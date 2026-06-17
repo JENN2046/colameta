@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$RUNNER_REPO_ROOT"
+
+if [ -x "$RUNNER_REPO_ROOT/venv/bin/python" ]; then
+  exec "$RUNNER_REPO_ROOT/venv/bin/python" "$RUNNER_REPO_ROOT/scripts/runner_cli.py" "$@"
+fi
+
+exec python3 "$RUNNER_REPO_ROOT/scripts/runner_cli.py" "$@"

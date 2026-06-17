@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+dist/
+*.egg-info/
+
+# OS
+.DS_Store
