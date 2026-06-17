@@ -1,5 +1,3 @@
-[**English**](README.md) | [**中文**](README.zh-CN.md)
-
 ```
    ______      __                      __     
   / ____/___  / /___ _____ ___  ____ _/ /____ 
@@ -11,6 +9,8 @@
 ```
 
 # ColaMeta
+
+[**English**](README.md) | [**中文**](README.zh-CN.md)
 
 ColaMeta is an AI coding workflow harness that connects ChatGPT / GPTs to local executors.
 
