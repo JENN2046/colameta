@@ -302,10 +302,14 @@ class RunnerStateMachine:
         if not isinstance(current_index, int) or current_index < 0 or current_index >= len(self.state.versions):
             return
         current_runtime = self.state.versions[current_index]
-        if current_runtime.status == "PASSED" and self.state.status == "READY":
+        if current_runtime.status == "PASSED" and self.state.status in {
+            "READY",
+            "BLOCKED_BY_MAX_FIX_ATTEMPTS",
+        }:
             self.state.status = "VERSION_PASSED"
 
     def continue_next_version(self) -> BuildRunnerState:
+        self.normalize_passed_current_version_status()
         if self.state.status != "VERSION_PASSED":
             raise ValueError("当前版本尚未通过，不能进入下一版本。")
 

@@ -3,6 +3,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -43,8 +44,62 @@ class OpenCodeServerAPIError(OpenCodeServerError):
         self.status_code = status_code
 
 
+class OpenCodeModelQuotaExhaustedError(OpenCodeServerAPIError):
+    terminal_reason = "executor_model_quota_exhausted"
+    error_code = "EXECUTOR_MODEL_QUOTA_EXHAUSTED"
+
+
+class OpenCodeProviderTerminalError(OpenCodeServerAPIError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 0,
+        log_path: str | None = None,
+        error_code: str = "EXECUTOR_PROVIDER_ERROR",
+        terminal_reason: str = "executor_provider_error",
+        provider_status: str = "",
+        evidence: dict[str, Any] | None = None,
+    ):
+        super().__init__(message, status_code=status_code, log_path=log_path)
+        self.error_code = error_code
+        self.terminal_reason = terminal_reason
+        self.provider_status = provider_status
+        self.evidence = evidence or {}
+
+
+class OpenCodeProviderRetryError(OpenCodeProviderTerminalError):
+    pass
+
+
+class OpenCodeServerStalledError(OpenCodeProviderTerminalError):
+    pass
+
+
 class OpenCodeProjectMismatchError(OpenCodeServerError):
     pass
+
+
+MODEL_QUOTA_EXHAUSTED_MESSAGE = "执行器模型额度或 token 配额已耗尽。请更换模型、等待额度恢复，或检查执行器账号和配置。"
+OPENCODE_STALLED_MESSAGE = "OpenCode 长时间停在发送提示词阶段，未收到 provider response、message part 或业务进展，已终结为 stalled executor failure。"
+MODEL_QUOTA_EXHAUSTED_MARKERS = (
+    "model quota",
+    "token quota",
+    "quota exceeded",
+    "insufficient quota",
+    "insufficient credits",
+    "insufficient credit",
+    "out of credits",
+    "usage limit",
+    "rate limit",
+    "too many requests",
+    "resource exhausted",
+    "resources exhausted",
+    "free usage exceeded",
+    "free_tier_limit",
+    "free limit reached",
+    "429",
+)
 
 
 def _find_free_port() -> int:
@@ -194,6 +249,17 @@ def _extract_message_text(response_body: str) -> str:
     return response_body
 
 
+def _looks_model_quota_exhausted(*texts: str | None) -> bool:
+    combined = "\n".join(
+        _redact_sensitive_text(text)
+        for text in texts
+        if isinstance(text, str) and text.strip()
+    ).lower()
+    if not combined:
+        return False
+    return any(marker in combined for marker in MODEL_QUOTA_EXHAUSTED_MARKERS)
+
+
 class OpenCodeServerAdapter:
     def __init__(
         self,
@@ -201,11 +267,15 @@ class OpenCodeServerAdapter:
         model: str | None = None,
         startup_timeout: int = 60,
         health_check_interval: float = 1.0,
+        prompt_status_poll_interval: float = 2.0,
+        prompt_stall_timeout: int = 180,
     ):
         self.executable = executable
         self.model = model.strip() if isinstance(model, str) and model.strip() else None
         self.startup_timeout = startup_timeout
         self.health_check_interval = health_check_interval
+        self.prompt_status_poll_interval = max(0.2, float(prompt_status_poll_interval))
+        self.prompt_stall_timeout = max(5, int(prompt_stall_timeout))
 
     def _start_server(self, project_root: str, logs_dir: str) -> tuple[int, subprocess.Popen, str]:
         opencode_path = shutil.which(self.executable)
@@ -375,13 +445,10 @@ class OpenCodeServerAdapter:
             usage["total_tokens"] = int(tokens["total"])
         cache = tokens.get("cache")
         if isinstance(cache, dict):
-            cached_total = 0
             if isinstance(cache.get("read"), (int, float)):
-                cached_total += int(cache["read"])
+                usage["cache_read_tokens"] = int(cache["read"])
             if isinstance(cache.get("write"), (int, float)):
-                cached_total += int(cache["write"])
-            if cached_total > 0:
-                usage["cached_input_tokens"] = cached_total
+                usage["cache_write_tokens"] = int(cache["write"])
         return usage
 
     def _fetch_message_detail(
@@ -396,12 +463,272 @@ class OpenCodeServerAdapter:
             return self._step_finish_tokens_to_usage(step_finish_tokens)
         return None
 
+    def _fetch_json_endpoint(self, port: int, path: str, timeout_seconds: int = 2) -> tuple[int, dict[str, Any] | list[Any] | None, str]:
+        status, body = _http_request(f"http://127.0.0.1:{port}{path}", method="GET", timeout=timeout_seconds)
+        try:
+            data = json.loads(body) if body else None
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        return status, data, body
+
+    def _fetch_server_events(self, port: int, timeout_seconds: int = 1) -> list[dict[str, Any]]:
+        status, body = _http_request(f"http://127.0.0.1:{port}/event", method="GET", timeout=timeout_seconds)
+        if status != 200 or not body:
+            return []
+        events: list[dict[str, Any]] = []
+        current_event = ""
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line:
+                current_event = ""
+                continue
+            if line.startswith("event:"):
+                current_event = line.split(":", 1)[1].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            payload = line.split(":", 1)[1].strip()
+            try:
+                data = json.loads(payload)
+            except (json.JSONDecodeError, ValueError):
+                data = {"raw": payload}
+            if isinstance(data, dict):
+                if current_event and "event" not in data and "type" not in data:
+                    data["event"] = current_event
+                events.append(data)
+        return events
+
+    def _extract_error_texts(self, value: Any) -> list[str]:
+        texts: list[str] = []
+        if isinstance(value, str):
+            if value.strip():
+                texts.append(value.strip())
+            return texts
+        if isinstance(value, list):
+            for item in value:
+                texts.extend(self._extract_error_texts(item))
+            return texts
+        if not isinstance(value, dict):
+            return texts
+
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text == "parts":
+                continue
+            if key_text == "action" and isinstance(item, dict):
+                for action_key in ("reason", "title", "message", "label"):
+                    action_value = item.get(action_key)
+                    if isinstance(action_value, str) and action_value.strip():
+                        texts.append(action_value.strip())
+                texts.extend(self._extract_error_texts(item))
+                continue
+            if key_text in {"error", "errors"}:
+                texts.extend(self._extract_error_texts(item))
+                continue
+            if key_text in {
+                "message", "responseBody", "body", "detail", "reason", "statusText",
+            }:
+                if isinstance(item, str) and item.strip():
+                    texts.append(item.strip())
+                elif isinstance(item, dict):
+                    texts.extend(self._extract_error_texts(item))
+                continue
+            if key_text in {"status_code", "statusCode"}:
+                if isinstance(item, str) and item.strip():
+                    texts.append(item.strip())
+                elif isinstance(item, (int, float)):
+                    texts.append(str(int(item)))
+                continue
+            if key_text in {"type", "status", "state"}:
+                if isinstance(item, str) and item.strip().lower() in {"retry", "error", "failed", "failure"}:
+                    texts.append(item.strip())
+                continue
+            if isinstance(item, (dict, list)):
+                texts.extend(self._extract_error_texts(item))
+
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type") or "").lower()
+                if "error" in part_type or "retry" in part_type:
+                    texts.extend(self._extract_error_texts(part))
+        return texts
+
+    def _extract_response_header_keys(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            for item in value:
+                keys = self._extract_response_header_keys(item)
+                if keys:
+                    return keys
+            return []
+        if not isinstance(value, dict):
+            return []
+        headers = value.get("responseHeaders")
+        if isinstance(headers, dict):
+            return sorted(str(key) for key in headers.keys() if isinstance(key, str))
+        for item in value.values():
+            keys = self._extract_response_header_keys(item)
+            if keys:
+                return keys
+        return []
+
+    def _extract_terminal_evidence(
+        self,
+        *,
+        source: str,
+        status_code: int,
+        data: Any,
+        body: str = "",
+    ) -> dict[str, Any] | None:
+        provider_status = ""
+        if isinstance(data, dict):
+            raw_status = data.get("status") or data.get("state")
+            if isinstance(raw_status, str):
+                provider_status = raw_status.strip().lower()
+        error_texts = self._extract_error_texts(data)
+        if body and status_code >= 400:
+            error_texts.append(body[:1000])
+        combined = "\n".join(error_texts)
+        combined_lower = combined.lower()
+        response_header_keys = self._extract_response_header_keys(data)
+        if _looks_model_quota_exhausted(combined, provider_status):
+            return {
+                "source": source,
+                "error_code": "EXECUTOR_MODEL_QUOTA_EXHAUSTED",
+                "terminal_reason": "executor_model_quota_exhausted",
+                "provider_status": provider_status or ("http_%s" % status_code if status_code else ""),
+                "message": MODEL_QUOTA_EXHAUSTED_MESSAGE,
+                "summary": MODEL_QUOTA_EXHAUSTED_MESSAGE,
+                "status_code": status_code,
+                "response_headers_present": bool(response_header_keys),
+                "response_header_keys": response_header_keys,
+            }
+        if provider_status == "retry" or "retry" in combined_lower:
+            return {
+                "source": source,
+                "error_code": "EXECUTOR_PROVIDER_RETRY",
+                "terminal_reason": "executor_provider_retry",
+                "provider_status": "retry",
+                "message": "OpenCode server 进入 retry 状态，未产生可验收输出，已终结执行器运行。",
+                "summary": "retry",
+                "status_code": status_code,
+            }
+        if error_texts or provider_status in {"error", "failed", "failure"} or (status_code >= 400 and bool(body.strip())):
+            summary = _truncate_summary(_redact_sensitive_text(combined or body or provider_status), max_length=500)
+            return {
+                "source": source,
+                "error_code": "EXECUTOR_PROVIDER_ERROR",
+                "terminal_reason": "executor_provider_error",
+                "provider_status": provider_status or ("http_%s" % status_code if status_code else ""),
+                "message": f"OpenCode server 返回 provider error：{summary}",
+                "summary": summary,
+                "status_code": status_code,
+                "response_headers_present": bool(response_header_keys),
+                "response_header_keys": response_header_keys,
+            }
+        return None
+
+    def _collect_prompt_wait_facts(
+        self,
+        port: int,
+        session_id: str,
+    ) -> dict[str, Any]:
+        facts: dict[str, Any] = {
+            "status": {},
+            "session": {},
+            "events": [],
+            "terminal_evidence": None,
+            "meaningful_progress": False,
+        }
+        status_code, status_data, status_body = self._fetch_json_endpoint(port, "/session/status", timeout_seconds=2)
+        if isinstance(status_data, dict):
+            facts["status"] = status_data
+            facts["meaningful_progress"] = True
+        evidence = self._extract_terminal_evidence(
+            source="/session/status",
+            status_code=status_code,
+            data=status_data,
+            body=status_body,
+        )
+        if evidence:
+            facts["terminal_evidence"] = evidence
+            return facts
+
+        sess_code, sess_data, sess_body = self._fetch_json_endpoint(port, f"/session/{session_id}", timeout_seconds=2)
+        if isinstance(sess_data, dict):
+            facts["session"] = sess_data
+            if sess_data.get("error") or sess_data.get("status"):
+                facts["meaningful_progress"] = True
+        evidence = self._extract_terminal_evidence(
+            source=f"/session/{session_id}",
+            status_code=sess_code,
+            data=sess_data,
+            body=sess_body,
+        )
+        if evidence:
+            facts["terminal_evidence"] = evidence
+            return facts
+
+        events = self._fetch_server_events(port, timeout_seconds=1)
+        facts["events"] = events[-10:]
+        for event in events[-10:]:
+            event_type = str(event.get("type") or event.get("event") or "").lower()
+            if event_type and event_type != "heartbeat":
+                facts["meaningful_progress"] = True
+            evidence = self._extract_terminal_evidence(
+                source="/event",
+                status_code=200,
+                data=event,
+                body="",
+            )
+            if evidence:
+                facts["terminal_evidence"] = evidence
+                return facts
+            if "retry" in event_type:
+                facts["terminal_evidence"] = {
+                    "source": "/event",
+                    "error_code": "EXECUTOR_PROVIDER_RETRY",
+                    "terminal_reason": "executor_provider_retry",
+                    "provider_status": "retry",
+                    "message": "OpenCode server event 显示 retry，未产生可验收输出，已终结执行器运行。",
+                    "summary": "retry",
+                    "status_code": 200,
+                }
+                return facts
+        return facts
+
+    def _raise_terminal_evidence(self, evidence: dict[str, Any]) -> None:
+        error_code = str(evidence.get("error_code") or "EXECUTOR_PROVIDER_ERROR")
+        if error_code == "EXECUTOR_MODEL_QUOTA_EXHAUSTED":
+            raise OpenCodeModelQuotaExhaustedError(
+                MODEL_QUOTA_EXHAUSTED_MESSAGE,
+                status_code=int(evidence.get("status_code") or 0),
+            )
+        cls: type[OpenCodeProviderTerminalError]
+        if error_code == "EXECUTOR_PROVIDER_RETRY":
+            cls = OpenCodeProviderRetryError
+        else:
+            cls = OpenCodeProviderTerminalError
+        raise cls(
+            str(evidence.get("message") or "OpenCode server 返回 provider terminal error。"),
+            status_code=int(evidence.get("status_code") or 0),
+            error_code=error_code,
+            terminal_reason=str(evidence.get("terminal_reason") or "executor_provider_error"),
+            provider_status=str(evidence.get("provider_status") or ""),
+            evidence=evidence,
+        )
+
     def _send_prompt_to_session(
         self,
         port: int,
         session_id: str,
         prompt: str,
         timeout_seconds: int,
+        event_store: ExecutorEventStore | None = None,
+        run_id: str | None = None,
+        event_context: dict[str, Any] | None = None,
     ) -> tuple[str, str, int, dict[str, Any] | None, str | None]:
         url = f"http://127.0.0.1:{port}/session/{session_id}/message"
         payload = {
@@ -412,7 +739,88 @@ class OpenCodeServerAdapter:
         model_payload = self._model_payload()
         if model_payload:
             payload["model"] = model_payload
-        status, body = _http_request(url, method="POST", data=payload, timeout=timeout_seconds)
+        response_box: dict[str, Any] = {}
+
+        def _post_message() -> None:
+            response_box["response"] = _http_request(url, method="POST", data=payload, timeout=timeout_seconds)
+
+        post_thread = threading.Thread(target=_post_message, daemon=True)
+        post_thread.start()
+        deadline = time.time() + max(1, int(timeout_seconds))
+        last_business_progress_at = time.time()
+        last_fact_signature = ""
+        while post_thread.is_alive():
+            now = time.time()
+            if now >= deadline:
+                raise OpenCodeServerStalledError(
+                    "OpenCode prompt send timed out before server returned a message response.",
+                    status_code=599,
+                    error_code="EXECUTOR_STALLED",
+                    terminal_reason="executor_stalled_without_provider_error",
+                    provider_status="timeout",
+                    evidence={"source": "prompt_send_timeout"},
+                )
+            facts = self._collect_prompt_wait_facts(port, session_id)
+            evidence = facts.get("terminal_evidence")
+            if isinstance(evidence, dict):
+                _append_live_event(
+                    event_store, run_id, "executor_tool_event",
+                    {"stage": "provider_terminal_evidence", **evidence},
+                    event_context,
+                    phase="server",
+                    message="OpenCode provider terminal evidence",
+                    level="error",
+                )
+                self._raise_terminal_evidence(evidence)
+            fact_signature = json.dumps({
+                "status": facts.get("status"),
+                "session": facts.get("session"),
+                "events": facts.get("events"),
+            }, sort_keys=True, ensure_ascii=False, default=str)[:1000]
+            if facts.get("meaningful_progress") and fact_signature and fact_signature != last_fact_signature:
+                last_fact_signature = fact_signature
+                last_business_progress_at = now
+                _append_live_event(
+                    event_store, run_id, "executor_tool_event",
+                    {
+                        "stage": "server_wait_fact",
+                        "session_status": facts.get("status"),
+                        "session": facts.get("session"),
+                        "event_count": len(facts.get("events") or []),
+                    },
+                    event_context,
+                    phase="server",
+                    message="OpenCode server wait fact observed",
+                )
+            if now - last_business_progress_at >= self.prompt_stall_timeout:
+                evidence = {
+                    "source": "prompt_send_monitor",
+                    "error_code": "EXECUTOR_STALLED",
+                    "terminal_reason": "executor_stalled_without_provider_error",
+                    "provider_status": "stalled",
+                    "message": OPENCODE_STALLED_MESSAGE,
+                    "summary": "prompt_send_started_without_response_or_message_part",
+                    "status_code": 599,
+                }
+                _append_live_event(
+                    event_store, run_id, "executor_tool_event",
+                    {"stage": "prompt_send_stalled", **evidence},
+                    event_context,
+                    phase="server",
+                    message="OpenCode prompt send stalled",
+                    level="error",
+                )
+                raise OpenCodeServerStalledError(
+                    OPENCODE_STALLED_MESSAGE,
+                    status_code=599,
+                    error_code="EXECUTOR_STALLED",
+                    terminal_reason="executor_stalled_without_provider_error",
+                    provider_status="stalled",
+                    evidence=evidence,
+                )
+            post_thread.join(timeout=min(self.prompt_status_poll_interval, max(0.1, deadline - now)))
+
+        status, body = response_box.get("response", (599, "request_failed:missing_response"))
         if status == 200 or status == 201:
             result_text = _extract_message_text(body)
             step_finish_tokens, message_id = self._extract_step_finish_tokens_from_body(body)
@@ -421,7 +829,32 @@ class OpenCodeServerAdapter:
                 if step_finish_tokens
                 else None
             )
+            if _looks_model_quota_exhausted(result_text, body):
+                raise OpenCodeModelQuotaExhaustedError(
+                    MODEL_QUOTA_EXHAUSTED_MESSAGE,
+                    status_code=status,
+                )
+            try:
+                body_data = json.loads(body) if body and body.strip().startswith(("{", "[")) else {"message": result_text}
+            except (json.JSONDecodeError, ValueError):
+                body_data = {"message": result_text}
+            body_evidence = self._extract_terminal_evidence(
+                source="/session/:id/message response",
+                status_code=status,
+                data=body_data,
+                body=body,
+            )
+            if body_evidence:
+                self._raise_terminal_evidence(body_evidence)
             return result_text, "", 0, server_usage, message_id
+        evidence = self._extract_terminal_evidence(
+            source="/session/:id/message response",
+            status_code=status,
+            data=None,
+            body=body,
+        )
+        if evidence:
+            self._raise_terminal_evidence(evidence)
         raise OpenCodeServerAPIError(
             f"发送提示词失败（HTTP {status}）：{body[:500]}",
             status_code=status,
@@ -570,6 +1003,9 @@ class OpenCodeServerAdapter:
                 result_text, stderr_text, exit_code, raw_server_usage, message_id = (
                     self._send_prompt_to_session(
                         port, session_id, prompt, timeout_seconds,
+                        event_store=event_store,
+                        run_id=run_id,
+                        event_context=event_context,
                     )
                 )
                 stdout = result_text
@@ -622,6 +1058,22 @@ class OpenCodeServerAdapter:
                 level="error",
             )
             self._terminate_server(proc)
+            if isinstance(e, OpenCodeModelQuotaExhaustedError):
+                raise OpenCodeModelQuotaExhaustedError(
+                    MODEL_QUOTA_EXHAUSTED_MESSAGE,
+                    status_code=e.status_code,
+                    log_path=log_path,
+                ) from e
+            if isinstance(e, OpenCodeProviderTerminalError):
+                raise e.__class__(
+                    str(e),
+                    status_code=e.status_code,
+                    log_path=log_path,
+                    error_code=getattr(e, "error_code", "EXECUTOR_PROVIDER_ERROR"),
+                    terminal_reason=getattr(e, "terminal_reason", "executor_provider_error"),
+                    provider_status=getattr(e, "provider_status", ""),
+                    evidence=getattr(e, "evidence", {}),
+                ) from e
             raise OpenCodeServerError(f"OpenCode 服务器执行失败，已写入日志：{log_path}", log_path=log_path) from e
         except Exception as e:
             completed_at = _now()

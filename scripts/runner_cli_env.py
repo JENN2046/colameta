@@ -89,30 +89,6 @@ def load_global_runner_config(
     return result
 
 
-def load_global_runner_config_env(
-    command_name: str,
-    *,
-    project_path: str | None = None,
-    load_global_runner_config_func: Callable[..., dict[str, object]],
-) -> dict[str, str]:
-    global_config = load_global_runner_config_func(
-        command_name,
-        include_auth_token=True,
-        project_path=project_path,
-    )
-    env: dict[str, str] = {}
-    auth_mode = global_config.get("auth_mode")
-    if isinstance(auth_mode, str) and auth_mode.strip():
-        env["MVP_RUNNER_AUTH_MODE"] = auth_mode.strip()
-    public_base_url = global_config.get("public_base_url")
-    if isinstance(public_base_url, str) and public_base_url.strip():
-        env["MVP_RUNNER_PUBLIC_BASE_URL"] = public_base_url.strip()
-    auth_token = global_config.get("auth_token")
-    if isinstance(auth_token, str) and auth_token.strip():
-        env["MVP_RUNNER_AUTH_TOKEN"] = auth_token.strip()
-    return env
-
-
 def resolve_auth_mode(auth_mode: str | None, auth_token: str | None) -> str:
     return auth_mode or ("token" if auth_token else "none")
 

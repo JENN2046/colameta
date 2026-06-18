@@ -102,10 +102,23 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .project-switch select:disabled { opacity: 0.7; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.58); z-index: 1000; display: none; align-items: flex-start; justify-content: center; padding: 72px 16px 24px; }
 .modal-backdrop.open { display: flex; }
-.modal-panel { width: min(900px, 100%); max-height: calc(100vh - 96px); overflow: auto; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.45); }
+.modal-panel { width: min(900px, 100%); max-height: calc(100vh - 96px); overflow: auto; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.45); scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+.modal-panel::-webkit-scrollbar { width: 6px; }
+.modal-panel::-webkit-scrollbar-track { background: transparent; }
+.modal-panel::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.modal-panel::-webkit-scrollbar-thumb:hover { background: #484f58; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #21262d; }
 .modal-title { font-size: 15px; font-weight: 600; color: #f0f6fc; }
 .modal-body { padding: 16px; }
+.version-detail-tabs { display: flex; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid #21262d; }
+.version-detail-tab { background: transparent; border: none; color: #8b949e; cursor: pointer; padding: 8px 2px; font-size: 13px; border-bottom: 2px solid transparent; }
+.version-detail-tab.active { color: #f0f6fc; border-bottom-color: #58a6ff; }
+.version-detail-path { margin-bottom: 8px; font-size: 12px; color: #8b949e; word-break: break-all; }
+.version-detail-content { background:#161b22; padding:12px; border-radius:6px; font-size:13px; color:#c9d1d9; white-space:pre-wrap; word-break:break-word; max-height:60vh; overflow:auto; scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+.version-detail-content::-webkit-scrollbar { width: 6px; }
+.version-detail-content::-webkit-scrollbar-track { background: transparent; }
+.version-detail-content::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.version-detail-content::-webkit-scrollbar-thumb:hover { background: #484f58; }
 .modal-close { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
 .modal-close:hover { background: #30363d; }
 .empty-state { color: #8b949e; font-size: 13px; font-style: italic; padding: 4px 0; }
@@ -279,6 +292,7 @@ function isLiveRunRunning(lr) {{
   if (lr.available !== true) return false;
   const diagnostics = Array.isArray(lr.diagnostics) ? lr.diagnostics : [];
   if (diagnostics.includes("EXECUTOR_RUN_ORPHANED")) return false;
+  if (diagnostics.includes("HEARTBEAT_ONLY_WITH_STALE_PROGRESS")) return false;
   return lr.claim_status === "RUNNING" || lr.claim_status === "running";
 }}
 
@@ -624,7 +638,6 @@ function renderLeftColumn(data) {{
 
   h += `<div class="tab-content" data-left-tab="overview">`;
   h += `<div class="compact-card" style="margin-bottom:0;">`;
-  h += `<div class="card-title">项目状态</div>`;
   h += r("项目", pi.project_name || "-");
   h += `<div class="compact-row"><span class="key">代码：</span><span class="val">分支 ${{sb(pi.git_branch)}} ｜ 提交 ${{sb(pi.git_head_short)}}</span></div>`;
   h += `<div class="compact-row"><span class="key">版本：</span><span class="val">当前 ${{sb(fs.current_version)}} ｜ 下一 ${{sb(fs.next_version)}}</span></div>`;
@@ -636,7 +649,6 @@ function renderLeftColumn(data) {{
   h += `<div style="margin-top:8px;">`;
   if (fs.next_not_started_version != null) h += r("下一未开始", fs.next_not_started_version);
   if (fs.pending_count != null) h += r("挂起版本", fs.pending_count);
-  if (fs.has_pending_versions != null) h += r("有挂起", fs.has_pending_versions ? "是" : "否");
   h += r("未跟踪文件", untrackedCount);
   h += r("可提交", fs.can_commit === true ? "是" : fs.can_commit === false ? "否" : "-");
   h += r("规则检查", lintText);
@@ -665,17 +677,22 @@ function displayVersionName(v) {{
   return name || v.version;
 }}
 
+function versionRuntimeDone(v) {{
+  const status = String(v.runtime_status || "").toUpperCase();
+  return status === "PASSED" || status === "FAILED" || status === "COMPLETED";
+}}
+
 function versionStatusLabel(v) {{
   if (!v.enabled) return "已禁用";
+  if (versionRuntimeDone(v)) return "开发完";
   if (v.is_current) return "开发中";
-  if (v.runtime_status === "PASSED" || v.runtime_status === "completed") return "已完成";
-  return "待开发";
+  return "未开发";
 }}
 
 function versionStatusBadgeClass(v) {{
   if (!v.enabled) return "badge-err";
+  if (versionRuntimeDone(v)) return "badge-ok";
   if (v.is_current) return "badge-info";
-  if (v.runtime_status === "PASSED" || v.runtime_status === "completed") return "badge-ok";
   return "badge-warn";
 }}
 
@@ -689,7 +706,6 @@ function renderVersionPlan(data) {{
 
   let h = "";
   h += `<div class="compact-card" style="margin-bottom:0;">`;
-  h += `<div class="card-title">版本计划</div>`;
   for (const v of ordered) {{
     const ver = esc(v.version);
     const label = esc(displayVersionName(v));
@@ -720,6 +736,10 @@ function liveRunEventLabel(evt) {{
   if (t === "executor_started") return `${{provider}} 已启动，正在执行任务`;
   if (t === "executor_finished") return `${{provider}} 已返回结果`;
   if (t === "executor_failed") return `${{provider}} 执行失败`;
+  if (t === "executor_tool_event" && d.stage === "provider_terminal_evidence") return "执行器服务返回错误事实";
+  if (t === "executor_tool_event" && d.stage === "prompt_send_stalled") return "执行器服务等待已停滞";
+  if (t === "executor_tool_event" && d.stage === "server_wait_fact") return "执行器服务状态已更新";
+  if (t === "executor_tool_event" && d.stage === "prompt_send_started") return "提示词已发送到执行器服务";
   if (t === "validation_started") return "开始运行验收命令";
   if (t === "validation_finished") return d.run_status === "PASSED" ? "验收通过" : "验收未通过";
   if (t === "git_diff_changed") return `检测到 ${{d.changed_file_count || 0}} 个文件改动`;
@@ -742,6 +762,13 @@ function liveRunEventDetail(evt) {{
   if (t === "executor_started") return "这一步可能持续几分钟；如果执行器没有流式输出，Runner 会等它结束后再显示后续结果。";
   if (t === "executor_finished") return "执行器进程已结束，Runner 正在检查改动并运行验收。";
   if (t === "executor_failed") return d.message || d.error_code || "执行器失败，但没有返回详细错误。";
+  if (t === "executor_tool_event" && d.stage === "provider_terminal_evidence") return d.message || d.error_code || d.terminal_reason || "provider/server 返回 terminal error。";
+  if (t === "executor_tool_event" && d.stage === "prompt_send_stalled") return d.message || d.summary || "提示词发送后长时间没有 response、message part 或业务进展。";
+  if (t === "executor_tool_event" && d.stage === "server_wait_fact") {{
+    const st = d.session_status && d.session_status.status ? d.session_status.status : "";
+    return st ? "server status: " + st : "已读取 server event/status/message 事实。";
+  }}
+  if (t === "executor_tool_event" && d.stage === "prompt_send_started") return "Runner 正在等待执行器服务返回 response 或 server event/status/error 事实。";
   if (t === "validation_finished") return `验收命令 ${{d.total_commands || 0}} 个，失败 ${{d.failed_count || 0}} 个。`;
   if (t === "git_diff_changed") {{
     const bizFiles = Array.isArray(d.changed_files) ? d.changed_files.slice(0, 5) : [];
@@ -841,6 +868,7 @@ function renderLiveRunPanel(lr, data) {{
 
   let taskTitle = "当前任务";
   const currentVer = fs.current_version || "";
+  const latestReportIsCurrent = hasLastReport && currentVer && latestReport.version === currentVer;
   const pendingVersions = Array.isArray(fs.pending_versions) ? fs.pending_versions : [];
   const currentPending = pendingVersions.find(v => v && v.version === currentVer) || {{}};
   const taskName = currentPending.name || currentPending.description || (ds.title && ds.title !== "操作成功" ? ds.title : "");
@@ -850,8 +878,8 @@ function renderLiveRunPanel(lr, data) {{
     taskTitle = "正在启动执行器…";
   }} else if (hasLastReport && latestReport.version) {{
     const reportVer = latestReport.version;
-    if (reportVer === currentVer) {{
-      taskTitle = "上次结果：" + (taskName ? currentVer + " " + taskName : currentVer);
+    if (latestReportIsCurrent) {{
+      taskTitle = "当前版本：" + currentVer;
     }} else {{
       taskTitle = "上次结果（" + reportVer + "）";
     }}
@@ -868,14 +896,18 @@ function renderLiveRunPanel(lr, data) {{
   const diagnostics = Array.isArray(lr.diagnostics) ? lr.diagnostics : [];
   const events = hasLiveRun && Array.isArray(lr.events) ? lr.events : (!isBlocked && Array.isArray(latestReport.events) ? latestReport.events : []);
   const orphaned = diagnostics.includes("EXECUTOR_RUN_ORPHANED");
+  const progressStalled = diagnostics.includes("HEARTBEAT_ONLY_WITH_STALE_PROGRESS") || lr.progress_stalled === true;
   const runStatus = hasLiveRun ? (lr.claim_status || "unknown") : (hasLastReport ? (latestReport.status || "completed") : "empty");
   let statusText = "执行器暂无结果";
   if (isStarting) statusText = "正在启动执行器…";
   else if (isBlocked) statusText = "启动被阻断：" + (lastOp.message || "操作失败");
   else if (hasLiveRun && orphaned) statusText = "执行器已失联";
+  else if (hasLiveRun && progressStalled) statusText = "执行器业务进展停滞";
   else if (hasLiveRun && (runStatus === "RUNNING" || runStatus === "running")) statusText = "执行器运行中" + (pollExhausted ? "（数据可能已过期）" : "");
   else if (hasLiveRun && (runStatus === "COMPLETED" || runStatus === "completed")) statusText = "执行器已完成";
   else if (hasLiveRun && (runStatus === "FAILED" || runStatus === "failed")) statusText = "执行器失败";
+  else if (hasLastReport && latestReportIsCurrent && latestReport.status === "completed") statusText = "✅ 开发完成，成功生成报告";
+  else if (hasLastReport && latestReportIsCurrent && latestReport.status === "failed") statusText = "☑️ 开发完成，报告生成失败";
   else if (hasLastReport && latestReport.status === "completed") statusText = "上次报告已完成";
   else if (hasLastReport && latestReport.status === "failed") statusText = "上次报告失败";
   else if (hasLastReport) statusText = "上次报告：" + latestReport.status;
@@ -949,6 +981,13 @@ function renderLiveRunPanel(lr, data) {{
       const stale = lr.heartbeat.stale ? "（已过期）" : "";
       heartbeatText = age + stale;
     }}
+    let progressText = "-";
+    const mp = lr.last_meaningful_progress || {{}};
+    if (mp && mp.available) {{
+      const age = mp.age_seconds != null ? Math.round(mp.age_seconds) + "s" : "-";
+      const stale = mp.stale ? "（已过期）" : "";
+      progressText = age + stale;
+    }}
     h += `<div class="compact-row" style="display:flex;flex-wrap:wrap;gap:2px 0;font-size:13px;padding:4px 0;border-bottom:1px solid #21262d;">`;
     h += `<span class="key">业务改动：</span><span class="val">${{sb(businessCount)}}</span>`;
     h += `<span style="margin:0 4px;color:#8b949e;">｜</span>`;
@@ -957,6 +996,8 @@ function renderLiveRunPanel(lr, data) {{
     h += `<span class="key">报告可用：</span><span class="val">${{reportAvailable ? "是" : "否"}}</span>`;
     h += `<span style="margin:0 4px;color:#8b949e;">｜</span>`;
     h += `<span class="key">心跳：</span><span class="val">${{esc(heartbeatText)}}</span>`;
+    h += `<span style="margin:0 4px;color:#8b949e;">｜</span>`;
+    h += `<span class="key">业务进展：</span><span class="val">${{esc(progressText)}}</span>`;
     h += `</div>`;
 
     if (hasLiveRun && businessCount > 0 && Array.isArray(lr.changed_files)) {{
@@ -964,9 +1005,11 @@ function renderLiveRunPanel(lr, data) {{
       h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件：${{esc(preview)}}${{businessCount > 8 ? " …" : ""}}</div>`;
     }} else if (hasLastReport && latestReportChangedFiles) {{
       const preview = latestReportChangedFiles.slice(0, 8).join(", ");
-      h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件（上次结果）：${{esc(preview)}}${{businessCount > 8 ? " …" : ""}}</div>`;
+      const changedFilesLabel = latestReportIsCurrent ? "当前版本" : "上次结果";
+      h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件（${{changedFilesLabel}}）：${{esc(preview)}}${{businessCount > 8 ? " …" : ""}}</div>`;
     }} else if (hasLastReport) {{
-      h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件：上次结果未提供文件列表</div>`;
+      const changedFilesMissingText = latestReportIsCurrent ? "当前版本未提供文件列表" : "上次结果未提供文件列表";
+      h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件：${{changedFilesMissingText}}</div>`;
     }} else {{
       h += `<div style="font-size:11px;color:#8b949e;padding:6px 0 4px 0;word-break:break-all;">改动文件：无</div>`;
     }}
@@ -989,25 +1032,22 @@ function renderLiveRunPanel(lr, data) {{
   if (!isBlocked && latestReport && latestReport.token_usage) {{
     const tu = latestReport.token_usage;
     if (tu.available === true) {{
-      const fi = tu.input_tokens != null ? Number(tu.input_tokens).toLocaleString() : "-";
+      const totalIn = tu.prompt_input_tokens != null ? Number(tu.prompt_input_tokens).toLocaleString() : "-";
+      const freshIn = tu.fresh_input_tokens != null ? Number(tu.fresh_input_tokens).toLocaleString() : "-";
+      const cacheRead = tu.cache_read_tokens != null ? Number(tu.cache_read_tokens).toLocaleString() : "-";
       const fo = tu.output_tokens != null ? Number(tu.output_tokens).toLocaleString() : "-";
-      const fc = tu.cached_input_tokens != null ? Number(tu.cached_input_tokens).toLocaleString() : "-";
-      const ft = tu.total_tokens != null ? Number(tu.total_tokens).toLocaleString() : "-";
-      const fh = tu.cache_hit_rate_percent || "-";
       const fr = tu.reasoning_output_tokens != null ? Number(tu.reasoning_output_tokens).toLocaleString() : "0";
-      const tokenSource = tu.source ? String(tu.source) : "";
-      const tokenProvider = tu.provider ? String(tu.provider) : "";
-      let tokenLabel = "";
-      if (tokenSource && tokenProvider) tokenLabel = " (" + esc(tokenSource) + ", " + esc(tokenProvider) + ")";
-      else if (tokenSource) tokenLabel = " (" + esc(tokenSource) + ")";
-      else if (tokenProvider) tokenLabel = " (" + esc(tokenProvider) + ")";
+      const ft = tu.total_tokens != null ? Number(tu.total_tokens).toLocaleString() : "-";
+      let fh = tu.cache_hit_rate_percent || "-";
+      if (fh === "-" && totalIn !== "-" && Number(totalIn.replace(/,/g, "")) > 0) {{
+        fh = "数据不足";
+      }}
       h += `<div style="border-top:1px solid #30363d;margin:8px 0 8px 0;"></div>`;
       h += `<div class="compact-row" style="font-size:13px;padding:4px 0;">`;
-      h += '<span class="key">Token：</span><span class="val">' + fi + ' in / ' + fo + ' out / ' + fr + ' rsn / ' + fc + ' cache / ' + fh + ' hit / ' + ft + ' total' + tokenLabel + '</span>';
+      h += '<span class="key">Token：</span><span class="val">' + totalIn + ' 总输入 / ' + freshIn + ' 新 / ' + cacheRead + ' 缓存 / ' + fo + ' 输出 / ' + fr + ' 推理 / ' + fh + ' 命中 / ' + ft + ' 合计</span>';
       h += `</div>`;
       if (Array.isArray(tu.warnings) && tu.warnings.length) {{
-        const tokenWarnings = tu.warnings.map(w => esc(String(w))).join(", ");
-        h += '<div style="font-size:11px;color:#d29922;padding:2px 0 4px 0;">Token usage warnings: ' + tokenWarnings + '</div>';
+        h += '<div style="font-size:11px;color:#d29922;padding:2px 0 4px 0;">Token 数据可能存在偏差</div>';
       }}
     }} else {{
       let unavailableText = "Token usage unavailable";
@@ -1024,20 +1064,6 @@ function renderLiveRunPanel(lr, data) {{
         h += '<div style="font-size:11px;color:#d29922;padding:2px 0 4px 0;">' + tokenWarnings + '</div>';
       }}
     }}
-  }}
-
-  if (lr.stale_orphan_claim) {{
-    const soc = lr.stale_orphan_claim;
-    h += `<div style="border-top:2px solid #f85149;margin:8px 0 8px 0;"></div>`;
-    h += `<div class="key" style="color:#f85149;margin-bottom:6px;">⚠ 旧运行残留诊断</div>`;
-    h += `<div style="font-size:12px;color:#f85149;background:#2d1215;border-radius:4px;padding:6px 8px;margin-bottom:6px;">`;
-    h += `<div class="compact-row"><span class="key">运行 ID：</span><span class="val">${{esc(soc.run_id || "-")}}</span></div>`;
-    h += `<div class="compact-row"><span class="key">预览 ID：</span><span class="val">${{esc(soc.preview_id || "-")}}</span></div>`;
-    h += `<div class="compact-row"><span class="key">声明状态：</span><span class="val">${{esc(soc.claim_status || "-")}}</span></div>`;
-    if (lr.stale_orphan_message) {{
-      h += `<div style="color:#f85149;font-size:11px;margin-top:4px;">${{esc(lr.stale_orphan_message)}}</div>`;
-    }}
-    h += `</div>`;
   }}
 
   h += `</div>`;
@@ -1276,10 +1302,56 @@ function closeTodoModal(event) {{
   if (modal) modal.classList.remove("open");
 }}
 
+let versionDetailModalData = null;
+
+function versionDetailTitle(data, version) {{
+  const ver = (data && data.version) || version || "";
+  const name = data && data.version_name ? String(data.version_name).trim() : "";
+  return name ? ver + ": " + name : ver;
+}}
+
+function renderVersionDetailModalBody(data, activeTab) {{
+  activeTab = activeTab === "report" ? "report" : "prompt";
+  const promptActive = activeTab === "prompt" ? " active" : "";
+  const reportActive = activeTab === "report" ? " active" : "";
+  let h = "";
+  h += `<div class="version-detail-tabs">`;
+  h += `<button type="button" class="version-detail-tab${{promptActive}}" onclick="showVersionDetailTab('prompt')">prompt</button>`;
+  h += `<button type="button" class="version-detail-tab${{reportActive}}" onclick="showVersionDetailTab('report')">report</button>`;
+  h += `</div>`;
+  if (activeTab === "report") {{
+    const report = data && data.report && typeof data.report === "object" ? data.report : {{}};
+    if (report.available) {{
+      h += `<div class="version-detail-path">报告地址：${{esc(report.report_file || "-")}}</div>`;
+      h += `<pre class="version-detail-content">${{esc(report.content || "")}}</pre>`;
+      if (report.truncated) {{
+        h += `<div style="margin-top:8px;font-size:12px;color:#d29922;">提示：报告内容已截断。</div>`;
+      }}
+    }} else {{
+      h += `<div class="version-detail-path">报告地址：-</div>`;
+      h += `<div class="empty-state">${{esc(report.message || "该版本暂无执行器报告。")}}</div>`;
+    }}
+    return h;
+  }}
+  h += `<div class="version-detail-path">prompt 文件：${{esc(data.prompt_file || "-")}}</div>`;
+  h += `<pre class="version-detail-content">${{esc(data.content || "")}}</pre>`;
+  if (data.truncated) {{
+    h += `<div style="margin-top:8px;font-size:12px;color:#d29922;">提示：内容已截断，仅显示前 ${{data.char_count}} 字符。</div>`;
+  }}
+  return h;
+}}
+
+function showVersionDetailTab(tab) {{
+  const body = $("version-prompt-modal-body");
+  if (!body || !versionDetailModalData) return;
+  body.innerHTML = renderVersionDetailModalBody(versionDetailModalData, tab);
+}}
+
 function openVersionPromptModal(version) {{
   const titleEl = $("version-prompt-modal-title");
   const body = $("version-prompt-modal-body");
-  if (titleEl) titleEl.textContent = esc(version) + " Prompt";
+  versionDetailModalData = null;
+  if (titleEl) titleEl.textContent = version;
   if (body) body.innerHTML = `<div class="empty-state">加载中…</div>`;
   const modal = $("version-prompt-modal");
   if (modal) modal.classList.add("open");
@@ -1289,15 +1361,11 @@ function openVersionPromptModal(version) {{
     .then(function(data) {{
       if (!body) return;
       if (data.ok) {{
-        var h = "";
-        h += `<div style="margin-bottom:8px;font-size:12px;color:#8b949e;">prompt 文件：${{esc(data.prompt_file || "-")}}</div>`;
-        h += `<pre style="background:#161b22;padding:12px;border-radius:6px;font-size:13px;color:#c9d1d9;white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;">${{esc(data.content || "")}}</pre>`;
-        if (data.truncated) {{
-          h += `<div style="margin-top:8px;font-size:12px;color:#d29922;">提示：内容已截断，仅显示前 ${{data.char_count}} 字符。</div>`;
-        }}
-        body.innerHTML = h;
+        versionDetailModalData = data;
+        if (titleEl) titleEl.textContent = versionDetailTitle(data, version);
+        body.innerHTML = renderVersionDetailModalBody(data, "prompt");
       }} else {{
-        body.innerHTML = `<div style="color:#f85149;">错误：${{esc(data.message || "获取 prompt 失败")}}</div>`;
+        body.innerHTML = `<div style="color:#f85149;">错误：${{esc(data.message || "获取版本详情失败")}}</div>`;
       }}
     }})
     .catch(function(e) {{ if (body) body.innerHTML = `<div style="color:#f85149;">错误：${{esc(String(e))}}</div>`; }});

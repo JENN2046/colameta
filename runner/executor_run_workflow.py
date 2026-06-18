@@ -26,6 +26,7 @@ from runner.runner_paths import (
     resolve_project_runner_dir,
     resolve_project_runner_plan_path,
 )
+from runner.sensitive_redaction import redact_sensitive_text
 from runner.source_review_bridge import SourceReviewBridge
 from runner.state_machine import RunnerStateMachine
 from runner.state_mutation import ExecutorRunLifecycleStatePersistMutation, RunnerStateMutationService
@@ -57,6 +58,7 @@ _EXECUTOR_ERROR_CODES = {
     "OPENCODE_RUN_UNSUPPORTED",
     "FIX_PROMPT_MISSING",
     "EXECUTOR_FAILED",
+    "EXECUTOR_MODEL_QUOTA_EXHAUSTED",
     "REQUIRED_CHANGED_FILES_MISSING",
 }
 _RESOURCE_EXHAUSTION_MARKERS = (
@@ -254,6 +256,11 @@ class ExecutorRunOnceService:
             status_raw = state_data.get("status")
             runner_status = status_raw.strip() if isinstance(status_raw, str) else ""
 
+        if isinstance(plan_data, dict) and isinstance(state_data, dict):
+            normalized_status = self._normalized_runner_status_from_state(plan_file, state_file)
+            if normalized_status:
+                runner_status = normalized_status
+
         if not current_version:
             blocks.append({"code": "NO_CURRENT_VERSION", "message": "当前没有可执行版本。"})
 
@@ -331,6 +338,16 @@ class ExecutorRunOnceService:
             "executor_inventory": inventory_raw,
         }
 
+    def _normalized_runner_status_from_state(self, plan_file: str, state_file: str) -> str:
+        try:
+            loader = PlanLoader()
+            plan = loader.load_plan(plan_file)
+            state = StateStore().load_state(state_file)
+            RunnerStateMachine(plan, state).normalize_passed_current_version_status()
+            return str(state.status or "")
+        except Exception:
+            return ""
+
     def run_once(
         self,
         provider: str,
@@ -341,6 +358,7 @@ class ExecutorRunOnceService:
         reason: str = "",
         executor_session_mode: str = "auto",
         model: str | None = None,
+        model_source: str | None = None,
         run_id: str = "",
         preview_id: str = "",
         preview_claimed_at: str = "",
@@ -533,7 +551,7 @@ class ExecutorRunOnceService:
                         preview_claimed_at=preview_claimed_at,
                         preview_claim_status=preview_claim_status,
                         model=model,
-                        model_source="request" if model else None,
+                        model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
                     ),
                     changed_files=changed_files_after,
                     preexisting_runner_files=preexisting_runner_files_set,
@@ -668,7 +686,7 @@ class ExecutorRunOnceService:
                 preview_claimed_at=preview_claimed_at,
                 preview_claim_status=preview_claim_status,
                 model=model,
-                model_source="request" if model else None,
+                model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
             ),
             completion_evidence=completion_evidence,
             preexisting_runner_files=preexisting_runner_files_set,
@@ -804,17 +822,26 @@ class ExecutorRunOnceService:
         not_found_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
         unauthorized_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
         unsupported_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
+        model_quota_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
+        provider_terminal_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
         try:
             if provider == "codex":
-                from adapters.codex_cli_adapter import CodexNotFoundError, CodexUnauthorizedError
+                from adapters.codex_cli_adapter import (
+                    CodexModelQuotaExhaustedError,
+                    CodexNotFoundError,
+                    CodexUnauthorizedError,
+                )
                 from runner.codex_executor import CodexExecutor
 
                 executor = CodexExecutor(workspace, model_override=model_override)
                 not_found_error = CodexNotFoundError
                 unauthorized_error = CodexUnauthorizedError
                 unsupported_error = tuple()
+                model_quota_error = CodexModelQuotaExhaustedError
             elif provider == "opencode":
                 from adapters.opencode_server_adapter import (
+                    OpenCodeModelQuotaExhaustedError,
+                    OpenCodeProviderTerminalError,
                     OpenCodeServerNotFoundError,
                     OpenCodeServerUnauthorizedError,
                 )
@@ -824,6 +851,8 @@ class ExecutorRunOnceService:
                 not_found_error = OpenCodeServerNotFoundError
                 unsupported_error = tuple()
                 unauthorized_error = OpenCodeServerUnauthorizedError
+                model_quota_error = OpenCodeModelQuotaExhaustedError
+                provider_terminal_error = OpenCodeProviderTerminalError
             else:
                 from adapters.pi_rpc_adapter import PiNotFoundError, PiUnauthorizedError
                 from runner.pi_executor import PiExecutor
@@ -832,6 +861,7 @@ class ExecutorRunOnceService:
                 not_found_error = PiNotFoundError
                 unauthorized_error = PiUnauthorizedError
                 unsupported_error = tuple()
+                model_quota_error = tuple()
 
             self._maybe_write_event(run_id, "executor_started", {
                 "provider": provider,
@@ -874,6 +904,69 @@ class ExecutorRunOnceService:
                 head_before,
                 execution_mode,
             )
+        except model_quota_error as exc:  # type: ignore[misc]
+            safe_message = self._model_quota_exhausted_message(get_executor_provider_display(provider))
+            return {
+                **self._executor_interruption_error(
+                    provider=provider,
+                    head_before=head_before,
+                    execution_mode=execution_mode,
+                    report={
+                        "status": "failed",
+                        "log_path": getattr(exc, "log_path", "") or "",
+                        "summary_path": "",
+                    },
+                    interruption={
+                        "classification": "executor_resource_exhausted",
+                        "error_code": "EXECUTOR_MODEL_QUOTA_EXHAUSTED",
+                        "interruption_kind": "executor_model_quota_exhausted",
+                        "message": safe_message,
+                        "provider_status": "failed",
+                        "summary_excerpt": safe_message,
+                    },
+                ),
+                "terminal_reason": "executor_model_quota_exhausted",
+                "model": model_override or "",
+                "model_source": "preview" if model_override else "",
+            }
+        except provider_terminal_error as exc:  # type: ignore[misc]
+            provider_display = get_executor_provider_display(provider)
+            error_code = str(getattr(exc, "error_code", "") or "EXECUTOR_PROVIDER_ERROR")
+            terminal_reason = str(getattr(exc, "terminal_reason", "") or "executor_provider_error")
+            provider_status = str(getattr(exc, "provider_status", "") or "")
+            safe_message = str(exc) or f"{provider_display} provider/server 返回 terminal error。"
+            if error_code == "EXECUTOR_STALLED":
+                classification = "executor_infrastructure_failed"
+                interruption_kind = "executor_stalled"
+            elif error_code == "EXECUTOR_PROVIDER_RETRY":
+                classification = "executor_infrastructure_failed"
+                interruption_kind = "provider_retry"
+            else:
+                classification = "executor_infrastructure_failed"
+                interruption_kind = "provider_error"
+            return {
+                **self._executor_interruption_error(
+                    provider=provider,
+                    head_before=head_before,
+                    execution_mode=execution_mode,
+                    report={
+                        "status": "failed",
+                        "log_path": getattr(exc, "log_path", "") or "",
+                        "summary_path": "",
+                    },
+                    interruption={
+                        "classification": classification,
+                        "error_code": error_code,
+                        "interruption_kind": interruption_kind,
+                        "message": safe_message,
+                        "provider_status": provider_status or "failed",
+                        "summary_excerpt": safe_message[:240],
+                        "terminal_reason": terminal_reason,
+                    },
+                ),
+                "terminal_reason": terminal_reason,
+                "provider_error_code": error_code,
+            }
         except Exception as exc:
             provider_display = get_executor_provider_display(provider)
             return self._executor_error(
@@ -925,6 +1018,9 @@ class ExecutorRunOnceService:
             "fallback_to_new_session": getattr(rs, "fallback_to_new_session", False),
             "resume_failed_reason": getattr(rs, "resume_failed_reason", None),
             "command_shape": getattr(rs, "command_shape", None),
+            "provider_status": getattr(rs, "provider_status", None),
+            "provider_error_code": getattr(rs, "provider_error_code", None),
+            "provider_error_summary": getattr(rs, "provider_error_summary", None),
         }
 
     def _collect_provider_interruption_text(self, execution_result: Any, report: dict[str, Any]) -> str:
@@ -934,12 +1030,12 @@ class ExecutorRunOnceService:
             if isinstance(value, str) and value.strip():
                 texts.append(value.strip())
 
-        for key in ("summary", "status", "provider", "execution_mode", "resume_failed_reason", "command_shape"):
+        for key in ("summary", "status", "provider", "execution_mode", "resume_failed_reason", "command_shape", "provider_status", "provider_error_code", "provider_error_summary"):
             _append_text(report.get(key))
 
         result_summary = getattr(execution_result, "result_summary", None)
         if result_summary is not None:
-            for key in ("summary", "status", "process_status", "resume_failed_reason", "command_shape"):
+            for key in ("summary", "status", "process_status", "resume_failed_reason", "command_shape", "provider_status", "provider_error_code", "provider_error_summary"):
                 _append_text(getattr(result_summary, key, None))
 
         for attr_name in ("codex_run", "opencode_run", "pi_run"):
@@ -956,7 +1052,7 @@ class ExecutorRunOnceService:
             if exit_code not in (None, ""):
                 texts.append(f"exit_code={exit_code}")
 
-        return "\n".join(texts)[:8000]
+        return redact_sensitive_text("\n".join(texts), replacement_token="<redacted>", preserve_token_prefix=True)[:8000]
 
     def _provider_completed_with_completion_evidence(self, report_status: str, combined_text_lower: str) -> bool:
         if report_status not in _COMPLETED_PROVIDER_STATUSES:
@@ -980,16 +1076,22 @@ class ExecutorRunOnceService:
             return None
 
         if any(marker in combined_text_lower for marker in _RESOURCE_EXHAUSTION_MARKERS):
-            message = f"{provider_display} 资源中断，已在 acceptance 前停止。"
-            if summary_excerpt:
+            is_model_quota = self._looks_model_quota_exhausted(combined_text_lower)
+            message = (
+                self._model_quota_exhausted_message(provider_display)
+                if is_model_quota
+                else f"{provider_display} 资源中断，已在 acceptance 前停止。"
+            )
+            if summary_excerpt and not is_model_quota:
                 message = f"{message} 原因摘要：{summary_excerpt}"
             return {
                 "classification": "executor_resource_exhausted",
-                "error_code": "EXECUTOR_RESOURCE_EXHAUSTED",
-                "interruption_kind": "resource_exhausted",
+                "error_code": "EXECUTOR_MODEL_QUOTA_EXHAUSTED" if is_model_quota else "EXECUTOR_RESOURCE_EXHAUSTED",
+                "interruption_kind": "executor_model_quota_exhausted" if is_model_quota else "resource_exhausted",
                 "message": message,
                 "provider_status": report_status,
-                "summary_excerpt": summary_excerpt,
+                "summary_excerpt": message if is_model_quota else summary_excerpt,
+                "terminal_reason": "executor_model_quota_exhausted" if is_model_quota else "",
             }
 
         if any(marker in combined_text_lower for marker in _INFRA_INTERRUPTION_TEXT_MARKERS):
@@ -1048,6 +1150,7 @@ class ExecutorRunOnceService:
             "interruption_kind": str(interruption.get("interruption_kind") or "infrastructure_failed"),
             "provider_status": str(interruption.get("provider_status") or ""),
             "provider_summary_excerpt": str(interruption.get("summary_excerpt") or ""),
+            "terminal_reason": str(interruption.get("terminal_reason") or ""),
             "recovery_options": self._build_recovery_options(
                 classification=classification,
                 provider=provider,
@@ -1091,6 +1194,7 @@ class ExecutorRunOnceService:
             "error_code": str(execution_result.get("error_code") or ""),
             "interruption_kind": str(execution_result.get("interruption_kind") or ""),
             "provider_status": str(execution_result.get("provider_status") or ""),
+            "terminal_reason": str(execution_result.get("terminal_reason") or ""),
             "recovery_options": recovery_option_names,
             "executor_changed_files": list(changed_files),
             "has_partial_worktree": bool(changed_files),
@@ -1171,6 +1275,8 @@ class ExecutorRunOnceService:
 
         error_norm = str(executor_error_code or "").strip().upper()
         if error_norm == "EXECUTOR_RESOURCE_EXHAUSTED":
+            return "executor_resource_exhausted"
+        if error_norm == "EXECUTOR_MODEL_QUOTA_EXHAUSTED":
             return "executor_resource_exhausted"
         if error_norm == "EXECUTOR_INFRASTRUCTURE_FAILED":
             return "executor_infrastructure_failed"
@@ -1667,6 +1773,11 @@ class ExecutorRunOnceService:
                 "resume_warnings": [],
                 "hard_blockers": [f"continuation_decision_error:{exc.__class__.__name__}"],
                 "resume_blockers": [f"continuation_decision_error:{exc.__class__.__name__}"],
+                "decision_owner": "gpts",
+                "optimization_goal": "maximize_cache_hit",
+                "recommended_default": "start_new",
+                "cache_hit_preference": "start_new_avoids_cache_stale",
+                "context_facts": {},
             }
 
     def _safe_get_resume_invocation_preview(self, provider: str) -> dict[str, Any]:
@@ -1683,10 +1794,34 @@ class ExecutorRunOnceService:
     def _sanitize_text(self, value: Any, max_chars: int) -> str:
         if not isinstance(value, str):
             return ""
-        cleaned = value.strip()
+        cleaned = redact_sensitive_text(value.strip(), replacement_token="<redacted>", preserve_token_prefix=True)
         if len(cleaned) > max_chars:
             cleaned = cleaned[:max_chars]
         return cleaned
+
+    def _looks_model_quota_exhausted(self, lowered_text: str) -> bool:
+        markers = (
+            "model quota",
+            "token quota",
+            "quota exceeded",
+            "insufficient quota",
+            "insufficient credits",
+            "insufficient credit",
+            "out of credits",
+            "usage limit",
+            "rate limit",
+            "too many requests",
+            "resource exhausted",
+            "resources exhausted",
+            "429",
+        )
+        return any(marker in lowered_text for marker in markers)
+
+    def _model_quota_exhausted_message(self, provider_display: str) -> str:
+        return (
+            f"{provider_display} 模型额度或 token 配额已耗尽，Runner 已将本次执行标记为终止失败。"
+            "请更换模型、等待额度恢复，或检查执行器账号和配置。"
+        )
 
     def _expand_status_changed_paths(self, status_paths: list[str]) -> list[str]:
         expanded: list[str] = []

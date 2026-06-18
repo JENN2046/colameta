@@ -23,7 +23,7 @@ from runner.executor_run_claims import ExecutorRunClaimStore, parse_iso_datetime
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.executor_session import ExecutorSessionStore
-from runner.executor_status import apply_claim_to_status, status_base_result
+from runner.executor_status import apply_claim_to_status, read_executor_events_for_status, status_base_result
 from runner.executor_registry import is_supported_execution_provider
 from runner.param_utils import bounded_int
 from runner.path_glob import match as glob_match, match_any as glob_match_any, normalize as glob_normalize
@@ -635,12 +635,15 @@ class MCPExecutorWorkflowManager:
             return self._error("run_once", "PREVIEW_KIND_MISMATCH", "preview_id 类型不匹配，当前不是 run_once_preview。")
 
         artifact_model = _sanitize_optional_str(artifact.get("model"))
-        if model != artifact_model:
+        artifact_model_source = _sanitize_optional_str(artifact.get("model_source"))
+        if model is not None and model != artifact_model:
             return self._error(
                 "run_once",
                 "MODEL_MISMATCH",
                 f"model 不匹配。preview 中记录的是 {artifact_model or '默认模型'}，但请求的是 {model or '默认模型'}。",
             )
+        effective_model = artifact_model
+        effective_model_source = artifact_model_source
 
         validation = self._validate_preview_artifact(preview_id, artifact, provider, execution_mode)
         if not validation.get("ok"):
@@ -740,7 +743,8 @@ class MCPExecutorWorkflowManager:
             max_report_chars=max_report_chars,
             reason=reason,
             executor_session_mode=executor_session_mode,
-            model=model,
+            model=effective_model,
+            model_source=effective_model_source,
             run_id=run_id,
             preview_id=preview_id,
             preview_claimed_at=preview_claimed_at,
@@ -760,6 +764,7 @@ class MCPExecutorWorkflowManager:
         max_report_chars: int, reason: str,
         executor_session_mode: str = "auto",
         model: str | None = None,
+        model_source: str | None = None,
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
     ) -> None:
@@ -778,7 +783,7 @@ class MCPExecutorWorkflowManager:
                 provider, execution_mode,
                 include_diff_summary, include_report_markdown,
                 max_report_chars, reason,
-                executor_session_mode, model,
+                executor_session_mode, model, model_source,
                 run_id, preview_id,
                 preview_claimed_at, preview_claim_status,
                 run_once_callable,
@@ -793,6 +798,7 @@ class MCPExecutorWorkflowManager:
         max_report_chars: int, reason: str,
         executor_session_mode: str = "auto",
         model: str | None = None,
+        model_source: str | None = None,
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
         run_once_callable: Callable[..., dict[str, Any]] | None = None,
@@ -824,6 +830,7 @@ class MCPExecutorWorkflowManager:
                 reason=reason,
                 executor_session_mode=executor_session_mode,
                 model=model,
+                model_source=model_source,
                 run_id=run_id,
                 preview_id=preview_id,
                 preview_claimed_at=preview_claimed_at,
@@ -1509,7 +1516,9 @@ class MCPExecutorWorkflowManager:
     def _apply_claim_to_status(self, result: dict[str, Any], claim: dict[str, Any]) -> None:
         orphan_info = self._evaluate_orphaned_claim(claim)
         possible_report_id = self._resolve_possible_report_id(claim) if orphan_info.get("orphaned") else ""
-        apply_claim_to_status(result, claim, orphan_info, possible_report_id=possible_report_id)
+        run_id = str(claim.get("run_id") or "")
+        events = read_executor_events_for_status(self.project_root, run_id, limit=50)
+        apply_claim_to_status(result, claim, orphan_info, possible_report_id=possible_report_id, events=events)
 
     def _find_claim_by_run_id(self, run_id: str) -> dict[str, Any] | None:
         return self._claims.find_claim_by_run_id(run_id)
@@ -3809,7 +3818,7 @@ class MCPExecutorWorkflowManager:
             "resume_reason": resume_reason,
             "start_new_reason": start_new_reason,
             "cache_affinity_expected": will_resume and resume_identity_present,
-            "message": "下一次 run_once 预计会续接上一轮执行器会话，有利于连续任务缓存命中。" if will_resume else "下一次 run_once 预计会开启新执行器会话；不会命中上一轮对话缓存。",
+            "message": "下一次 run_once 预计会续接上一轮执行器会话，有利于连续任务缓存命中（GPTs 可最终决策）。" if will_resume else "下一次 run_once 预计会开启新执行器会话；不会命中上一轮对话缓存（可手动指定 resume_existing 以优先缓存命中）。",
         }
 
     def _compact_continuation_decision(self, decision: Any) -> dict[str, Any]:
@@ -3833,6 +3842,11 @@ class MCPExecutorWorkflowManager:
             "resume_identity_kind": decision.get("resume_identity_kind", decision.get("identity_kind")),
             "resume_identity_present": decision.get("resume_identity_present"),
             "conversation_identity_present": decision.get("conversation_identity_present"),
+            "decision_owner": decision.get("decision_owner"),
+            "optimization_goal": decision.get("optimization_goal"),
+            "recommended_default": decision.get("recommended_default"),
+            "cache_hit_preference": decision.get("cache_hit_preference"),
+            "context_facts": decision.get("context_facts"),
         }
 
     def _compact_resume_preview(self, preview: Any) -> dict[str, Any]:

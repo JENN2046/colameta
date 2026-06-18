@@ -72,15 +72,6 @@ def _load_global_runner_config(
         store_factory=RunnerGlobalConfigStore,
     )
 
-
-def _load_global_runner_config_env(command_name: str, project_path: str | None = None) -> dict[str, str]:
-    return cli_env.load_global_runner_config_env(
-        command_name,
-        project_path=project_path,
-        load_global_runner_config_func=_load_global_runner_config,
-    )
-
-
 def _resolve_auth_mode(auth_mode: str | None, auth_token: str | None) -> str:
     return cli_env.resolve_auth_mode(auth_mode, auth_token)
 
@@ -590,10 +581,6 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
             print("缺少 public_base_url。默认入口会启动 OAuth MCP，需要 ChatGPT 可访问的 HTTPS URL。", file=sys.stderr)
             print("示例：", file=sys.stderr)
             print(f"./bin/colameta \"{project_path}\" --public-base-url \"https://your-domain.com\"", file=sys.stderr)
-            print(
-                f"MVP_RUNNER_PUBLIC_BASE_URL=\"https://your-domain.com\" ./bin/colameta \"{project_path}\"",
-                file=sys.stderr,
-            )
             print("如果只需要本地启动，请使用：", file=sys.stderr)
             print(f"./bin/colameta serve \"{project_path}\" --auth-mode none --open", file=sys.stderr)
             return None
@@ -732,7 +719,6 @@ def _prepare_global_start(args: list[str]) -> dict[str, object] | None:
         idx += 1
 
     try:
-        env = _load_global_runner_config_env("start", project_path=project_path)
         global_config = _load_global_runner_config("start", include_auth_token=True, project_path=project_path)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -747,8 +733,6 @@ def _prepare_global_start(args: list[str]) -> dict[str, object] | None:
         mcp_port = int(global_config["mcp_port"])
     if "public_base_url" not in explicit_fields and global_config.get("public_base_url") is not None:
         public_base_url = str(global_config["public_base_url"])
-    if public_base_url is None and env.get("MVP_RUNNER_PUBLIC_BASE_URL"):
-        public_base_url = env["MVP_RUNNER_PUBLIC_BASE_URL"]
 
     return {
         "project_path": project_path,
@@ -949,7 +933,6 @@ def _prepare_source_only_service_start(
         idx += 1
 
     try:
-        _load_global_runner_config_env("start", project_path=project_path)
         global_config = _load_global_runner_config("start", include_auth_token=True, project_path=project_path)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

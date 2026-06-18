@@ -14,6 +14,7 @@ from runner.git_diff_helper import (
     is_root_runner_path,
     normalize_repo_path,
 )
+from runner.sensitive_redaction import redact_sensitive_text
 from runner.token_usage import normalize_token_usage
 
 
@@ -30,6 +31,23 @@ PREFIXED_THREAD_NAME_PATTERN = re.compile(
 TEXT_RESUME_HINT_PATTERN = re.compile(
     r"(?i)\bcodex(?:\s+exec)?\s+resume\s+([A-Za-z0-9_.:-]+)"
 )
+MODEL_QUOTA_EXHAUSTED_REASON = "executor_model_quota_exhausted"
+MODEL_QUOTA_EXHAUSTED_MESSAGE = "执行器模型额度或 token 配额已耗尽。请更换模型、等待额度恢复，或检查执行器账号和配置。"
+MODEL_QUOTA_EXHAUSTED_MARKERS = (
+    "model quota",
+    "token quota",
+    "quota exceeded",
+    "insufficient quota",
+    "insufficient credits",
+    "insufficient credit",
+    "out of credits",
+    "usage limit",
+    "rate limit",
+    "too many requests",
+    "resource exhausted",
+    "resources exhausted",
+    "429",
+)
 
 
 class CodexCliError(RuntimeError):
@@ -44,6 +62,11 @@ class CodexNotFoundError(CodexCliError):
 
 class CodexUnauthorizedError(CodexCliError):
     pass
+
+
+class CodexModelQuotaExhaustedError(CodexCliError):
+    terminal_reason = MODEL_QUOTA_EXHAUSTED_REASON
+    error_code = "EXECUTOR_MODEL_QUOTA_EXHAUSTED"
 
 
 @dataclass
@@ -71,6 +94,7 @@ class CodexRunResult:
     conversation_id_source: str | None = None
     command_shape: str | None = None
     token_usage: dict[str, Any] | None = None
+    terminal_reason: str | None = None
 
 
 class CodexCliAdapter:
@@ -256,6 +280,8 @@ class CodexCliAdapter:
         )
 
         if exit_code != 0:
+            if self._looks_model_quota_exhausted(stdout, stderr, final_message, final_message_preview):
+                raise CodexModelQuotaExhaustedError(MODEL_QUOTA_EXHAUSTED_MESSAGE, log_path=log_path)
             if self._looks_unauthorized(stdout) or self._looks_unauthorized(stderr):
                 raise CodexUnauthorizedError("codex 尚未登录或授权失效，请先在终端运行 codex 并完成登录。", log_path=log_path)
             raise CodexCliError(f"Codex 执行失败，已写入日志：{log_path}", log_path=log_path)
@@ -324,6 +350,16 @@ class CodexCliAdapter:
             command_shape=command_shape,
             token_usage=token_usage,
         )
+
+    def _looks_model_quota_exhausted(self, *texts: str | None) -> bool:
+        combined = "\n".join(
+            redact_sensitive_text(text, replacement_token="<redacted>", preserve_token_prefix=True)
+            for text in texts
+            if isinstance(text, str) and text.strip()
+        ).lower()
+        if not combined:
+            return False
+        return any(marker in combined for marker in MODEL_QUOTA_EXHAUSTED_MARKERS)
 
     def _build_command(
         self,
@@ -508,6 +544,8 @@ class CodexCliAdapter:
         command_shape: str | None = None,
         business_diff_warning: str | None = None,
     ) -> None:
+        redacted_stdout = redact_sensitive_text(stdout, replacement_token="<redacted>", preserve_token_prefix=True)
+        redacted_stderr = redact_sensitive_text(stderr, replacement_token="<redacted>", preserve_token_prefix=True)
         with open(log_path, "w", encoding="utf-8") as f:
             f.write("# Codex CLI Execution Log\n")
             f.write(f"execution_mode: {execution_mode}\n")
@@ -539,12 +577,12 @@ class CodexCliAdapter:
                 f.write(f"final_message_preview: {json.dumps(final_message_preview, ensure_ascii=False)}\n")
             f.write(f"exit_code: {exit_code}\n")
             f.write("\n## stdout\n")
-            f.write(stdout)
-            if stdout and not stdout.endswith("\n"):
+            f.write(redacted_stdout)
+            if redacted_stdout and not redacted_stdout.endswith("\n"):
                 f.write("\n")
             f.write("\n## stderr\n")
-            f.write(stderr)
-            if stderr and not stderr.endswith("\n"):
+            f.write(redacted_stderr)
+            if redacted_stderr and not redacted_stderr.endswith("\n"):
                 f.write("\n")
 
     def _supports_ask_for_approval(self, codex_path: str) -> bool:

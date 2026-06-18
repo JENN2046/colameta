@@ -35,3 +35,7 @@ class OpenCodeRunResult:
     identity_source: str | None = None
     command_shape: str | None = None
     token_usage: dict[str, Any] | None = None
+    terminal_reason: str | None = None
+    provider_status: str | None = None
+    provider_error_code: str | None = None
+    provider_error_summary: str | None = None

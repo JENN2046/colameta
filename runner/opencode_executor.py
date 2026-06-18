@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from adapters.opencode_types import OpenCodeCliError, OpenCodeRunResult
-from adapters.opencode_server_adapter import OpenCodeServerAdapter, OpenCodeServerError
+from adapters.opencode_server_adapter import (
+    OpenCodeModelQuotaExhaustedError,
+    OpenCodeServerAdapter,
+    OpenCodeServerError,
+)
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
 from runner.execution_profile import (
@@ -40,6 +44,9 @@ class OpenCodeExecutorResultSummary:
     resume_failed_reason: str | None = None
     command_shape: str | None = None
     token_usage: dict[str, Any] | None = None
+    provider_status: str | None = None
+    provider_error_code: str | None = None
+    provider_error_summary: str | None = None
 
 
 class OpenCodeExecutor:
@@ -123,6 +130,9 @@ class OpenCodeExecutor:
             command_shape=opencode_run.command_shape,
             token_usage=opencode_token_usage,
         )
+        result_summary.provider_status = opencode_run.provider_status
+        result_summary.provider_error_code = opencode_run.provider_error_code
+        result_summary.provider_error_summary = opencode_run.provider_error_summary
         self._record_execution_session(
             plan=plan,
             version=current_version.version,
@@ -209,6 +219,9 @@ class OpenCodeExecutor:
             command_shape=opencode_run.command_shape,
             token_usage=opencode_token_usage,
         )
+        result_summary.provider_status = opencode_run.provider_status
+        result_summary.provider_error_code = opencode_run.provider_error_code
+        result_summary.provider_error_summary = opencode_run.provider_error_summary
         self._record_execution_session(
             plan=plan,
             version=current_version.version,
@@ -278,6 +291,8 @@ class OpenCodeExecutor:
                 run_id=run_id,
                 event_context=event_context,
             )
+        except OpenCodeModelQuotaExhaustedError:
+            raise
         except OpenCodeCliError as resume_error:
             resume_failed_reason = self._sanitize_opencode_error(resume_error)
             message = (

@@ -287,7 +287,6 @@ class ExecutorSessionStore:
             and current_head is not None
             and recorded_head != current_head
         ):
-            eligibility["resume_blockers"].append("head_mismatch")
             eligibility["resume_warnings"].append("head_mismatch")
             eligibility["risk_warnings"].append("head_mismatch")
         diagnostics = self._build_resume_diagnostics(
@@ -361,6 +360,14 @@ class ExecutorSessionStore:
             risk_level=risk_level,
         )
 
+        decision_owner = "gpts"
+        optimization_goal = "maximize_cache_hit"
+        recommended_default = eligibility.get("recommended_default", "start_new")
+        cache_hit_preference = eligibility.get("cache_hit_preference", "start_new_avoids_cache_stale")
+        context_facts = eligibility.get("context_facts", {})
+        if not isinstance(context_facts, dict):
+            context_facts = {}
+
         return {
             "ok": True,
             "project_root": self.project_root,
@@ -387,6 +394,11 @@ class ExecutorSessionStore:
             "conversation_identity_present": bool(eligibility.get("conversation_identity_present") is True),
             "resume_identity_present": identity_present,
             "next_action_hint": next_action_hint,
+            "decision_owner": decision_owner,
+            "optimization_goal": optimization_goal,
+            "recommended_default": recommended_default,
+            "cache_hit_preference": cache_hit_preference,
+            "context_facts": context_facts,
         }
 
     def get_continuation_decision(self, requested_provider: str | None = None) -> dict[str, Any]:
@@ -488,18 +500,30 @@ class ExecutorSessionStore:
             and not hard_blockers
         )
         if decision == "resume_auto_eligible":
+            base = "当前存在同项目、同执行器的可续接候选。Runner 仅提供事实，由 GPTs 最终决策，推荐默认 resume 以最大化缓存命中。"
             if risk_level == "warning":
-                next_action_hint = "当前存在同项目、同执行器的可续接候选，分支或 HEAD 变化会记录为风险告警，下一次执行将自动 resume。"
+                next_action_hint = f"{base} HEAD 或分支有其他变化，已记录风险。"
             else:
-                next_action_hint = "当前存在同项目、同执行器的可续接候选，下一次执行将自动 resume。"
+                next_action_hint = base
         elif decision == "start_new_provider_mismatch":
-            next_action_hint = "当前记录的会话来自其他执行器，本次应启动新会话。"
+            next_action_hint = "当前记录的会话来自其他执行器，本项目优先考虑最大化缓存命中。"
         elif decision == "start_new_invalid_provider":
-            next_action_hint = "请求的执行器无效，本次不能使用 continuation。"
+            next_action_hint = "请求的执行器无效，本项目优先考虑最大化缓存命中。"
         elif decision == "start_new_no_session":
-            next_action_hint = "当前没有可续接会话，本次应启动新会话。"
+            next_action_hint = "当前没有可续接会话，默认启动新会话；由 GPTs 决策。"
         else:
-            next_action_hint = "当前存在硬阻断，本次应启动新会话。"
+            next_action_hint = "当前存在硬阻断，默认启动新会话；由 GPTs 决策。"
+
+        decision_owner = preview.get("decision_owner", "gpts") if isinstance(preview, dict) else "gpts"
+        optimization_goal = preview.get("optimization_goal", "maximize_cache_hit") if isinstance(preview, dict) else "maximize_cache_hit"
+        preview_recommended = preview.get("recommended_default") if isinstance(preview, dict) else None
+        recommended_default = preview_recommended or ("start_new" if should_start_new else "resume")
+        cache_hit_preference = preview.get("cache_hit_preference") if isinstance(preview, dict) else None
+        if not cache_hit_preference:
+            cache_hit_preference = "prefer_resume_for_cache_hit" if continuation_available else "start_new_avoids_cache_stale"
+        context_facts = preview.get("context_facts", {}) if isinstance(preview, dict) else {}
+        if not isinstance(context_facts, dict):
+            context_facts = {}
 
         return {
             "ok": True,
@@ -529,6 +553,11 @@ class ExecutorSessionStore:
             "actual_executor_resume_attempted": False,
             "resume_invocation_verified": resume_invocation_verified,
             "next_action_hint": next_action_hint,
+            "decision_owner": decision_owner,
+            "optimization_goal": optimization_goal,
+            "recommended_default": recommended_default,
+            "cache_hit_preference": cache_hit_preference,
+            "context_facts": context_facts,
             "preview": preview,
         }
 
@@ -864,14 +893,36 @@ class ExecutorSessionStore:
             eligibility["preferred_continuation_provider"] = provider if isinstance(provider, str) and provider else None
             eligibility["preferred_continuation_available"] = False
             eligibility["preferred_continuation_reason"] = "blocked"
+        eligibility["decision_owner"] = "gpts"
+        eligibility["optimization_goal"] = "maximize_cache_hit"
+        continuation_available = bool(eligibility.get("preferred_continuation_available") is True)
+        no_hard_blockers = not bool(eligibility.get("hard_blockers"))
+        eligibility["recommended_default"] = "resume" if (continuation_available and no_hard_blockers) else "start_new"
+        eligibility["cache_hit_preference"] = "prefer_resume_for_cache_hit" if continuation_available else "start_new_avoids_cache_stale"
+        eligibility["context_facts"] = {
+            "project_root": self.project_root,
+            "provider": provider,
+            "identity_present": bool(eligibility.get("resume_identity_present") is True),
+            "identity_kind": eligibility.get("resume_identity_kind"),
+            "continuation_available": continuation_available,
+            "hard_blockers": list(eligibility.get("hard_blockers") or []),
+            "resume_warnings": list(eligibility.get("resume_warnings") or []),
+            "risk_level": str(eligibility.get("risk_level") or "none"),
+            "head_mismatch": "head_mismatch" in blockers,
+            "branch_mismatch": "branch_mismatch" in blockers,
+            "provider_mismatch": "provider_mismatch" in blockers,
+            "session_resume_available": bool(eligibility.get("session_resume_available") is True),
+            "provider_resume_supported": bool(eligibility.get("provider_resume_supported") is True),
+        }
         return eligibility
 
     def _build_continuation_hint(self, *, continuation_available: bool, blockers: list[str], risk_level: str) -> str:
         blocker_set = set(blockers)
         if continuation_available:
+            base = "当前存在同项目、同执行器的可续接候选。Runner 仅提供事实，由 GPTs 最终决策，推荐默认 resume 以最大化缓存命中。"
             if risk_level == "warning":
-                return "当前存在同项目、同执行器的可续接候选，但分支或 HEAD 已变化；本轮仅预览，不会执行 resume。"
-            return "当前存在同项目、同执行器的可续接候选；本轮仅预览，不会执行 resume。"
+                return f"{base} HEAD 或分支有其他变化，已记录风险。"
+            return base
         if "no_session_manifest" in blocker_set:
             return "当前没有可续接会话，下次执行将启动新会话。"
         if "provider_resume_not_supported" in blocker_set:

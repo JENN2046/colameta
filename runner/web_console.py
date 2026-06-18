@@ -34,6 +34,7 @@ from runner.plan_loader import PlanLoader
 from runner.state_store import StateStore
 from runner.state_machine import RunnerStateMachine
 from runner.executor_run_workflow import ExecutorRunOnceService
+from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -761,11 +762,45 @@ class WebConsoleServer:
         return {
             "ok": True,
             "version": version,
+            "version_name": str(target_ver.get("name") or target_ver.get("description") or ""),
             "prompt_file": self._to_project_relative(prompt_file_abs),
             "content": text,
             "char_count": char_count,
             "line_count": line_count,
             "truncated": truncated,
+            "report": self._version_prompt_report_payload(version),
+        }
+
+    def _version_prompt_report_payload(self, version: str) -> dict[str, Any]:
+        try:
+            report_result = ExecutorRunReportStore(self.project_root).get_report(
+                version=version,
+                latest=True,
+                include_markdown=True,
+                max_markdown_chars=50000,
+            )
+        except Exception as exc:
+            return {
+                "available": False,
+                "error_code": "REPORT_READ_ERROR",
+                "message": f"读取报告失败：{exc}",
+            }
+        if not report_result.get("ok"):
+            return {
+                "available": False,
+                "error_code": str(report_result.get("error_code") or "REPORT_NOT_FOUND"),
+                "message": str(report_result.get("message") or "该版本暂无执行器报告。"),
+            }
+        report = report_result.get("report") if isinstance(report_result.get("report"), dict) else {}
+        markdown_file = str(report.get("markdown_file") or "")
+        return {
+            "available": True,
+            "report_id": str(report.get("report_id") or ""),
+            "status": str(report.get("status") or ""),
+            "provider": str(report.get("provider") or ""),
+            "report_file": self._to_project_relative(markdown_file) if markdown_file else "",
+            "content": str(report_result.get("report_markdown") or ""),
+            "truncated": bool(report_result.get("truncated", False)),
         }
 
     def _build_version_rows_from_plan(self, plan_versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1681,6 +1716,7 @@ class WebConsoleServer:
             )
             live_data = inspect_result.get("live")
             if isinstance(live_data, dict) and inspect_result.get("ok") and live_data.get("available"):
+                self._enrich_live_run_progress_status(live_data)
                 return self._with_executor_identity_display(
                     live_data,
                     session_status=session_status,
@@ -1698,6 +1734,28 @@ class WebConsoleServer:
         except Exception:
             pass
         return {"available": False}
+
+    def _enrich_live_run_progress_status(self, live_data: dict[str, Any]) -> None:
+        try:
+            from runner.executor_status import analyze_meaningful_progress
+            events = live_data.get("events")
+            progress = analyze_meaningful_progress(events if isinstance(events, list) else [])
+            live_data["last_meaningful_progress"] = progress
+            diagnostics = live_data.get("diagnostics")
+            if not isinstance(diagnostics, list):
+                diagnostics = []
+            heartbeat = live_data.get("heartbeat")
+            heartbeat_stale = bool(heartbeat.get("stale")) if isinstance(heartbeat, dict) else False
+            claim_status = str(live_data.get("claim_status") or "").upper()
+            if claim_status == "RUNNING" and not heartbeat_stale and progress.get("available") and progress.get("stale"):
+                if "HEARTBEAT_ONLY_WITH_STALE_PROGRESS" not in diagnostics:
+                    diagnostics.append("HEARTBEAT_ONLY_WITH_STALE_PROGRESS")
+                live_data["provider_status"] = "stalled_without_provider_error"
+                live_data["terminal_reason"] = "executor_stalled_without_provider_error"
+                live_data["progress_stalled"] = True
+            live_data["diagnostics"] = diagnostics
+        except Exception:
+            pass
 
     def _executor_model_for_display(
         self,
@@ -1880,6 +1938,17 @@ class WebConsoleServer:
                     latest["executor_model"] = str(lineage.get("model") or "")
                 if not latest.get("session_id_full"):
                     latest["session_id_full"] = str(lineage.get("session_id_full") or "")
+                if not latest.get("session_id_full"):
+                    identity = self._latest_report_session_identity_from_current_session(
+                        latest=latest,
+                        lineage=lineage,
+                    )
+                    if identity.get("identity_present") is True:
+                        latest["session_id_full"] = str(identity.get("identity_value") or "")
+                        latest["session_identity_value"] = str(identity.get("identity_value") or "")
+                        latest["session_identity_kind"] = str(identity.get("identity_kind") or "")
+                        latest["session_identity_label"] = str(identity.get("identity_label") or "会话标识")
+                        latest["session_identity_source"] = str(identity.get("identity_source") or "")
                 if not latest.get("session_mode"):
                     used_resume = lineage.get("used_resume") is True
                     latest["session_mode"] = "resume" if used_resume else "new"
@@ -1892,6 +1961,37 @@ class WebConsoleServer:
                 latest["events"] = events
         except Exception:
             pass
+
+    def _latest_report_session_identity_from_current_session(
+        self,
+        *,
+        latest: dict[str, Any],
+        lineage: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            status = self.executor_session_store.get_status()
+        except Exception:
+            status = {}
+        record = status.get("record") if isinstance(status, dict) and isinstance(status.get("record"), dict) else {}
+        if not record:
+            return {"identity_present": False}
+
+        latest_provider = str(latest.get("provider") or "").strip()
+        record_provider = str(record.get("provider") or "").strip()
+        if latest_provider and record_provider and latest_provider != record_provider:
+            return {"identity_present": False}
+
+        latest_version = str(latest.get("version") or "").strip()
+        record_version = str(record.get("version") or "").strip()
+        if latest_version and record_version and latest_version != record_version:
+            return {"identity_present": False}
+
+        return select_executor_identity_for_display(
+            run_identity={"report": {"execution_lineage": lineage}},
+            session_record=record,
+            provider=latest_provider or record_provider,
+            fallback_value=str(latest.get("session_id_full") or ""),
+        )
 
     def _build_registry_action_outcome(
         self,

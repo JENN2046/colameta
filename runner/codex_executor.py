@@ -2,7 +2,12 @@ import os
 from dataclasses import dataclass, replace as dataclass_replace
 from typing import Any, Callable, Literal
 
-from adapters.codex_cli_adapter import CodexCliAdapter, CodexCliError, CodexRunResult
+from adapters.codex_cli_adapter import (
+    CodexCliAdapter,
+    CodexCliError,
+    CodexModelQuotaExhaustedError,
+    CodexRunResult,
+)
 from runner.execution_profile import load_runner_settings_for_project, resolve_version_execution_model
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
@@ -260,6 +265,8 @@ class CodexExecutor:
                 run_id=run_id,
                 event_context=event_context,
             )
+        except CodexModelQuotaExhaustedError:
+            raise
         except CodexCliError as resume_error:
             resume_failed_reason = self._sanitize_codex_error(resume_error)
             if progress:
@@ -277,6 +284,8 @@ class CodexExecutor:
                     run_id=run_id,
                     event_context=event_context,
                 )
+            except CodexModelQuotaExhaustedError:
+                raise
             except CodexCliError as fallback_error:
                 fallback_reason = self._sanitize_codex_error(fallback_error)
                 resume_log_path = getattr(resume_error, "log_path", None)

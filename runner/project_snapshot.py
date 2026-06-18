@@ -305,6 +305,17 @@ class ProjectSnapshotBuilder:
                 should_resume = bool(decision_result.get("should_resume", False))
                 manual_confirmation = bool(decision_result.get("manual_confirmation_required", False))
 
+            decision_owner = None
+            optimization_goal = None
+            recommended_default = None
+            cache_hit_preference = None
+            context_facts = None
+            if isinstance(continuation_preview, dict):
+                decision_owner = continuation_preview.get("decision_owner")
+                optimization_goal = continuation_preview.get("optimization_goal")
+                recommended_default = continuation_preview.get("recommended_default")
+                cache_hit_preference = continuation_preview.get("cache_hit_preference")
+                context_facts = continuation_preview.get("context_facts")
             return {
                 "has_session": has_session,
                 "continuation_available": continuation_available,
@@ -315,6 +326,11 @@ class ProjectSnapshotBuilder:
                 "risk_level": exec_risk,
                 "blockers": exec_blockers,
                 "warnings": exec_warnings,
+                "decision_owner": decision_owner,
+                "optimization_goal": optimization_goal,
+                "recommended_default": recommended_default,
+                "cache_hit_preference": cache_hit_preference,
+                "context_facts": context_facts,
             }
         except Exception as exc:
             partial_errors.append({"name": "executor", "error_code": "CONTEXT_ERROR", "message": str(exc)})
