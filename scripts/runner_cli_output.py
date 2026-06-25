@@ -146,7 +146,7 @@ def print_default_start_summary(
     print_colamate_banner(stderr=target)
     print(f"\U0001f9e9  Project: {project_path}", file=target)
     if enable_web:
-        display_url = public_base_url or f"http://{web_host}:{web_port}"
+        display_url = f"http://{web_host}:{web_port}"
         print(f"\U0001f310  Web Console: {display_url}", file=target)
     if enable_mcp:
         if public_base_url:

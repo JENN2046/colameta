@@ -490,8 +490,10 @@ This starts both the Web Console and the MCP HTTP Server.
 
 Default addresses:
 
-- Web Console: http://0.0.0.0:8799
-- MCP HTTP: http://0.0.0.0:8765/mcp
+- Web Console: http://127.0.0.1:8799
+- MCP HTTP: http://127.0.0.1:8765/mcp
+
+Use `--web-host 0.0.0.0` or `--mcp-host 0.0.0.0` only when you intentionally want a network-visible listener.
 
 Restart or stop the service:
 

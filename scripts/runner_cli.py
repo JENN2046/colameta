@@ -19,7 +19,7 @@ from scripts.runner_cli_usage import SIMPLE_START_MODES as _SIMPLE_START_MODES
 from scripts.runner_cli_usage import USAGE_MESSAGE
 from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.http_server_utils import is_tcp_port_bindable, wait_for_tcp_port_bindable
-from runner.runner_global_config import RunnerGlobalConfigStore
+from runner.runner_global_config import DEFAULT_MCP_HOST, DEFAULT_WEB_HOST, RunnerGlobalConfigStore
 from runner.project_registry import ProjectRegistry, PROJECT_MODE_MANAGED
 from runner.runner_paths import (
     PRIMARY_USER_CONFIG_DIRNAME,
@@ -215,6 +215,14 @@ def _service_command_for_display(command: str, project_path: str | None = None) 
     if project_path is None or os.path.realpath(project_path) == os.path.realpath(_default_service_project_root()):
         return f"./bin/colameta {command}".strip()
     return f'./bin/colameta {command} "{project_path}"'
+
+
+def _web_console_url(host: str, port: int) -> str:
+    return f"http://{host}:{port}"
+
+
+def _mcp_endpoint_url(host: str, port: int) -> str:
+    return f"http://{host}:{port}/mcp"
 
 
 def _read_service_metadata(project_path: str) -> dict[str, object] | None:
@@ -464,9 +472,9 @@ def _print_default_start_summary(
 
 
 def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, object] | None:
-    web_host = "0.0.0.0"
+    web_host = DEFAULT_WEB_HOST
     web_port = 8799
-    mcp_host = "0.0.0.0"
+    mcp_host = DEFAULT_MCP_HOST
     mcp_port = 8765
     oauth_token_ttl_seconds = 3600
     open_web = True
@@ -646,15 +654,21 @@ def _run_default_serve(project_path: str, args: list[str]) -> int:
     return _run_service_start_from_command(prepared)
 
 
-def _prepare_global_start(args: list[str]) -> dict[str, object] | None:
-    project_path = _default_service_project_root()
+def _prepare_global_start(
+    args: list[str],
+    *,
+    project_path: str | None = None,
+    global_mode: bool = True,
+    register_as_selected: bool = False,
+) -> dict[str, object] | None:
+    project_path = project_path or _default_service_project_root()
     serve_args = ["serve", project_path]
     if args:
         serve_args.extend(args)
 
-    web_host = "0.0.0.0"
+    web_host = DEFAULT_WEB_HOST
     web_port = 8799
-    mcp_host = "0.0.0.0"
+    mcp_host = DEFAULT_MCP_HOST
     mcp_port = 8765
     enable_web = True
     enable_mcp = True
@@ -744,8 +758,8 @@ def _prepare_global_start(args: list[str]) -> dict[str, object] | None:
         "enable_web": enable_web,
         "enable_mcp": enable_mcp,
         "serve_args": serve_args,
-        "global_mode": True,
-        "register_as_selected": False,
+        "global_mode": global_mode,
+        "register_as_selected": register_as_selected,
     }
 
 
@@ -773,7 +787,7 @@ def _run_service_start_from_command(prepared: dict[str, object]) -> int:
         _clear_service_metadata(project_path)
 
     if prepared.get("enable_web"):
-        web_host = str(prepared.get("web_host", "0.0.0.0"))
+        web_host = str(prepared.get("web_host", DEFAULT_WEB_HOST))
         web_port = int(prepared.get("web_port", 0))
         if not _is_port_available(web_host, web_port):
             print(f"start 启动失败：Web Console 端口 {web_host}:{web_port} 已被占用。", file=sys.stderr)
@@ -817,10 +831,10 @@ def _run_service_start_from_command(prepared: dict[str, object]) -> int:
 
     web_url = None
     if prepared.get("enable_web"):
-        web_url = str(prepared.get("public_base_url") or f"http://{prepared['web_host']}:{prepared['web_port']}")
+        web_url = _web_console_url(str(prepared["web_host"]), int(prepared["web_port"]))
     mcp_url = None
     if prepared.get("enable_mcp"):
-        mcp_url = f"http://{prepared['mcp_host']}:{prepared['mcp_port']}/mcp"
+        mcp_url = _mcp_endpoint_url(str(prepared["mcp_host"]), int(prepared["mcp_port"]))
 
     payload: dict[str, object] = {
         "pid": process.pid,
@@ -966,8 +980,8 @@ def _run_service_start(args: list[str]) -> int:
         idx += 1
     global_mode = len(args) <= idx or args[idx].startswith("-")
     if global_mode:
-        project_path = _default_service_project_root()
         startup_args = args[idx:]
+        project_path = _default_service_project_root()
     else:
         project_path = _resolve_path(args[idx])
         if not os.path.isdir(project_path):
@@ -982,7 +996,20 @@ def _run_service_start(args: list[str]) -> int:
         return _run_service_start_from_command(prepared)
 
     if global_mode:
-        prepared = _prepare_global_start(startup_args)
+        project_path, project_name, resolution = _resolve_default_managed_project(ProjectRegistry())
+        if project_path is None:
+            _print_default_managed_project_error(resolution)
+            return 1
+        if project_name:
+            print(f"start 使用已登记 managed 项目：{project_name}  {project_path}", file=sys.stderr)
+        else:
+            print(f"start 使用已登记 managed 项目：{project_path}", file=sys.stderr)
+        prepared = _prepare_global_start(
+            startup_args,
+            project_path=project_path,
+            global_mode=False,
+            register_as_selected=True,
+        )
         if prepared is None:
             return 1
         return _run_service_start_from_command(prepared)
@@ -1130,12 +1157,12 @@ def _run_service_stop(args: list[str]) -> int:
             return 1
     unreleased_ports: list[str] = []
     if metadata.get("enable_web"):
-        web_host_for_release = str(metadata.get("web_host", "0.0.0.0"))
+        web_host_for_release = str(metadata.get("web_host", DEFAULT_WEB_HOST))
         web_port_for_release = int(metadata.get("web_port", 0))
         if not _wait_for_port_available(web_host_for_release, web_port_for_release, label="stop"):
             unreleased_ports.append(f"Web Console {web_host_for_release}:{web_port_for_release}")
     if metadata.get("enable_mcp"):
-        mcp_host_for_release = str(metadata.get("mcp_host", "0.0.0.0"))
+        mcp_host_for_release = str(metadata.get("mcp_host", DEFAULT_MCP_HOST))
         mcp_port_for_release = int(metadata.get("mcp_port", 0))
         if not _wait_for_port_available(mcp_host_for_release, mcp_port_for_release, label="stop"):
             unreleased_ports.append(f"MCP HTTP {mcp_host_for_release}:{mcp_port_for_release}")
@@ -1679,7 +1706,7 @@ def _run_web_console(args: list[str]) -> int:
     except Exception as e:
         print(f"启动失败：{e}", file=sys.stderr)
         return 1
-    display_url = "http://127.0.0.1:8799"
+    display_url = _web_console_url(host, port)
     print(f"MVP Runner Web Console: {display_url}", file=sys.stderr)
     print("Web Console 为本地控制台，运行、修复、提交等动作仍由用户手动触发。", file=sys.stderr)
     return server.serve_http(host=host, port=port)
@@ -1692,9 +1719,9 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
         return 1
 
     project_path = _resolve_path(args[1])
-    web_host = "0.0.0.0"
+    web_host = DEFAULT_WEB_HOST
     web_port = 8799
-    mcp_host = "0.0.0.0"
+    mcp_host = DEFAULT_MCP_HOST
     mcp_port = 8765
     auth_mode: str | None = None
     auth_token: str | None = None
@@ -1961,7 +1988,7 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
     else:
         print(f"\U0001f9e9  Project: {project_path}", file=sys.stderr)
     if enable_web and web_server is not None:
-        web_url = public_base_url or f"http://{web_host}:{web_port}"
+        web_url = _web_console_url(web_host, web_port)
         print(f"\U0001f310  Web Console: {web_url}", file=sys.stderr)
         threads.append(
             threading.Thread(
@@ -1974,7 +2001,7 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
     if enable_mcp and mcp_server is not None:
         if public_base_url:
             print(f"\u2699\ufe0f  Actions API: {public_base_url.rstrip('/')}/openapi.json", file=sys.stderr)
-        mcp_url = f"http://{mcp_host}:{mcp_port}/mcp"
+        mcp_url = _mcp_endpoint_url(mcp_host, mcp_port)
         print(f"\U0001f50c  MCP Endpoint: {mcp_url}", file=sys.stderr)
         if resolved_auth_mode == "none":
             print("\U0001f513  Auth: disabled", file=sys.stderr)
@@ -2015,7 +2042,7 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
         return 1
 
     if open_web and enable_web:
-        open_url = public_base_url.rstrip("/") if public_base_url else "http://127.0.0.1:8799"
+        open_url = _web_console_url(web_host, web_port)
         webbrowser.open(open_url)
 
     try:
@@ -2675,17 +2702,17 @@ def _run_executor_resume_invocation_preview(args: list[str]) -> int:
 
 def _resolve_default_managed_project(
     registry: ProjectRegistry,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str]:
     """Resolve the best default managed project from the registry.
 
-    Returns (project_root, project_name) or (None, None).
+    Returns (project_root, project_name, resolution).
     Preference order:
     1. last-selected managed project
     2. exactly one managed project with no prior selection
     """
     result = registry.list_projects()
     if not result.get("ok"):
-        return None, None
+        return None, None, "registry_error"
     projects = result.get("projects", [])
     managed = []
     for p in projects:
@@ -2702,7 +2729,7 @@ def _resolve_default_managed_project(
             continue
         managed.append(p)
     if not managed:
-        return None, None
+        return None, None, "none"
 
     def _sort_key(p):
         ts = p.get("last_selected_at")
@@ -2711,12 +2738,27 @@ def _resolve_default_managed_project(
     managed.sort(key=_sort_key, reverse=True)
 
     if managed[0].get("last_selected_at"):
-        return managed[0]["project_root"], managed[0].get("project_name")
+        return managed[0]["project_root"], managed[0].get("project_name"), "last_selected"
 
     if len(managed) == 1:
-        return managed[0]["project_root"], managed[0].get("project_name")
+        return managed[0]["project_root"], managed[0].get("project_name"), "single"
 
-    return None, None
+    return None, None, "ambiguous"
+
+
+def _print_default_managed_project_error(resolution: str) -> None:
+    if resolution == "ambiguous":
+        print(
+            "start 无法选择默认 managed 项目：存在多个已登记 managed 项目，且没有 last-selected 项目。",
+            file=sys.stderr,
+        )
+        print("请显式运行 colameta start <project-root>，或先启动/登记一个 managed 项目作为默认选择。", file=sys.stderr)
+        return
+    if resolution == "registry_error":
+        print("start 无法读取项目 registry。请检查本地 ColaMeta 用户配置。", file=sys.stderr)
+        return
+    print("start 未找到可用的已登记 managed 项目。", file=sys.stderr)
+    print("请先运行 colameta add <project-root> managed，或显式运行 colameta start <project-root>。", file=sys.stderr)
 
 
 def _print_json_result(result: dict[str, object]) -> int:

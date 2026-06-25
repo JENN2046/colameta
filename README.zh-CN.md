@@ -491,8 +491,10 @@ colameta start
 
 默认地址：
 
-- Web Console: http://0.0.0.0:8799
-- MCP HTTP: http://0.0.0.0:8765/mcp
+- Web Console: http://127.0.0.1:8799
+- MCP HTTP: http://127.0.0.1:8765/mcp
+
+只有明确希望监听到局域网/公网时，才手动传入 `--web-host 0.0.0.0` 或 `--mcp-host 0.0.0.0`。
 
 重启或停止服务：
 
