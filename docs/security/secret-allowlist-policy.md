@@ -38,7 +38,22 @@ These terms may appear in source or test filenames when the file is normal code 
 - `settings`: acceptable in source or test names for settings definitions, validation, defaults, UI or CLI settings behavior, or related tests.
 - `env`: acceptable in source or test names for environment-variable handling, environment validation, or tests using placeholder environment names and values.
 
+### Source Roles That May Trigger Detectors
+
+The following source-code roles may legitimately contain secret-adjacent identifiers without embedding real secrets:
+
+- environment variable lookup/name handling;
+- config metadata and config key definitions;
+- CLI option definitions;
+- executor adapter configuration;
+- OAuth/token/session handling code;
+- session/cookie metadata handling;
+- redaction and detector rule definitions;
+- project snapshot or placeholder-handling logic.
+
 ## 4. Current Allowlist Candidates
+
+### Current Path-Level Allowlist Candidates
 
 - `runner/executor_session.py`
   - Trigger: `session` can indicate session state, cookies, or credential-bearing runtime data.
@@ -75,6 +90,21 @@ These terms may appear in source or test filenames when the file is normal code 
   - Source/test signal: `scripts/` plus `.py` suggests normal Python source code for CLI environment handling.
   - Future content-aware scan: verify environment handling does not include hardcoded secrets or credential examples.
 
+### Policy Refinement Candidate Paths
+
+These source-role allowlist candidates are distinct from content-safe approval. They should remain visible in redacted scan reports unless a later tool-level suppression policy is separately reviewed and authorized.
+
+- `adapters/codex_cli_adapter.py`
+- `adapters/opencode_server_adapter.py`
+- `runner/cloud_agent_client.py`
+- `runner/cloud_pairing.py`
+- `runner/codex_executor.py`
+- `runner/executor_run_reports.py`
+- `runner/executor_run_workflow.py`
+- `runner/mcp_server.py`
+- `runner/opencode_executor.py`
+- `scripts/runner_cli.py`
+
 ## 5. Non-Allowlisted Patterns
 
 The following must not be allowlisted by filename alone:
@@ -105,15 +135,36 @@ The following must not be allowlisted by filename alone:
 5. Real credentials require immediate human handling.
 6. Private runtime state should move to `state-private/`.
 7. Public configuration examples should use `*.example`, `*.sample`, or `*.template`.
+8. Allowlist status does not prove content-safe, and pattern scans may miss secrets.
+9. Reports must redact values and snippets.
+10. Real credentials or credible secret literals require human escalation before remediation claims.
+
+### Classification Language
+
+- `allowlist candidate`: a path or source role that can be normal code or test code by name and location, but is not automatically content-safe.
+- `confirmed false positive`: a finding whose inspected context is clearly variable/key name handling, detector/redaction rule definition, placeholder mechanism, non-secret metadata, or code for reading secrets from the environment without embedding the value.
+- `likely placeholder`: a finding whose inspected context is clearly non-real placeholder material.
+- `policy allowlist refinement`: a finding whose path or source role is normal and should be documented in policy while future scans still apply redaction.
+- `needs targeted human review`: a finding whose context is insufficient to decide safely without Jenn's review.
+- `high-risk escalation`: a finding whose inspected context strongly suggests a real credential literal, token, key, cookie, private secret, or production credential.
+
+### Non-Suppression Rule
+
+Allowlist policy may classify findings, but must not silently suppress them. Findings must remain visible in redacted scan reports unless a later tool-level suppression policy is separately reviewed and authorized.
 
 ## 7. Current Evidence Binding
 
 ```text
 Branch: main
-HEAD: ef95cd38c0fd6392e150238235eadb1032832a12
+HEAD: 9897fc42ef64cec386e16174ab3c85432a7dfde2
 Path triage result: PASS_CURRENT_HEAD_PATH_TRIAGE_REPORT_READY
 Policy plan result: PASS_CURRENT_HEAD_SECRET_POLICY_FIX_PLAN_READY
 Content read: no
+Redacted findings review result: PASS_REDACTED_FINDINGS_REVIEW_READY
+Reviewed findings: 112
+High-risk escalations: 0
+Human review items: 0
+Policy refinement findings: 92
 ```
 
 ## 8. Explicit Non-Claims
