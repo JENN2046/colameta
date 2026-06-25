@@ -3,8 +3,9 @@ from __future__ import annotations
 import html as html_lib
 
 
-def render_v2_index_page(csrf_token: str = "") -> str:
+def render_v2_index_page(csrf_token: str = "", web_read_token: str = "") -> str:
     csrf_attr = html_lib.escape(csrf_token, quote=True)
+    web_read_auth_attr = html_lib.escape(web_read_token, quote=True)
     css = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { height: 100vh; }
@@ -175,6 +176,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="colameta-csrf-token" content="{csrf_attr}">
+<meta name="colameta-web-read-auth" content="{web_read_auth_attr}">
 <title>ColaMeta</title>
 <style>{css}</style>
 </head>
@@ -245,6 +247,11 @@ const $ = (id) => document.getElementById(id);
 const API = "/api/v2/status";
 const csrfMeta = document.querySelector('meta[name="colameta-csrf-token"]');
 const CSRF_TOKEN = csrfMeta ? (csrfMeta.getAttribute("content") || "") : "";
+const webReadAuthMeta = document.querySelector('meta[name="colameta-web-read-auth"]');
+const WEB_READ_AUTH = webReadAuthMeta ? (webReadAuthMeta.getAttribute("content") || "") : "";
+function readHeaders() {{
+  return WEB_READ_AUTH ? {{ "X-ColaMeta-Read-Auth": WEB_READ_AUTH }} : {{}};
+}}
 function jsonHeaders() {{
   return {{ "Content-Type": "application/json", "X-ColaMeta-CSRF": CSRF_TOKEN }};
 }}
@@ -273,7 +280,7 @@ async function fetchStatus() {{
   const controller = new AbortController();
   const timer = setTimeout(function() {{ controller.abort(); }}, STATUS_FETCH_TIMEOUT_MS);
   try {{
-    const resp = await fetch(API, {{ cache: "no-store", signal: controller.signal }});
+    const resp = await fetch(API, {{ cache: "no-store", signal: controller.signal, headers: readHeaders() }});
     return await resp.json();
   }} finally {{
     clearTimeout(timer);
@@ -1365,7 +1372,7 @@ function openVersionPromptModal(version) {{
   const modal = $("version-prompt-modal");
   if (modal) modal.classList.add("open");
 
-  fetch("/api/version-prompt?version=" + encodeURIComponent(version))
+  fetch("/api/version-prompt?version=" + encodeURIComponent(version), {{ headers: readHeaders() }})
     .then(function(r) {{ return r.json(); }})
     .then(function(data) {{
       if (!body) return;

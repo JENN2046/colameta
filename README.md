@@ -494,7 +494,7 @@ Default addresses:
 - MCP HTTP: http://127.0.0.1:8765/mcp
 
 Use `--mcp-host 0.0.0.0` only when you intentionally want a network-visible MCP listener.
-For a network-visible Web Console, pass both `--web-host 0.0.0.0` and `--allow-external-web`; Web write/control requests are guarded by CSRF and origin/host checks, but external browser access remains an explicit opt-in.
+For a network-visible Web Console, pass `--web-host 0.0.0.0`, `--allow-external-web`, and `--web-read-token <token>`. Sensitive Web read APIs require `X-ColaMeta-Read-Auth` or `Authorization: Bearer ...`; write/control requests are still guarded by CSRF and origin/host checks. The local browser shell can receive a process-local read token on loopback, but external binds require an explicit user-supplied token.
 
 Restart or stop the service:
 

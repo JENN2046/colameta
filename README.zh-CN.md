@@ -495,7 +495,7 @@ colameta start
 - MCP HTTP: http://127.0.0.1:8765/mcp
 
 只有明确希望让 MCP 监听到局域网/公网时，才手动传入 `--mcp-host 0.0.0.0`。
-如果需要让 Web Console 网络可见，必须同时传入 `--web-host 0.0.0.0` 和 `--allow-external-web`；Web 写入/控制请求会经过 CSRF 与 Origin/Host 校验，但外部浏览器访问仍然是显式 opt-in。
+如果需要让 Web Console 网络可见，必须同时传入 `--web-host 0.0.0.0`、`--allow-external-web` 和 `--web-read-token <token>`。敏感 Web 读取 API 需要携带 `X-ColaMeta-Read-Auth` 或 `Authorization: Bearer ...`；写入/控制请求仍会经过 CSRF 与 Origin/Host 校验。loopback 本地浏览器页面可以获得进程内读取 token，但外部绑定必须由用户显式提供 token。
 
 重启或停止服务：
 

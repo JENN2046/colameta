@@ -466,6 +466,31 @@ def _validate_external_web_bind(command_name: str, web_host: str, allow_external
     return False
 
 
+def _normalize_web_read_token(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _validate_external_web_read_auth(command_name: str, web_host: str, web_read_token: str | None) -> bool:
+    if _is_loopback_bind_host(web_host):
+        return True
+    if _normalize_web_read_token(web_read_token):
+        return True
+    print(
+        f"{command_name} 参数错误：Web Console 绑定到非 loopback 主机 {web_host} "
+        "需要显式传入 --web-read-token。",
+        file=sys.stderr,
+    )
+    print(
+        "公开监听的 Web Console 不会把读取鉴权 token 嵌入公共页面；"
+        "敏感 GET/read API 必须由客户端显式携带读取鉴权。",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _print_registry_project_list() -> None:
     cli_output.print_registry_project_list(registry_factory=ProjectRegistry, stderr=sys.stderr)
 
@@ -513,6 +538,7 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
     explicit_web_port = False
     explicit_mcp_port = False
     allow_external_web = False
+    web_read_token: str | None = None
 
     idx = 0
     while idx < len(args):
@@ -575,6 +601,12 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
             enable_mcp = False
         elif token == "--allow-external-web":
             allow_external_web = True
+        elif token == "--web-read-token":
+            idx += 1
+            if idx >= len(args):
+                print("默认入口参数错误：--web-read-token 缺少值。", file=sys.stderr)
+                return None
+            web_read_token = args[idx]
         elif token == "--auth-mode":
             print("默认入口固定使用 OAuth。其他鉴权模式请使用 serve 命令。", file=sys.stderr)
             return None
@@ -591,6 +623,8 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
         print("默认入口参数错误：至少启动 Web Console 或 MCP HTTP。", file=sys.stderr)
         return None
     if enable_web and not _validate_external_web_bind("默认入口", web_host, allow_external_web):
+        return None
+    if enable_web and not _validate_external_web_read_auth("默认入口", web_host, web_read_token):
         return None
 
     runner_rel_dir = resolve_project_runner_rel_dir(project_path)
@@ -660,6 +694,8 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
         serve_args.extend(["--auth-mode", "oauth", "--public-base-url", str(public_base_url)])
     if allow_external_web:
         serve_args.append("--allow-external-web")
+    if web_read_token:
+        serve_args.extend(["--web-read-token", web_read_token])
     if open_web:
         serve_args.append("--open")
     if not enable_web:
@@ -679,6 +715,7 @@ def _prepare_default_start(project_path: str, args: list[str]) -> dict[str, obje
         "open_web": open_web,
         "web_disabled_reason": web_disabled_reason,
         "allow_external_web": allow_external_web,
+        "web_read_token_configured": bool(_normalize_web_read_token(web_read_token)),
         "serve_args": serve_args,
     }
 
@@ -710,6 +747,7 @@ def _prepare_global_start(
     enable_mcp = True
     public_base_url: str | None = None
     allow_external_web = False
+    web_read_token: str | None = None
     explicit_fields: set[str] = set()
 
     idx = 0
@@ -764,6 +802,12 @@ def _prepare_global_start(
             enable_mcp = False
         elif token == "--allow-external-web":
             allow_external_web = True
+        elif token == "--web-read-token":
+            idx += 1
+            if idx >= len(args):
+                print("start 参数错误：--web-read-token 缺少值。", file=sys.stderr)
+                return None
+            web_read_token = args[idx]
         elif token in {"--auth-mode", "--auth-token", "--oauth-token-ttl-seconds"}:
             idx += 1
             if idx >= len(args):
@@ -788,6 +832,8 @@ def _prepare_global_start(
         public_base_url = str(global_config["public_base_url"])
     if enable_web and not _validate_external_web_bind("start", web_host, allow_external_web):
         return None
+    if enable_web and not _validate_external_web_read_auth("start", web_host, web_read_token):
+        return None
 
     return {
         "project_path": project_path,
@@ -802,6 +848,7 @@ def _prepare_global_start(
         "global_mode": global_mode,
         "register_as_selected": register_as_selected,
         "allow_external_web": allow_external_web,
+        "web_read_token_configured": bool(_normalize_web_read_token(web_read_token)),
     }
 
 
@@ -1713,6 +1760,7 @@ def _run_web_console(args: list[str]) -> int:
     host = "127.0.0.1"
     port = 8787
     allow_external_web = False
+    web_read_token: str | None = None
     idx = 2
     while idx < len(args):
         token = args[idx]
@@ -1734,12 +1782,20 @@ def _run_web_console(args: list[str]) -> int:
                 return 1
         elif token == "--allow-external-web":
             allow_external_web = True
+        elif token == "--web-read-token":
+            idx += 1
+            if idx >= len(args):
+                print("web 参数错误：--web-read-token 缺少值。", file=sys.stderr)
+                return 1
+            web_read_token = args[idx]
         else:
             print(f"web 参数错误：未知参数 {token}", file=sys.stderr)
             print(USAGE_MESSAGE, file=sys.stderr)
             return 1
         idx += 1
     if not _validate_external_web_bind("web", host, allow_external_web):
+        return 1
+    if not _validate_external_web_read_auth("web", host, web_read_token):
         return 1
 
     try:
@@ -1756,7 +1812,12 @@ def _run_web_console(args: list[str]) -> int:
     display_url = _web_console_url(host, port)
     print(f"MVP Runner Web Console: {display_url}", file=sys.stderr)
     print("Web Console 为本地控制台，运行、修复、提交等动作仍由用户手动触发。", file=sys.stderr)
-    return server.serve_http(host=host, port=port, allow_external_web=allow_external_web)
+    return server.serve_http(
+        host=host,
+        port=port,
+        allow_external_web=allow_external_web,
+        web_read_token=web_read_token,
+    )
 
 
 def _run_combined_serve(args: list[str], project_mode: str | None = None, *, register_as_selected: bool = True, global_mode: bool = False) -> int:
@@ -1779,6 +1840,7 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
     open_web = False
     debug_actions_flag = _resolve_debug_actions(False)
     allow_external_web = False
+    web_read_token: str | None = None
     explicit_fields: set[str] = set()
 
     idx = 2
@@ -1866,6 +1928,12 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
             open_web = True
         elif token == "--allow-external-web":
             allow_external_web = True
+        elif token == "--web-read-token":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--web-read-token 缺少值。", file=sys.stderr)
+                return 1
+            web_read_token = args[idx]
         else:
             print(f"serve 参数错误：未知参数 {token}", file=sys.stderr)
             print(USAGE_MESSAGE, file=sys.stderr)
@@ -1914,6 +1982,8 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
         print("serve 参数提示：--open 在 --no-web 模式下已忽略。", file=sys.stderr)
         open_web = False
     if enable_web and not _validate_external_web_bind("serve", web_host, allow_external_web):
+        return 1
+    if enable_web and not _validate_external_web_read_auth("serve", web_host, web_read_token):
         return 1
     resolved_auth_mode = _resolve_auth_mode(auth_mode, auth_token)
     if enable_mcp:
@@ -2051,6 +2121,7 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
                         host=web_host,
                         port=web_port,
                         allow_external_web=allow_external_web,
+                        web_read_token=web_read_token,
                     ),
                 ),
                 name="colameta-web",

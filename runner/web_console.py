@@ -61,6 +61,19 @@ from runner.web_console_presenter import (
 )
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
+WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
+SENSITIVE_WEB_GET_PATHS = frozenset({
+    "/api/status",
+    "/api/v2/status",
+    "/api/version-result",
+    "/api/next-plan",
+    "/api/plan-overview",
+    "/api/log-tail",
+    "/api/plan-patches",
+    "/api/version-prompt",
+    "/api/job-status",
+    "/api/project-registry",
+})
 PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/jobs/start",
     "/api/auto-apply-patches",
@@ -133,6 +146,7 @@ class WebConsoleServer:
         self._set_project_root(project_path)
         self._settings_resolve_cache: dict[str, Any] = {}
         self._csrf_token = secrets.token_urlsafe(32)
+        self._local_web_read_token = secrets.token_urlsafe(32)
 
     @classmethod
     def _default_project_registry(cls, project_path: str) -> ProjectRegistry:
@@ -297,9 +311,22 @@ class WebConsoleServer:
             return "-"
         return self._to_project_relative(path)
 
-    def serve_http(self, host: str = "127.0.0.1", port: int = 8787, *, allow_external_web: bool = False) -> int:
-        if not _is_loopback_host(host) and not allow_external_web:
+    def serve_http(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8787,
+        *,
+        allow_external_web: bool = False,
+        web_read_token: str | None = None,
+    ) -> int:
+        external_web = not _is_loopback_host(host)
+        configured_web_read_token = self._normalize_optional_secret(web_read_token)
+        if external_web and not allow_external_web:
             raise ValueError("Web Console non-loopback bind requires --allow-external-web.")
+        if external_web and configured_web_read_token is None:
+            raise ValueError("Web Console non-loopback bind requires --web-read-token.")
+        active_web_read_token = configured_web_read_token or self._local_web_read_token
+        embed_web_read_token = not external_web
         server = self
 
         class WebConsoleHandler(BaseHTTPRequestHandler):
@@ -341,7 +368,7 @@ class WebConsoleServer:
                 parsed = urlparse(self.path)
                 path = parsed.path
                 if path == "/":
-                    self._send_html(server._render_v2_index_html())
+                    self._send_html(server._render_v2_index_html(active_web_read_token if embed_web_read_token else ""))
                     return
                 if path == "/legacy/":
                     self._send_json(
@@ -356,6 +383,19 @@ class WebConsoleServer:
                 if path == "/api/healthz":
                     self._send_json({"ok": True, "service": "colameta-web-console"})
                     return
+                if path == "/api/v2/health":
+                    self._send_json(server._api_v2_health())
+                    return
+                if path in SENSITIVE_WEB_GET_PATHS:
+                    read_guard = server._validate_web_read_request(
+                        headers=self.headers,
+                        web_host=host,
+                        web_port=port,
+                        web_read_token=active_web_read_token,
+                    )
+                    if read_guard is not None:
+                        self._send_guard_result(read_guard)
+                        return
                 if path == "/api/status":
                     self._send_json(server._api_status())
                     return
@@ -385,13 +425,10 @@ class WebConsoleServer:
                     self._send_json(server._api_project_registry())
                     return
                 if path == "/v2/":
-                    self._send_html(server._render_v2_index_html())
+                    self._send_html(server._render_v2_index_html(active_web_read_token if embed_web_read_token else ""))
                     return
                 if path == "/api/v2/status":
                     self._send_json(server._api_v2_status())
-                    return
-                if path == "/api/v2/health":
-                    self._send_json(server._api_v2_health())
                     return
                 self._send_json({"ok": False, "message": "not_found"}, status_code=404)
 
@@ -496,6 +533,76 @@ class WebConsoleServer:
             "_http_status": status_code,
         }
 
+    @staticmethod
+    def _normalize_optional_secret(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    def _validate_web_host_header(
+        self,
+        headers: Any,
+        *,
+        web_host: str,
+        web_port: int,
+        request_kind: str,
+    ) -> dict[str, Any] | None:
+        host_name, host_port = _parsed_header_host(headers.get("Host"))
+        if host_name is None:
+            return self._guard_error(
+                "WEB_HOST_INVALID",
+                f"Web Console {request_kind} request Host is invalid.",
+            )
+        if host_port is not None and web_port and host_port != web_port:
+            return self._guard_error(
+                "WEB_HOST_INVALID",
+                f"Web Console {request_kind} request Host port is invalid.",
+            )
+        normalized_web_host = (web_host or "").strip().lower().rstrip(".")
+        host_allowed = _is_loopback_host(host_name)
+        if not host_allowed and normalized_web_host not in {"0.0.0.0", "::"}:
+            host_allowed = host_name.strip().lower().rstrip(".") == normalized_web_host
+        if not host_allowed:
+            return self._guard_error(
+                "WEB_HOST_INVALID",
+                f"Web Console {request_kind} request Host is not allowed.",
+            )
+        return None
+
+    def _validate_web_read_request(
+        self,
+        *,
+        headers: Any | None = None,
+        web_host: str = "127.0.0.1",
+        web_port: int = 0,
+        web_read_token: str = "",
+    ) -> dict[str, Any] | None:
+        if headers is None:
+            return self._guard_error("WEB_READ_AUTH_REQUIRED", "Web Console read authentication is required.")
+        host_guard = self._validate_web_host_header(
+            headers,
+            web_host=web_host,
+            web_port=web_port,
+            request_kind="read",
+        )
+        if host_guard is not None:
+            return host_guard
+        expected = self._normalize_optional_secret(web_read_token)
+        if expected is None:
+            return self._guard_error("WEB_READ_AUTH_REQUIRED", "Web Console read authentication is required.")
+        presented = self._normalize_optional_secret(headers.get(WEB_READ_AUTH_HEADER))
+        authorization = self._normalize_optional_secret(headers.get("Authorization"))
+        if presented is None and authorization:
+            parts = authorization.split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                presented = self._normalize_optional_secret(parts[1])
+        if presented is None:
+            return self._guard_error("WEB_READ_AUTH_REQUIRED", "Web Console read authentication is required.")
+        if not secrets.compare_digest(presented, expected):
+            return self._guard_error("WEB_READ_AUTH_INVALID", "Web Console read authentication is invalid.")
+        return None
+
     def _validate_web_write_request(
         self,
         body: dict[str, Any] | None,
@@ -514,17 +621,15 @@ class WebConsoleServer:
                     status_code=415,
                 )
 
-            host_name, host_port = _parsed_header_host(headers.get("Host"))
-            if host_name is None:
-                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host is invalid.")
-            if host_port is not None and web_port and host_port != web_port:
-                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host port is invalid.")
+            host_guard = self._validate_web_host_header(
+                headers,
+                web_host=web_host,
+                web_port=web_port,
+                request_kind="write",
+            )
+            if host_guard is not None:
+                return host_guard
             normalized_web_host = (web_host or "").strip().lower().rstrip(".")
-            host_allowed = _is_loopback_host(host_name)
-            if not host_allowed and normalized_web_host not in {"0.0.0.0", "::"}:
-                host_allowed = host_name.strip().lower().rstrip(".") == normalized_web_host
-            if not host_allowed:
-                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host is not allowed.")
 
             for header_name, error_code in (("Origin", "WEB_ORIGIN_INVALID"), ("Referer", "WEB_REFERER_INVALID")):
                 value = headers.get(header_name)
@@ -2221,5 +2326,5 @@ class WebConsoleServer:
     def _api_v2_health() -> dict[str, Any]:
         return {"ok": True, "version": "v2"}
 
-    def _render_v2_index_html(self) -> str:
-        return render_v2_index_page(csrf_token=self._csrf_token)
+    def _render_v2_index_html(self, web_read_token: str = "") -> str:
+        return render_v2_index_page(csrf_token=self._csrf_token, web_read_token=web_read_token)

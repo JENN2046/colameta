@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import secrets
 import tempfile
 import threading
 import time
@@ -44,6 +45,8 @@ def http_request(
     method: str = "GET",
     payload: dict[str, Any] | None = None,
     csrf_token: str | None = None,
+    web_read_token: str | None = None,
+    authorization: str | None = None,
     origin: str | None = None,
     host_header: str | None = None,
     content_type: str | None = "application/json",
@@ -55,6 +58,10 @@ def http_request(
         headers["Content-Type"] = content_type
     if csrf_token is not None:
         headers["X-ColaMeta-CSRF"] = csrf_token
+    if web_read_token is not None:
+        headers["X-ColaMeta-Read-Auth"] = web_read_token
+    if authorization is not None:
+        headers["Authorization"] = authorization
     if origin is not None:
         headers["Origin"] = origin
     if host_header is not None:
@@ -98,7 +105,13 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert wait_until_port_released(self.port)
         self._tmp.cleanup()
 
-    def start_web(self) -> None:
+    def start_web(
+        self,
+        *,
+        host: str = HOST,
+        allow_external_web: bool = False,
+        web_read_token: str | None = None,
+    ) -> None:
         from runner.web_console import WebConsoleServer
 
         self.server = WebConsoleServer(str(self.project))
@@ -113,7 +126,12 @@ class WebConsoleSecurityTests(unittest.TestCase):
 
         def run() -> None:
             try:
-                self.server.serve_http(host=HOST, port=self.port)
+                self.server.serve_http(
+                    host=host,
+                    port=self.port,
+                    allow_external_web=allow_external_web,
+                    web_read_token=web_read_token,
+                )
             except BaseException as exc:  # noqa: BLE001 - surfaced to the test thread
                 self.server_errors.append(exc)
 
@@ -138,22 +156,81 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert match is not None
         return match.group(1)
 
+    def read_token_from_page(self) -> str:
+        status, body = http_request(f"http://{HOST}:{self.port}/")
+        assert status == 200
+        match = re.search(r'name="colameta-web-read-auth" content="([^"]*)"', body)
+        assert match is not None
+        return match.group(1)
+
     def valid_origin(self) -> str:
         return f"http://{HOST}:{self.port}"
 
     def valid_host(self) -> str:
         return f"{HOST}:{self.port}"
 
-    def test_health_and_sensitive_read_get_remain_accessible_without_csrf(self) -> None:
+    def test_health_and_ui_shell_remain_public_without_project_state(self) -> None:
         self.start_web()
 
         status, health = json_request(f"http://{HOST}:{self.port}/api/healthz")
         assert status == 200
         assert health["ok"] is True
 
-        status, registry = json_request(f"http://{HOST}:{self.port}/api/project-registry")
+        status, v2_health = json_request(f"http://{HOST}:{self.port}/api/v2/health")
+        assert status == 200
+        assert v2_health["ok"] is True
+
+        status, body = http_request(f"http://{HOST}:{self.port}/")
+        assert status == 200
+        assert str(self.project) not in body
+        assert ".colameta" not in body
+
+    def test_sensitive_get_without_read_auth_is_rejected(self) -> None:
+        self.start_web()
+
+        status, payload = json_request(f"http://{HOST}:{self.port}/api/project-registry")
+        assert status == 403
+        assert payload["error_code"] == "WEB_READ_AUTH_REQUIRED"
+
+    def test_sensitive_get_with_invalid_read_auth_is_rejected(self) -> None:
+        self.start_web()
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/project-registry",
+            web_read_token="invalid-read-auth-token",
+        )
+        assert status == 403
+        assert payload["error_code"] == "WEB_READ_AUTH_INVALID"
+
+    def test_sensitive_get_with_valid_web_read_auth_succeeds(self) -> None:
+        self.start_web()
+        read_token = self.read_token_from_page()
+
+        status, registry = json_request(
+            f"http://{HOST}:{self.port}/api/project-registry",
+            web_read_token=read_token,
+        )
         assert status == 200
         assert registry.get("ok") is True
+
+    def test_high_sensitivity_read_routes_require_web_read_auth(self) -> None:
+        self.start_web()
+        read_token = self.read_token_from_page()
+
+        status, payload = json_request(f"http://{HOST}:{self.port}/api/log-tail")
+        assert status == 403
+        assert payload["error_code"] == "WEB_READ_AUTH_REQUIRED"
+
+        status, payload = json_request(f"http://{HOST}:{self.port}/api/v2/status")
+        assert status == 403
+        assert payload["error_code"] == "WEB_READ_AUTH_REQUIRED"
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/status",
+            authorization=f"Bearer {read_token}",
+        )
+        assert status == 200
+        assert payload.get("ok") is True
 
     def test_missing_csrf_on_write_route_is_rejected(self) -> None:
         self.start_web()
@@ -275,11 +352,38 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert runner_cli.DEFAULT_WEB_HOST == "127.0.0.1"
         assert runner_cli._validate_external_web_bind("web", "127.0.0.1", False) is True
         assert runner_cli._validate_external_web_bind("web", "0.0.0.0", True) is True
+        assert runner_cli._validate_external_web_read_auth("web", "127.0.0.1", None) is True
+        assert runner_cli._validate_external_web_read_auth("web", "0.0.0.0", "configured-read-auth") is True
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             assert runner_cli._validate_external_web_bind("web", "0.0.0.0", False) is False
         assert "--allow-external-web" in stderr.getvalue()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            assert runner_cli._validate_external_web_read_auth("web", "0.0.0.0", None) is False
+        assert "--web-read-token" in stderr.getvalue()
 
         server = WebConsoleServer(str(self.project))
         with self.assertRaises(ValueError):
             server.serve_http(host="0.0.0.0", port=self.port)
+        with self.assertRaises(ValueError):
+            server.serve_http(host="0.0.0.0", port=self.port, allow_external_web=True)
+
+    def test_external_bind_with_acknowledgement_and_read_auth_is_accepted(self) -> None:
+        read_token = secrets.token_urlsafe(24)
+        self.start_web(host="0.0.0.0", allow_external_web=True, web_read_token=read_token)
+
+        status, body = http_request(f"http://{HOST}:{self.port}/")
+        assert status == 200
+        assert 'name="colameta-web-read-auth" content=""' in body
+
+        status, payload = json_request(f"http://{HOST}:{self.port}/api/project-registry")
+        assert status == 403
+        assert payload["error_code"] == "WEB_READ_AUTH_REQUIRED"
+
+        status, registry = json_request(
+            f"http://{HOST}:{self.port}/api/project-registry",
+            web_read_token=read_token,
+        )
+        assert status == 200
+        assert registry.get("ok") is True
