@@ -4,8 +4,13 @@ __pycache__/
 *$py.class
 
 # Build artifacts
+build/
 dist/
 *.egg-info/
+
+# Test and local environments
+.pytest_cache/
+.venv/
 
 # OS
 .DS_Store

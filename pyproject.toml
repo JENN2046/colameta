@@ -26,6 +26,13 @@ Homepage = "https://github.com/riccilnl/colameta"
 [project.scripts]
 colameta = "scripts.runner_cli:main"
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<9",
+    "setuptools>=68",
+    "wheel>=0.43",
+]
+
 [tool.setuptools.packages.find]
 include = ["runner", "runner.*", "adapters", "adapters.*", "schemas", "schemas.*", "scripts", "scripts.*"]
 
