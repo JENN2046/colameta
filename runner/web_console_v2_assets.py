@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import html as html_lib
 
-def render_v2_index_page() -> str:
+
+def render_v2_index_page(csrf_token: str = "") -> str:
+    csrf_attr = html_lib.escape(csrf_token, quote=True)
     css = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { height: 100vh; }
@@ -171,6 +174,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="colameta-csrf-token" content="{csrf_attr}">
 <title>ColaMeta</title>
 <style>{css}</style>
 </head>
@@ -239,6 +243,11 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 <script>
 const $ = (id) => document.getElementById(id);
 const API = "/api/v2/status";
+const csrfMeta = document.querySelector('meta[name="colameta-csrf-token"]');
+const CSRF_TOKEN = csrfMeta ? (csrfMeta.getAttribute("content") || "") : "";
+function jsonHeaders() {{
+  return {{ "Content-Type": "application/json", "X-ColaMeta-CSRF": CSRF_TOKEN }};
+}}
 const STATUS_FETCH_TIMEOUT_MS = 12000;
 const BACKGROUND_STATUS_POLL_MS = 5000;
 
@@ -501,7 +510,7 @@ async function runAction(nextAction, currentData) {{
     }};
     const resp = await fetch("/api/v2/action", {{
       method: "POST",
-      headers: {{ "Content-Type": "application/json" }},
+      headers: jsonHeaders(),
       body: JSON.stringify(payload),
       cache: "no-store",
     }});
@@ -521,7 +530,7 @@ async function switchProject(projectRoot) {{
   try {{
     const resp = await fetch("/api/switch-project", {{
       method: "POST",
-      headers: {{ "Content-Type": "application/json" }},
+      headers: jsonHeaders(),
       body: JSON.stringify({{ project_root: projectRoot }}),
       cache: "no-store",
     }});
@@ -1143,7 +1152,7 @@ function registryAction(actionName, params) {{
   }};
   fetch("/api/v2/action", {{
     method: "POST",
-    headers: {{ "Content-Type": "application/json" }},
+    headers: jsonHeaders(),
     body: JSON.stringify(payload),
     cache: "no-store",
   }})
@@ -1199,7 +1208,7 @@ function previewProjectIdentity() {{
   projectIdentityPreviewId = "";
   fetch("/api/project-identity/preview", {{
     method: "POST",
-    headers: {{ "Content-Type": "application/json" }},
+    headers: jsonHeaders(),
     body: JSON.stringify({{
       project_id: projectId ? projectId.value : "",
       new_project_name: projectName ? projectName.value : "",
@@ -1232,7 +1241,7 @@ function applyProjectIdentity() {{
   }}
   fetch("/api/project-identity/apply", {{
     method: "POST",
-    headers: {{ "Content-Type": "application/json" }},
+    headers: jsonHeaders(),
     body: JSON.stringify({{ preview_id: projectIdentityPreviewId }}),
     cache: "no-store",
   }})

@@ -140,7 +140,7 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
         assert prepared["project_path"] == str(project)
         assert prepared["serve_args"][1] == str(project)
 
-    def test_default_start_hosts_are_loopback_and_override_can_opt_in_to_any_address(self) -> None:
+    def test_default_start_hosts_are_loopback_and_external_web_requires_ack(self) -> None:
         from scripts import runner_cli
 
         project = self.create_managed_project("host-defaults")
@@ -152,7 +152,7 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
         assert prepared["web_host"] == "127.0.0.1"
         assert prepared["mcp_host"] == "127.0.0.1"
 
-        overridden = runner_cli._prepare_default_start(
+        blocked = runner_cli._prepare_default_start(
             str(project),
             [
                 "--web-host",
@@ -163,9 +163,24 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
                 "http://127.0.0.1:8765",
             ],
         )
+        assert blocked is None
+
+        overridden = runner_cli._prepare_default_start(
+            str(project),
+            [
+                "--web-host",
+                "0.0.0.0",
+                "--allow-external-web",
+                "--mcp-host",
+                "0.0.0.0",
+                "--public-base-url",
+                "http://127.0.0.1:8765",
+            ],
+        )
         assert overridden is not None
         assert overridden["web_host"] == "0.0.0.0"
         assert overridden["mcp_host"] == "0.0.0.0"
+        assert "--allow-external-web" in overridden["serve_args"]
 
     def test_default_start_summary_separates_web_mcp_and_public_urls(self) -> None:
         from scripts import runner_cli_output
@@ -206,9 +221,10 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
             def validate_project(self) -> None:
                 captured["validated"] = True
 
-            def serve_http(self, *, host: str, port: int) -> int:
+            def serve_http(self, *, host: str, port: int, allow_external_web: bool = False) -> int:
                 captured["host"] = host
                 captured["port"] = port
+                captured["allow_external_web"] = allow_external_web
                 return 0
 
         web_console.WebConsoleServer = FakeWebConsoleServer
@@ -223,6 +239,7 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
         assert captured["project_path"] == str(project)
         assert captured["host"] == "127.0.0.2"
         assert captured["port"] == 8898
+        assert captured["allow_external_web"] is False
         assert "MVP Runner Web Console: http://127.0.0.2:8898" in stderr.getvalue()
 
     def test_explicit_serve_project_path_and_url_reporting_are_preserved(self) -> None:

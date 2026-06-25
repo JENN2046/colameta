@@ -494,7 +494,8 @@ colameta start
 - Web Console: http://127.0.0.1:8799
 - MCP HTTP: http://127.0.0.1:8765/mcp
 
-只有明确希望监听到局域网/公网时，才手动传入 `--web-host 0.0.0.0` 或 `--mcp-host 0.0.0.0`。
+只有明确希望让 MCP 监听到局域网/公网时，才手动传入 `--mcp-host 0.0.0.0`。
+如果需要让 Web Console 网络可见，必须同时传入 `--web-host 0.0.0.0` 和 `--allow-external-web`；Web 写入/控制请求会经过 CSRF 与 Origin/Host 校验，但外部浏览器访问仍然是显式 opt-in。
 
 重启或停止服务：
 

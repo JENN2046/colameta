@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
 import uuid
+import ipaddress
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -58,6 +60,55 @@ from runner.web_console_presenter import (
     extract_model_display_from_plan_data,
 )
 
+WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
+PROTECTED_WEB_POST_PATHS = frozenset({
+    "/api/jobs/start",
+    "/api/auto-apply-patches",
+    "/api/run-current-version",
+    "/api/fix-current-version",
+    "/api/reload-plan",
+    "/api/continue-next-version",
+    "/api/rerun-acceptance",
+    "/api/checkpoint-review",
+    "/api/commit-preview",
+    "/api/commit-confirm",
+    "/api/switch-executor",
+    "/api/switch-project",
+    "/api/project-identity/preview",
+    "/api/project-identity/apply",
+    "/api/v2/action",
+})
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    value = (host or "").strip().lower().rstrip(".")
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _parsed_header_host(value: str | None) -> tuple[str | None, int | None]:
+    if not isinstance(value, str) or not value.strip():
+        return None, None
+    try:
+        parsed = urlparse(f"//{value.strip()}")
+        return parsed.hostname, parsed.port
+    except ValueError:
+        return None, None
+
+
+def _parsed_url_host(value: str | None) -> tuple[str | None, int | None]:
+    if not isinstance(value, str) or not value.strip():
+        return None, None
+    try:
+        parsed = urlparse(value.strip())
+        return parsed.hostname, parsed.port
+    except ValueError:
+        return None, None
+
 
 class WebConsoleServer:
     def __init__(
@@ -81,6 +132,7 @@ class WebConsoleServer:
         self.runner_settings_store = RunnerSettingsStore()
         self._set_project_root(project_path)
         self._settings_resolve_cache: dict[str, Any] = {}
+        self._csrf_token = secrets.token_urlsafe(32)
 
     @classmethod
     def _default_project_registry(cls, project_path: str) -> ProjectRegistry:
@@ -245,7 +297,9 @@ class WebConsoleServer:
             return "-"
         return self._to_project_relative(path)
 
-    def serve_http(self, host: str = "127.0.0.1", port: int = 8787) -> int:
+    def serve_http(self, host: str = "127.0.0.1", port: int = 8787, *, allow_external_web: bool = False) -> int:
+        if not _is_loopback_host(host) and not allow_external_web:
+            raise ValueError("Web Console non-loopback bind requires --allow-external-web.")
         server = self
 
         class WebConsoleHandler(BaseHTTPRequestHandler):
@@ -278,6 +332,10 @@ class WebConsoleServer:
                     return parsed if isinstance(parsed, dict) else {}
                 except Exception:
                     return {}
+
+            def _send_guard_result(self, result: dict[str, Any]) -> None:
+                status_code = int(result.pop("_http_status", 403))
+                self._send_json(result, status_code=status_code)
 
             def do_GET(self) -> None:
                 parsed = urlparse(self.path)
@@ -339,62 +397,41 @@ class WebConsoleServer:
 
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
-                if path == "/api/jobs/start":
+                body: dict[str, Any] | None = None
+                if path in PROTECTED_WEB_POST_PATHS:
                     body = self._read_json_body()
-                    write_guard = server._validate_web_write_request(body)
+                    write_guard = server._validate_web_write_request(
+                        body,
+                        headers=self.headers,
+                        path=path,
+                        web_host=host,
+                        web_port=port,
+                    )
                     if write_guard is not None:
-                        self._send_json(write_guard)
+                        self._send_guard_result(write_guard)
                         return
-                    self._send_json(server._api_start_job(body))
+                if path == "/api/jobs/start":
+                    self._send_json(server._api_start_job(body or {}))
                     return
                 if path == "/api/auto-apply-patches":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_auto_apply_patches())
                     return
                 if path == "/api/run-current-version":
-                    body = self._read_json_body()
-                    write_guard = server._validate_web_write_request(body)
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_run_current_version())
                     return
                 if path == "/api/fix-current-version":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_fix_current_version())
                     return
                 if path == "/api/reload-plan":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_reload_plan())
                     return
                 if path == "/api/continue-next-version":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_continue_next_version())
                     return
                 if path == "/api/rerun-acceptance":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_rerun_acceptance())
                     return
                 if path == "/api/checkpoint-review":
-                    write_guard = server._validate_web_write_request(self._read_json_body())
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
                     self._send_json(server._api_checkpoint_review())
                     return
                 if path == "/api/commit-preview":
@@ -404,28 +441,19 @@ class WebConsoleServer:
                     self._send_json(server._api_commit_confirm_with_project())
                     return
                 if path == "/api/switch-executor":
-                    body = self._read_json_body()
-                    write_guard = server._validate_web_write_request(body)
-                    if write_guard is not None:
-                        self._send_json(write_guard)
-                        return
-                    self._send_json(server._api_switch_executor(body))
+                    self._send_json(server._api_switch_executor(body or {}))
                     return
                 if path == "/api/switch-project":
-                    body = self._read_json_body()
-                    self._send_json(server._api_switch_project(body))
+                    self._send_json(server._api_switch_project(body or {}))
                     return
                 if path == "/api/project-identity/preview":
-                    body = self._read_json_body()
-                    self._send_json(server._api_project_identity_preview(body))
+                    self._send_json(server._api_project_identity_preview(body or {}))
                     return
                 if path == "/api/project-identity/apply":
-                    body = self._read_json_body()
-                    self._send_json(server._api_project_identity_apply(body))
+                    self._send_json(server._api_project_identity_apply(body or {}))
                     return
                 if path == "/api/v2/action":
-                    body = self._read_json_body()
-                    self._send_json(server._api_v2_action(body))
+                    self._send_json(server._api_v2_action(body or {}))
                     return
                 self._send_json({"ok": False, "message": "not_found"}, status_code=404)
 
@@ -460,13 +488,70 @@ class WebConsoleServer:
             }
         return None
 
-    def _validate_web_write_request(self, body: dict[str, Any] | None) -> dict[str, Any] | None:
+    def _guard_error(self, error_code: str, message: str, *, status_code: int = 403) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error_code": error_code,
+            "message": message,
+            "_http_status": status_code,
+        }
+
+    def _validate_web_write_request(
+        self,
+        body: dict[str, Any] | None,
+        *,
+        headers: Any | None = None,
+        path: str = "",
+        web_host: str = "127.0.0.1",
+        web_port: int = 0,
+    ) -> dict[str, Any] | None:
+        if headers is not None:
+            content_type = str(headers.get("Content-Type", "") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                return self._guard_error(
+                    "WEB_CONTENT_TYPE_REQUIRED",
+                    "Web Console write requests require application/json.",
+                    status_code=415,
+                )
+
+            host_name, host_port = _parsed_header_host(headers.get("Host"))
+            if host_name is None:
+                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host is invalid.")
+            if host_port is not None and web_port and host_port != web_port:
+                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host port is invalid.")
+            normalized_web_host = (web_host or "").strip().lower().rstrip(".")
+            host_allowed = _is_loopback_host(host_name)
+            if not host_allowed and normalized_web_host not in {"0.0.0.0", "::"}:
+                host_allowed = host_name.strip().lower().rstrip(".") == normalized_web_host
+            if not host_allowed:
+                return self._guard_error("WEB_HOST_INVALID", "Web Console write request Host is not allowed.")
+
+            for header_name, error_code in (("Origin", "WEB_ORIGIN_INVALID"), ("Referer", "WEB_REFERER_INVALID")):
+                value = headers.get(header_name)
+                if not value:
+                    continue
+                origin_host, origin_port = _parsed_url_host(value)
+                if origin_host is None:
+                    return self._guard_error(error_code, f"Web Console write request {header_name} is invalid.")
+                if origin_port is not None and web_port and origin_port != web_port:
+                    return self._guard_error(error_code, f"Web Console write request {header_name} port is invalid.")
+                origin_allowed = _is_loopback_host(origin_host)
+                if not origin_allowed and normalized_web_host not in {"0.0.0.0", "::"}:
+                    origin_allowed = origin_host.strip().lower().rstrip(".") == normalized_web_host
+                if not origin_allowed:
+                    return self._guard_error(error_code, f"Web Console write request {header_name} is not allowed.")
+
+            csrf_value = str(headers.get(WEB_CSRF_HEADER, "") or "")
+            if not csrf_value or not secrets.compare_digest(csrf_value, self._csrf_token):
+                return self._guard_error("WEB_CSRF_INVALID", "Web Console write request CSRF token is invalid.")
+
         payload = body or {}
         if payload.get("project_root") is not None:
             return {
                 "ok": False,
                 "error_code": "INVALID_PARAMS",
                 "message": "project_root is not allowed.",
+                "_http_status": 400,
             }
         return None
 
@@ -2137,4 +2222,4 @@ class WebConsoleServer:
         return {"ok": True, "version": "v2"}
 
     def _render_v2_index_html(self) -> str:
-        return render_v2_index_page()
+        return render_v2_index_page(csrf_token=self._csrf_token)

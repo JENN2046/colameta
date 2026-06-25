@@ -493,7 +493,8 @@ Default addresses:
 - Web Console: http://127.0.0.1:8799
 - MCP HTTP: http://127.0.0.1:8765/mcp
 
-Use `--web-host 0.0.0.0` or `--mcp-host 0.0.0.0` only when you intentionally want a network-visible listener.
+Use `--mcp-host 0.0.0.0` only when you intentionally want a network-visible MCP listener.
+For a network-visible Web Console, pass both `--web-host 0.0.0.0` and `--allow-external-web`; Web write/control requests are guarded by CSRF and origin/host checks, but external browser access remains an explicit opt-in.
 
 Restart or stop the service:
 
