@@ -742,6 +742,98 @@
       }
     },
     {
+      "version": "v1.6.1",
+      "name": "State Lineage Reconciliation Support V1",
+      "description": "Add preview-first Runner state lineage reconciliation support for binding manually controlled completion receipts back into Runner state before v1.7 execution.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.6.1.md",
+      "enabled": true,
+      "context_files": [
+        "runner/state_mutation.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/mcp_server.py",
+        "runner/mcp_validation_run.py",
+        "runner/git_history_reconcile.py",
+        ".colameta/plan.json"
+      ],
+      "allowed_files": [
+        "runner/state_lineage_reconciliation.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/mcp_server.py",
+        "tests/test_state_lineage_reconciliation.py"
+      ],
+      "forbidden_files": [
+        "runner/runtime_observability.py",
+        "runner/runtime_version_decision.py",
+        "runner/web_console.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_state_lineage_reconciliation",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "Preview action validates the reconciliation payload and produces an auditable before/after state summary without running the executor.",
+        "Apply requires an explicit preview_id and fails closed if HEAD, worktree cleanliness, plan membership, local commit presence, or required evidence no longer match preview facts.",
+        "The immediate reconciliation can bind v1.5 to 582f047 and v1.6 to 8fb86aa while keeping v1.7 NOT_STARTED and next runnable.",
+        "Apply only touches .colameta/state.json and controlled preview bookkeeping; it must not modify source/docs/tests/plan/prompt files.",
+        "No executor run, Git remote operation, tag/release, restart/reload/kill, or service lifecycle mutation is performed."
+      ],
+      "out_of_scope": [
+        "Executor run, bounded loop, or fix round execution.",
+        "Runtime version decision evaluator implementation for v1.7.",
+        "Web Console route changes or new Web mutation surfaces.",
+        "Git remote mutation including fetch, pull, push, tag, or release.",
+        "Service lifecycle mutation including restart, reload, or kill.",
+        "Direct manual editing of .colameta/state.json outside the controlled reconciliation apply path.",
+        "Commit or push of the reconciliation implementation from this version execution."
+      ],
+      "execution": {
+        "provider": "codex"
+      }
+    },
+    {
       "version": "v1.7",
       "name": "Runtime Version Status Decision Evaluator V1",
       "description": "Add a pure decision evaluator for interpreting runtime version status without granting restart/reload/kill/apply authority.",
