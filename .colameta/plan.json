@@ -628,6 +628,118 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.6",
+      "name": "Runtime Version Status Documentation + Operator Decision Contract",
+      "description": "Document and test the decision contract for interpreting v1.5 read-only runtime/version observability without granting automatic restart/reload/kill/apply authority.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.6.md",
+      "enabled": true,
+      "context_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "tests/test_runtime_observability.py",
+        "tests/test_mcp_runtime_observability.py",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "allowed_files": [
+        "docs/runtime-version-status-decision-contract.md",
+        "tests/test_runtime_version_status_decision_contract.py",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "forbidden_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "runner/web_console.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/continue_version_workflow.py",
+        "runner/mcp_project_patch.py",
+        "runner/dangerous_action_guard.py",
+        "runner/state_machine.py",
+        "runner/state_mutation.py",
+        "runner/state_mutation_gateway.py",
+        "runner/workflow_engine.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_version_status_decision_contract",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "v1.6 is docs/tests-only or explains any deviation.",
+        "The contract does not add restart/reload/kill/apply behavior.",
+        "The contract does not add Web Console business routes.",
+        "The contract does not add MCP mutation tools.",
+        "The contract does not mutate service lifecycle state.",
+        "The contract does not authorize Git fetch/pull/push/tag/release.",
+        "The contract preserves v1.5 read-only observability semantics.",
+        "restart_needed_state == needed results in operator handoff only.",
+        "restart_needed_state == unknown results in bounded read-only diagnostics only.",
+        "No automatic action is authorized by any state."
+      ],
+      "out_of_scope": [
+        "Restart preview",
+        "Restart apply",
+        "Reload apply",
+        "Kill process",
+        "Service manager integration",
+        "Config write",
+        "Web Console business route",
+        "Web remote Git mutation route",
+        "Git push/fetch/pull/tag/release",
+        "Executor workflow changes",
+        "State mutation changes",
+        "Operator handoff execution surface",
+        "Auth changes",
+        "Notification or background monitor"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
