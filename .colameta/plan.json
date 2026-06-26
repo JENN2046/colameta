@@ -127,6 +127,92 @@
         "release/tag/upstream PR",
         "server-side workdir synchronization"
       ]
+    },
+    {
+      "version": "v1.1",
+      "name": "E2D Git Commit Confirm Web Guard",
+      "description": "Add Web dangerous-action confirmation protection for local Git commit confirmation. This narrows E2D to /api/commit-confirm only, leaving commit-preview as metadata preview and MCP Git managers unchanged.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.1.md",
+      "enabled": true,
+      "context_files": [
+        "runner/web_console.py",
+        "tests/test_web_console_security.py",
+        "README.md",
+        "README.zh-CN.md",
+        "runner/dangerous_action_guard.py",
+        "runner/mcp_git_commit.py"
+      ],
+      "allowed_files": [
+        "runner/web_console.py",
+        "tests/test_web_console_security.py",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "forbidden_files": [
+        "runner/mcp_git_commit.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_history.py",
+        "runner/mcp_server.py",
+        "adapters/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "/api/commit-confirm missing dangerous confirmation is rejected before commit dispatch",
+        "/api/commit-confirm stale commit preview signature is rejected before commit dispatch",
+        "/api/commit-confirm valid dangerous confirmation allows existing commit confirm flow and returns redacted dangerous_action_receipt",
+        "Full confirmation id is absent from response payloads",
+        "/api/commit-preview remains outside dangerous confirmation and only creates runtime preview metadata",
+        "MCP Git manager internals are unchanged",
+        "No Web push/pull apply routes are added"
+      ],
+      "out_of_scope": [
+        "MCP Git manager hardening",
+        "Web push/pull apply routes",
+        "Remote Git guard changes",
+        "restore/revert hardening",
+        "executor internals",
+        "workflow file changes",
+        "release/tag/upstream PR",
+        "Runner lineage reconciliation"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }

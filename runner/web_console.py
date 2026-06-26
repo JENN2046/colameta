@@ -105,6 +105,7 @@ DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
     "/api/continue-next-version",
     "/api/rerun-acceptance",
     "/api/checkpoint-review",
+    "/api/commit-confirm",
     "/api/switch-executor",
     "/api/switch-project",
     "/api/project-identity/apply",
@@ -594,7 +595,10 @@ class WebConsoleServer:
                     self._send_json(server._api_commit_preview_with_project())
                     return
                 if path == "/api/commit-confirm":
-                    self._send_json(server._api_commit_confirm_with_project())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_commit_confirm_with_project(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/switch-executor":
                     self._send_json(server._with_dangerous_action_receipt(
@@ -828,7 +832,7 @@ class WebConsoleServer:
             current_head=context["current_head"],
             state_signature=context["state_signature"],
             plan_signature=context["plan_signature"] if policy.get("guard_plan_signature") else None,
-            patch_signature=context["patch_signature"] if policy.get("guard_patch_signature") else None,
+            patch_signature=self._dangerous_secondary_signature(policy, context),
             registry_signature=context["registry_signature"],
             payload=payload,
             target_summary=policy["target_summary"],
@@ -854,17 +858,30 @@ class WebConsoleServer:
             current_head=context["current_head"],
             state_signature=context["state_signature"],
             plan_signature=context["plan_signature"] if policy.get("guard_plan_signature") else None,
-            patch_signature=context["patch_signature"] if policy.get("guard_patch_signature") else None,
+            patch_signature=self._dangerous_secondary_signature(policy, context),
             registry_signature=context["registry_signature"],
             payload=body,
         )
         if not result.get("ok"):
+            error_code = str(result.get("error_code") or "DANGEROUS_CONFIRMATION_INVALID")
+            message = str(result.get("message") or "Dangerous action confirmation is invalid.")
+            if policy.get("guard_commit_preview_signature") and error_code == "DANGEROUS_CONFIRMATION_PATCH_MISMATCH":
+                error_code = "DANGEROUS_CONFIRMATION_COMMIT_PREVIEW_MISMATCH"
+                message = "Dangerous action confirmation commit preview mismatch."
             return self._guard_error(
-                str(result.get("error_code") or "DANGEROUS_CONFIRMATION_INVALID"),
-                str(result.get("message") or "Dangerous action confirmation is invalid."),
+                error_code,
+                message,
             ), None
         receipt = result.get("receipt") if isinstance(result.get("receipt"), dict) else {}
         return None, receipt
+
+    @staticmethod
+    def _dangerous_secondary_signature(policy: dict[str, Any], context: dict[str, Any]) -> str | None:
+        if policy.get("guard_commit_preview_signature"):
+            return context["commit_preview_signature"]
+        if policy.get("guard_patch_signature"):
+            return context["patch_signature"]
+        return None
 
     def _with_dangerous_action_receipt(
         self,
@@ -904,6 +921,8 @@ class WebConsoleServer:
                 title=str(plan_state_route_policy["title"]),
                 background_job=False,
             )
+        if route == "/api/commit-confirm":
+            return self._dangerous_git_commit_confirm_policy()
         if route == "/api/jobs/start":
             operation = str(payload.get("operation") or "").strip()
             job_executor_policy = DANGEROUS_JOB_EXECUTOR_OPERATIONS.get(operation)
@@ -1036,6 +1055,43 @@ class WebConsoleServer:
                 "post_checks": "executor acceptance workflow and post-run scope validation remain required",
                 "rollback_guidance": "Review the executor report, inspect the resulting diff, and revert or repair project changes before any commit or push.",
             },
+        }
+
+    def _dangerous_git_commit_confirm_policy(self) -> dict[str, Any]:
+        target_summary = self._dangerous_commit_preview_summary()
+        return {
+            "action_type": "git_commit_confirm",
+            "risk_class": "git_local_history_action",
+            "target_summary": target_summary,
+            "display_summary": {
+                "title": "Confirm local Git commit",
+                "target": target_summary.get("version") or "current version",
+                "rollback_guidance": "Inspect the new local commit and use normal Git history repair if the commit should be changed before any push.",
+            },
+            "guard_plan_signature": True,
+            "guard_commit_preview_signature": True,
+        }
+
+    def _dangerous_commit_preview_summary(self) -> dict[str, Any]:
+        preview = self.pending_commit_preview if isinstance(self.pending_commit_preview, dict) else {}
+        files = preview.get("commit_files") if isinstance(preview.get("commit_files"), list) else []
+        commit_files = sorted(str(item) for item in files if isinstance(item, str))
+        preview_id = preview.get("preview_id") if isinstance(preview.get("preview_id"), str) else ""
+        preview_project_root = preview.get("project_root")
+        project_root = preview_project_root if isinstance(preview_project_root, str) and preview_project_root.strip() else self.project_root
+        return {
+            "operation": "commit_confirm",
+            "preview_ready": bool(preview_id),
+            "preview_id_present": bool(preview_id),
+            "project_root": os.path.abspath(project_root),
+            "version": preview.get("version") if isinstance(preview.get("version"), str) else "",
+            "diff_hash": preview.get("diff_hash") if isinstance(preview.get("diff_hash"), str) else "",
+            "commit_file_count": len(commit_files),
+            "commit_files": commit_files,
+            "git_commit_allowed": True,
+            "git_push_allowed": False,
+            "git_pull_allowed": False,
+            "remote_mutation_allowed": False,
         }
 
     def _dangerous_plan_state_action_policy(
@@ -1215,6 +1271,7 @@ class WebConsoleServer:
             "state_signature": self._dangerous_file_signature(self.state_file),
             "plan_signature": self._dangerous_file_signature(self.plan_file),
             "patch_signature": self._dangerous_plan_patch_signature(),
+            "commit_preview_signature": self._dangerous_commit_preview_signature(),
             "registry_signature": self._dangerous_file_signature(self.project_registry.registry_path()),
         }
 
@@ -1275,6 +1332,27 @@ class WebConsoleServer:
             json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         return f"dir-sha256:{digest}:files:{len(entries)}"
+
+    def _dangerous_commit_preview_signature(self) -> str:
+        preview = self.pending_commit_preview if isinstance(self.pending_commit_preview, dict) else {}
+        preview_id = preview.get("preview_id") if isinstance(preview.get("preview_id"), str) else ""
+        if not preview_id:
+            return "missing"
+        files = preview.get("commit_files") if isinstance(preview.get("commit_files"), list) else []
+        commit_files = sorted(str(item) for item in files if isinstance(item, str))
+        preview_project_root = preview.get("project_root")
+        project_root = preview_project_root if isinstance(preview_project_root, str) and preview_project_root.strip() else self.project_root
+        signature_payload = {
+            "preview_id": preview_id,
+            "diff_hash": preview.get("diff_hash") if isinstance(preview.get("diff_hash"), str) else "",
+            "commit_files": commit_files,
+            "version": preview.get("version") if isinstance(preview.get("version"), str) else "",
+            "project_root": os.path.abspath(project_root),
+        }
+        digest = hashlib.sha256(
+            json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return f"commit-preview-sha256:{digest}"
 
     def _validate_run_preview_request(self, body: dict[str, Any] | None) -> dict[str, Any] | None:
         payload = body or {}

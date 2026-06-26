@@ -496,8 +496,9 @@ colameta start
 
 只有明确希望让 MCP 监听到局域网/公网时，才手动传入 `--mcp-host 0.0.0.0`。
 如果需要让 Web Console 网络可见，必须同时传入 `--web-host 0.0.0.0`、`--allow-external-web` 和 `--web-read-token <token>`。敏感 Web 读取 API 需要携带 `X-ColaMeta-Read-Auth` 或 `Authorization: Bearer ...`；写入/控制请求仍会经过 CSRF 与 Origin/Host 校验。loopback 本地浏览器页面可以获得进程内读取 token，但外部绑定必须由用户显式提供 token。
-通过本地执行器运行或修复当前版本、应用待处理 plan patch、重载 plan、进入下一版本、重新验收、执行 checkpoint review、切换项目、切换执行器、应用项目身份变更、清理或移出 registry 记录等高风险 Web Console 动作，还需要在真正写入前完成预览确认。`/api/jobs/start` 中的执行器 run/fix、重新验收和 checkpoint review 别名也会在分派前走同一套 guard。
-这个 Web 确认 guard 只保护执行器/动作分派前的 Web 入口：它不替代执行后的范围校验，GitHub Actions 仍不在本地 Web guard 范围内，E2A 确认流程中的 confirmation id 仍会短暂暴露给浏览器，服务端 workdir 同步仍按 Commander 决策延后。MCP 对齐以及 Git 本地/远程 guard 不属于 E2C Web 预分派 guard 的范围，仍是后续独立加固路线。
+通过本地执行器运行或修复当前版本、应用待处理 plan patch、重载 plan、进入下一版本、重新验收、执行 checkpoint review、确认本地 Git commit、切换项目、切换执行器、应用项目身份变更、清理或移出 registry 记录等高风险 Web Console 动作，还需要在真正写入前完成预览确认。`/api/jobs/start` 中的执行器 run/fix、重新验收和 checkpoint review 别名也会在分派前走同一套 guard。
+`/api/commit-preview` 只生成运行时预览元数据；`/api/commit-confirm` 是本地 Git 历史写入边界，必须完成 dangerous confirmation。本轮 Web 远程 Git 状态仍保持只读，不新增 Web push/pull apply 路由。
+这个 Web 确认 guard 只保护执行器/动作分派前的 Web 入口：它不替代执行后的范围校验，GitHub Actions 仍不在本地 Web guard 范围内，E2A 确认流程中的 confirmation id 仍会短暂暴露给浏览器，服务端 workdir 同步仍按 Commander 决策延后。MCP 对齐以及更广的 Git remote/apply guard 仍是后续独立加固路线。
 
 重启或停止服务：
 

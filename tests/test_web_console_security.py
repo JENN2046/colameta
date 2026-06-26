@@ -252,6 +252,96 @@ class WebConsoleSecurityTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def mutate_commit_preview_signature(self) -> None:
+        assert self.server is not None
+        assert isinstance(self.server.pending_commit_preview, dict)
+        self.server.pending_commit_preview["diff_hash"] = f"diff-{secrets.token_hex(8)}"
+
+    def prepare_commit_confirm_state(self) -> None:
+        assert self.server is not None
+        state_path = Path(self.server.state_file)
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        data["status"] = "VERSION_PASSED"
+        data["current_version"] = data.get("current_version") or "v1"
+        data["current_version_index"] = 0
+        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def prepare_pending_commit_preview(
+        self,
+        *,
+        preview_id: str = "commit-preview-test",
+        diff_hash: str = "diff-hash-test",
+        commit_files: list[str] | None = None,
+    ) -> None:
+        assert self.server is not None
+        self.server.pending_commit_preview = {
+            "preview_id": preview_id,
+            "message": "v1 test",
+            "commit_files": sorted(commit_files or ["app.py", "tests/test_app.py"]),
+            "excluded_files": [],
+            "diff_hash": diff_hash,
+            "version": "v1",
+            "project_root": str(self.project),
+        }
+
+    def create_commit_confirmation(
+        self,
+        *,
+        action_type: str = "git_commit_confirm",
+        route: str = "/api/commit-confirm",
+        current_head: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        assert self.server is not None
+        context = self.server._dangerous_action_context()
+        preview = self.server.dangerous_action_guard.create_preview(
+            action_type=action_type,
+            surface="web",
+            route=route,
+            risk_class="git_local_history_action",
+            project_root=context["project_root"],
+            project_id=context["project_id"],
+            project_name=context["project_name"],
+            current_head=current_head if current_head is not None else context["current_head"],
+            state_signature=context["state_signature"],
+            plan_signature=context["plan_signature"],
+            patch_signature=context["commit_preview_signature"],
+            registry_signature=context["registry_signature"],
+            payload=payload or {},
+            target_summary={"operation": "commit_confirm"},
+            display_summary={"title": "Confirm local Git commit", "target": "current version"},
+        )
+        return preview.confirmation_id
+
+    def install_commit_manager_stub(self) -> list[dict[str, Any]]:
+        from runner import web_console
+
+        calls: list[dict[str, Any]] = []
+        original = web_console.MCPGitCommitManager
+
+        class StubCommitManager:
+            def __init__(self, project_root: str):
+                self.project_root = project_root
+
+            def commit(self, *, preview_id: str) -> dict[str, Any]:
+                calls.append({"project_root": self.project_root, "preview_id": preview_id})
+                return {
+                    "ok": True,
+                    "preview_id": preview_id,
+                    "commit_hash": "abcdef1234567890",
+                    "commit_hash_short": "abcdef12",
+                    "message": "v1 test",
+                    "committed_files": ["app.py", "tests/test_app.py"],
+                    "verify_clean": True,
+                    "verify_summary": {"one_line": "代码提交完成"},
+                    "remaining_uncommitted_files": [],
+                    "commit_state_update": {"ok": True},
+                }
+
+        web_console.MCPGitCommitManager = StubCommitManager
+        self.addCleanup(lambda: setattr(web_console, "MCPGitCommitManager", original))
+        return calls
+
     def create_manual_confirmation(
         self,
         *,
@@ -881,6 +971,187 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls == [{"mode": "run", "wrap": False}]
         assert self.server is not None
         assert self.server.operation_running is False
+
+    def test_commit_confirm_requires_dangerous_confirmation_before_dispatch(self) -> None:
+        self.start_web()
+        calls = self.install_api_stub("_api_commit_confirm_with_project")
+        csrf = self.csrf_token_from_page()
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+        assert calls == []
+
+    def test_commit_confirm_rejects_invalid_confirmations_before_dispatch(self) -> None:
+        self.start_web()
+        calls = self.install_api_stub("_api_commit_confirm_with_project")
+        self.prepare_commit_confirm_state()
+        self.prepare_pending_commit_preview()
+        csrf = self.csrf_token_from_page()
+
+        self.server.dangerous_action_guard.ttl_seconds = -1
+        expired_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        self.server.dangerous_action_guard.ttl_seconds = 300
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": expired_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_EXPIRED"
+
+        valid_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": valid_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert len(calls) == 1
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": valid_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REUSED"
+
+        wrong_action_confirmation = self.dangerous_preview("/api/run-current-version", {})
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": wrong_action_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_ACTION_MISMATCH"
+
+        wrong_route_confirmation = self.create_commit_confirmation(route="/api/wrong-route")
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": wrong_route_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_ROUTE_MISMATCH"
+
+        wrong_payload_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"extra": "changed", "confirmation_id": wrong_payload_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+
+        stale_head_confirmation = self.create_commit_confirmation(current_head="stale-head")
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": stale_head_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_HEAD_MISMATCH"
+
+        stale_state_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        self.mutate_runner_state_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": stale_state_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_STATE_MISMATCH"
+
+        stale_plan_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        self.mutate_runner_plan_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": stale_plan_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PLAN_MISMATCH"
+
+        stale_preview_confirmation = self.dangerous_preview("/api/commit-confirm", {})
+        self.mutate_commit_preview_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": stale_preview_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_COMMIT_PREVIEW_MISMATCH"
+        assert len(calls) == 1
+
+    def test_commit_confirm_valid_confirmation_allows_stubbed_commit_and_redacted_receipt(self) -> None:
+        self.start_web()
+        self.prepare_commit_confirm_state()
+        self.prepare_pending_commit_preview(preview_id="commit-preview-ok")
+        commit_calls = self.install_commit_manager_stub()
+        csrf = self.csrf_token_from_page()
+        confirmation_id = self.dangerous_preview("/api/commit-confirm", {})
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/commit-confirm",
+            method="POST",
+            payload={"confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert commit_calls == [{"project_root": os.path.realpath(str(self.project)), "preview_id": "commit-preview-ok"}]
+        receipt = payload["dangerous_action_receipt"]
+        assert receipt["action_type"] == "git_commit_confirm"
+        assert receipt["risk_class"] == "git_local_history_action"
+        assert receipt["confirmation_validated"] is True
+        assert receipt["confirmation_id"] == "REDACTED"
+        assert receipt["target_summary"]["git_commit_allowed"] is True
+        assert receipt["target_summary"]["git_push_allowed"] is False
+        assert receipt["target_summary"]["remote_mutation_allowed"] is False
+        if confirmation_id in json.dumps(payload, ensure_ascii=False):
+            raise AssertionError("full confirmation id leaked")
 
     def test_plan_patch_and_state_direct_routes_reject_missing_confirmation_before_dispatch(self) -> None:
         self.start_web()
