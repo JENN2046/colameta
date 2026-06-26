@@ -37,6 +37,11 @@ from runner.runner_paths import (
     resolve_project_runner_rel_dir,
 )
 from runner.state_machine import RunnerStateMachine
+from runner.state_lineage_reconciliation import (
+    ARTIFACT_KIND as STATE_LINEAGE_ARTIFACT_KIND,
+    apply_state_lineage_reconciliation_artifact,
+    build_state_lineage_reconciliation_preview,
+)
 from runner.state_mutation import (
     ManualValidationPassMutation,
     RecheckReportStateRefreshMutation,
@@ -106,6 +111,8 @@ class MCPExecutorWorkflowManager:
             "manual_validation_apply": self._manual_validation_apply,
             "scope_mismatch_preview": self._scope_mismatch_preview,
             "scope_mismatch_apply": self._scope_mismatch_apply,
+            "state_lineage_reconciliation_preview": self._state_lineage_reconciliation_preview,
+            "state_lineage_reconciliation_apply": self._state_lineage_reconciliation_apply,
             "reconcile_orphaned_claims_preview": self._reconcile_orphaned_claims_preview,
             "reconcile_orphaned_claims_apply": self._reconcile_orphaned_claims_apply,
             "status": self._status,
@@ -115,7 +122,7 @@ class MCPExecutorWorkflowManager:
             return {
                 "ok": False,
                 "error_code": "UNKNOWN_ACTION",
-                "message": "不支持的操作。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。",
+                "message": "不支持的操作。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。",
             }
         return handler(params)
 
@@ -1889,6 +1896,130 @@ class MCPExecutorWorkflowManager:
             payload["why_blocked"] = "当前手动验收登记存在阻断项，apply 不可用。"
         return payload
 
+    def _state_lineage_reconciliation_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        context = self._load_state_lineage_context()
+        if not context.get("ok"):
+            return {
+                "ok": False,
+                "action": "state_lineage_reconciliation_preview",
+                "status": "failed",
+                "risk_level": "blocked",
+                "error_code": str(context.get("error_code") or "PLAN_OR_STATE_LOAD_FAILED"),
+                "message": str(context.get("message") or "加载 plan/state 失败。"),
+                "blockers": self._str_list(context.get("blockers")),
+                "warnings": self._str_list(context.get("warnings")),
+            }
+
+        bindings = params.get("bindings") if isinstance(params.get("bindings"), list) else []
+        commit_facts = self._state_lineage_commit_facts(bindings)
+        current_head = self._str_param(self._service._get_git_head(), default="")
+        current_branch = self._str_param(self._service._get_git_branch(), default="")
+        git_status_short = self._service._get_git_status_short()
+        preview_result = build_state_lineage_reconciliation_preview(
+            plan=context["plan"],
+            state=context["state"],
+            bindings=bindings,
+            expected_head=self._str_param(params.get("expected_head"), default=""),
+            current_head=current_head,
+            git_status_short=git_status_short,
+            target_next_version=self._str_param(params.get("target_next_version"), default=""),
+            now=self._now_iso(),
+            state_file=str(context.get("state_file") or ""),
+            project_root=self.project_root,
+            expected_branch=self._str_param(params.get("expected_branch"), default=""),
+            current_branch=current_branch,
+            commit_exists=commit_facts["exists"],
+            commit_subjects=commit_facts["subjects"],
+        )
+        response = dict(preview_result)
+        response.pop("proposed_state", None)
+        if preview_result.get("can_apply"):
+            preview_id = self._generate_preview_key(prefix="state_lineage")
+            expires_at = self._now_iso_ts(PREVIEW_TTL_SECONDS)
+            artifact = dict(preview_result)
+            artifact["preview_id"] = preview_id
+            artifact["expires_at"] = expires_at
+            self._write_preview_artifact(preview_id, artifact)
+            response["preview_id"] = preview_id
+            response["expires_at"] = expires_at
+            response["next_actions"] = [{
+                "tool": "manage_executor_workflow",
+                "action": "state_lineage_reconciliation_apply",
+                "params": {"action": "state_lineage_reconciliation_apply", "preview_id": preview_id},
+                "reason": "使用 preview_id 受控写入 Runner state lineage 对账结果。",
+                "requires_confirmation": True,
+                "risk_level": "commit",
+            }]
+        else:
+            response["why_blocked"] = "state lineage reconciliation preview 存在阻断项，apply 不可用。"
+        return response
+
+    def _state_lineage_reconciliation_apply(self, params: dict[str, Any]) -> dict[str, Any]:
+        preview_id = self._str_param(params.get("preview_id"), default="")
+        if not preview_id:
+            return self._error("state_lineage_reconciliation_apply", "PREVIEW_ID_REQUIRED", "state_lineage_reconciliation_apply 需要 preview_id。")
+        artifact = self._read_preview_artifact(preview_id)
+        if artifact is None:
+            return self._error("state_lineage_reconciliation_apply", "PREVIEW_NOT_FOUND", "preview_id 不存在或已过期。")
+        if str(artifact.get("artifact_kind") or "") != STATE_LINEAGE_ARTIFACT_KIND:
+            return self._error("state_lineage_reconciliation_apply", "PREVIEW_KIND_MISMATCH", "preview_id 类型不匹配。")
+        guard_error = self._preview_guard_error(
+            "state_lineage_reconciliation_apply",
+            preview_id,
+            artifact,
+            expired_message="preview_id 已过期，请重新生成 preview。",
+        )
+        if guard_error is not None:
+            return guard_error
+
+        context = self._load_state_lineage_context()
+        if not context.get("ok"):
+            return self._error(
+                "state_lineage_reconciliation_apply",
+                str(context.get("error_code") or "PLAN_OR_STATE_LOAD_FAILED"),
+                str(context.get("message") or "加载 plan/state 失败。"),
+            )
+        bindings = artifact.get("bindings") if isinstance(artifact.get("bindings"), list) else []
+        commit_facts = self._state_lineage_commit_facts(bindings)
+        apply_result = apply_state_lineage_reconciliation_artifact(
+            artifact=artifact,
+            current_state=context["state"],
+            preview_id=preview_id,
+            current_head=self._str_param(self._service._get_git_head(), default=""),
+            git_status_short=self._service._get_git_status_short(),
+            current_branch=self._str_param(self._service._get_git_branch(), default=""),
+            commit_exists=commit_facts["exists"],
+            commit_subjects=commit_facts["subjects"],
+        )
+        if not apply_result.get("ok"):
+            return apply_result
+        try:
+            StateMutationGateway().save_raw(
+                apply_result["updated_state"],
+                str(context.get("state_file") or ""),
+                expected_hash=self._str_param(artifact.get("state_hash"), default=""),
+            )
+        except Exception:
+            return self._error("state_lineage_reconciliation_apply", "STATE_SAVE_FAILED", "写入 state 失败。")
+        self._delete_preview_artifact(preview_id)
+        return {
+            "ok": True,
+            "action": "state_lineage_reconciliation_apply",
+            "status": "succeeded",
+            "risk_level": "commit",
+            "preview_id": preview_id,
+            "state_file": str(context.get("state_file") or ""),
+            "before_state_summary": apply_result.get("before_state_summary", {}),
+            "after_state_summary": apply_result.get("after_state_summary", {}),
+            "versions_updated": apply_result.get("versions_updated", []),
+            "files_touched": [
+                str(item).replace("<preview_id>", preview_id)
+                for item in apply_result.get("files_touched", [])
+            ],
+            "forbidden_side_effects": apply_result.get("forbidden_side_effects", []),
+            "message": "Runner state lineage reconciliation 已受控写入 state.json；未运行 executor、未执行 Git 远端操作。",
+        }
+
     def _manual_validation_apply(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id"), default="")
         if not preview_id:
@@ -2789,6 +2920,74 @@ class MCPExecutorWorkflowManager:
                 "message": "validation run 记录格式无效。",
             }
         return {"ok": True, "record": data, "path": target}
+
+    def _load_state_lineage_context(self) -> dict[str, Any]:
+        plan_file = resolve_project_runner_path(self.project_root, "plan.json")
+        state_file = resolve_project_runner_path(self.project_root, "state.json")
+        if not os.path.isfile(plan_file):
+            return {
+                "ok": False,
+                "error_code": "PLAN_NOT_FOUND",
+                "message": "缺少 plan.json，无法执行 state lineage reconciliation。",
+                "blockers": ["PLAN_NOT_FOUND"],
+                "warnings": [],
+            }
+        if not os.path.isfile(state_file):
+            return {
+                "ok": False,
+                "error_code": "STATE_NOT_FOUND",
+                "message": "缺少 state.json，无法执行 state lineage reconciliation。",
+                "blockers": ["STATE_NOT_FOUND"],
+                "warnings": [],
+            }
+        try:
+            with open(plan_file, "r", encoding="utf-8") as handle:
+                plan = json.load(handle)
+            with open(state_file, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error_code": "PLAN_OR_STATE_LOAD_FAILED",
+                "message": f"加载 plan/state 失败：{exc}",
+                "blockers": ["PLAN_OR_STATE_LOAD_FAILED"],
+                "warnings": [],
+            }
+        if not isinstance(plan, dict) or not isinstance(state, dict):
+            return {
+                "ok": False,
+                "error_code": "PLAN_OR_STATE_INVALID",
+                "message": "plan/state 格式无效。",
+                "blockers": ["PLAN_OR_STATE_INVALID"],
+                "warnings": [],
+            }
+        return {
+            "ok": True,
+            "plan": plan,
+            "state": state,
+            "plan_file": plan_file,
+            "state_file": state_file,
+            "blockers": [],
+            "warnings": [],
+        }
+
+    def _state_lineage_commit_facts(self, bindings: list[Any]) -> dict[str, dict[str, Any]]:
+        exists: dict[str, bool] = {}
+        subjects: dict[str, str] = {}
+        for item in bindings:
+            if not isinstance(item, dict):
+                continue
+            commit_hash = self._str_param(item.get("accepted_commit") or item.get("commit_hash"), default="")
+            if not commit_hash or commit_hash in exists:
+                continue
+            ok, _, _ = self._service._run_git_cmd(["cat-file", "-e", f"{commit_hash}^{{commit}}"])
+            exists[commit_hash] = bool(ok)
+            if ok:
+                subject_ok, subject_out, _ = self._service._run_git_cmd(["show", "-s", "--format=%s", commit_hash])
+                subjects[commit_hash] = subject_out.strip() if subject_ok else ""
+            else:
+                subjects[commit_hash] = ""
+        return {"exists": exists, "subjects": subjects}
 
     def _load_recheck_plan_state_context(self, requested_version: str) -> dict[str, Any]:
         workspace_root = self.project_root

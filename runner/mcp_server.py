@@ -2481,6 +2481,8 @@ class MCPPlanningBridgeServer:
                     "manual_validation_apply（基于 manual_validation_preview 的 preview_id 登记手动/等价验收通过，不改 executor report）；"
                     "scope_mismatch_preview（只读输出授权范围与实际 changed_files 的通用差异诊断，生成 resolution preview，不改 state/report/audit/Git）；"
                     "scope_mismatch_apply（基于 scope_mismatch_preview 的 preview_id 执行受控 resolution 状态落盘，不改 report/Git）；"
+                    "state_lineage_reconciliation_preview（基于人工受控完成证据生成 Runner state lineage 对账 preview）；"
+                    "state_lineage_reconciliation_apply（基于 state_lineage_reconciliation_preview 的 preview_id 受控写入 state lineage 对账结果）；"
                     "reconcile_orphaned_claims_preview（只读扫描 RUNNING claim 并生成失联 claim reconcile preview，不改 runtime）；"
                     "reconcile_orphaned_claims_apply（基于 reconcile_orphaned_claims_preview 的 preview_id 受控终结仍失联的 RUNNING claim，不删除 claim，不杀进程）；"
                     "status（查看当前执行器会话状态）。"
@@ -2492,21 +2494,42 @@ class MCPPlanningBridgeServer:
                     "run_once/run_bounded 不执行任意 git reset/clean/stash/merge/rebase/push，不创建或切换分支。"
                     "status 使用非阻塞轮询契约：next_poll_after_seconds=3，max_poll_attempts=3，最多轮询 3 次。支持 preview_id/run_id 查询。"
                     "project_name 支持已登记 managed 项目的所有 action。"
-                    "scope：preflight/status/get_audit_package=mcp:read，run_once_preview/run_bounded_preview/recheck_report_preview/manual_fix_prompt_preview/manual_validation_preview/scope_mismatch_preview/reconcile_orphaned_claims_preview=mcp:preview，run_once/run_bounded/refresh_audit_package/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/reconcile_orphaned_claims_apply=mcp:commit。"
+                    "scope：preflight/status/get_audit_package=mcp:read，run_once_preview/run_bounded_preview/recheck_report_preview/manual_fix_prompt_preview/manual_validation_preview/scope_mismatch_preview/state_lineage_reconciliation_preview/reconcile_orphaned_claims_preview=mcp:preview，run_once/run_bounded/refresh_audit_package/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/state_lineage_reconciliation_apply/reconcile_orphaned_claims_apply=mcp:commit。"
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["preflight", "run_once_preview", "run_once", "run_bounded_preview", "run_bounded", "get_audit_package", "refresh_audit_package", "recheck_report_preview", "recheck_report_apply", "manual_fix_prompt_preview", "manual_fix_prompt_apply", "manual_validation_preview", "manual_validation_apply", "scope_mismatch_preview", "scope_mismatch_apply", "reconcile_orphaned_claims_preview", "reconcile_orphaned_claims_apply", "status"], "description": "执行器工作流操作。"},
+                        "action": {"type": "string", "enum": ["preflight", "run_once_preview", "run_once", "run_bounded_preview", "run_bounded", "get_audit_package", "refresh_audit_package", "recheck_report_preview", "recheck_report_apply", "manual_fix_prompt_preview", "manual_fix_prompt_apply", "manual_validation_preview", "manual_validation_apply", "scope_mismatch_preview", "scope_mismatch_apply", "state_lineage_reconciliation_preview", "state_lineage_reconciliation_apply", "reconcile_orphaned_claims_preview", "reconcile_orphaned_claims_apply", "status"], "description": "执行器工作流操作。"},
                         "project_name": {"type": "string", "description": "可选。按已登记 managed project_name 路由 preflight、run_once_preview、run_once、status。"},
                         "project_root": {"type": "string", "description": "可选。项目根目录路径；不传时使用 MCP 绑定项目。"},
                         "provider": {"type": "string", "enum": ["pi", "codex", "opencode"], "description": "执行器 provider。默认 codex。"},
                         "model": {"type": "string", "description": "run_once_preview/run_once 可选。显式指定本次执行器模型；run_once 必须与对应 preview 中记录的 model 一致。"},
                         "execution_mode": {"type": "string", "enum": ["run", "fix"], "description": "执行模式。run 为正常执行，fix 仅当当前状态为 FIX_PROMPT_READY 时可用。默认 run。"},
-                        "preview_id": {"type": "string", "description": "run_once/run_bounded/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/reconcile_orphaned_claims_apply 必填；status 可选。来自对应 preview 的 preview_id。"},
+                        "preview_id": {"type": "string", "description": "run_once/run_bounded/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/state_lineage_reconciliation_apply/reconcile_orphaned_claims_apply 必填；status 可选。来自对应 preview 的 preview_id。"},
                         "manual_fix_prompt": {"type": "string", "description": "manual_fix_prompt_preview 必填。用户提供的手动修复提示词内容。"},
                         "validation_run_id": {"type": "string", "description": "manual_validation_preview 必填。来自 manage_validation_run run/status 的 validation run ID。"},
                         "resolution": {"type": "string", "enum": ["refresh_in_scope_state", "record_direct_manual_review", "abort_version"], "description": "scope_mismatch_apply 必填。resolution 选项。"},
+                        "expected_head": {"type": "string", "description": "state_lineage_reconciliation_preview 必填。期望当前 Git HEAD。"},
+                        "expected_branch": {"type": "string", "description": "state_lineage_reconciliation_preview 可选。期望当前分支。"},
+                        "target_next_version": {"type": "string", "description": "state_lineage_reconciliation_preview 必填。对账后应成为当前可运行版本的 version。"},
+                        "bindings": {
+                            "type": "array",
+                            "description": "state_lineage_reconciliation_preview 必填。版本对账绑定列表。",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "properties": {
+                                    "version": {"type": "string"},
+                                    "target_status": {"type": "string"},
+                                    "accepted_commit": {"type": "string"},
+                                    "accepted_commit_subject": {"type": "string"},
+                                    "commit_files": {"type": "array", "items": {"type": "string"}},
+                                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                                    "evidence_summary": {"type": "string"},
+                                    "reason": {"type": "string"},
+                                },
+                            },
+                        },
                         "run_id": {"type": "string", "description": "status 可选。执行器运行 ID。"},
                         "poll_attempt": {"type": "integer", "description": "status 可选。轮询次数。默认 1，最大 3。"},
                         "max_diff_chars": {"type": "integer", "default": 40000, "minimum": 1, "maximum": 80000, "description": "run_once 可选。diff 输出字符限制。默认 40000，最大 80000。"},
@@ -3327,6 +3350,8 @@ class MCPPlanningBridgeServer:
             "manual_validation_apply",
             "scope_mismatch_preview",
             "scope_mismatch_apply",
+            "state_lineage_reconciliation_preview",
+            "state_lineage_reconciliation_apply",
             "reconcile_orphaned_claims_preview",
             "reconcile_orphaned_claims_apply",
             "status",
@@ -3342,6 +3367,7 @@ class MCPPlanningBridgeServer:
                 "支持手动修复提示词准备链路：manual_fix_prompt_preview -> manual_fix_prompt_apply。"
                 "支持手动验收登记链路：manual_validation_preview -> manual_validation_apply。"
                 "支持通用范围诊断链路：scope_mismatch_preview -> scope_mismatch_apply。"
+                "支持 state lineage 对账链路：state_lineage_reconciliation_preview -> state_lineage_reconciliation_apply。"
                 "支持失联 claim 受控协调链路：reconcile_orphaned_claims_preview -> reconcile_orphaned_claims_apply。"
             )
         )
@@ -3379,13 +3405,14 @@ class MCPPlanningBridgeServer:
                 "get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、"
                 "manual_fix_prompt_preview、manual_fix_prompt_apply、"
                 "manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、"
+                "state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、"
                 "reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。"
             )
         preview_schema = props.get("preview_id")
         if isinstance(preview_schema, dict):
             preview_schema["description"] = (
-                "run_once/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/reconcile_orphaned_claims_apply 必填；status 可选。"
-                "来自 run_once_preview、recheck_report_preview、manual_fix_prompt_preview、manual_validation_preview、scope_mismatch_preview 或 reconcile_orphaned_claims_preview 的 preview_id。"
+                "run_once/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/state_lineage_reconciliation_apply/reconcile_orphaned_claims_apply 必填；status 可选。"
+                "来自 run_once_preview、recheck_report_preview、manual_fix_prompt_preview、manual_validation_preview、scope_mismatch_preview、state_lineage_reconciliation_preview 或 reconcile_orphaned_claims_preview 的 preview_id。"
             )
         for bounded_only_param in (
             "max_iterations",
@@ -4351,9 +4378,9 @@ class MCPPlanningBridgeServer:
                 action = None
             if action in ("preflight", "status", "get_audit_package"):
                 required_scope = "mcp:read"
-            elif action in ("run_once_preview", "run_bounded_preview", "recheck_report_preview", "manual_validation_preview", "scope_mismatch_preview", "reconcile_orphaned_claims_preview"):
+            elif action in ("run_once_preview", "run_bounded_preview", "recheck_report_preview", "manual_validation_preview", "scope_mismatch_preview", "state_lineage_reconciliation_preview", "reconcile_orphaned_claims_preview"):
                 required_scope = "mcp:preview"
-            elif action in ("refresh_audit_package", "recheck_report_apply", "manual_validation_apply", "scope_mismatch_apply", "reconcile_orphaned_claims_apply"):
+            elif action in ("refresh_audit_package", "recheck_report_apply", "manual_validation_apply", "scope_mismatch_apply", "state_lineage_reconciliation_apply", "reconcile_orphaned_claims_apply"):
                 required_scope = "mcp:commit"
             else:
                 required_scope = "mcp:commit"
@@ -7021,11 +7048,15 @@ class MCPPlanningBridgeServer:
         include_markdown = self._bool_param(params.get("include_markdown"), default=False)
         max_chars = self._bounded_int_param(params.get("max_chars"), default=20000, minimum=1, maximum=60000)
         resolution = params.get("resolution", "")
+        expected_head = params.get("expected_head", "")
+        expected_branch = params.get("expected_branch", "")
+        target_next_version = params.get("target_next_version", "")
+        bindings = params.get("bindings") if isinstance(params.get("bindings"), list) else []
         if not isinstance(action, str) or not action.strip():
             return self._with_project_identity({
                 "ok": False,
                 "error_code": "ACTION_REQUIRED",
-                "message": "action 不能为空。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、status。",
+                "message": "action 不能为空。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、status。",
             })
         manager = MCPExecutorWorkflowManager(project_path)
         workflow_params = {
@@ -7057,6 +7088,10 @@ class MCPPlanningBridgeServer:
             "include_markdown": include_markdown,
             "max_chars": max_chars,
             "resolution": resolution,
+            "expected_head": expected_head,
+            "expected_branch": expected_branch,
+            "target_next_version": target_next_version,
+            "bindings": bindings,
         }
         if action.strip().lower() == "run_once" or "executor_session_mode" in params:
             workflow_params["executor_session_mode"] = executor_session_mode
