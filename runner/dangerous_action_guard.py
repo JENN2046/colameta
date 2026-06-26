@@ -30,6 +30,8 @@ class DangerousActionPreview:
     project_name: str | None
     current_head: str | None
     state_signature: str | None
+    plan_signature: str | None
+    patch_signature: str | None
     registry_signature: str | None
     payload_digest: str
     target_summary: dict[str, Any]
@@ -64,6 +66,8 @@ class DangerousActionGuard:
         project_name: str | None = None,
         current_head: str | None = None,
         state_signature: str | None = None,
+        plan_signature: str | None = None,
+        patch_signature: str | None = None,
         registry_signature: str | None = None,
         payload: dict[str, Any] | None = None,
         target_summary: dict[str, Any] | None = None,
@@ -82,6 +86,8 @@ class DangerousActionGuard:
             project_name=project_name,
             current_head=current_head,
             state_signature=state_signature,
+            plan_signature=plan_signature,
+            patch_signature=patch_signature,
             registry_signature=registry_signature,
             payload_digest=payload_digest(payload),
             target_summary=target_summary or {},
@@ -118,6 +124,8 @@ class DangerousActionGuard:
         project_root: str | None,
         current_head: str | None = None,
         state_signature: str | None = None,
+        plan_signature: str | None = None,
+        patch_signature: str | None = None,
         registry_signature: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -143,6 +151,10 @@ class DangerousActionGuard:
             return self._reject("DANGEROUS_CONFIRMATION_HEAD_MISMATCH", "Dangerous action confirmation HEAD mismatch.")
         if (preview.state_signature or "") != (state_signature or ""):
             return self._reject("DANGEROUS_CONFIRMATION_STATE_MISMATCH", "Dangerous action confirmation state mismatch.")
+        if (preview.plan_signature or "") != (plan_signature or ""):
+            return self._reject("DANGEROUS_CONFIRMATION_PLAN_MISMATCH", "Dangerous action confirmation plan mismatch.")
+        if (preview.patch_signature or "") != (patch_signature or ""):
+            return self._reject("DANGEROUS_CONFIRMATION_PATCH_MISMATCH", "Dangerous action confirmation patch mismatch.")
         if (preview.registry_signature or "") != (registry_signature or ""):
             return self._reject("DANGEROUS_CONFIRMATION_REGISTRY_MISMATCH", "Dangerous action confirmation registry mismatch.")
         if preview.payload_digest != payload_digest(payload):

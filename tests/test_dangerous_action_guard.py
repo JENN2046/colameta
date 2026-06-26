@@ -26,6 +26,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_name="project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
             target_summary={"project_root": "/tmp/project-b"},
@@ -59,6 +61,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -78,6 +82,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -97,6 +103,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -116,6 +124,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-other",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -135,6 +145,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-c"},
         )
@@ -154,6 +166,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-b",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -171,12 +185,54 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-b",
             payload={"project_root": "/tmp/project-b"},
         )
 
         assert result["ok"] is False
         assert result["error_code"] == "DANGEROUS_CONFIRMATION_REGISTRY_MISMATCH"
+
+    def test_plan_or_patch_mismatch_rejected(self) -> None:
+        guard = self.make_guard()
+        preview = self.preview(guard)
+
+        result = guard.confirm(
+            confirmation_id=preview.confirmation_id,
+            action_type="switch_project",
+            surface="web",
+            route="/api/switch-project",
+            project_root="/tmp/project-a",
+            current_head="abc123",
+            state_signature="state-a",
+            plan_signature="plan-b",
+            patch_signature="patch-a",
+            registry_signature="registry-a",
+            payload={"project_root": "/tmp/project-b"},
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "DANGEROUS_CONFIRMATION_PLAN_MISMATCH"
+
+        guard = self.make_guard()
+        preview = self.preview(guard)
+        result = guard.confirm(
+            confirmation_id=preview.confirmation_id,
+            action_type="switch_project",
+            surface="web",
+            route="/api/switch-project",
+            project_root="/tmp/project-a",
+            current_head="abc123",
+            state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-b",
+            registry_signature="registry-a",
+            payload={"project_root": "/tmp/project-b"},
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "DANGEROUS_CONFIRMATION_PATCH_MISMATCH"
 
     def test_reused_confirmation_rejected(self) -> None:
         guard = self.make_guard()
@@ -190,6 +246,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )
@@ -201,6 +259,8 @@ class DangerousActionGuardTests(unittest.TestCase):
             project_root="/tmp/project-a",
             current_head="abc123",
             state_signature="state-a",
+            plan_signature="plan-a",
+            patch_signature="patch-a",
             registry_signature="registry-a",
             payload={"project_root": "/tmp/project-b"},
         )

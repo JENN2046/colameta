@@ -42,5 +42,91 @@
   },
   "runtime_dir": "/home/jenn/src/colameta-dev/.colameta/runtime",
   "state_file": "/home/jenn/src/colameta-dev/.colameta/state.json",
-  "versions": []
+  "versions": [
+    {
+      "version": "v1.0",
+      "name": "v1.0 COMMANDER_AUTHORIZATION｜E2C_PLAN",
+      "description": "v1.0：COMMANDER_AUTHORIZATION｜E2C_PLAN_PATCH_AND_STATE_ACTION_GUARD_CORE Goal: Implement Web dangerous...",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.0.md",
+      "enabled": true,
+      "context_files": [
+        "runner/web_console.py",
+        "runner/dangerous_action_guard.py",
+        "tests/test_dangerous_action_guard.py",
+        "tests/test_web_console_security.py",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "allowed_files": [
+        "runner/web_console.py",
+        "runner/dangerous_action_guard.py",
+        "runner/web_console_v2_assets.py",
+        "tests/test_dangerous_action_guard.py",
+        "tests/test_web_console_security.py",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "forbidden_files": [
+        ".github/workflows/**",
+        "runner/mcp_executor_workflow.py",
+        "runner/mcp_server.py",
+        "runner/mcp_git_*",
+        "runner/git_*",
+        "adapters/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "missing confirmation blocks /api/auto-apply-patches, /api/reload-plan, /api/continue-next-version, /api/rerun-acceptance, /api/checkpoint-review",
+        "/api/jobs/start rerun_acceptance and checkpoint_review aliases are guarded or explicitly blocked until guarded",
+        "stale state/plan/patch signatures are rejected before mutation",
+        "mutation is avoided before valid confirmation",
+        "E2A/E2B protected route tests still pass",
+        "no executor, commit, push, preview/apply leakage",
+        "confirmation id is redacted from receipts/errors/log-facing fields"
+      ],
+      "out_of_scope": [
+        "MCP parity",
+        "Git local/remote guard",
+        "executor internals",
+        "provider adapter sandboxing",
+        "workflow file changes",
+        "release/tag/upstream PR",
+        "server-side workdir synchronization"
+      ]
+    }
+  ]
 }

@@ -98,8 +98,13 @@ PROTECTED_WEB_POST_PATHS = frozenset({
 
 DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
     "/api/jobs/start",
+    "/api/auto-apply-patches",
     "/api/run-current-version",
     "/api/fix-current-version",
+    "/api/reload-plan",
+    "/api/continue-next-version",
+    "/api/rerun-acceptance",
+    "/api/checkpoint-review",
     "/api/switch-executor",
     "/api/switch-project",
     "/api/project-identity/apply",
@@ -114,6 +119,52 @@ DANGEROUS_DIRECT_EXECUTOR_ROUTES = {
 DANGEROUS_JOB_EXECUTOR_OPERATIONS = {
     "run_current_version": ("executor_job_run_current_version", "run"),
     "fix_current_version": ("executor_job_fix_current_version", "fix"),
+}
+
+DANGEROUS_PLAN_STATE_ROUTES = {
+    "/api/auto-apply-patches": {
+        "action_type": "plan_patch_auto_apply",
+        "operation": "auto_apply_patches",
+        "risk_class": "plan_patch_action",
+        "title": "Auto-apply pending plan patches",
+    },
+    "/api/reload-plan": {
+        "action_type": "reload_plan",
+        "operation": "reload_plan",
+        "risk_class": "plan_state_transition",
+        "title": "Reload plan",
+    },
+    "/api/continue-next-version": {
+        "action_type": "continue_next_version",
+        "operation": "continue_next_version",
+        "risk_class": "plan_state_transition",
+        "title": "Continue to next version",
+    },
+    "/api/rerun-acceptance": {
+        "action_type": "rerun_acceptance",
+        "operation": "rerun_acceptance",
+        "risk_class": "acceptance_action",
+        "title": "Rerun acceptance",
+    },
+    "/api/checkpoint-review": {
+        "action_type": "checkpoint_review",
+        "operation": "checkpoint_review",
+        "risk_class": "checkpoint_review_action",
+        "title": "Run checkpoint review",
+    },
+}
+
+DANGEROUS_JOB_PLAN_STATE_OPERATIONS = {
+    "rerun_acceptance": {
+        "action_type": "job_rerun_acceptance",
+        "risk_class": "acceptance_action",
+        "title": "Start background rerun acceptance job",
+    },
+    "checkpoint_review": {
+        "action_type": "job_checkpoint_review",
+        "risk_class": "checkpoint_review_action",
+        "title": "Start background checkpoint review job",
+    },
 }
 
 DANGEROUS_REGISTRY_ACTIONS = frozenset({
@@ -498,7 +549,10 @@ class WebConsoleServer:
                     ))
                     return
                 if path == "/api/auto-apply-patches":
-                    self._send_json(server._api_auto_apply_patches())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_auto_apply_patches(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/run-current-version":
                     self._send_json(server._with_dangerous_action_receipt(
@@ -513,16 +567,28 @@ class WebConsoleServer:
                     ))
                     return
                 if path == "/api/reload-plan":
-                    self._send_json(server._api_reload_plan())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_reload_plan(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/continue-next-version":
-                    self._send_json(server._api_continue_next_version())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_continue_next_version(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/rerun-acceptance":
-                    self._send_json(server._api_rerun_acceptance())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_rerun_acceptance(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/checkpoint-review":
-                    self._send_json(server._api_checkpoint_review())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_checkpoint_review(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/commit-preview":
                     self._send_json(server._api_commit_preview_with_project())
@@ -761,6 +827,8 @@ class WebConsoleServer:
             project_name=context["project_name"],
             current_head=context["current_head"],
             state_signature=context["state_signature"],
+            plan_signature=context["plan_signature"] if policy.get("guard_plan_signature") else None,
+            patch_signature=context["patch_signature"] if policy.get("guard_patch_signature") else None,
             registry_signature=context["registry_signature"],
             payload=payload,
             target_summary=policy["target_summary"],
@@ -785,6 +853,8 @@ class WebConsoleServer:
             project_root=context["project_root"],
             current_head=context["current_head"],
             state_signature=context["state_signature"],
+            plan_signature=context["plan_signature"] if policy.get("guard_plan_signature") else None,
+            patch_signature=context["patch_signature"] if policy.get("guard_patch_signature") else None,
             registry_signature=context["registry_signature"],
             payload=body,
         )
@@ -824,19 +894,39 @@ class WebConsoleServer:
                 operation=None,
                 background_job=False,
             )
+        plan_state_route_policy = DANGEROUS_PLAN_STATE_ROUTES.get(route)
+        if plan_state_route_policy is not None:
+            return self._dangerous_plan_state_action_policy(
+                action_type=str(plan_state_route_policy["action_type"]),
+                route=route,
+                operation=str(plan_state_route_policy["operation"]),
+                risk_class=str(plan_state_route_policy["risk_class"]),
+                title=str(plan_state_route_policy["title"]),
+                background_job=False,
+            )
         if route == "/api/jobs/start":
             operation = str(payload.get("operation") or "").strip()
             job_executor_policy = DANGEROUS_JOB_EXECUTOR_OPERATIONS.get(operation)
-            if job_executor_policy is None:
-                return None
-            action_type, executor_mode = job_executor_policy
-            return self._dangerous_executor_action_policy(
-                action_type=action_type,
-                route=route,
-                executor_mode=executor_mode,
-                operation=operation,
-                background_job=True,
-            )
+            if job_executor_policy is not None:
+                action_type, executor_mode = job_executor_policy
+                return self._dangerous_executor_action_policy(
+                    action_type=action_type,
+                    route=route,
+                    executor_mode=executor_mode,
+                    operation=operation,
+                    background_job=True,
+                )
+            job_plan_state_policy = DANGEROUS_JOB_PLAN_STATE_OPERATIONS.get(operation)
+            if job_plan_state_policy is not None:
+                return self._dangerous_plan_state_action_policy(
+                    action_type=str(job_plan_state_policy["action_type"]),
+                    route=route,
+                    operation=operation,
+                    risk_class=str(job_plan_state_policy["risk_class"]),
+                    title=str(job_plan_state_policy["title"]),
+                    background_job=True,
+                )
+            return None
         if route == "/api/switch-executor":
             provider = str(payload.get("provider") or "").strip().lower()
             return {
@@ -948,6 +1038,125 @@ class WebConsoleServer:
             },
         }
 
+    def _dangerous_plan_state_action_policy(
+        self,
+        *,
+        action_type: str,
+        route: str,
+        operation: str,
+        risk_class: str,
+        title: str,
+        background_job: bool,
+    ) -> dict[str, Any]:
+        target_summary = self._dangerous_plan_state_summary(
+            operation=operation,
+            background_job=background_job,
+        )
+        return {
+            "action_type": action_type,
+            "risk_class": risk_class,
+            "target_summary": target_summary,
+            "display_summary": {
+                "title": title,
+                "target": target_summary.get("current_version") or "managed plan",
+                "rollback_guidance": "Review the plan and runner state diff, then restore or repair the specific ColaMeta plan/state files if needed.",
+            },
+            "guard_plan_signature": True,
+            "guard_patch_signature": operation == "auto_apply_patches",
+        }
+
+    def _dangerous_plan_state_summary(self, *, operation: str, background_job: bool) -> dict[str, Any]:
+        plan = self._read_json_file(self.plan_file) or {}
+        state = self._read_json_file(self.state_file) or {}
+        plan_versions = plan.get("versions") if isinstance(plan.get("versions"), list) else []
+        current_version = state.get("current_version") if isinstance(state.get("current_version"), str) else ""
+        current_version_index = state.get("current_version_index")
+        current_item = self._dangerous_current_plan_item(plan_versions, current_version, current_version_index)
+        summary: dict[str, Any] = {
+            "operation": operation,
+            "background_job": background_job,
+            "project_root": self.project_root,
+            "plan_file": self._to_project_relative(self.plan_file),
+            "state_file": self._to_project_relative(self.state_file),
+            "current_version": current_version,
+            "current_version_index": current_version_index,
+            "runner_status": state.get("status") if isinstance(state.get("status"), str) else "",
+            "plan_version_count": len(plan_versions),
+        }
+        if operation == "auto_apply_patches":
+            summary["plan_patch_inventory"] = self._dangerous_plan_patch_inventory()
+            summary["max_auto_apply_batch_size"] = 5
+        elif operation == "continue_next_version":
+            summary["next_version"] = self._dangerous_next_enabled_version(plan_versions, current_version_index)
+        elif operation == "rerun_acceptance":
+            commands = current_item.get("acceptance_commands") if isinstance(current_item, dict) else None
+            summary["acceptance_command_count"] = len(commands) if isinstance(commands, list) else 0
+        elif operation == "checkpoint_review":
+            review_policy = plan.get("review_policy") if isinstance(plan.get("review_policy"), dict) else {}
+            after_versions = review_policy.get("after_versions") if isinstance(review_policy.get("after_versions"), list) else []
+            summary["checkpoint_version_count"] = len(after_versions)
+            summary["current_version_is_checkpoint"] = current_version in after_versions
+        return summary
+
+    @staticmethod
+    def _dangerous_current_plan_item(
+        plan_versions: list[Any],
+        current_version: str,
+        current_version_index: Any,
+    ) -> dict[str, Any]:
+        if isinstance(current_version_index, int) and 0 <= current_version_index < len(plan_versions):
+            item = plan_versions[current_version_index]
+            if isinstance(item, dict):
+                return item
+        if current_version:
+            for item in plan_versions:
+                if isinstance(item, dict) and item.get("version") == current_version:
+                    return item
+        return {}
+
+    @staticmethod
+    def _dangerous_next_enabled_version(plan_versions: list[Any], current_version_index: Any) -> str:
+        start_index = current_version_index + 1 if isinstance(current_version_index, int) else 0
+        for item in plan_versions[start_index:]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("enabled", True) is False:
+                continue
+            version = item.get("version")
+            return version if isinstance(version, str) else ""
+        return ""
+
+    def _dangerous_plan_patch_inventory(self) -> dict[str, Any]:
+        patch_dir = Path(self.runner_dir) / "plan-patches"
+        if not patch_dir.is_dir():
+            return {
+                "patch_dir_present": False,
+                "patch_json_count": 0,
+                "pending_patch_count": 0,
+                "read_error_count": 0,
+            }
+        patch_json_count = 0
+        pending_patch_count = 0
+        read_error_count = 0
+        for patch_file in sorted(patch_dir.glob("*.json")):
+            if not patch_file.is_file():
+                continue
+            patch_json_count += 1
+            try:
+                payload = json.loads(patch_file.read_text(encoding="utf-8"))
+            except Exception:
+                read_error_count += 1
+                continue
+            status = str(payload.get("status", "PENDING")).strip() or "PENDING"
+            if status == "PENDING":
+                pending_patch_count += 1
+        return {
+            "patch_dir_present": True,
+            "patch_json_count": patch_json_count,
+            "pending_patch_count": pending_patch_count,
+            "read_error_count": read_error_count,
+        }
+
     def _dangerous_executor_context(self, executor_mode: str) -> dict[str, Any]:
         state = self._read_json_file(self.state_file) or {}
         plan = self._read_json_file(self.plan_file) or {}
@@ -1004,6 +1213,8 @@ class WebConsoleServer:
             "project_name": project.get("project_name") if isinstance(project.get("project_name"), str) else None,
             "current_head": self._dangerous_current_head(),
             "state_signature": self._dangerous_file_signature(self.state_file),
+            "plan_signature": self._dangerous_file_signature(self.plan_file),
+            "patch_signature": self._dangerous_plan_patch_signature(),
             "registry_signature": self._dangerous_file_signature(self.project_registry.registry_path()),
         }
 
@@ -1036,6 +1247,34 @@ class WebConsoleServer:
             return f"sha256:{digest}:size:{stat.st_size}"
         except Exception:
             return "unreadable"
+
+    def _dangerous_plan_patch_signature(self) -> str:
+        patch_dir = Path(self.runner_dir) / "plan-patches"
+        if not patch_dir.exists():
+            return "missing"
+        if not patch_dir.is_dir():
+            return "not-directory"
+        entries: list[dict[str, Any]] = []
+        for patch_file in sorted(patch_dir.glob("*.json")):
+            if not patch_file.is_file():
+                continue
+            try:
+                content = patch_file.read_bytes()
+                stat = patch_file.stat()
+                entries.append({
+                    "name": patch_file.name,
+                    "size": stat.st_size,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                })
+            except Exception:
+                entries.append({
+                    "name": patch_file.name,
+                    "error": "unreadable",
+                })
+        digest = hashlib.sha256(
+            json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return f"dir-sha256:{digest}:files:{len(entries)}"
 
     def _validate_run_preview_request(self, body: dict[str, Any] | None) -> dict[str, Any] | None:
         payload = body or {}

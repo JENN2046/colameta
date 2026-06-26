@@ -203,12 +203,54 @@ class WebConsoleSecurityTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(self.server, "_api_execute_current_version", original_execute))
         return calls
 
+    def install_api_stub(self, method_name: str) -> list[dict[str, Any]]:
+        assert self.server is not None
+        calls: list[dict[str, Any]] = []
+        original = getattr(self.server, method_name)
+
+        def safe_stub(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"method": method_name, "args": args, "kwargs": kwargs})
+            return {
+                "ok": True,
+                "message": "stubbed guarded operation",
+                "method": method_name,
+            }
+
+        setattr(self.server, method_name, safe_stub)
+        self.addCleanup(lambda: setattr(self.server, method_name, original))
+        return calls
+
     def mutate_runner_state_signature(self) -> None:
         assert self.server is not None
         state_path = Path(self.server.state_file)
         data = json.loads(state_path.read_text(encoding="utf-8"))
         data["e2b_state_nonce"] = secrets.token_hex(8)
         state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def mutate_runner_plan_signature(self) -> None:
+        assert self.server is not None
+        plan_path = Path(self.server.plan_file)
+        data = json.loads(plan_path.read_text(encoding="utf-8"))
+        data["e2c_plan_nonce"] = secrets.token_hex(8)
+        plan_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def mutate_plan_patch_signature(self) -> None:
+        assert self.server is not None
+        patch_dir = Path(self.server.runner_dir) / "plan-patches"
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        patch_path = patch_dir / "e2c-signature-test.json"
+        patch_path.write_text(
+            json.dumps(
+                {
+                    "patch_id": "e2c-signature-test",
+                    "status": "PENDING",
+                    "nonce": secrets.token_hex(8),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     def create_manual_confirmation(
         self,
@@ -839,6 +881,177 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls == [{"mode": "run", "wrap": False}]
         assert self.server is not None
         assert self.server.operation_running is False
+
+    def test_plan_patch_and_state_direct_routes_reject_missing_confirmation_before_dispatch(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        route_methods = [
+            ("/api/auto-apply-patches", "_api_auto_apply_patches"),
+            ("/api/reload-plan", "_api_reload_plan"),
+            ("/api/continue-next-version", "_api_continue_next_version"),
+            ("/api/rerun-acceptance", "_api_rerun_acceptance"),
+            ("/api/checkpoint-review", "_api_checkpoint_review"),
+        ]
+        call_lists = [self.install_api_stub(method_name) for _, method_name in route_methods]
+
+        for route, _ in route_methods:
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}{route}",
+                method="POST",
+                payload={},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 403
+            assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+            assert self.server is not None
+            assert self.server.operation_running is False
+
+        assert all(calls == [] for calls in call_lists)
+
+    def test_plan_state_jobs_start_aliases_reject_missing_confirmation_before_job_state(self) -> None:
+        self.start_web()
+        rerun_calls = self.install_api_stub("_api_rerun_acceptance")
+        checkpoint_calls = self.install_api_stub("_api_checkpoint_review")
+        csrf = self.csrf_token_from_page()
+
+        for operation in ("rerun_acceptance", "checkpoint_review"):
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}/api/jobs/start",
+                method="POST",
+                payload={"operation": operation},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 403
+            assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+            assert self.server is not None
+            assert self.server.operation_running is False
+            assert self.server.job.get("status") == "idle"
+
+        assert rerun_calls == []
+        assert checkpoint_calls == []
+
+    def test_plan_patch_and_state_direct_routes_valid_confirmation_dispatches_with_redacted_receipt(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        route_methods = [
+            ("/api/auto-apply-patches", "_api_auto_apply_patches", "plan_patch_auto_apply"),
+            ("/api/reload-plan", "_api_reload_plan", "reload_plan"),
+            ("/api/continue-next-version", "_api_continue_next_version", "continue_next_version"),
+            ("/api/rerun-acceptance", "_api_rerun_acceptance", "rerun_acceptance"),
+            ("/api/checkpoint-review", "_api_checkpoint_review", "checkpoint_review"),
+        ]
+        call_lists = [self.install_api_stub(method_name) for _, method_name, _ in route_methods]
+
+        for index, (route, method_name, action_type) in enumerate(route_methods):
+            confirmation_id = self.dangerous_preview(route, {})
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}{route}",
+                method="POST",
+                payload={"confirmation_id": confirmation_id},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 200
+            assert payload["ok"] is True
+            assert payload["method"] == method_name
+            receipt = payload["dangerous_action_receipt"]
+            assert receipt["action_type"] == action_type
+            assert receipt["confirmation_validated"] is True
+            assert receipt["confirmation_id"] == "REDACTED"
+            assert "executor_mode" not in receipt["target_summary"]
+            if confirmation_id in json.dumps(payload, ensure_ascii=False):
+                raise AssertionError("full confirmation id leaked")
+            assert len(call_lists[index]) == 1
+
+    def test_plan_state_jobs_start_aliases_valid_confirmation_allows_stubbed_jobs(self) -> None:
+        self.start_web()
+        rerun_calls = self.install_api_stub("_api_rerun_acceptance")
+        checkpoint_calls = self.install_api_stub("_api_checkpoint_review")
+        csrf = self.csrf_token_from_page()
+        cases = [
+            ("rerun_acceptance", "job_rerun_acceptance", rerun_calls),
+            ("checkpoint_review", "job_checkpoint_review", checkpoint_calls),
+        ]
+
+        for operation, action_type, calls in cases:
+            request_body = {"operation": operation}
+            confirmation_id = self.dangerous_preview("/api/jobs/start", request_body)
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}/api/jobs/start",
+                method="POST",
+                payload={**request_body, "confirmation_id": confirmation_id},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 200
+            assert payload["ok"] is True
+            assert payload["operation"] == operation
+            assert payload["dangerous_action_receipt"]["action_type"] == action_type
+            assert payload["dangerous_action_receipt"]["confirmation_id"] == "REDACTED"
+            if confirmation_id in json.dumps(payload, ensure_ascii=False):
+                raise AssertionError("full confirmation id leaked")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and (not calls or self.server.operation_running):
+                time.sleep(0.05)
+            assert len(calls) == 1
+            assert calls[0]["kwargs"] == {"wrap": False}
+            assert self.server is not None
+            assert self.server.operation_running is False
+
+    def test_plan_patch_and_state_confirmation_rejects_stale_state_plan_and_patch(self) -> None:
+        self.start_web()
+        rerun_calls = self.install_api_stub("_api_rerun_acceptance")
+        reload_calls = self.install_api_stub("_api_reload_plan")
+        patch_calls = self.install_api_stub("_api_auto_apply_patches")
+        csrf = self.csrf_token_from_page()
+
+        stale_state_confirmation = self.dangerous_preview("/api/rerun-acceptance", {})
+        self.mutate_runner_state_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/rerun-acceptance",
+            method="POST",
+            payload={"confirmation_id": stale_state_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_STATE_MISMATCH"
+
+        stale_plan_confirmation = self.dangerous_preview("/api/reload-plan", {})
+        self.mutate_runner_plan_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/reload-plan",
+            method="POST",
+            payload={"confirmation_id": stale_plan_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PLAN_MISMATCH"
+
+        stale_patch_confirmation = self.dangerous_preview("/api/auto-apply-patches", {})
+        self.mutate_plan_patch_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/auto-apply-patches",
+            method="POST",
+            payload={"confirmation_id": stale_patch_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PATCH_MISMATCH"
+        assert rerun_calls == []
+        assert reload_calls == []
+        assert patch_calls == []
 
     def test_loopback_default_and_external_web_acknowledgement(self) -> None:
         from runner.web_console import WebConsoleServer

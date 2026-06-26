@@ -495,7 +495,8 @@ Default addresses:
 
 Use `--mcp-host 0.0.0.0` only when you intentionally want a network-visible MCP listener.
 For a network-visible Web Console, pass `--web-host 0.0.0.0`, `--allow-external-web`, and `--web-read-token <token>`. Sensitive Web read APIs require `X-ColaMeta-Read-Auth` or `Authorization: Bearer ...`; write/control requests are still guarded by CSRF and origin/host checks. The local browser shell can receive a process-local read token on loopback, but external binds require an explicit user-supplied token.
-High-risk Web Console actions such as running or fixing the current version with a local executor, switching projects, switching executors, applying project identity changes, and pruning/unregistering registry entries also require a preview-confirm check before mutation.
+High-risk Web Console actions such as running or fixing the current version with a local executor, applying pending plan patches, reloading the plan, continuing to the next version, rerunning acceptance, running checkpoint review, switching projects, switching executors, applying project identity changes, and pruning/unregistering registry entries also require a preview-confirm check before mutation. The same pre-dispatch guard applies to `/api/jobs/start` aliases for executor run/fix, rerun acceptance, and checkpoint review.
+This Web confirmation guard is intentionally pre-executor only: it does not replace post-run scope validation, GitHub Actions remains outside this local Web guard, the browser still temporarily receives the confirmation id for E2A confirmation flow, and server-side workdir synchronization remains deferred. MCP parity and Git local/remote guard coverage are intentionally out of scope for this E2C Web pre-dispatch guard and remain separate hardening tracks.
 
 Restart or stop the service:
 
