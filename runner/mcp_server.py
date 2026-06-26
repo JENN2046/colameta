@@ -39,6 +39,7 @@ from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
+from runner.runtime_observability import get_runtime_version_status
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -63,6 +64,7 @@ MCP_HARD_TOOL_RESULT_CHARS = 75000
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
+    "get_runtime_version_status",
     "analyze_project_state",
     "run_mcp_workflow",
     "manage_executor_config",
@@ -132,6 +134,7 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
 
 
 PROJECT_NAME_REQUIRED_TOOLS = {
+    "get_runtime_version_status",
     "get_plan_standards_report",
     "get_review_context",
     "manage_project_memory",
@@ -261,6 +264,7 @@ class MCPPlanningBridgeServer:
         common_output_schema = self._build_common_output_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
+            "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_runner_status": self._tool_get_runner_status,
             "get_version_result": self._tool_get_version_result,
             "get_next_version_plan": self._tool_get_next_version_plan,
@@ -339,6 +343,22 @@ class MCPPlanningBridgeServer:
                         "project_name": {
                             "type": "string",
                             "description": "可选。按已登记 project_name 路由读取目标项目身份。",
+                        }
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_runtime_version_status",
+                description=f"[{self.project_hint}] Read-only runtime/version metadata for the running ColaMeta process and current project checkout. Reports process start time, loaded runtime HEAD, current checkout HEAD, branch/project root, and whether restart/reload appears needed. This tool never restarts, reloads, kills, applies, fetches, pulls, pushes, tags, or releases.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目 checkout HEAD；服务模式下必须显式提供。",
                         }
                     },
                     "required": [],
@@ -4566,6 +4586,10 @@ class MCPPlanningBridgeServer:
         if section is not None and not isinstance(section, str):
             raise MCPToolInputError("INVALID_SECTION", "section 必须是字符串。")
         return get_execution_standards(section=section)
+
+    def _tool_get_runtime_version_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        return get_runtime_version_status(project_root)
 
     def _tool_get_runner_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
