@@ -186,6 +186,58 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert confirmation_id
         return confirmation_id
 
+    def install_safe_executor_stub(self) -> list[dict[str, Any]]:
+        assert self.server is not None
+        calls: list[dict[str, Any]] = []
+        original_execute = self.server._api_execute_current_version
+
+        def safe_execute(mode: str, wrap: bool = True) -> dict[str, Any]:
+            calls.append({"mode": mode, "wrap": wrap})
+            return {
+                "ok": True,
+                "message": "stubbed executor path accepted",
+                "execution_mode": mode,
+            }
+
+        self.server._api_execute_current_version = safe_execute
+        self.addCleanup(lambda: setattr(self.server, "_api_execute_current_version", original_execute))
+        return calls
+
+    def mutate_runner_state_signature(self) -> None:
+        assert self.server is not None
+        state_path = Path(self.server.state_file)
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        data["e2b_state_nonce"] = secrets.token_hex(8)
+        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def create_manual_confirmation(
+        self,
+        *,
+        action_type: str = "executor_run_current_version",
+        route: str = "/api/run-current-version",
+        project_root: str | None = None,
+        current_head: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        assert self.server is not None
+        context = self.server._dangerous_action_context()
+        preview = self.server.dangerous_action_guard.create_preview(
+            action_type=action_type,
+            surface="web",
+            route=route,
+            risk_class="executor_action",
+            project_root=project_root or context["project_root"],
+            project_id=context["project_id"],
+            project_name=context["project_name"],
+            current_head=current_head if current_head is not None else context["current_head"],
+            state_signature=context["state_signature"],
+            registry_signature=context["registry_signature"],
+            payload=payload or {},
+            target_summary={"executor_mode": "run"},
+            display_summary={"title": "Run current version", "target": "current version"},
+        )
+        return preview.confirmation_id
+
     def create_registered_managed_project(self, name: str) -> Path:
         from runner.mcp_runner_plan import ensure_minimal_runner_managed_project
 
@@ -548,6 +600,245 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert status == 200
         assert payload["ok"] is True
         assert payload["dangerous_action_receipt"]["action_type"] == "project_identity_apply"
+
+    def test_executor_direct_routes_reject_missing_confirmation(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+
+        for route in ("/api/run-current-version", "/api/fix-current-version"):
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}{route}",
+                method="POST",
+                payload={},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 403
+            assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+
+        assert calls == []
+
+    def test_executor_jobs_start_run_fix_reject_missing_confirmation_before_job_state(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+
+        for operation in ("run_current_version", "fix_current_version"):
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}/api/jobs/start",
+                method="POST",
+                payload={"operation": operation},
+                csrf_token=csrf,
+                origin=self.valid_origin(),
+                host_header=self.valid_host(),
+            )
+            assert status == 403
+            assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+            assert self.server is not None
+            assert self.server.operation_running is False
+            assert self.server.job.get("status") == "idle"
+
+        assert calls == []
+
+    def test_executor_confirmation_rejects_wrong_action_and_route(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        wrong_action_confirmation = self.dangerous_preview("/api/fix-current-version", {})
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": wrong_action_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_ACTION_MISMATCH"
+
+        wrong_route_confirmation = self.create_manual_confirmation(route="/api/wrong-route")
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": wrong_route_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_ROUTE_MISMATCH"
+
+    def test_executor_confirmation_rejects_wrong_project_payload_and_stale_state(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+        other_project = self.create_registered_managed_project("executor-other-project")
+        wrong_project_confirmation = self.create_manual_confirmation(project_root=str(other_project))
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": wrong_project_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PROJECT_MISMATCH"
+
+        request_body = {"operation": "run_current_version"}
+        mismatched_confirmation = self.dangerous_preview("/api/jobs/start", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/jobs/start",
+            method="POST",
+            payload={**request_body, "extra": "changed", "confirmation_id": mismatched_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+
+        stale_head_confirmation = self.create_manual_confirmation(current_head="stale-head")
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": stale_head_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_HEAD_MISMATCH"
+
+        stale_confirmation = self.dangerous_preview("/api/run-current-version", {})
+        self.mutate_runner_state_signature()
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": stale_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_STATE_MISMATCH"
+        assert calls == []
+
+    def test_executor_confirmation_rejects_expired_and_reused_confirmation(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+        assert self.server is not None
+        self.server.dangerous_action_guard.ttl_seconds = -1
+        expired_confirmation = self.dangerous_preview("/api/run-current-version", {})
+        self.server.dangerous_action_guard.ttl_seconds = 300
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": expired_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_EXPIRED"
+
+        valid_confirmation = self.dangerous_preview("/api/run-current-version", {})
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": valid_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 200
+        assert payload["ok"] is True
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": valid_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REUSED"
+        assert len(calls) == 1
+
+    def test_executor_csrf_guard_runs_before_confirmation(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={},
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "WEB_CSRF_INVALID"
+        assert calls == []
+
+    def test_executor_valid_confirmation_allows_safe_stub_and_redacted_receipt(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+        confirmation_id = self.dangerous_preview("/api/run-current-version", {})
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/run-current-version",
+            method="POST",
+            payload={"confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert calls == [{"mode": "run", "wrap": True}]
+        receipt = payload["dangerous_action_receipt"]
+        assert receipt["action_type"] == "executor_run_current_version"
+        assert receipt["confirmation_validated"] is True
+        assert receipt["confirmation_id"] == "REDACTED"
+        assert receipt["target_summary"]["git_commit_allowed"] is False
+        assert receipt["target_summary"]["git_push_allowed"] is False
+        if confirmation_id in json.dumps(payload, ensure_ascii=False):
+            raise AssertionError("full confirmation id leaked")
+
+    def test_executor_jobs_start_valid_confirmation_allows_safe_stubbed_job(self) -> None:
+        self.start_web()
+        calls = self.install_safe_executor_stub()
+        csrf = self.csrf_token_from_page()
+        request_body = {"operation": "run_current_version"}
+        confirmation_id = self.dangerous_preview("/api/jobs/start", request_body)
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/jobs/start",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["dangerous_action_receipt"]["action_type"] == "executor_job_run_current_version"
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not calls:
+            time.sleep(0.05)
+        assert calls == [{"mode": "run", "wrap": False}]
+        assert self.server is not None
+        assert self.server.operation_running is False
 
     def test_loopback_default_and_external_web_acknowledgement(self) -> None:
         from runner.web_console import WebConsoleServer

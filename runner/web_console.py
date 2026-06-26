@@ -97,11 +97,24 @@ PROTECTED_WEB_POST_PATHS = frozenset({
 })
 
 DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
+    "/api/jobs/start",
+    "/api/run-current-version",
+    "/api/fix-current-version",
     "/api/switch-executor",
     "/api/switch-project",
     "/api/project-identity/apply",
     "/api/v2/action",
 })
+
+DANGEROUS_DIRECT_EXECUTOR_ROUTES = {
+    "/api/run-current-version": ("executor_run_current_version", "run"),
+    "/api/fix-current-version": ("executor_fix_current_version", "fix"),
+}
+
+DANGEROUS_JOB_EXECUTOR_OPERATIONS = {
+    "run_current_version": ("executor_job_run_current_version", "run"),
+    "fix_current_version": ("executor_job_fix_current_version", "fix"),
+}
 
 DANGEROUS_REGISTRY_ACTIONS = frozenset({
     "project_registry_unregister",
@@ -479,16 +492,25 @@ class WebConsoleServer:
                     self._send_json(preview_payload, status_code=status_code)
                     return
                 if path == "/api/jobs/start":
-                    self._send_json(server._api_start_job(body or {}))
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_start_job(body or {}),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/auto-apply-patches":
                     self._send_json(server._api_auto_apply_patches())
                     return
                 if path == "/api/run-current-version":
-                    self._send_json(server._api_run_current_version())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_run_current_version(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/fix-current-version":
-                    self._send_json(server._api_fix_current_version())
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_fix_current_version(),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/reload-plan":
                     self._send_json(server._api_reload_plan())
@@ -792,6 +814,29 @@ class WebConsoleServer:
     def _dangerous_action_policy(self, route: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         if route not in DANGEROUS_WEB_CONFIRMATION_ROUTES:
             return None
+        direct_executor_policy = DANGEROUS_DIRECT_EXECUTOR_ROUTES.get(route)
+        if direct_executor_policy is not None:
+            action_type, executor_mode = direct_executor_policy
+            return self._dangerous_executor_action_policy(
+                action_type=action_type,
+                route=route,
+                executor_mode=executor_mode,
+                operation=None,
+                background_job=False,
+            )
+        if route == "/api/jobs/start":
+            operation = str(payload.get("operation") or "").strip()
+            job_executor_policy = DANGEROUS_JOB_EXECUTOR_OPERATIONS.get(operation)
+            if job_executor_policy is None:
+                return None
+            action_type, executor_mode = job_executor_policy
+            return self._dangerous_executor_action_policy(
+                action_type=action_type,
+                route=route,
+                executor_mode=executor_mode,
+                operation=operation,
+                background_job=True,
+            )
         if route == "/api/switch-executor":
             provider = str(payload.get("provider") or "").strip().lower()
             return {
@@ -849,6 +894,81 @@ class WebConsoleServer:
                 },
             }
         return None
+
+    def _dangerous_executor_action_policy(
+        self,
+        *,
+        action_type: str,
+        route: str,
+        executor_mode: str,
+        operation: str | None,
+        background_job: bool,
+    ) -> dict[str, Any]:
+        context = self._dangerous_executor_context(executor_mode)
+        target_summary = {
+            "executor_mode": executor_mode,
+            "operation": operation or action_type,
+            "background_job": background_job,
+            "project_root": self.project_root,
+            "current_head": context.get("current_head") or "",
+            "current_version": context.get("current_version") or "",
+            "current_version_index": context.get("current_version_index"),
+            "plan_step": context.get("plan_step") or "",
+            "runner_status": context.get("runner_status") or "",
+            "allowed_working_directory": self.project_root,
+            "expected_mutation_scope": [
+                "project files allowed by the current plan",
+                f"{self.runner_rel_dir}/runtime/**",
+                f"{self.runner_rel_dir}/logs/**",
+                f"{self.runner_rel_dir}/reports/**",
+            ],
+            "blocked_paths": [
+                ".git/**",
+                ".github/workflows/**",
+                "remote repositories",
+            ],
+            "git_commit_allowed": False,
+            "git_push_allowed": False,
+            "external_network_allowed": False,
+        }
+        title = "Run current version" if executor_mode == "run" else "Fix current version"
+        if background_job:
+            title = f"Start background executor job: {title}"
+        return {
+            "action_type": action_type,
+            "risk_class": "executor_action",
+            "target_summary": target_summary,
+            "display_summary": {
+                "title": title,
+                "target": context.get("current_version") or "current version",
+                "executor_mode": executor_mode,
+                "expected_writable_scope": "current project files allowed by plan plus ColaMeta runtime metadata",
+                "post_checks": "executor acceptance workflow and post-run scope validation remain required",
+                "rollback_guidance": "Review the executor report, inspect the resulting diff, and revert or repair project changes before any commit or push.",
+            },
+        }
+
+    def _dangerous_executor_context(self, executor_mode: str) -> dict[str, Any]:
+        state = self._read_json_file(self.state_file) or {}
+        plan = self._read_json_file(self.plan_file) or {}
+        current_version = state.get("current_version")
+        current_version_index = state.get("current_version_index")
+        runner_status = state.get("status")
+        plan_versions = plan.get("versions") if isinstance(plan, dict) else None
+        plan_step = None
+        if isinstance(plan_versions, list) and isinstance(current_version_index, int):
+            if 0 <= current_version_index < len(plan_versions):
+                version_data = plan_versions[current_version_index]
+                if isinstance(version_data, dict):
+                    plan_step = version_data.get("name") or version_data.get("title") or version_data.get("version")
+        return {
+            "executor_mode": executor_mode,
+            "current_head": self._dangerous_current_head(),
+            "current_version": current_version if isinstance(current_version, str) else "",
+            "current_version_index": current_version_index,
+            "runner_status": runner_status if isinstance(runner_status, str) else "",
+            "plan_step": plan_step if isinstance(plan_step, str) else "",
+        }
 
     def _dangerous_target_project_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = payload.get("project_id") if isinstance(payload.get("project_id"), str) else None

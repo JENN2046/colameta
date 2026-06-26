@@ -154,6 +154,11 @@ class DangerousActionGuard:
         }
 
     def receipt_for(self, preview: DangerousActionPreview) -> dict[str, Any]:
+        rollback_guidance = "Review the action result and reverse the specific registry, project identity, or settings change if needed."
+        if isinstance(preview.display_summary, dict):
+            display_rollback = preview.display_summary.get("rollback_guidance")
+            if isinstance(display_rollback, str) and display_rollback.strip():
+                rollback_guidance = display_rollback.strip()
         return {
             "action_type": preview.action_type,
             "surface": preview.surface,
@@ -164,10 +169,11 @@ class DangerousActionGuard:
                 "project_name": preview.project_name,
                 "project_root": preview.project_root,
             },
+            "current_head": preview.current_head or "",
             "target_summary": preview.target_summary,
             "confirmation_validated": True,
             "confirmation_id": "REDACTED",
-            "rollback_guidance": "Review the action result and reverse the specific registry, project identity, or settings change if needed.",
+            "rollback_guidance": rollback_guidance,
         }
 
     def preview_snapshot(self, confirmation_id: str) -> dict[str, Any] | None:
