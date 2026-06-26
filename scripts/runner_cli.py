@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import getpass
+import importlib.metadata
 import ipaddress
 import signal
 import subprocess
@@ -154,6 +155,29 @@ def _is_port_available(host: str, port: int) -> bool:
 
 def _default_service_project_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("colameta")
+    except importlib.metadata.PackageNotFoundError:
+        pyproject_path = os.path.join(_default_service_project_root(), "pyproject.toml")
+        try:
+            with open(pyproject_path, "r", encoding="utf-8") as handle:
+                in_project_section = False
+                for line in handle:
+                    stripped = line.strip()
+                    if stripped == "[project]":
+                        in_project_section = True
+                        continue
+                    if in_project_section and stripped.startswith("["):
+                        break
+                    if in_project_section and stripped.startswith("version"):
+                        _, raw_value = stripped.split("=", 1)
+                        return raw_value.strip().strip('"').strip("'")
+        except OSError:
+            pass
+    return "unknown"
 
 
 def _service_paths(project_path: str) -> dict[str, str]:
@@ -3167,6 +3191,9 @@ def main() -> int:
     cmd = sys.argv[1]
     if cmd in ("help", "--help", "-h"):
         print(USAGE_MESSAGE)
+        return 0
+    if cmd in ("--version", "-V"):
+        print(f"colameta {_package_version()}")
         return 0
     if cmd == "bootstrap":
         return _run_bootstrap(sys.argv[1:])

@@ -1,0 +1,46 @@
+{
+  "commit_policy": {
+    "after_acceptance_pass": true,
+    "enabled": false,
+    "include_runner_runtime_files": false,
+    "mode": "manual_gate",
+    "require_clean_scope": true,
+    "require_commit_before_continue": false,
+    "require_confirm": true
+  },
+  "default_acceptance_commands": [
+    {
+      "command": "python3 -m compileall -q .",
+      "continue_on_failure": false,
+      "timeout_seconds": 600
+    }
+  ],
+  "logs_dir": "/home/jenn/src/colameta-dev/.colameta/logs",
+  "model_execution": {
+    "mode": "manual",
+    "model_command": null,
+    "prompt_input_mode": "stdin",
+    "provider": "codex",
+    "stream_output": true,
+    "timeout_seconds": 1800
+  },
+  "plan_version": "1.0.0",
+  "project_name": "colameta-self-dev",
+  "project_root": "/home/jenn/src/colameta-dev",
+  "review_policy": {
+    "after_versions": [],
+    "enabled": false,
+    "mode": "manual_gate"
+  },
+  "rules_file": "/home/jenn/src/colameta-dev/.colameta/rules.md",
+  "runner_policy": {
+    "auto_continue_on_pass": false,
+    "max_fix_attempts_per_version": 3,
+    "require_clean_worktree": false,
+    "stop_on_acceptance_failure": true,
+    "stop_on_scope_violation": true
+  },
+  "runtime_dir": "/home/jenn/src/colameta-dev/.colameta/runtime",
+  "state_file": "/home/jenn/src/colameta-dev/.colameta/state.json",
+  "versions": []
+}

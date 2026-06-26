@@ -1,5 +1,6 @@
 USAGE_MESSAGE = """用法：
   colameta help
+  colameta --version
   colameta start [managed|source-only] [project_path] [options]
   colameta stop [project_path]
   colameta restart [project_path] [options]

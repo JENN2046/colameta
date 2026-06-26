@@ -54,7 +54,15 @@ class CliBaselineTests(unittest.TestCase):
 
         assert result.returncode == 0
         assert "colameta help" in result.stdout
+        assert "colameta --version" in result.stdout
         assert "colameta add <project_path>" in result.stdout
+        assert result.stderr == ""
+
+    def test_version_prints_package_version(self) -> None:
+        result = run_cli(self.tmp_path, "--version")
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == "colameta 0.1.2"
         assert result.stderr == ""
 
     def test_list_uses_isolated_user_config(self) -> None:

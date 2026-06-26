@@ -14,3 +14,20 @@ dist/
 
 # OS
 .DS_Store
+
+# >>> ColaMeta local state >>>
+.colameta/state.json
+.colameta/runtime/**
+.colameta/logs/**
+.colameta/reports/**
+.colameta/audits/**
+.colameta/plan-patches/**
+.colameta/tmp/**
+.colameta/local/**
+.colameta/executor-session.json
+.colameta/executor-sessions/**
+.colameta/settings.json
+.colameta/runner-settings.json
+.colameta/*.lock
+.colameta/**/*.lock
+# <<< ColaMeta local state <<<
