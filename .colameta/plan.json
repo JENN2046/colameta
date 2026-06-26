@@ -304,6 +304,96 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.3",
+      "name": "Platform-Blocked Operator Handoff RFC",
+      "description": "Write a docs-only RFC for handling platform-level ChatGPT tool-call blocks without bypassing ColaMeta preview/apply controls. The RFC must define operator handoff, receipt verification, action-specific surfaces, and closeout rules while preserving the existing Web remote Git mutation prohibition.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.3.md",
+      "enabled": true,
+      "context_files": [
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "allowed_files": [
+        "docs/platform-blocked-operator-handoff.md",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "forbidden_files": [
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/mcp_server.py",
+        "runner/web_console.py",
+        "runner/**",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        "tests/**",
+        "assets/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "RFC does not authorize Web Console remote Git mutation.",
+        "push_apply, fetch_apply, and pull_apply are excluded from the Web handoff MVP.",
+        "Receipt is explicitly defined as a claim, not proof.",
+        "Closeout requires read-only state verification.",
+        "Approved operator surfaces are action-specific.",
+        "No implementation files are touched.",
+        "README references are short pointers and do not duplicate the RFC.",
+        "Existing Web remote Git read-only prohibition is preserved."
+      ],
+      "out_of_scope": [
+        "Implementation of handoff generation tools",
+        "Implementation of Web Console handoff routes",
+        "Implementation of receipt verification tools",
+        "Modifying MCP Git managers",
+        "Modifying Web Console routing or action dispatch",
+        "Remote Git mutation fallback support",
+        "Shell fallback",
+        "Manual state edits",
+        "Unbound apply actions",
+        "Tag/release support",
+        "Pull/restore/revert fallback support"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }

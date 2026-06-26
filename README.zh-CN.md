@@ -499,6 +499,7 @@ colameta start
 通过本地执行器运行或修复当前版本、应用待处理 plan patch、重载 plan、进入下一版本、重新验收、执行 checkpoint review、确认本地 Git commit、切换项目、切换执行器、应用项目身份变更、清理或移出 registry 记录等高风险 Web Console 动作，还需要在真正写入前完成预览确认。`/api/jobs/start` 中的执行器 run/fix、重新验收和 checkpoint review 别名也会在分派前走同一套 guard。
 `/api/commit-preview` 只生成运行时预览元数据；`/api/commit-confirm` 是本地 Git 历史写入边界，必须完成 dangerous confirmation。Web remote Git 只允许只读状态展示：Web Console 不得暴露 push、pull、fetch、preview、apply 或等价的远程 Git mutation 路由。远程 Git mutation 仍不属于 Web Console 范围，未来如要新增任何 Web 入口，必须先有专门的强门禁计划。
 这个 Web 确认 guard 只保护执行器/动作分派前的 Web 入口：它不替代执行后的范围校验，GitHub Actions 仍不在本地 Web guard 范围内，E2A 确认流程中的 confirmation id 仍会短暂暴露给浏览器，服务端 workdir 同步仍按 Commander 决策延后。MCP 对齐以及更广的 Git remote/apply guard 仍是后续独立加固路线。
+如果平台在 ColaMeta 自身 guard 评估前拦截了预览绑定的 apply 工具调用，应把它视为 operator handoff 边界，而不是绕过；见 [Platform-Blocked Operator Handoff RFC](docs/platform-blocked-operator-handoff.md)。
 
 重启或停止服务：
 
