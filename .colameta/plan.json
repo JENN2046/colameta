@@ -740,6 +740,116 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.7",
+      "name": "Runtime Version Status Decision Evaluator V1",
+      "description": "Add a pure decision evaluator for interpreting runtime version status without granting restart/reload/kill/apply authority.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.7.md",
+      "enabled": true,
+      "context_files": [
+        "docs/runtime-version-status-decision-contract.md",
+        "runner/runtime_observability.py",
+        "tests/test_runtime_version_status_decision_contract.py",
+        "tests/test_runtime_observability.py"
+      ],
+      "allowed_files": [
+        "runner/runtime_version_decision.py",
+        "tests/test_runtime_version_decision.py"
+      ],
+      "forbidden_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "runner/web_console.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/continue_version_workflow.py",
+        "runner/mcp_project_patch.py",
+        "runner/dangerous_action_guard.py",
+        "runner/state_machine.py",
+        "runner/state_mutation.py",
+        "runner/state_mutation_gateway.py",
+        "runner/workflow_engine.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_version_decision",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_version_status_decision_contract",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "v1.7 adds a pure decision evaluator only.",
+        "The evaluator accepts restart_needed_state and returns decision_kind, operator_notice_required, diagnostics_required, and forbidden_actions.",
+        "not_needed maps to normal operation with no restart prompt.",
+        "needed maps to operator handoff notice only.",
+        "unknown maps to bounded read-only diagnostics only.",
+        "Unknown or invalid input fails closed to bounded read-only diagnostics.",
+        "No restart/reload/kill/apply behavior is added.",
+        "No MCP tool, Web route, service lifecycle mutation, state mutation, executor workflow mutation, or Git remote mutation is added.",
+        "The existing v1.5 observability and v1.6 documentation contract remain unchanged."
+      ],
+      "out_of_scope": [
+        "Restart preview",
+        "Restart apply",
+        "Reload apply",
+        "Kill process",
+        "Service manager integration",
+        "Config write",
+        "Web Console business route",
+        "MCP tool registration",
+        "Web remote Git mutation route",
+        "Git push/fetch/pull/tag/release",
+        "Executor workflow changes",
+        "State mutation changes",
+        "Operator handoff execution surface",
+        "Auth changes",
+        "Notification or background monitor"
+      ]
     }
   ]
 }
