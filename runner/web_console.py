@@ -174,6 +174,22 @@ DANGEROUS_REGISTRY_ACTIONS = frozenset({
     "project_registry_prune_temporary",
 })
 
+REMOTE_GIT_WEB_MUTATION_ACTIONS = frozenset({
+    "manage_git_remote",
+    "git_remote_push_preview",
+    "git_remote_push_apply",
+    "git_remote_fetch_preview",
+    "git_remote_fetch_apply",
+    "git_remote_pull_preview",
+    "git_remote_pull_apply",
+    "push_preview",
+    "push_apply",
+    "fetch_preview",
+    "fetch_apply",
+    "pull_preview",
+    "pull_apply",
+})
+
 
 def _is_loopback_host(host: str | None) -> bool:
     value = (host or "").strip().lower().rstrip(".")
@@ -1577,6 +1593,17 @@ class WebConsoleServer:
             return {str(k): self._redact_remote_git_display_value(v) for k, v in value.items()}
         return value
 
+    @staticmethod
+    def _is_web_remote_git_mutation_action(action_name: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(action_name or "").strip().lower()).strip("_")
+        if normalized in REMOTE_GIT_WEB_MUTATION_ACTIONS:
+            return True
+        parts = {part for part in normalized.split("_") if part}
+        remote_git_scope = bool({"git", "remote"} & parts) or normalized.startswith(("push_", "pull_", "fetch_"))
+        remote_operation = bool({"push", "pull", "fetch"} & parts)
+        mutation_intent = bool({"apply", "preview", "confirm", "run", "start", "execute"} & parts)
+        return remote_git_scope and remote_operation and mutation_intent
+
     def _api_version_result(self) -> dict[str, Any]:
         try:
             data = self.bridge.get_version_result(self.project_root)
@@ -2974,6 +3001,31 @@ class WebConsoleServer:
             }
 
         action_name = (next_action.get("action") or "").lower()
+        if self._is_web_remote_git_mutation_action(action_name):
+            return self._json_safe(CoreOutput(
+                ok=False,
+                source="web_v2",
+                action="action",
+                status="blocked",
+                risk_level="blocked",
+                action_outcome={
+                    "code": "FAILED",
+                    "message": "Web Console remote Git mutation is prohibited; only read-only remote Git status is exposed.",
+                    "error_code": "WEB_REMOTE_GIT_MUTATION_PROHIBITED",
+                },
+                blockers=["Web Console 不提供远程 Git push/pull/fetch apply 或 preview 路由。"],
+                display_summary={
+                    "title": "远程 Git 写入已拦截",
+                    "status_text": "blocked",
+                    "primary_message": "Web Console 仅展示只读 remote Git 状态，不执行远程 Git 变更。",
+                    "next_step_text": "如需远程 Git 操作，请使用受控 MCP 流程和独立确认。",
+                    "detail_refs": [],
+                },
+                audit={
+                    "blocked_action": action_name,
+                    "policy": "web_remote_git_mutation_prohibited",
+                },
+            ))
         registry_result = self._handle_registry_action(action_name, next_action)
         if registry_result is not None:
             return registry_result

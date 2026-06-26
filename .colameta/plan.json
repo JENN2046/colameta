@@ -213,6 +213,97 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.2",
+      "name": "E2E Web Remote Git Mutation Policy Baseline",
+      "description": "Codify the Web Console policy that remote Git mutation remains prohibited. The slice should document and test that Web remote Git status remains read-only, no Web push/pull/fetch apply routes exist, and future accidental Web remote mutation routes are blocked by security tests.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.2.md",
+      "enabled": true,
+      "context_files": [
+        "README.md",
+        "README.zh-CN.md",
+        "tests/test_web_console_security.py",
+        "runner/web_console.py",
+        "runner/dangerous_action_guard.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py"
+      ],
+      "allowed_files": [
+        "README.md",
+        "README.zh-CN.md",
+        "tests/test_web_console_security.py",
+        "runner/web_console.py"
+      ],
+      "forbidden_files": [
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/mcp_git_history.py",
+        "runner/mcp_server.py",
+        "adapters/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "Web remote Git status remains readable as read-only status.",
+        "No Web push apply route is added.",
+        "No Web pull apply route is added.",
+        "No Web fetch apply route is added.",
+        "Representative Web remote mutation route names are rejected or absent before dispatch.",
+        "Security tests would fail if a future Web remote mutation route is accidentally added.",
+        "MCPGitRemoteManager internals are unchanged.",
+        "No remote Git mutation Web route is added."
+      ],
+      "out_of_scope": [
+        "Implementing Web push apply",
+        "Implementing Web pull apply",
+        "Implementing Web fetch apply",
+        "Changing MCPGitRemoteManager internals",
+        "Changing MCPGitCommitManager internals",
+        "Remote Git guard implementation beyond a prohibition baseline",
+        "Git history restore/revert guard changes",
+        "Executor internals",
+        "Workflow file changes",
+        "Release/tag/upstream PR",
+        "Runner lineage reconciliation"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }

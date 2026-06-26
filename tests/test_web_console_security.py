@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -18,6 +19,150 @@ from typing import Any
 
 
 HOST = "127.0.0.1"
+
+
+class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
+    REPRESENTATIVE_PROHIBITED_REMOTE_GIT_PATHS = (
+        "/api/git/push",
+        "/api/git/push/apply",
+        "/api/git-push-apply",
+        "/api/git-remote/push",
+        "/api/git-remote/push-apply",
+        "/api/remote-git/push",
+        "/api/remote-git/push-apply",
+        "/api/remote-git/fetch-preview",
+        "/api/remote-git/fetch-apply",
+        "/api/remote-git/pull-preview",
+        "/api/remote-git/pull-apply",
+        "/api/push-apply",
+        "/api/pull-apply",
+        "/api/fetch-apply",
+        "/api/git/pull-confirm",
+        "/api/git/fetch-confirm",
+        "/api/v2/git-remote/push/apply",
+    )
+
+    REPRESENTATIVE_PROHIBITED_REMOTE_GIT_ACTIONS = (
+        "push_preview",
+        "push_apply",
+        "fetch_preview",
+        "fetch_apply",
+        "pull_preview",
+        "pull_apply",
+        "git_remote_push_apply",
+        "remote-git.fetch-apply",
+        "manage_git_remote",
+    )
+
+    def _web_console_source_and_routes(self) -> tuple[str, set[str]]:
+        from runner import web_console
+
+        source = inspect.getsource(web_console)
+        route_literals = set(re.findall(r"""["'](/api/[^"']+)["']""", source))
+        route_literals.update(web_console.SENSITIVE_WEB_GET_PATHS)
+        route_literals.update(web_console.PROTECTED_WEB_POST_PATHS)
+        route_literals.update(web_console.DANGEROUS_WEB_CONFIRMATION_ROUTES)
+        return source, route_literals
+
+    @staticmethod
+    def _is_remote_git_mutation_route(route: str) -> bool:
+        normalized = str(route or "").strip().lower().replace("_", "-")
+        parts = {part for part in re.split(r"[^a-z0-9]+", normalized) if part}
+        remote_context = bool({"git", "remote"} & parts) or normalized.startswith((
+            "/api/push",
+            "/api/pull",
+            "/api/fetch",
+        ))
+        remote_operation = bool({"push", "pull", "fetch"} & parts)
+        mutation_intent = bool({"apply", "preview", "confirm", "run", "start", "execute"} & parts)
+        return remote_context and remote_operation and mutation_intent
+
+    def test_remote_git_status_sanitizer_is_read_only_and_redacted(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer.__new__(WebConsoleServer)
+        sanitized = server._sanitize_remote_git_status({
+            "ok": True,
+            "action": "push_status",
+            "branch": "main",
+            "remote_name": "origin",
+            "remote_url_redacted": "https://token@example.invalid/org/repo.git",
+            "can_push": True,
+            "can_preview": True,
+            "preview_id": "must-not-leak",
+            "command_summary": "git push origin main",
+            "pushed": True,
+            "commits": [{"hash": "abcdef1234567890", "subject": "Bearer secret-token"}],
+        })
+
+        assert sanitized["ok"] is True
+        assert sanitized["action"] == "push_status"
+        assert sanitized["remote_url_redacted"] == "https://***@example.invalid/org/repo.git"
+        assert sanitized["commits"][0]["short_hash"] == "abcdef123456"
+        assert sanitized["commits"][0]["subject"] == "Bearer ***"
+        for mutation_field in ("preview_id", "command_summary", "pushed", "preview_path"):
+            assert mutation_field not in sanitized
+
+    def test_commit_preview_and_confirm_web_git_boundaries_are_preserved(self) -> None:
+        from runner import web_console
+
+        assert "/api/commit-preview" in web_console.PROTECTED_WEB_POST_PATHS
+        assert "/api/commit-preview" not in web_console.DANGEROUS_WEB_CONFIRMATION_ROUTES
+        assert "/api/commit-confirm" in web_console.PROTECTED_WEB_POST_PATHS
+        assert "/api/commit-confirm" in web_console.DANGEROUS_WEB_CONFIRMATION_ROUTES
+
+    def test_web_route_tables_do_not_expose_remote_git_mutation_paths(self) -> None:
+        _, routes = self._web_console_source_and_routes()
+
+        for prohibited_path in self.REPRESENTATIVE_PROHIBITED_REMOTE_GIT_PATHS:
+            assert prohibited_path not in routes
+        offenders = sorted(route for route in routes if self._is_remote_git_mutation_route(route))
+        assert offenders == []
+
+    def test_web_console_does_not_call_remote_git_mutation_manager_methods(self) -> None:
+        source, _ = self._web_console_source_and_routes()
+        remote_manager_calls = set(re.findall(r"MCPGitRemoteManager\([^)]*\)\.([a-z_]+)\(", source))
+
+        assert remote_manager_calls == {"push_status"}
+        for forbidden_method in (
+            "push_preview",
+            "push_apply",
+            "fetch_preview",
+            "fetch_apply",
+            "pull_status",
+            "pull_preview",
+            "pull_apply",
+        ):
+            assert f".{forbidden_method}(" not in source
+
+    def test_web_v2_action_rejects_remote_git_mutation_actions(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer.__new__(WebConsoleServer)
+        for action_name in self.REPRESENTATIVE_PROHIBITED_REMOTE_GIT_ACTIONS:
+            result = server._api_v2_action({
+                "next_action": {
+                    "action": action_name,
+                    "params": {"preview_id": "preview-do-not-use"},
+                }
+            })
+            assert result["ok"] is False
+            assert result["status"] == "blocked"
+            assert result["action_outcome"]["error_code"] == "WEB_REMOTE_GIT_MUTATION_PROHIBITED"
+
+    def test_dangerous_preview_policy_does_not_authorize_remote_git_mutation_actions(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer.__new__(WebConsoleServer)
+        for action_name in self.REPRESENTATIVE_PROHIBITED_REMOTE_GIT_ACTIONS:
+            assert server._dangerous_action_policy(
+                "/api/v2/action",
+                {"next_action": {"action": action_name, "params": {"preview_id": "preview-do-not-use"}}},
+            ) is None
+            assert server._dangerous_action_policy(
+                "/api/jobs/start",
+                {"operation": action_name},
+            ) is None
 
 
 def free_tcp_port() -> int:
