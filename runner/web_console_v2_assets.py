@@ -255,6 +255,35 @@ function readHeaders() {{
 function jsonHeaders() {{
   return {{ "Content-Type": "application/json", "X-ColaMeta-CSRF": CSRF_TOKEN }};
 }}
+const DANGEROUS_REGISTRY_ACTIONS = new Set([
+  "project_registry_unregister",
+  "project_registry_prune_unavailable",
+  "project_registry_prune_temporary",
+]);
+async function dangerousPostAction(route, payload) {{
+  const previewResp = await fetch("/api/dangerous-action/preview", {{
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({{ route: route, payload: payload || {{}} }}),
+    cache: "no-store",
+  }});
+  const preview = await previewResp.json();
+  if (!preview.ok) return preview;
+  const summary = preview.display_summary || {{}};
+  const title = summary.title || route;
+  const target = summary.target ? ("\\n目标：" + summary.target) : "";
+  if (window.confirm && !window.confirm("确认执行高风险操作：" + title + target)) {{
+    return {{ ok: false, error_code: "DANGEROUS_CONFIRMATION_CANCELLED", message: "操作已取消。" }};
+  }}
+  const body = Object.assign({{}}, payload || {{}}, {{ confirmation_id: preview.confirmation_id }});
+  const resp = await fetch(route, {{
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify(body),
+    cache: "no-store",
+  }});
+  return await resp.json();
+}}
 const STATUS_FETCH_TIMEOUT_MS = 12000;
 const BACKGROUND_STATUS_POLL_MS = 5000;
 
@@ -515,13 +544,18 @@ async function runAction(nextAction, currentData) {{
         timestamp: new Date().toISOString(),
       }},
     }};
-    const resp = await fetch("/api/v2/action", {{
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    }});
-    const data = await resp.json();
+    const actionName = nextAction && nextAction.action ? String(nextAction.action).toLowerCase() : "";
+    const data = DANGEROUS_REGISTRY_ACTIONS.has(actionName)
+      ? await dangerousPostAction("/api/v2/action", payload)
+      : await (async function() {{
+          const resp = await fetch("/api/v2/action", {{
+            method: "POST",
+            headers: jsonHeaders(),
+            body: JSON.stringify(payload),
+            cache: "no-store",
+          }});
+          return await resp.json();
+        }})();
     render(data);
   }} catch (e) {{
     showError(String(e));
@@ -535,13 +569,7 @@ async function switchProject(projectRoot) {{
   $("loading").style.display = "block";
   $("error").style.display = "none";
   try {{
-    const resp = await fetch("/api/switch-project", {{
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({{ project_root: projectRoot }}),
-      cache: "no-store",
-    }});
-    const data = await resp.json();
+    const data = await dangerousPostAction("/api/switch-project", {{ project_root: projectRoot }});
     if (!data.ok) {{
       showError(data.message || data.error_code || "项目切换失败");
       await refresh();
@@ -1157,13 +1185,7 @@ function registryAction(actionName, params) {{
       timestamp: new Date().toISOString(),
     }},
   }};
-  fetch("/api/v2/action", {{
-    method: "POST",
-    headers: jsonHeaders(),
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  }})
-    .then(function(r) {{ return r.json(); }})
+  dangerousPostAction("/api/v2/action", payload)
     .then(function(data) {{
       render(data);
       $("loading").style.display = "none";
@@ -1246,13 +1268,7 @@ function applyProjectIdentity() {{
     if (result) result.textContent = "请先生成有效预览。";
     return;
   }}
-  fetch("/api/project-identity/apply", {{
-    method: "POST",
-    headers: jsonHeaders(),
-    body: JSON.stringify({{ preview_id: projectIdentityPreviewId }}),
-    cache: "no-store",
-  }})
-    .then(function(r) {{ return r.json(); }})
+  dangerousPostAction("/api/project-identity/apply", {{ preview_id: projectIdentityPreviewId }})
     .then(function(data) {{
       if (result) result.textContent = data.message || (data.ok ? "迁移完成，请刷新页面。" : "迁移失败。");
       if (data.ok) {{

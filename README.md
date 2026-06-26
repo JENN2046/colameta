@@ -495,6 +495,7 @@ Default addresses:
 
 Use `--mcp-host 0.0.0.0` only when you intentionally want a network-visible MCP listener.
 For a network-visible Web Console, pass `--web-host 0.0.0.0`, `--allow-external-web`, and `--web-read-token <token>`. Sensitive Web read APIs require `X-ColaMeta-Read-Auth` or `Authorization: Bearer ...`; write/control requests are still guarded by CSRF and origin/host checks. The local browser shell can receive a process-local read token on loopback, but external binds require an explicit user-supplied token.
+High-risk Web Console actions such as switching projects, switching executors, applying project identity changes, and pruning/unregistering registry entries also require a preview-confirm check before mutation.
 
 Restart or stop the service:
 

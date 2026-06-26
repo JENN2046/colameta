@@ -2,10 +2,12 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import tempfile
 import threading
 import uuid
 import ipaddress
+import hashlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -54,6 +56,7 @@ from runner.web_console_v2_assets import render_v2_index_page
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_output import CoreOutput
 from runner.core_request import CoreRequest
+from runner.dangerous_action_guard import DangerousActionGuard
 from runner.web_console_presenter import (
     build_execution_display,
     build_executor_session_display,
@@ -90,6 +93,20 @@ PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/project-identity/preview",
     "/api/project-identity/apply",
     "/api/v2/action",
+    "/api/dangerous-action/preview",
+})
+
+DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
+    "/api/switch-executor",
+    "/api/switch-project",
+    "/api/project-identity/apply",
+    "/api/v2/action",
+})
+
+DANGEROUS_REGISTRY_ACTIONS = frozenset({
+    "project_registry_unregister",
+    "project_registry_prune_unavailable",
+    "project_registry_prune_temporary",
 })
 
 
@@ -147,6 +164,7 @@ class WebConsoleServer:
         self._settings_resolve_cache: dict[str, Any] = {}
         self._csrf_token = secrets.token_urlsafe(32)
         self._local_web_read_token = secrets.token_urlsafe(32)
+        self.dangerous_action_guard = DangerousActionGuard()
 
     @classmethod
     def _default_project_registry(cls, project_path: str) -> ProjectRegistry:
@@ -435,6 +453,7 @@ class WebConsoleServer:
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
                 body: dict[str, Any] | None = None
+                dangerous_receipt: dict[str, Any] | None = None
                 if path in PROTECTED_WEB_POST_PATHS:
                     body = self._read_json_body()
                     write_guard = server._validate_web_write_request(
@@ -447,6 +466,18 @@ class WebConsoleServer:
                     if write_guard is not None:
                         self._send_guard_result(write_guard)
                         return
+                    dangerous_guard, dangerous_receipt = server._validate_dangerous_action_request(
+                        path,
+                        body or {},
+                    )
+                    if dangerous_guard is not None:
+                        self._send_guard_result(dangerous_guard)
+                        return
+                if path == "/api/dangerous-action/preview":
+                    preview_payload = server._api_dangerous_action_preview(body or {})
+                    status_code = int(preview_payload.pop("_http_status", 200))
+                    self._send_json(preview_payload, status_code=status_code)
+                    return
                 if path == "/api/jobs/start":
                     self._send_json(server._api_start_job(body or {}))
                     return
@@ -478,19 +509,31 @@ class WebConsoleServer:
                     self._send_json(server._api_commit_confirm_with_project())
                     return
                 if path == "/api/switch-executor":
-                    self._send_json(server._api_switch_executor(body or {}))
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_switch_executor(body or {}),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/switch-project":
-                    self._send_json(server._api_switch_project(body or {}))
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_switch_project(body or {}),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/project-identity/preview":
                     self._send_json(server._api_project_identity_preview(body or {}))
                     return
                 if path == "/api/project-identity/apply":
-                    self._send_json(server._api_project_identity_apply(body or {}))
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_project_identity_apply(body or {}),
+                        dangerous_receipt,
+                    ))
                     return
                 if path == "/api/v2/action":
-                    self._send_json(server._api_v2_action(body or {}))
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_v2_action(body or {}),
+                        dangerous_receipt,
+                    ))
                     return
                 self._send_json({"ok": False, "message": "not_found"}, status_code=404)
 
@@ -651,7 +694,7 @@ class WebConsoleServer:
                 return self._guard_error("WEB_CSRF_INVALID", "Web Console write request CSRF token is invalid.")
 
         payload = body or {}
-        if payload.get("project_root") is not None:
+        if payload.get("project_root") is not None and path != "/api/switch-project":
             return {
                 "ok": False,
                 "error_code": "INVALID_PARAMS",
@@ -659,6 +702,220 @@ class WebConsoleServer:
                 "_http_status": 400,
             }
         return None
+
+    def _api_dangerous_action_preview(self, body: dict[str, Any]) -> dict[str, Any]:
+        route = body.get("route")
+        payload = body.get("payload")
+        if not isinstance(route, str) or not route.strip():
+            return {
+                "ok": False,
+                "error_code": "DANGEROUS_PREVIEW_ROUTE_REQUIRED",
+                "message": "Dangerous action preview requires a route.",
+                "_http_status": 400,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "error_code": "DANGEROUS_PREVIEW_PAYLOAD_REQUIRED",
+                "message": "Dangerous action preview requires a JSON payload.",
+                "_http_status": 400,
+            }
+        policy = self._dangerous_action_policy(route.strip(), payload)
+        if policy is None:
+            return {
+                "ok": False,
+                "error_code": "DANGEROUS_PREVIEW_UNSUPPORTED",
+                "message": "Dangerous action preview is not available for this action.",
+                "_http_status": 400,
+            }
+        context = self._dangerous_action_context()
+        preview = self.dangerous_action_guard.create_preview(
+            action_type=policy["action_type"],
+            surface="web",
+            route=route.strip(),
+            risk_class=policy["risk_class"],
+            project_root=context["project_root"],
+            project_id=context["project_id"],
+            project_name=context["project_name"],
+            current_head=context["current_head"],
+            state_signature=context["state_signature"],
+            registry_signature=context["registry_signature"],
+            payload=payload,
+            target_summary=policy["target_summary"],
+            display_summary=policy["display_summary"],
+        )
+        return self.dangerous_action_guard.preview_response(preview)
+
+    def _validate_dangerous_action_request(
+        self,
+        route: str,
+        body: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        policy = self._dangerous_action_policy(route, body)
+        if policy is None:
+            return None, None
+        context = self._dangerous_action_context()
+        result = self.dangerous_action_guard.confirm(
+            confirmation_id=body.get("confirmation_id"),
+            action_type=policy["action_type"],
+            surface="web",
+            route=route,
+            project_root=context["project_root"],
+            current_head=context["current_head"],
+            state_signature=context["state_signature"],
+            registry_signature=context["registry_signature"],
+            payload=body,
+        )
+        if not result.get("ok"):
+            return self._guard_error(
+                str(result.get("error_code") or "DANGEROUS_CONFIRMATION_INVALID"),
+                str(result.get("message") or "Dangerous action confirmation is invalid."),
+            ), None
+        receipt = result.get("receipt") if isinstance(result.get("receipt"), dict) else {}
+        return None, receipt
+
+    def _with_dangerous_action_receipt(
+        self,
+        payload: dict[str, Any],
+        receipt: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not receipt:
+            return payload
+        result = dict(payload)
+        safe_receipt = dict(receipt)
+        safe_receipt["execution_result"] = "ok" if bool(result.get("ok")) else "failed"
+        if result.get("error_code"):
+            safe_receipt["execution_error_code"] = result.get("error_code")
+        result["dangerous_action_receipt"] = safe_receipt
+        return result
+
+    def _dangerous_action_policy(self, route: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if route not in DANGEROUS_WEB_CONFIRMATION_ROUTES:
+            return None
+        if route == "/api/switch-executor":
+            provider = str(payload.get("provider") or "").strip().lower()
+            return {
+                "action_type": "switch_executor",
+                "risk_class": "dangerous_write",
+                "target_summary": {"provider": provider or "unknown"},
+                "display_summary": {
+                    "title": "Switch executor",
+                    "target": provider or "unknown",
+                },
+            }
+        if route == "/api/switch-project":
+            target = self._dangerous_target_project_summary(payload)
+            return {
+                "action_type": "switch_project",
+                "risk_class": "identity_or_registry_action",
+                "target_summary": target,
+                "display_summary": {
+                    "title": "Switch project",
+                    "target": target.get("project_name") or target.get("project_id") or target.get("project_root") or "unknown",
+                },
+            }
+        if route == "/api/project-identity/apply":
+            preview_id = str(payload.get("preview_id") or "").strip()
+            return {
+                "action_type": "project_identity_apply",
+                "risk_class": "identity_or_registry_action",
+                "target_summary": {
+                    "preview_id_present": bool(preview_id),
+                    "preview_id": "REDACTED" if preview_id else "",
+                },
+                "display_summary": {
+                    "title": "Apply project identity migration",
+                    "target": "project identity preview",
+                },
+            }
+        if route == "/api/v2/action":
+            next_action = payload.get("next_action")
+            if not isinstance(next_action, dict):
+                return None
+            action_name = str(next_action.get("action") or "").strip().lower()
+            if action_name not in DANGEROUS_REGISTRY_ACTIONS:
+                return None
+            params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
+            return {
+                "action_type": action_name,
+                "risk_class": "identity_or_registry_action",
+                "target_summary": {
+                    "action": action_name,
+                    "project": self._dangerous_target_project_summary(params),
+                },
+                "display_summary": {
+                    "title": "Project registry mutation",
+                    "target": action_name,
+                },
+            }
+        return None
+
+    def _dangerous_target_project_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        project_id = payload.get("project_id") if isinstance(payload.get("project_id"), str) else None
+        project_root = payload.get("project_root") if isinstance(payload.get("project_root"), str) else None
+        normalized_root = None
+        if project_root and project_root.strip():
+            normalized_root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root.strip())))
+        project_name = None
+        for project in self.project_registry.list_projects().get("projects", []):
+            if not isinstance(project, dict):
+                continue
+            if project_id and project.get("project_id") == project_id:
+                project_name = project.get("project_name") if isinstance(project.get("project_name"), str) else None
+                normalized_root = project.get("project_root") if isinstance(project.get("project_root"), str) else normalized_root
+                break
+            if normalized_root and project.get("project_root") == normalized_root:
+                project_id = project.get("project_id") if isinstance(project.get("project_id"), str) else project_id
+                project_name = project.get("project_name") if isinstance(project.get("project_name"), str) else None
+                break
+        return {
+            "project_id": project_id,
+            "project_name": project_name,
+            "project_root": normalized_root,
+        }
+
+    def _dangerous_action_context(self) -> dict[str, Any]:
+        project = self.project_registry.get_project(self.project_root).get("project")
+        if not isinstance(project, dict):
+            project = {}
+        return {
+            "project_root": self.project_root,
+            "project_id": project.get("project_id") if isinstance(project.get("project_id"), str) else None,
+            "project_name": project.get("project_name") if isinstance(project.get("project_name"), str) else None,
+            "current_head": self._dangerous_current_head(),
+            "state_signature": self._dangerous_file_signature(self.state_file),
+            "registry_signature": self._dangerous_file_signature(self.project_registry.registry_path()),
+        }
+
+    def _dangerous_current_head(self) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self.project_root, "rev-parse", "HEAD"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception:
+            return None
+        if completed.returncode != 0:
+            return None
+        head = completed.stdout.strip()
+        return head if head else None
+
+    @staticmethod
+    def _dangerous_file_signature(path: str | None) -> str | None:
+        if not path:
+            return None
+        file_path = Path(path)
+        if not file_path.is_file():
+            return "missing"
+        try:
+            digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            stat = file_path.stat()
+            return f"sha256:{digest}:size:{stat.st_size}"
+        except Exception:
+            return "unreadable"
 
     def _validate_run_preview_request(self, body: dict[str, Any] | None) -> dict[str, Any] | None:
         payload = body or {}

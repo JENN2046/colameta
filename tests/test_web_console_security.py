@@ -169,6 +169,39 @@ class WebConsoleSecurityTests(unittest.TestCase):
     def valid_host(self) -> str:
         return f"{HOST}:{self.port}"
 
+    def dangerous_preview(self, route: str, payload: dict[str, Any]) -> str:
+        csrf = self.csrf_token_from_page()
+        status, preview = json_request(
+            f"http://{HOST}:{self.port}/api/dangerous-action/preview",
+            method="POST",
+            payload={"route": route, "payload": payload},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 200
+        assert preview["ok"] is True
+        confirmation_id = preview.get("confirmation_id")
+        assert isinstance(confirmation_id, str)
+        assert confirmation_id
+        return confirmation_id
+
+    def create_registered_managed_project(self, name: str) -> Path:
+        from runner.mcp_runner_plan import ensure_minimal_runner_managed_project
+
+        project = self.tmp_path / name
+        project.mkdir()
+        result = ensure_minimal_runner_managed_project(str(project))
+        assert result.get("ok") is True
+        assert self.server is not None
+        registered = self.server.project_registry.register_project(
+            str(project),
+            project_name=name,
+            last_selected=False,
+        )
+        assert registered.get("ok") is True
+        return project
+
     def test_health_and_ui_shell_remain_public_without_project_state(self) -> None:
         self.start_web()
 
@@ -264,6 +297,28 @@ class WebConsoleSecurityTests(unittest.TestCase):
     def test_valid_csrf_origin_and_host_allow_safe_stubbed_write_route(self) -> None:
         self.start_web()
         csrf = self.csrf_token_from_page()
+        payload_body = {"provider": "codex"}
+        confirmation_id = self.dangerous_preview("/api/switch-executor", payload_body)
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/switch-executor",
+            method="POST",
+            payload={**payload_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["provider"] == "codex"
+        receipt = payload.get("dangerous_action_receipt")
+        assert receipt["confirmation_validated"] is True
+        assert receipt["confirmation_id"] == "REDACTED"
+
+    def test_valid_csrf_without_dangerous_confirmation_is_rejected(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
 
         status, payload = json_request(
             f"http://{HOST}:{self.port}/api/switch-executor",
@@ -274,8 +329,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
             host_header=self.valid_host(),
         )
 
-        assert status == 200
-        assert payload == {"ok": True, "provider": "codex"}
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
 
     def test_invalid_origin_is_rejected(self) -> None:
         self.start_web()
@@ -328,22 +383,171 @@ class WebConsoleSecurityTests(unittest.TestCase):
 
     def test_v2_registry_mutation_path_is_guarded_before_dispatch(self) -> None:
         self.start_web()
+        csrf = self.csrf_token_from_page()
+        other_project = self.create_registered_managed_project("other-project")
 
         status, payload = json_request(
             f"http://{HOST}:{self.port}/api/v2/action",
             method="POST",
             payload={
                 "next_action": {
-                    "action": "project_registry_prune_temporary",
-                    "params": {},
+                    "action": "project_registry_unregister",
+                    "params": {"project_root": str(other_project)},
                 }
             },
+            csrf_token=csrf,
             origin=self.valid_origin(),
             host_header=self.valid_host(),
         )
 
         assert status == 403
-        assert payload["error_code"] == "WEB_CSRF_INVALID"
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+        registry = self.server.project_registry.list_projects()
+        assert any(
+            project.get("project_root") == str(other_project)
+            for project in registry.get("projects", [])
+        )
+
+    def test_v2_registry_mutation_with_valid_confirmation_dispatches(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        other_project = self.create_registered_managed_project("dispatch-project")
+        request_body = {
+            "next_action": {
+                "action": "project_registry_unregister",
+                "params": {"project_root": str(other_project)},
+            }
+        }
+        confirmation_id = self.dangerous_preview("/api/v2/action", request_body)
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["dangerous_action_receipt"]["confirmation_validated"] is True
+        registry = self.server.project_registry.list_projects()
+        assert all(
+            project.get("project_root") != str(other_project)
+            for project in registry.get("projects", [])
+        )
+
+    def test_switch_project_requires_correct_target_confirmation(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        other_project = self.create_registered_managed_project("switch-target")
+        wrong_confirmation = self.dangerous_preview(
+            "/api/switch-project",
+            {"project_root": str(other_project)},
+        )
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/switch-project",
+            method="POST",
+            payload={"project_root": str(self.project), "confirmation_id": wrong_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+
+        request_body = {"project_root": str(other_project)}
+        confirmation_id = self.dangerous_preview("/api/switch-project", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/switch-project",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert self.server.project_root == str(other_project)
+
+    def test_switch_executor_requires_correct_target_confirmation(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        wrong_confirmation = self.dangerous_preview("/api/switch-executor", {"provider": "codex"})
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/switch-executor",
+            method="POST",
+            payload={"provider": "opencode", "confirmation_id": wrong_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+
+        request_body = {"provider": "codex"}
+        confirmation_id = self.dangerous_preview("/api/switch-executor", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/switch-executor",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["dangerous_action_receipt"]["action_type"] == "switch_executor"
+
+    def test_project_identity_apply_requires_correct_preview_binding(self) -> None:
+        self.start_web()
+        assert self.server is not None
+        original_apply = self.server._api_project_identity_apply
+
+        def safe_apply(body: dict[str, Any] | None) -> dict[str, Any]:
+            return {"ok": True, "preview_id_seen": bool((body or {}).get("preview_id"))}
+
+        self.server._api_project_identity_apply = safe_apply
+        self.addCleanup(lambda: setattr(self.server, "_api_project_identity_apply", original_apply))
+        csrf = self.csrf_token_from_page()
+        wrong_confirmation = self.dangerous_preview(
+            "/api/project-identity/apply",
+            {"preview_id": "preview-a"},
+        )
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/project-identity/apply",
+            method="POST",
+            payload={"preview_id": "preview-b", "confirmation_id": wrong_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+
+        request_body = {"preview_id": "preview-a"}
+        confirmation_id = self.dangerous_preview("/api/project-identity/apply", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/project-identity/apply",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["dangerous_action_receipt"]["action_type"] == "project_identity_apply"
 
     def test_loopback_default_and_external_web_acknowledgement(self) -> None:
         from runner.web_console import WebConsoleServer
