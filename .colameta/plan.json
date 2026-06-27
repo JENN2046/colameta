@@ -1170,6 +1170,117 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.10",
+      "name": "Executor Session Head Mismatch Classification",
+      "description": "Classify executor-session HEAD mismatches as active operation risk, completed idle stale metadata, or unknown fail-closed state, and expose clear read-only status messages without mutating runtime, Git, or service lifecycle state.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.10.md",
+      "enabled": true,
+      "context_files": [
+        "runner/executor_session.py",
+        "runner/web_console.py",
+        "runner/web_console_presenter.py",
+        "runner/mcp_server.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/runtime_observability.py",
+        "tests/test_web_console_security.py",
+        "tests/test_runtime_loaded_code_verification.py",
+        "tests/test_executor_run_reports_truth_source.py"
+      ],
+      "allowed_files": [
+        "runner/executor_session_head_mismatch.py",
+        "runner/executor_session.py",
+        "runner/web_console_presenter.py",
+        "runner/web_console.py",
+        "tests/test_executor_session_head_mismatch.py",
+        "tests/test_web_console_security.py"
+      ],
+      "forbidden_files": [
+        "/home/jenn/tools/colameta/**",
+        "runner/runtime_observability.py",
+        "runner/runtime_version_decision.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/dangerous_action_guard.py",
+        "runner/state_machine.py",
+        "runner/state_mutation.py",
+        "runner/state_mutation_gateway.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_executor_session_head_mismatch",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_loaded_code_verification",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_executor_run_reports_truth_source",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest discover -s tests",
+          "timeout_seconds": 1200,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 900,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 300,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 300,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "Verify completed_idle_stale_session is treated as historical resume metadata and does not mark an executor operation as running.",
+        "Verify active_operation_head_mismatch blocks automatic resume/start and requires operator judgment.",
+        "Verify unknown_head_mismatch fails closed with an explanatory operator_message or reason.",
+        "Verify no restart/reload/kill/apply/commit/push authority is granted by any classification.",
+        "Verify /api/status or /api/v2/status exposes a readable classification message instead of only a raw head_mismatch warning.",
+        "Verify existing v1.9 runtime loaded-code verification and validation truth-source behavior do not regress."
+      ],
+      "out_of_scope": [
+        "Cleaning, deleting, or rewriting .colameta/runtime/executor-session.json.",
+        "Restart, reload, kill, service lifecycle mutation, or runtime process management.",
+        "Starting executor, running bounded loops, or performing executor workflow mutation beyond read-only status classification.",
+        "Git commit, push, fetch, pull, tag, release, or remote mutation.",
+        "Changing /home/jenn/tools/colameta or any stable service/tool installation files.",
+        "Changing dangerous action guards or Git remote mutation policy."
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
