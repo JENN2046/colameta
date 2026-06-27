@@ -1052,6 +1052,124 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.9",
+      "name": "Runtime Loaded-Code Verification / Post-Commit Reload Awareness",
+      "description": "Add read-only runtime loaded-code verification so MCP/Web operators can tell whether the running process is serving code loaded from the current Git HEAD or from stale module sources after a dirty worktree or post-commit change. This must only report reload awareness and must not authorize or perform restart/reload/kill/apply.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.9.md",
+      "enabled": true,
+      "context_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "tests/test_runtime_observability.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runtime_version_decision.py",
+        "docs/runtime-version-status-decision-contract.md",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "allowed_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "tests/test_runtime_observability.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runtime_loaded_code_verification.py",
+        "docs/runtime-loaded-code-verification.md",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "forbidden_files": [
+        "runner/runtime_version_decision.py",
+        "runner/web_console.py",
+        "runner/mcp_git_remote.py",
+        "runner/mcp_git_commit.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/continue_version_workflow.py",
+        "runner/mcp_project_patch.py",
+        "runner/dangerous_action_guard.py",
+        "runner/state_machine.py",
+        "runner/state_mutation.py",
+        "runner/state_mutation_gateway.py",
+        "runner/workflow_engine.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/**",
+        "adapters/**",
+        "schemas/**",
+        ".github/workflows/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        ".colameta/*.lock",
+        ".colameta/**/*.lock"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python3 -m compileall -q runner scripts adapters schemas tests",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_observability",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_mcp_runtime_observability",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 -m unittest tests.test_runtime_loaded_code_verification",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "python3 scripts/self_hosting_smoke.py",
+          "timeout_seconds": 180,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 60,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git status --short",
+          "timeout_seconds": 60,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "get_runtime_version_status remains an MCP read-only tool with scope mcp:read, read_only true, and side_effects false.",
+        "The response exposes runtime_loaded_code_stale and reload_needed_for_verification as read-only status fields only.",
+        "When the loaded runtime HEAD and project checkout HEAD are known and equal, and loaded module source hashes still match the files on disk, runtime_loaded_code_stale is false and reload_needed_for_verification is false.",
+        "When the project checkout HEAD differs from the loaded runtime HEAD after a new commit, runtime_loaded_code_stale is true and reload_needed_for_verification is true.",
+        "When a loaded runner module source file differs from the hash captured by the running process, runtime_loaded_code_stale is true and possibly_stale_surfaces identifies affected runtime surfaces.",
+        "When loaded HEAD or project HEAD cannot be proven, the status fails closed with runtime_loaded_code_stale unknown/null and reload_needed_for_verification true.",
+        "Dirty or changed source evidence produces operator-facing reload awareness only; it does not authorize restart, reload, kill, apply, service lifecycle mutation, executor workflow mutation, or Git remote mutation.",
+        "Existing restart_needed_state decision contract semantics from v1.5/v1.6/v1.7 remain unchanged."
+      ],
+      "out_of_scope": [
+        "automatic restart",
+        "automatic reload",
+        "kill process",
+        "service lifecycle mutation",
+        "reload preview/apply",
+        "Web Console business route",
+        "MCP mutation tool",
+        "Git fetch/pull/push/tag/release",
+        "executor workflow mutation",
+        "state mutation",
+        "background monitor or notification system",
+        "full Git dirty detection through shell fallback or remote Git operations"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
