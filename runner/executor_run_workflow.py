@@ -1499,6 +1499,7 @@ class ExecutorRunOnceService:
             audit_file = getattr(run_result, "audit_file", None) if run_result else None
             summary_changed = []
             summary_validation = []
+            summary_validation_command_records: list[dict[str, Any]] = []
             summary_risks = []
             if run_result is not None:
                 rc = getattr(run_result, "changed_files", None)
@@ -1510,10 +1511,20 @@ class ExecutorRunOnceService:
                     ]
                 acceptance = getattr(run_result, "acceptance_run", None)
                 if acceptance is not None and hasattr(acceptance, "commands"):
-                    for cmd in acceptance.commands:
+                    for idx, cmd in enumerate(acceptance.commands, start=1):
                         cmd_status = getattr(cmd, "status", "UNKNOWN")
                         cmd_text = getattr(cmd, "command", "") or getattr(cmd, "executed_command", "") or ""
                         summary_validation.append(f"{cmd_status}: {cmd_text}")
+                        summary_validation_command_records.append({
+                            "command_index": idx,
+                            "command": getattr(cmd, "command", "") or "",
+                            "original_command": getattr(cmd, "original_command", None) or getattr(cmd, "command", "") or "",
+                            "executed_command": getattr(cmd, "executed_command", None) or "",
+                            "status": cmd_status,
+                            "exit_code": getattr(cmd, "exit_code", None),
+                            "stdout": getattr(cmd, "stdout", "") or "",
+                            "stderr": getattr(cmd, "stderr", "") or "",
+                        })
                 scope = getattr(run_result, "scope_check", None)
                 if scope is not None:
                     scope_status = getattr(scope, "status", "NOT_CHECKED")
@@ -1557,6 +1568,7 @@ class ExecutorRunOnceService:
                 audit_file=audit_file,
                 summary_changed_files=summary_changed,
                 summary_validation_results=summary_validation,
+                summary_validation_command_records=summary_validation_command_records,
                 summary_risk_followups=summary_risks,
                 executor_report_text=report_text,
                 execution_lineage=execution_lineage,

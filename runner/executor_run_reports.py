@@ -10,6 +10,12 @@ from typing import Any
 from runner._internal_utils import now_iso as _now_iso, run_git as _run_git_base
 from runner.sensitive_redaction import redact_sensitive_text
 from runner.runner_paths import primary_project_runner_relpath, resolve_project_runner_dir
+from runner.executor_validation_truth import (
+    build_validation_truth,
+    bounded_validation_command_records,
+    summarize_legacy_validation_results,
+    validation_truth_from_summary,
+)
 
 REPORTS_SUBDIR = primary_project_runner_relpath("reports", "executor-runs")
 AUDITS_SUBDIR = primary_project_runner_relpath("audits", "executor-runs")
@@ -109,6 +115,7 @@ class ExecutorRunReportStore:
         audit_file: str | None = None,
         summary_changed_files: list[str] | None = None,
         summary_validation_results: list[str] | None = None,
+        summary_validation_command_records: list[dict[str, Any]] | None = None,
         summary_risk_followups: list[str] | None = None,
         executor_report_text: str | None = None,
         execution_lineage: dict[str, Any] | None = None,
@@ -125,6 +132,12 @@ class ExecutorRunReportStore:
         full_report_length = len(full_report_md)
 
         changed_files_list = sorted(set(str(f) for f in (changed_files or [])))
+        validation_results_list = [str(r) for r in (summary_validation_results or [])]
+        validation_truth = build_validation_truth(
+            validation_results_list,
+            summary_validation_command_records,
+            executor_report_text=full_report_md,
+        )
 
         try:
             os.makedirs(version_dir, exist_ok=True)
@@ -153,7 +166,15 @@ class ExecutorRunReportStore:
                     "audit_file": audit_file or "",
                     "summary": {
                         "changed_files": sorted(set(str(f) for f in (summary_changed_files or []))),
-                        "validation_results": [str(r) for r in (summary_validation_results or [])],
+                        "validation_results": validation_results_list,
+                        "validation_status_summary": validation_truth["validation_status_summary"],
+                        "validation_inconsistent": validation_truth["validation_inconsistent"],
+                        "validation_inconsistency_reasons": validation_truth["validation_inconsistency_reasons"],
+                        "validation_truth_source": validation_truth["validation_truth_source"],
+                        "validation_command_count": validation_truth["validation_command_count"],
+                        "validation_failed_command_count": validation_truth["validation_failed_command_count"],
+                        "validation_command_records": validation_truth["validation_command_records"],
+                        "validation_sample": validation_truth["validation_sample"],
                         "risk_and_followups": [str(r) for r in (summary_risk_followups or [])],
                         "executor_report_available": has_executor_report,
                         "executor_report_full_length": full_report_length,
@@ -562,11 +583,34 @@ class ExecutorRunReportStore:
             content += report_md + "\n"
         else:
             content += "No executor final report was captured. See log_file.\n"
-        validation = report.get("summary", {}).get("validation_results", [])
-        if validation:
+        summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+        validation = summary.get("validation_results", [])
+        validation_records = bounded_validation_command_records(summary.get("validation_command_records"), limit=100)
+        if validation or validation_records:
             content += "\n## Validation\n\n"
-            for val in validation:
-                content += f"- {val}\n"
+            validation_status = str(summary.get("validation_status_summary", "") or "")
+            if validation_status:
+                content += f"- Status summary: {validation_status}\n"
+            if bool(summary.get("validation_inconsistent") is True):
+                content += "- Validation inconsistent: true\n"
+            if validation_records:
+                for record in validation_records:
+                    command = str(record.get("executed_command") or record.get("command") or record.get("original_command") or "")
+                    status_recorded = str(record.get("status") or record.get("status_recorded") or "UNKNOWN")
+                    derived_status = str(record.get("derived_status") or "UNKNOWN")
+                    exit_code = record.get("exit_code")
+                    exit_suffix = f", exit_code={exit_code}" if exit_code is not None else ""
+                    line = f"- {status_recorded}: {command} (derived_status={derived_status}{exit_suffix})"
+                    reason = str(record.get("inconsistency_reason") or "")
+                    if reason:
+                        line += f" [inconsistent: {reason}]"
+                    content += line + "\n"
+                for val in validation:
+                    if isinstance(val, str) and val.startswith("Scope check:"):
+                        content += f"- {val}\n"
+            else:
+                for val in validation:
+                    content += f"- {val}\n"
         risks = report.get("summary", {}).get("risk_and_followups", [])
         if risks:
             content += "\n## Risks and follow-ups\n\n"
@@ -643,6 +687,10 @@ class ExecutorRunReportStore:
         summary_obj = report.get("summary")
         summary = summary_obj if isinstance(summary_obj, dict) else {}
         validation_results = [str(x) for x in summary.get("validation_results", []) if isinstance(x, str)]
+        validation_truth = validation_truth_from_summary(
+            summary,
+            executor_report_text=str(report.get("report_markdown", "") or ""),
+        )
         changed_files = [str(x) for x in report.get("changed_files", []) if isinstance(x, str)]
 
         source_report_json_file = str(report.get("json_file", "") or "")
@@ -678,9 +726,18 @@ class ExecutorRunReportStore:
             "resume_warnings": self._str_list_any(lineage.get("resume_warnings"))[:20],
             "changed_files": changed_files,
             "changed_files_count": len(changed_files),
-            "validation_status_summary": self._summarize_validation(validation_results),
+            "validation_status_summary": validation_truth["validation_status_summary"],
+            "validation_inconsistent": bool(validation_truth["validation_inconsistent"]),
+            "validation_inconsistency_reasons": self._str_list_any(validation_truth.get("validation_inconsistency_reasons"))[:20],
+            "validation_truth_source": str(validation_truth.get("validation_truth_source", "") or ""),
+            "validation_command_count": int(validation_truth.get("validation_command_count", 0) or 0),
+            "validation_failed_command_count": int(validation_truth.get("validation_failed_command_count", 0) or 0),
+            "validation_command_records": bounded_validation_command_records(
+                validation_truth.get("validation_command_records"),
+                limit=100,
+            ),
             "scope_status_summary": self._summarize_scope(validation_results),
-            "validation_sample": validation_results[:5],
+            "validation_sample": self._str_list_any(validation_truth.get("validation_sample"))[:5] or validation_results[:5],
             "evidence_paths": {
                 "json_file": source_report_json_file,
                 "markdown_file": source_report_markdown_file,
@@ -816,6 +873,7 @@ class ExecutorRunReportStore:
         selected_report = report_lookup.get(selected_report_id, report_lookup[latest_report_id])
         selected_summary = selected_report.get("summary") if isinstance(selected_report.get("summary"), dict) else {}
         validation_results = [str(x) for x in selected_summary.get("validation_results", []) if isinstance(x, str)]
+        validation_truth = validation_truth_from_summary(selected_summary)
         changed_files = [str(x) for x in selected_report.get("changed_files", []) if isinstance(x, str)]
         lineage_raw = selected_report.get("execution_lineage")
         lineage = lineage_raw if isinstance(lineage_raw, dict) else {}
@@ -861,9 +919,18 @@ class ExecutorRunReportStore:
             "executor_run_audit_package_files": run_audit_files,
             "changed_files": changed_files,
             "changed_files_count": len(changed_files),
-            "validation_status_summary": self._summarize_validation(validation_results),
+            "validation_status_summary": validation_truth["validation_status_summary"],
+            "validation_inconsistent": bool(validation_truth["validation_inconsistent"]),
+            "validation_inconsistency_reasons": self._str_list_any(validation_truth.get("validation_inconsistency_reasons"))[:20],
+            "validation_truth_source": str(validation_truth.get("validation_truth_source", "") or ""),
+            "validation_command_count": int(validation_truth.get("validation_command_count", 0) or 0),
+            "validation_failed_command_count": int(validation_truth.get("validation_failed_command_count", 0) or 0),
+            "validation_command_records": bounded_validation_command_records(
+                validation_truth.get("validation_command_records"),
+                limit=100,
+            ),
             "scope_status_summary": self._summarize_scope(validation_results),
-            "validation_sample": validation_results[:5],
+            "validation_sample": self._str_list_any(validation_truth.get("validation_sample"))[:5] or validation_results[:5],
             "commit_hash": str(commit_meta.get("commit_hash", "") or ""),
             "commit_hash_short": str(commit_meta.get("commit_hash_short", "") or ""),
             "commit_message": str(commit_meta.get("commit_message", "") or ""),
@@ -922,6 +989,15 @@ class ExecutorRunReportStore:
             "changed_files": self._str_list_any(snapshot.get("changed_files")),
             "changed_files_count": int(snapshot.get("changed_files_count", 0) or 0),
             "validation_status_summary": str(snapshot.get("validation_status_summary", "unknown") or "unknown"),
+            "validation_inconsistent": bool(snapshot.get("validation_inconsistent") is True),
+            "validation_inconsistency_reasons": self._str_list_any(snapshot.get("validation_inconsistency_reasons"))[:20],
+            "validation_truth_source": str(snapshot.get("validation_truth_source", "") or ""),
+            "validation_command_count": int(snapshot.get("validation_command_count", 0) or 0),
+            "validation_failed_command_count": int(snapshot.get("validation_failed_command_count", 0) or 0),
+            "validation_command_records": bounded_validation_command_records(
+                snapshot.get("validation_command_records"),
+                limit=100,
+            ),
             "scope_status_summary": str(snapshot.get("scope_status_summary", "unknown") or "unknown"),
             "validation_sample": self._str_list_any(snapshot.get("validation_sample"))[:5],
             "commit_hash": str(snapshot.get("commit_hash", "") or ""),
@@ -1097,21 +1173,7 @@ class ExecutorRunReportStore:
         return text[:max_len]
 
     def _summarize_validation(self, results: list[str]) -> str:
-        if not results:
-            return "unknown"
-        passed = 0
-        failed = 0
-        for item in results:
-            upper = item.upper()
-            if upper.startswith("PASSED:"):
-                passed += 1
-            elif upper.startswith("FAILED:"):
-                failed += 1
-        if failed > 0:
-            return "failed"
-        if passed > 0:
-            return "passed"
-        return "unknown"
+        return summarize_legacy_validation_results(results)
 
     def _summarize_scope(self, results: list[str]) -> str:
         scope_lines = [item for item in results if item.startswith("Scope check:")]

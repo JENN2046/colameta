@@ -50,6 +50,11 @@ from runner.state_mutation import (
 )
 from runner.state_mutation_gateway import StateMutationGateway
 from runner.state_store import StateStore
+from runner.executor_validation_truth import (
+    bounded_validation_command_records,
+    summarize_legacy_validation_results,
+    validation_truth_from_summary,
+)
 
 
 PREVIEWS_DIR = os.path.join("runtime", "executor-workflow-previews")
@@ -3529,7 +3534,7 @@ class MCPExecutorWorkflowManager:
         allowed_sections = {"summary", "lineage", "validation", "scope", "report_excerpt"}
         if section not in allowed_sections:
             return self._error("get_audit_package", "INVALID_SECTION", "section 不支持。")
-        include_md = bool(section == "report_excerpt" and include_markdown)
+        include_md = bool((section == "report_excerpt" and include_markdown) or section == "validation")
         if report_id:
             version = ""
 
@@ -3575,6 +3580,7 @@ class MCPExecutorWorkflowManager:
         report = report_result.get("report")
         if not isinstance(report, dict):
             report = {}
+        report_markdown_text = self._str_param(report_result.get("report_markdown"), default="")
 
         selected_lineage: dict[str, str] = {}
         changed_files: list[str] = []
@@ -3593,6 +3599,12 @@ class MCPExecutorWorkflowManager:
         finished_at_value = self._str_param(report.get("finished_at"), default="")
         validation_sample: list[str] = []
         validation_for_section: list[str] = []
+        validation_command_records: list[dict[str, Any]] = []
+        validation_inconsistent = False
+        validation_inconsistency_reasons: list[str] = []
+        validation_truth_source = ""
+        validation_command_count = 0
+        validation_failed_command_count = 0
         source_kind = "dynamic_report"
         report_id_value = self._str_param(report.get("report_id"), default="")
         package_role = ""
@@ -3630,10 +3642,26 @@ class MCPExecutorWorkflowManager:
             if report_ids:
                 selected_lineage["report_ids"] = ",".join(report_ids[:20])
             changed_files = self._str_list(version_package.get("changed_files"))
-            validation_status_summary = self._str_param(version_package.get("validation_status_summary"), default="unknown", lower=True)
+            report_summary_obj = report.get("summary")
+            report_summary_data = report_summary_obj if isinstance(report_summary_obj, dict) else {}
+            validation_truth = self._extract_validation_truth(
+                version_package,
+                fallback_summary=report_summary_data,
+                executor_report_text=report_markdown_text,
+            )
+            validation_status_summary = self._str_param(validation_truth.get("validation_status_summary"), default="unknown", lower=True)
+            validation_inconsistent = bool(validation_truth.get("validation_inconsistent") is True)
+            validation_inconsistency_reasons = self._str_list(validation_truth.get("validation_inconsistency_reasons"))[:20]
+            validation_truth_source = self._str_param(validation_truth.get("validation_truth_source"), default="")
+            validation_command_count = self._coerce_int(validation_truth.get("validation_command_count"), 0)
+            validation_failed_command_count = self._coerce_int(validation_truth.get("validation_failed_command_count"), 0)
+            validation_command_records = bounded_validation_command_records(
+                validation_truth.get("validation_command_records"),
+                limit=50,
+            )
             scope_status_summary = self._str_param(version_package.get("scope_status_summary"), default="unknown", lower=True)
-            validation_sample = self._str_list(version_package.get("validation_sample"))[:5]
-            validation_for_section = validation_sample
+            validation_sample = self._str_list(validation_truth.get("validation_sample"))[:5]
+            validation_for_section = self._str_list(validation_truth.get("validation_results")) or validation_sample
             audit_package_id = self._str_param(version_package.get("audit_package_id"), default=f"version_auditpkg_{version}")
             evidence_obj = version_package.get("evidence_paths")
             evidence_paths_raw = evidence_obj if isinstance(evidence_obj, dict) else {}
@@ -3682,10 +3710,26 @@ class MCPExecutorWorkflowManager:
                     if isinstance(val, str) and val.strip():
                         selected_lineage[key] = val.strip()[:200]
                 changed_files = self._str_list(materialized.get("changed_files"))
-                validation_status_summary = self._str_param(materialized.get("validation_status_summary"), default="unknown", lower=True)
+                report_summary_obj = report.get("summary")
+                report_summary_data = report_summary_obj if isinstance(report_summary_obj, dict) else {}
+                validation_truth = self._extract_validation_truth(
+                    materialized,
+                    fallback_summary=report_summary_data,
+                    executor_report_text=report_markdown_text,
+                )
+                validation_status_summary = self._str_param(validation_truth.get("validation_status_summary"), default="unknown", lower=True)
+                validation_inconsistent = bool(validation_truth.get("validation_inconsistent") is True)
+                validation_inconsistency_reasons = self._str_list(validation_truth.get("validation_inconsistency_reasons"))[:20]
+                validation_truth_source = self._str_param(validation_truth.get("validation_truth_source"), default="")
+                validation_command_count = self._coerce_int(validation_truth.get("validation_command_count"), 0)
+                validation_failed_command_count = self._coerce_int(validation_truth.get("validation_failed_command_count"), 0)
+                validation_command_records = bounded_validation_command_records(
+                    validation_truth.get("validation_command_records"),
+                    limit=50,
+                )
                 scope_status_summary = self._str_param(materialized.get("scope_status_summary"), default="unknown", lower=True)
-                validation_sample = self._str_list(materialized.get("validation_sample"))[:5]
-                validation_for_section = validation_sample
+                validation_sample = self._str_list(validation_truth.get("validation_sample"))[:5]
+                validation_for_section = self._str_list(validation_truth.get("validation_results")) or validation_sample
                 has_markdown = bool(self._str_param(report.get("markdown_file"), default=""))
                 truncated = False
                 audit_package_id = self._str_param(materialized.get("audit_package_id"), default=f"auditpkg_{report_id_value}")
@@ -3725,9 +3769,23 @@ class MCPExecutorWorkflowManager:
                 summary_data = summary_obj if isinstance(summary_obj, dict) else {}
                 validation_results = self._str_list(summary_data.get("validation_results"))
                 validation_results_trimmed = [item[:500] for item in validation_results[:100]]
-                validation_status_summary = self._summarize_validation(validation_results_trimmed)
+                validation_truth = self._extract_validation_truth(
+                    summary_data,
+                    fallback_summary=summary_data,
+                    executor_report_text=report_markdown_text,
+                )
+                validation_status_summary = self._str_param(validation_truth.get("validation_status_summary"), default="unknown", lower=True)
+                validation_inconsistent = bool(validation_truth.get("validation_inconsistent") is True)
+                validation_inconsistency_reasons = self._str_list(validation_truth.get("validation_inconsistency_reasons"))[:20]
+                validation_truth_source = self._str_param(validation_truth.get("validation_truth_source"), default="")
+                validation_command_count = self._coerce_int(validation_truth.get("validation_command_count"), 0)
+                validation_failed_command_count = self._coerce_int(validation_truth.get("validation_failed_command_count"), 0)
+                validation_command_records = bounded_validation_command_records(
+                    validation_truth.get("validation_command_records"),
+                    limit=50,
+                )
                 scope_status_summary = self._summarize_scope(validation_results_trimmed)
-                validation_sample = validation_results_trimmed[:5]
+                validation_sample = self._str_list(validation_truth.get("validation_sample"))[:5] or validation_results_trimmed[:5]
                 validation_for_section = validation_results_trimmed
                 has_markdown = bool(summary_data.get("executor_report_available"))
                 truncated = bool(report_result.get("truncated", False))
@@ -3765,6 +3823,10 @@ class MCPExecutorWorkflowManager:
             "finished_at": finished_at_value,
             "changed_files_count": len(changed_files),
             "validation_status_summary": validation_status_summary,
+            "validation_inconsistent": validation_inconsistent,
+            "validation_truth_source": validation_truth_source,
+            "validation_command_count": validation_command_count,
+            "validation_failed_command_count": validation_failed_command_count,
             "scope_status_summary": scope_status_summary,
             "completion_evidence_mode": completion_evidence_summary.get("mode", ""),
             "lineage_keys": sorted(selected_lineage.keys()),
@@ -3779,6 +3841,12 @@ class MCPExecutorWorkflowManager:
         acceptance_summary = {
             "validation_results_count": len(validation_sample),
             "validation_status_summary": validation_status_summary,
+            "validation_inconsistent": validation_inconsistent,
+            "validation_inconsistency_reasons": validation_inconsistency_reasons,
+            "validation_truth_source": validation_truth_source,
+            "validation_command_count": validation_command_count,
+            "validation_failed_command_count": validation_failed_command_count,
+            "validation_command_records_sample": validation_command_records[:10],
             "sample_validation_results": validation_sample,
         }
         scope_available = scope_status_summary not in {"unknown", ""}
@@ -3831,6 +3899,14 @@ class MCPExecutorWorkflowManager:
         elif section == "validation":
             payload["validation"] = {
                 "status": status_value,
+                "validation_status_summary": validation_status_summary,
+                "validation_inconsistent": validation_inconsistent,
+                "validation_inconsistency_reasons": validation_inconsistency_reasons,
+                "validation_truth_source": validation_truth_source,
+                "validation_command_count": validation_command_count,
+                "validation_failed_command_count": validation_failed_command_count,
+                "validation_command_records": validation_command_records,
+                "validation_command_records_truncated": validation_command_count > len(validation_command_records),
                 "validation_results": validation_for_section[:50],
                 "changed_files": changed_files[:20],
             }
@@ -4411,22 +4487,65 @@ class MCPExecutorWorkflowManager:
             result["validation_command_count"] = len(validation_commands)
         return {k: v for k, v in result.items() if v not in ("", [], None)}
 
+    def _extract_validation_truth(
+        self,
+        source: dict[str, Any] | None,
+        *,
+        fallback_summary: dict[str, Any] | None = None,
+        executor_report_text: str | None = None,
+    ) -> dict[str, Any]:
+        source_obj = source if isinstance(source, dict) else {}
+        fallback_obj = fallback_summary if isinstance(fallback_summary, dict) else {}
+        source_records = bounded_validation_command_records(source_obj.get("validation_command_records"), limit=100)
+        fallback_records = bounded_validation_command_records(fallback_obj.get("validation_command_records"), limit=100)
+        records = source_records or fallback_records
+        validation_results = self._str_list(fallback_obj.get("validation_results"))
+        if not validation_results:
+            validation_results = self._str_list(source_obj.get("validation_sample"))
+        truth = validation_truth_from_summary({
+            "validation_results": validation_results,
+            "validation_command_records": records,
+        }, executor_report_text=executor_report_text or "")
+        source_status = self._str_param(source_obj.get("validation_status_summary"), default="", lower=True)
+        status = source_status or self._str_param(truth.get("validation_status_summary"), default="unknown", lower=True)
+        truth_status = self._str_param(truth.get("validation_status_summary"), default="unknown", lower=True)
+        if truth_status in {"failed", "inconsistent"}:
+            status = truth_status
+        source_inconsistent = bool(source_obj.get("validation_inconsistent") is True)
+        validation_inconsistent = source_inconsistent or bool(truth.get("validation_inconsistent") is True)
+        if validation_inconsistent and status == "passed":
+            status = "inconsistent"
+        reasons = self._str_list(source_obj.get("validation_inconsistency_reasons"))
+        if not reasons:
+            reasons = self._str_list(truth.get("validation_inconsistency_reasons"))
+        validation_sample = self._str_list(source_obj.get("validation_sample"))
+        if not validation_sample:
+            validation_sample = self._str_list(truth.get("validation_sample"))
+        truth_records = bounded_validation_command_records(
+            truth.get("validation_command_records"),
+            limit=100,
+        )
+        truth_command_count = int(truth.get("validation_command_count", len(records)) or len(records))
+        truth_failed_count = int(truth.get("validation_failed_command_count", 0) or 0)
+        source_command_count = self._coerce_int(source_obj.get("validation_command_count"), truth_command_count)
+        source_failed_count = self._coerce_int(source_obj.get("validation_failed_command_count"), truth_failed_count)
+        return {
+            "validation_status_summary": status or "unknown",
+            "validation_inconsistent": validation_inconsistent,
+            "validation_inconsistency_reasons": reasons[:20],
+            "validation_truth_source": self._str_param(
+                source_obj.get("validation_truth_source"),
+                default=self._str_param(truth.get("validation_truth_source"), default=""),
+            ),
+            "validation_command_count": max(source_command_count, truth_command_count, len(records)),
+            "validation_failed_command_count": max(source_failed_count, truth_failed_count),
+            "validation_command_records": truth_records,
+            "validation_sample": validation_sample[:5],
+            "validation_results": validation_results[:100],
+        }
+
     def _summarize_validation(self, results: list[str]) -> str:
-        if not results:
-            return "unknown"
-        passed = 0
-        failed = 0
-        for item in results:
-            upper = item.upper()
-            if upper.startswith("PASSED:"):
-                passed += 1
-            elif upper.startswith("FAILED:"):
-                failed += 1
-        if failed > 0:
-            return "failed"
-        if passed > 0:
-            return "passed"
-        return "unknown"
+        return summarize_legacy_validation_results(results)
 
     def _summarize_scope(self, results: list[str]) -> str:
         scope_lines = [item for item in results if item.startswith("Scope check:")]
