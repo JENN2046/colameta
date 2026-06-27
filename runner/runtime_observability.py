@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import sys
 from datetime import datetime, timezone
 from typing import Any
 
 
 PROCESS_START_TIME_ISO = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 LOADED_SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+LOADED_MODULE_FINGERPRINT_ALGORITHM = "sha256"
+
+_ALL_POSSIBLY_STALE_SURFACES = (
+    "MCP tool results",
+    "Web Console handlers",
+    "executor workflow code paths",
+    "runtime observability",
+)
 
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 
@@ -65,11 +75,14 @@ def get_runtime_version_status(
     loaded_runtime_head: str | None = None,
     loaded_runtime_branch: str | None = None,
     process_start_time_iso: str | None = None,
+    loaded_module_fingerprints: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     loaded_head = _clean_head(loaded_runtime_head if loaded_runtime_head is not None else LOADED_RUNTIME_HEAD)
     project = git_checkout_metadata(project_root)
     project_head = _clean_head(project.get("head"))
     restart_needed, reason = _restart_needed(loaded_head, project_head)
+    module_verification = verify_loaded_module_sources(loaded_module_fingerprints)
+    reload_awareness = _reload_awareness(loaded_head, project_head, module_verification)
 
     return {
         "ok": True,
@@ -86,6 +99,7 @@ def get_runtime_version_status(
             "head_source": LOADED_RUNTIME_HEAD_SOURCE,
             "captured_at_process_start": True,
         },
+        "loaded_runtime_head": loaded_head,
         "project_checkout": {
             "project_root": project.get("project_root"),
             "head": project_head,
@@ -94,9 +108,101 @@ def get_runtime_version_status(
             "git_dir_available": bool(project.get("git_dir_available")),
             "head_source": project.get("head_source"),
         },
+        "project_checkout_head": project_head,
         "restart_needed": restart_needed,
         "restart_needed_state": "unknown" if restart_needed is None else ("needed" if restart_needed else "not_needed"),
         "restart_needed_reason": reason,
+        "runtime_loaded_code_stale": reload_awareness["runtime_loaded_code_stale"],
+        "reload_needed_for_verification": reload_awareness["reload_needed_for_verification"],
+        "reload_awareness_reason": reload_awareness["reload_awareness_reason"],
+        "loaded_module_source_changed": module_verification["loaded_module_source_changed"],
+        "changed_loaded_modules": module_verification["changed_loaded_modules"],
+        "possibly_stale_surfaces": reload_awareness["possibly_stale_surfaces"],
+        "loaded_module_verification": module_verification,
+    }
+
+
+def loaded_runner_module_fingerprints() -> dict[str, dict[str, Any]]:
+    return {module_name: dict(evidence) for module_name, evidence in _LOADED_RUNNER_MODULE_FINGERPRINTS.items()}
+
+
+def verify_loaded_module_sources(
+    loaded_module_fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    loaded_modules = _normalize_loaded_module_fingerprints(
+        loaded_module_fingerprints if loaded_module_fingerprints is not None else _LOADED_RUNNER_MODULE_FINGERPRINTS
+    )
+    checked_modules: list[dict[str, Any]] = []
+    changed_modules: list[dict[str, Any]] = []
+    unverified_modules: list[dict[str, Any]] = []
+
+    for module_name, loaded in sorted(loaded_modules.items()):
+        source_path = _clean_source_path(loaded.get("source_path"))
+        surfaces = _clean_surfaces(loaded.get("surfaces")) or _surfaces_for_module(module_name)
+        current = _fingerprint_source_file(source_path) if source_path else _unavailable_fingerprint("missing_source_path")
+        loaded_sha = _clean_sha256(loaded.get("sha256"))
+        current_sha = _clean_sha256(current.get("sha256"))
+        loaded_available = bool(loaded.get("fingerprint_available")) and bool(loaded_sha)
+        current_available = bool(current.get("fingerprint_available")) and bool(current_sha)
+
+        status = "verified"
+        reason = "fingerprints_match"
+        if not loaded_available:
+            status = "unverified"
+            reason = "missing_loaded_fingerprint"
+        elif not current_available:
+            status = "unverified"
+            reason = "missing_current_source_fingerprint"
+        elif loaded_sha != current_sha:
+            status = "changed"
+            reason = "sha256_mismatch"
+
+        module_result = {
+            "module_name": module_name,
+            "source_path": source_path,
+            "relative_path": loaded.get("relative_path"),
+            "surfaces": surfaces,
+            "verification_status": status,
+            "verification_reason": reason,
+            "loaded_sha256": loaded_sha,
+            "current_sha256": current_sha,
+            "loaded_size_bytes": loaded.get("size_bytes"),
+            "current_size_bytes": current.get("size_bytes"),
+            "loaded_mtime_ns": loaded.get("mtime_ns"),
+            "current_mtime_ns": current.get("mtime_ns"),
+            "captured_at_process_start": bool(loaded.get("captured_at_process_start")),
+        }
+        checked_modules.append(module_result)
+        if status == "changed":
+            changed_modules.append(module_result)
+        elif status == "unverified":
+            unverified_modules.append(module_result)
+
+    if changed_modules:
+        loaded_module_source_changed: bool | None = True
+    elif unverified_modules or not loaded_modules:
+        loaded_module_source_changed = None
+    else:
+        loaded_module_source_changed = False
+
+    return {
+        "source": "process_import_time_loaded_runner_module_fingerprints",
+        "fingerprint_algorithm": LOADED_MODULE_FINGERPRINT_ALGORITHM,
+        "captured_module_count": len(loaded_modules),
+        "checked_module_count": len(checked_modules),
+        "verified_module_count": len([item for item in checked_modules if item["verification_status"] == "verified"]),
+        "changed_module_count": len(changed_modules),
+        "unverified_module_count": len(unverified_modules),
+        "module_fingerprint_verification_complete": bool(loaded_modules) and not unverified_modules,
+        "loaded_module_source_changed": loaded_module_source_changed,
+        "changed_loaded_modules": changed_modules,
+        "unverified_loaded_modules": unverified_modules,
+        "checked_loaded_modules": checked_modules,
+        "worktree_cleanliness_claimed": False,
+        "worktree_cleanliness_limitation": (
+            "This check compares loaded runtime HEAD and import-time fingerprints for loaded runner modules only. "
+            "It does not claim full Git worktree cleanliness."
+        ),
     }
 
 
@@ -108,6 +214,203 @@ def _restart_needed(loaded_head: str | None, project_head: str | None) -> tuple[
     if loaded_head == project_head:
         return False, "heads_match"
     return True, "loaded_runtime_head_differs_from_project_checkout_head"
+
+
+def _reload_awareness(
+    loaded_head: str | None,
+    project_head: str | None,
+    module_verification: dict[str, Any],
+) -> dict[str, Any]:
+    changed_modules = module_verification.get("changed_loaded_modules")
+    unverified_modules = module_verification.get("unverified_loaded_modules")
+    module_changed = module_verification.get("loaded_module_source_changed") is True
+
+    if module_changed:
+        reason = "loaded_module_source_changed"
+        stale: bool | None = True
+        reload_needed = True
+        surfaces = _surfaces_from_modules(changed_modules)
+    elif not loaded_head or not project_head:
+        reason = "unknown_runtime_or_checkout_head"
+        stale = None
+        reload_needed = True
+        surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
+    elif loaded_head != project_head:
+        reason = "loaded_head_differs_from_project_head"
+        stale = True
+        reload_needed = True
+        surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
+    elif not module_verification.get("module_fingerprint_verification_complete"):
+        reason = "loaded_module_fingerprint_unknown"
+        stale = None
+        reload_needed = True
+        surfaces = _surfaces_from_modules(unverified_modules) or list(_ALL_POSSIBLY_STALE_SURFACES)
+    else:
+        reason = "loaded_code_verified_current"
+        stale = False
+        reload_needed = False
+        surfaces = []
+
+    return {
+        "runtime_loaded_code_stale": stale,
+        "reload_needed_for_verification": reload_needed,
+        "reload_awareness_reason": reason,
+        "possibly_stale_surfaces": surfaces,
+    }
+
+
+def _capture_loaded_runner_module_fingerprints() -> dict[str, dict[str, Any]]:
+    captured: dict[str, dict[str, Any]] = {}
+    for module_name, module in sorted(list(sys.modules.items())):
+        if module_name != "runner" and not module_name.startswith("runner."):
+            continue
+        source_path = _clean_source_path(getattr(module, "__file__", None))
+        if not source_path or not _is_python_source(source_path) or not _is_within_loaded_source_root(source_path):
+            continue
+        fingerprint = _fingerprint_source_file(source_path)
+        captured[module_name] = {
+            "module_name": module_name,
+            "source_path": source_path,
+            "relative_path": _relative_to_loaded_root(source_path),
+            "surfaces": _surfaces_for_module(module_name),
+            "fingerprint_algorithm": LOADED_MODULE_FINGERPRINT_ALGORITHM,
+            "fingerprint_available": bool(fingerprint.get("fingerprint_available")),
+            "sha256": fingerprint.get("sha256"),
+            "size_bytes": fingerprint.get("size_bytes"),
+            "mtime_ns": fingerprint.get("mtime_ns"),
+            "captured_at_process_start": True,
+        }
+    return captured
+
+
+def _normalize_loaded_module_fingerprints(value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_module_name, raw_evidence in value.items():
+        if not isinstance(raw_module_name, str) or not isinstance(raw_evidence, dict):
+            continue
+        module_name = raw_module_name.strip()
+        if module_name != "runner" and not module_name.startswith("runner."):
+            continue
+        evidence = dict(raw_evidence)
+        evidence["surfaces"] = _clean_surfaces(evidence.get("surfaces")) or _surfaces_for_module(module_name)
+        normalized[module_name] = evidence
+    return normalized
+
+
+def _fingerprint_source_file(path: str) -> dict[str, Any]:
+    try:
+        stat_result = os.stat(path)
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "fingerprint_available": True,
+            "sha256": digest.hexdigest(),
+            "size_bytes": stat_result.st_size,
+            "mtime_ns": stat_result.st_mtime_ns,
+        }
+    except OSError as e:
+        return _unavailable_fingerprint(e.__class__.__name__)
+
+
+def _unavailable_fingerprint(reason: str) -> dict[str, Any]:
+    return {
+        "fingerprint_available": False,
+        "sha256": None,
+        "size_bytes": None,
+        "mtime_ns": None,
+        "unavailable_reason": reason,
+    }
+
+
+def _surfaces_for_module(module_name: str) -> list[str]:
+    surfaces: set[str] = set()
+    if module_name == "runner.runtime_observability":
+        surfaces.update({"runtime observability", "MCP tool results"})
+    if module_name == "runner.mcp_server" or module_name.startswith("runner.mcp_"):
+        surfaces.add("MCP tool results")
+    if module_name == "runner.web_console" or module_name.startswith("runner.web_console"):
+        surfaces.add("Web Console handlers")
+    if (
+        module_name.startswith("runner.executor_")
+        or module_name.startswith("runner.core_")
+        or module_name in {
+            "runner.workflow_engine",
+            "runner.workflow_records",
+            "runner.planning_bridge",
+            "runner.plan_loader",
+            "runner.state_machine",
+            "runner.state_store",
+        }
+    ):
+        surfaces.add("executor workflow code paths")
+    if not surfaces:
+        surfaces.add("runtime support code")
+    return sorted(surfaces)
+
+
+def _surfaces_from_modules(modules: Any) -> list[str]:
+    surfaces: set[str] = set()
+    if isinstance(modules, list):
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            surfaces.update(_clean_surfaces(module.get("surfaces")))
+    return sorted(surfaces)
+
+
+def _clean_surfaces(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if candidate and candidate not in cleaned:
+            cleaned.append(candidate)
+    return cleaned
+
+
+def _clean_source_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw_candidate = value.strip()
+    if not raw_candidate:
+        return None
+    candidate = os.path.abspath(os.path.expanduser(raw_candidate))
+    return candidate or None
+
+
+def _clean_sha256(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if re.match(r"^[0-9a-f]{64}$", candidate):
+        return candidate
+    return None
+
+
+def _is_python_source(path: str) -> bool:
+    return path.endswith(".py")
+
+
+def _is_within_loaded_source_root(path: str) -> bool:
+    try:
+        common = os.path.commonpath([LOADED_SOURCE_ROOT, path])
+    except ValueError:
+        return False
+    return common == LOADED_SOURCE_ROOT
+
+
+def _relative_to_loaded_root(path: str) -> str:
+    try:
+        return os.path.relpath(path, LOADED_SOURCE_ROOT)
+    except ValueError:
+        return path
 
 
 def _resolve_git_dir(project_root: str) -> str | None:
@@ -190,3 +493,4 @@ _LOADED_RUNTIME_GIT_METADATA = git_checkout_metadata(LOADED_SOURCE_ROOT)
 LOADED_RUNTIME_HEAD = _LOADED_RUNTIME_GIT_METADATA.get("head")
 LOADED_RUNTIME_BRANCH = _LOADED_RUNTIME_GIT_METADATA.get("branch")
 LOADED_RUNTIME_HEAD_SOURCE = _LOADED_RUNTIME_GIT_METADATA.get("head_source")
+_LOADED_RUNNER_MODULE_FINGERPRINTS = _capture_loaded_runner_module_fingerprints()

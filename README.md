@@ -500,6 +500,7 @@ High-risk Web Console actions such as running or fixing the current version with
 This Web confirmation guard is intentionally pre-executor only: it does not replace post-run scope validation, GitHub Actions remains outside this local Web guard, the browser still temporarily receives the confirmation id for E2A confirmation flow, and server-side workdir synchronization remains deferred. MCP parity and broader Git remote/apply guard coverage remain separate hardening tracks.
 If a platform blocks a preview-bound ColaMeta apply tool call before ColaMeta can evaluate its own guards, treat it as an operator handoff boundary, not a bypass; see [Platform-Blocked Operator Handoff RFC](docs/platform-blocked-operator-handoff.md).
 Runtime version status is a read-only signal, not restart authority; see [Runtime Version Status Decision Contract](docs/runtime-version-status-decision-contract.md).
+Runtime loaded-code verification adds read-only reload awareness for stale loaded modules or post-commit HEAD changes; see [Runtime Loaded-Code Verification](docs/runtime-loaded-code-verification.md).
 
 Restart or stop the service:
 

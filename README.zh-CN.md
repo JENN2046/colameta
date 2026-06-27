@@ -501,6 +501,7 @@ colameta start
 这个 Web 确认 guard 只保护执行器/动作分派前的 Web 入口：它不替代执行后的范围校验，GitHub Actions 仍不在本地 Web guard 范围内，E2A 确认流程中的 confirmation id 仍会短暂暴露给浏览器，服务端 workdir 同步仍按 Commander 决策延后。MCP 对齐以及更广的 Git remote/apply guard 仍是后续独立加固路线。
 如果平台在 ColaMeta 自身 guard 评估前拦截了预览绑定的 apply 工具调用，应把它视为 operator handoff 边界，而不是绕过；见 [Platform-Blocked Operator Handoff RFC](docs/platform-blocked-operator-handoff.md)。
 Runtime version status 是只读信号，不是 restart 授权；见 [Runtime Version Status Decision Contract](docs/runtime-version-status-decision-contract.md)。
+Runtime loaded-code verification 会只读报告已加载模块是否可能落后于当前 checkout 或本地源码；见 [Runtime Loaded-Code Verification](docs/runtime-loaded-code-verification.md)。
 
 重启或停止服务：
 
