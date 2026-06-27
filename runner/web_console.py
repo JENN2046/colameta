@@ -50,7 +50,11 @@ from runner.continue_version_workflow import ContinueNextVersionService
 from runner.plan_patch_workflow import PlanPatchAutoApplyService
 from runner.project_registry import ProjectRegistry
 from runner.runner_settings import RunnerSettingsStore
-from runner.executor_session import ExecutorSessionStore, select_executor_identity_for_display
+from runner.executor_session import (
+    ExecutorSessionStore,
+    classify_executor_session_head_mismatch,
+    select_executor_identity_for_display,
+)
 from runner.runner_paths import resolve_project_runner_dir, resolve_project_runner_rel_dir
 from runner.web_console_v2_assets import render_v2_index_page
 from runner.core_orchestrator import WorkflowOrchestrator
@@ -1477,6 +1481,7 @@ class WebConsoleServer:
                 "command_preview": [],
                 "message": "执行会话调用形态预览读取失败。",
             }
+        self._apply_executor_session_head_mismatch_classification(data)
         data["executor_session_display"] = build_executor_session_display(
             executor_session_status=data.get("executor_session_status"),
             continuation_decision=data.get("executor_continuation_decision"),
@@ -1524,6 +1529,131 @@ class WebConsoleServer:
         except Exception:
             data["version_execution_display"] = None
         return data
+
+    def _apply_executor_session_head_mismatch_classification(
+        self,
+        data: dict[str, Any],
+        *,
+        runner_status_data: dict[str, Any] | None = None,
+        live_run: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session_status = data.get("executor_session_status")
+        if not isinstance(session_status, dict):
+            try:
+                session_status = self.executor_session_store.get_status()
+                data["executor_session_status"] = session_status
+            except Exception:
+                session_status = {}
+
+        existing = session_status.get("head_mismatch_classification") if isinstance(session_status, dict) else None
+        if isinstance(existing, dict) and existing.get("status") == "none":
+            classification = existing
+        else:
+            runner_data = runner_status_data if isinstance(runner_status_data, dict) else data
+            if not (
+                isinstance(runner_data, dict)
+                and "runner_status" in runner_data
+                and "current_version_status" in runner_data
+            ):
+                try:
+                    runner_data = self.bridge.get_runner_status(self.project_root)
+                except Exception:
+                    runner_data = {}
+
+            job_status = self._current_job_status_for_classification()
+            latest_run_status, latest_claim_status, live_data = self._latest_run_evidence_for_classification(live_run)
+            classification = classify_executor_session_head_mismatch(
+                executor_session_status=session_status,
+                operation_running=bool(self.operation_running),
+                job_status=job_status,
+                latest_run_status=latest_run_status,
+                latest_claim_status=latest_claim_status,
+                live_run=live_data,
+                runner_status=str(runner_data.get("runner_status") or "") if isinstance(runner_data, dict) else None,
+                current_version_status=(
+                    str(runner_data.get("current_version_status") or "") if isinstance(runner_data, dict) else None
+                ),
+                worktree_clean=self._read_worktree_clean_for_status(),
+            )
+
+        if isinstance(session_status, dict):
+            session_status["head_mismatch_classification"] = classification
+        data["executor_session_head_mismatch"] = classification
+        for key in (
+            "executor_continuation_preview",
+            "executor_continuation_decision",
+            "executor_resume_invocation_preview",
+        ):
+            payload = data.get(key)
+            if isinstance(payload, dict):
+                payload["head_mismatch_classification"] = classification
+        return classification
+
+    def _current_job_status_for_classification(self) -> str | None:
+        try:
+            with self.operation_lock:
+                job = dict(self.job) if isinstance(self.job, dict) else {}
+        except Exception:
+            job = {}
+        status = job.get("status")
+        return status if isinstance(status, str) and status.strip() else None
+
+    def _latest_run_evidence_for_classification(
+        self,
+        live_run: dict[str, Any] | None = None,
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        latest_run_status: str | None = None
+        latest_claim_status: str | None = None
+        live_data = live_run if isinstance(live_run, dict) else None
+        try:
+            from runner.executor_read import handle_inspect_executor_activity
+
+            inspect_result = handle_inspect_executor_activity(
+                self.project_root, "latest_run_status", {}
+            )
+            raw_status = inspect_result.get("status")
+            if isinstance(raw_status, str) and raw_status.strip():
+                latest_run_status = raw_status.strip()
+            inspected_live = inspect_result.get("live")
+            if isinstance(inspected_live, dict):
+                live_data = inspected_live
+            stale = inspect_result.get("stale_orphan_claim")
+            if live_data is None and isinstance(stale, dict):
+                live_data = stale
+        except Exception:
+            pass
+
+        if isinstance(live_data, dict):
+            claim_status = live_data.get("claim_status")
+            if isinstance(claim_status, str) and claim_status.strip():
+                latest_claim_status = claim_status.strip()
+            claim = live_data.get("claim")
+            if latest_claim_status is None and isinstance(claim, dict):
+                claim_status = claim.get("status")
+                if isinstance(claim_status, str) and claim_status.strip():
+                    latest_claim_status = claim_status.strip()
+            if latest_run_status is None:
+                for key in ("status", "run_status", "executor_run_status"):
+                    value = live_data.get(key)
+                    if isinstance(value, str) and value.strip():
+                        latest_run_status = value.strip()
+                        break
+        return latest_run_status, latest_claim_status, live_data
+
+    def _read_worktree_clean_for_status(self) -> bool | None:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self.project_root, "status", "--short"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return None
+        if completed.returncode != 0:
+            return None
+        return not bool(completed.stdout.strip())
 
     def _api_remote_git_status(self) -> dict[str, Any]:
         try:
@@ -2806,6 +2936,7 @@ class WebConsoleServer:
         result["live_run"] = live_run
         if not (isinstance(live_run, dict) and live_run.get("available") is True):
             self._enrich_latest_report_identity(result)
+        self._apply_executor_session_head_mismatch_classification(result, live_run=live_run)
         try:
             result["plan_versions"] = self._build_plan_version_list_for_v2()
         except Exception:

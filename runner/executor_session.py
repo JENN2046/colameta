@@ -13,6 +13,215 @@ if TYPE_CHECKING:
     from runner.development_target import ResolvedDevelopmentTarget
 
 
+COMPLETED_IDLE_STALE_SESSION_MESSAGE = (
+    "Historical executor session resume metadata records a HEAD different from the current project HEAD. "
+    "No operation is running, the job is idle, and Runner state is completed. This warning does not mean an "
+    "executor is currently running, and it does not authorize restart, reload, kill, apply, commit, or push. "
+    "New development versions should start from the current HEAD."
+)
+
+
+def classify_executor_session_head_mismatch(
+    *,
+    executor_session_status: dict[str, Any] | None = None,
+    session_record: dict[str, Any] | None = None,
+    session_head: str | None = None,
+    current_head: str | None = None,
+    operation_running: bool | None = None,
+    job_status: str | None = None,
+    latest_run_status: str | None = None,
+    latest_claim_status: str | None = None,
+    live_run: dict[str, Any] | None = None,
+    runner_status: str | None = None,
+    current_version_status: str | None = None,
+    worktree_clean: bool | None = None,
+) -> dict[str, Any]:
+    status_payload = executor_session_status if isinstance(executor_session_status, dict) else {}
+    record = session_record if isinstance(session_record, dict) else status_payload.get("record")
+    record = record if isinstance(record, dict) else {}
+    session_exists = bool(record) or bool(status_payload.get("active") is True)
+
+    recorded_head = _clean_head(session_head)
+    if recorded_head is None:
+        recorded_head = _clean_head(record.get("current_head"))
+    if recorded_head is None:
+        recorded_head = _clean_head(record.get("base_head"))
+
+    checkout_head = _clean_head(current_head)
+    if checkout_head is None:
+        checkout_head = _clean_head(status_payload.get("current_head"))
+
+    normalized_job_status = _clean_status(job_status)
+    job_idle = None if normalized_job_status is None else normalized_job_status == "idle"
+    latest_run_status_clean = _clean_status(latest_run_status)
+    latest_claim_status_clean = _clean_status(latest_claim_status)
+
+    live_run_running = _live_run_is_running(live_run)
+    latest_run_running = latest_run_status_clean in {"running", "orphaned"}
+    latest_claim_running = latest_claim_status_clean == "running"
+    job_running = normalized_job_status == "running"
+    active_operation = bool(operation_running is True or live_run_running or latest_run_running or latest_claim_running or job_running)
+
+    latest_run_or_claim_completed = bool(
+        latest_run_status_clean == "completed"
+        or latest_claim_status_clean == "completed"
+    )
+    runner_version_passed = bool(runner_status == "VERSION_PASSED" and current_version_status == "PASSED")
+    heads_comparable = bool(recorded_head and checkout_head)
+    head_mismatch = bool(heads_comparable and recorded_head != checkout_head)
+
+    base_result = {
+        "status": "none",
+        "severity": "info",
+        "blocks_auto_resume": False,
+        "blocks_auto_start": False,
+        "operation_running": bool(operation_running is True),
+        "job_idle": job_idle,
+        "session_head": recorded_head,
+        "current_head": checkout_head,
+        "reason": "no_session_manifest" if not session_exists else "no_head_mismatch",
+        "operator_message": "No executor session HEAD mismatch is present.",
+        "allowed_next_actions": ["read_status"],
+        "evidence": {
+            "session_exists": session_exists,
+            "heads_comparable": heads_comparable,
+            "head_mismatch": head_mismatch,
+            "live_run_running": live_run_running,
+            "latest_run_status": latest_run_status_clean,
+            "latest_claim_status": latest_claim_status_clean,
+            "runner_status": runner_status,
+            "current_version_status": current_version_status,
+            "worktree_clean": worktree_clean,
+        },
+    }
+
+    if not session_exists:
+        return base_result
+    if not heads_comparable:
+        result = dict(base_result)
+        result.update(
+            {
+                "status": "unknown_head_mismatch",
+                "severity": "blocked",
+                "blocks_auto_resume": True,
+                "blocks_auto_start": True,
+                "reason": "head_evidence_incomplete",
+                "operator_message": (
+                    "Executor session HEAD comparison evidence is incomplete. Automatic resume/start are blocked "
+                    "until the recorded session HEAD and current project HEAD can be compared."
+                ),
+                "allowed_next_actions": ["read_status", "inspect_runtime_evidence", "human_review_required"],
+            }
+        )
+        return result
+    if not head_mismatch:
+        return base_result
+
+    if active_operation:
+        result = dict(base_result)
+        result.update(
+            {
+                "status": "active_operation_head_mismatch",
+                "severity": "blocked",
+                "blocks_auto_resume": True,
+                "blocks_auto_start": True,
+                "reason": "operation_or_live_run_running",
+                "operator_message": (
+                    "Executor session resume metadata records a HEAD different from the current project HEAD while "
+                    "an operation or live run appears to be running. Automatic resume/start are blocked pending "
+                    "human judgment; runtime/session files must not be modified automatically."
+                ),
+                "allowed_next_actions": ["read_status", "inspect_live_run", "human_review_required"],
+            }
+        )
+        return result
+
+    completed_idle_evidence = bool(
+        operation_running is False
+        and job_idle is True
+        and latest_run_or_claim_completed
+        and runner_version_passed
+        and worktree_clean is True
+    )
+    if completed_idle_evidence:
+        result = dict(base_result)
+        result.update(
+            {
+                "status": "completed_idle_stale_session",
+                "severity": "warning",
+                "blocks_auto_resume": True,
+                "blocks_auto_start": False,
+                "reason": "completed_idle_runner_passed_clean_worktree",
+                "operator_message": COMPLETED_IDLE_STALE_SESSION_MESSAGE,
+                "allowed_next_actions": [
+                    "read_status",
+                    "inspect_latest_report",
+                    "begin_new_development_from_current_head",
+                ],
+            }
+        )
+        return result
+
+    missing_evidence: list[str] = []
+    if operation_running is not False:
+        missing_evidence.append("operation_running_false")
+    if job_idle is not True:
+        missing_evidence.append("job_idle")
+    if not latest_run_or_claim_completed:
+        missing_evidence.append("latest_run_or_claim_completed")
+    if not runner_version_passed:
+        missing_evidence.append("runner_version_passed")
+    if worktree_clean is not True:
+        missing_evidence.append("worktree_clean")
+
+    result = dict(base_result)
+    result.update(
+        {
+            "status": "unknown_head_mismatch",
+            "severity": "blocked",
+            "blocks_auto_resume": True,
+            "blocks_auto_start": True,
+            "reason": "incomplete_evidence:" + ",".join(missing_evidence),
+            "operator_message": (
+                "Executor session resume metadata records a HEAD different from the current project HEAD, but "
+                "idle/completed evidence is incomplete. Automatic resume/start are blocked until operation, job, "
+                "latest-run, Runner-state, and worktree evidence can be confirmed."
+            ),
+            "allowed_next_actions": ["read_status", "inspect_runtime_evidence", "human_review_required"],
+        }
+    )
+    return result
+
+
+def _clean_head(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _clean_status(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text or None
+
+
+def _live_run_is_running(live_run: dict[str, Any] | None) -> bool:
+    if not isinstance(live_run, dict) or live_run.get("available") is not True:
+        return False
+    candidates = [
+        live_run.get("status"),
+        live_run.get("run_status"),
+        live_run.get("claim_status"),
+        live_run.get("executor_run_status"),
+    ]
+    claim = live_run.get("claim")
+    if isinstance(claim, dict):
+        candidates.append(claim.get("status"))
+    return any(_clean_status(value) == "running" for value in candidates)
+
+
 def _normalize_executor_identity_str(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -159,12 +368,17 @@ class ExecutorSessionStore:
                 git_branch=git_branch,
                 current_head=current_head,
             )
+            classification = classify_executor_session_head_mismatch(
+                session_record=None,
+                current_head=current_head,
+            )
             result = {
                 "ok": True,
                 "active": False,
                 "manifest_file": self.manifest_file,
                 "message": "当前没有执行器会话记录。",
                 "eligibility": eligibility,
+                "head_mismatch_classification": classification,
             }
             if warnings:
                 result["warnings"] = warnings
@@ -189,6 +403,10 @@ class ExecutorSessionStore:
                 "error_code": "MANIFEST_INVALID",
                 "message": "执行器会话记录格式无效。",
                 "eligibility": eligibility,
+                "head_mismatch_classification": classify_executor_session_head_mismatch(
+                    session_record=None,
+                    current_head=current_head,
+                ),
             }
 
         recorded_project = record.get("project_root")
@@ -226,6 +444,10 @@ class ExecutorSessionStore:
             "matches_current_branch": matches_current_branch,
             "matches_current_head": matches_current_head,
             "eligibility": eligibility,
+            "head_mismatch_classification": classify_executor_session_head_mismatch(
+                session_record=record,
+                current_head=current_head,
+            ),
         }
         if warnings:
             result["warnings"] = warnings
@@ -367,6 +589,12 @@ class ExecutorSessionStore:
         context_facts = eligibility.get("context_facts", {})
         if not isinstance(context_facts, dict):
             context_facts = {}
+        head_mismatch_classification = status.get("head_mismatch_classification")
+        if not isinstance(head_mismatch_classification, dict):
+            head_mismatch_classification = classify_executor_session_head_mismatch(
+                session_record=record,
+                current_head=status.get("current_head") if isinstance(status, dict) else None,
+            )
 
         return {
             "ok": True,
@@ -399,6 +627,7 @@ class ExecutorSessionStore:
             "recommended_default": recommended_default,
             "cache_hit_preference": cache_hit_preference,
             "context_facts": context_facts,
+            "head_mismatch_classification": head_mismatch_classification,
         }
 
     def get_continuation_decision(self, requested_provider: str | None = None) -> dict[str, Any]:
@@ -524,6 +753,9 @@ class ExecutorSessionStore:
         context_facts = preview.get("context_facts", {}) if isinstance(preview, dict) else {}
         if not isinstance(context_facts, dict):
             context_facts = {}
+        head_mismatch_classification = preview.get("head_mismatch_classification")
+        if not isinstance(head_mismatch_classification, dict):
+            head_mismatch_classification = {}
 
         return {
             "ok": True,
@@ -558,6 +790,7 @@ class ExecutorSessionStore:
             "recommended_default": recommended_default,
             "cache_hit_preference": cache_hit_preference,
             "context_facts": context_facts,
+            "head_mismatch_classification": head_mismatch_classification,
             "preview": preview,
         }
 
@@ -678,6 +911,7 @@ class ExecutorSessionStore:
             "hard_blockers": hard_blockers,
             "evidence": evidence,
             "next_action_hint": next_action_hint,
+            "head_mismatch_classification": decision.get("head_mismatch_classification", {}),
             "continuation_decision": decision,
         }
 
@@ -899,6 +1133,11 @@ class ExecutorSessionStore:
         no_hard_blockers = not bool(eligibility.get("hard_blockers"))
         eligibility["recommended_default"] = "resume" if (continuation_available and no_hard_blockers) else "start_new"
         eligibility["cache_hit_preference"] = "prefer_resume_for_cache_hit" if continuation_available else "start_new_avoids_cache_stale"
+        head_mismatch_present = (
+            "head_mismatch" in blockers
+            or "head_mismatch" in resume_warnings
+            or "head_mismatch" in unique_risks
+        )
         eligibility["context_facts"] = {
             "project_root": self.project_root,
             "provider": provider,
@@ -908,7 +1147,7 @@ class ExecutorSessionStore:
             "hard_blockers": list(eligibility.get("hard_blockers") or []),
             "resume_warnings": list(eligibility.get("resume_warnings") or []),
             "risk_level": str(eligibility.get("risk_level") or "none"),
-            "head_mismatch": "head_mismatch" in blockers,
+            "head_mismatch": head_mismatch_present,
             "branch_mismatch": "branch_mismatch" in blockers,
             "provider_mismatch": "provider_mismatch" in blockers,
             "session_resume_available": bool(eligibility.get("session_resume_available") is True),

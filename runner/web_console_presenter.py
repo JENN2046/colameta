@@ -49,11 +49,30 @@ def build_executor_session_display(
     invocation = resume_invocation_preview if isinstance(resume_invocation_preview, dict) else {}
     preview = continuation_preview if isinstance(continuation_preview, dict) else {}
     eligibility = session.get("eligibility") if isinstance(session.get("eligibility"), dict) else {}
+    head_mismatch = session.get("head_mismatch_classification")
+    if not isinstance(head_mismatch, dict):
+        head_mismatch = decision.get("head_mismatch_classification")
+    if not isinstance(head_mismatch, dict):
+        head_mismatch = preview.get("head_mismatch_classification")
+    if not isinstance(head_mismatch, dict):
+        head_mismatch = invocation.get("head_mismatch_classification")
+    if not isinstance(head_mismatch, dict):
+        head_mismatch = {}
+    head_mismatch_status = str(head_mismatch.get("status") or "none")
 
     text = "执行会话：未记录"
     state = "untracked"
 
-    if session.get("active") is True:
+    if head_mismatch_status == "active_operation_head_mismatch":
+        text = "执行会话：HEAD 不一致（运行中）"
+        state = "blocked"
+    elif head_mismatch_status == "completed_idle_stale_session":
+        text = "执行会话：历史 HEAD 不一致"
+        state = "stale_session"
+    elif head_mismatch_status == "unknown_head_mismatch":
+        text = "执行会话：HEAD 不一致（证据不足）"
+        state = "blocked"
+    elif session.get("active") is True:
         if decision.get("should_resume") is True:
             text = "执行会话：可继续"
             state = "resumable"
@@ -86,4 +105,6 @@ def build_executor_session_display(
         "text": text,
         "state": state,
         "resumable": state == "resumable",
+        "head_mismatch_classification_status": head_mismatch_status,
+        "head_mismatch_operator_message": str(head_mismatch.get("operator_message") or ""),
     }
