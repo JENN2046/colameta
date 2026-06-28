@@ -20,11 +20,15 @@ freeze_candidate_review_packet:
   project: ColaMeta
   observed_at: "2026-06-29"
   workspace: /home/jenn/src/colameta-dev
-  packet_sync_status: post_contract_patch_sync_draft
+  packet_sync_status: post_baseline_commit_reconciliation_draft
   synced_after_master_updates:
     - hash_canonical_single_authority_patch
     - gateevent_commander_blocked_accepted_state_authority_patch
     - minimum_machine_checkable_objects_patch
+  local_baseline_commit:
+    commit: f3b7420
+    subject: "docs: add master taskbook baseline"
+    status: created_locally_not_pushed
 
   non_authorization:
     - does_not_promote_target_to_freeze_candidate
@@ -56,8 +60,9 @@ proposed_review_target:
   possible_future_status_after_all_gates: freeze_candidate
   status_promotion_authority: Commander
   status_promotion_scope: not_authorized_by_this_packet
-  currently_tracked_by_git: false
-  current_worktree_marker: "?? PROJECT_MASTER_TASKBOOK.md"
+  currently_tracked_by_git: true
+  local_baseline_commit: f3b7420
+  current_worktree_marker: tracked_in_local_baseline_commit
   current_master_draft_readiness_marker: contract_patches_applied_pending_readiness_review
 ```
 
@@ -76,15 +81,16 @@ accepted canonical hash receipt.
 ```yaml id="repository-reality-snapshot"
 repository_reality:
   branch: main
-  local_head: 640a843
-  local_head_subject: "feat(runner): classify executor session head mismatch"
+  local_head: f3b7420
+  local_head_subject: "docs: add master taskbook baseline"
   origin_main: 1caa0b2
   origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 2
+  ahead_origin_main: 3
   tracked_remote_sync_status: local_ahead_remote
-  untracked_files:
+  baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
+  remote_push_authorized_by_this_packet: false
 ```
 
 Remote note:
@@ -228,7 +234,10 @@ p0_review:
       current_result: no_known_p0
     - id: p0_untracked_file_treated_as_frozen
       question: Does the current process treat the untracked target file as already frozen?
-      current_result: pending_until_canonical_copy_is_stored
+      current_result: no_known_p0_after_local_baseline_commit
+      note: >
+        The target file is tracked in local baseline commit f3b7420, but remains
+        discussion_draft and not freeze_candidate.
     - id: p0_hash_authority_split_after_patch
       question: Does the document still keep two competing authoritative hash input manifests?
       current_result: no_known_p0_after_patch
@@ -269,7 +278,7 @@ v1_10_local_status:
   implementation_commit: 640a843
   local_branch: main
   origin_main: 1caa0b2
-  local_ahead_origin_main: 2
+  local_ahead_origin_main: 3
   remote_push_authorized_by_this_packet: false
   executor_run_authorized_by_this_packet: false
   route_transition_authorized_by_this_packet: false
@@ -406,7 +415,8 @@ packet_cannot_prove:
   - P0 review closure
   - Commander freeze-candidate confirmation
   - that post-patch P1 findings are resolved or formally dispositioned
-  - that canonical copy storage has happened
+  - that local baseline commit f3b7420 has been pushed or accepted remotely
+  - that canonical copy storage is final after post-baseline packet reconciliation
   - that the current unaccepted snapshot hash is canonical or accepted
 ```
 
@@ -423,8 +433,9 @@ review_outcomes:
   - remain_discussion_draft
   - revise_and_rehash
   - run_non_authoritative_post_patch_readiness_review
-  - prepare_canonical_copy_handling_request
-  - proceed_to_canonical_copy_and_hash_receipt_preparation
+  - reconcile_post_baseline_packet_facts
+  - proceed_to_candidate_policy_acceptance_review
+  - proceed_to_canonical_hash_receipt_preparation
   - confirm_exact_accepted_hash_as_freeze_candidate
 ```
 
@@ -451,20 +462,22 @@ itself.
 
 ```yaml id="canonical-copy-handling"
 canonical_copy_handling:
-  status: entered_not_authorized_to_store
+  status: local_baseline_commit_created_not_freeze
   chinese_name: 规范副本处理
   target_document:
     path: PROJECT_MASTER_TASKBOOK.md
     role: canonical_copy_candidate
     current_status: discussion_draft
-    current_git_tracking_status: untracked
-    current_worktree_marker: "?? PROJECT_MASTER_TASKBOOK.md"
+    current_git_tracking_status: tracked_in_local_baseline_commit
+    current_worktree_marker: tracked_in_HEAD_f3b7420
+    local_baseline_commit: f3b7420
     current_unaccepted_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
   companion_review_packet:
     path: FREEZE_CANDIDATE_REVIEW_PACKET.md
     role: non_authoritative_review_packet_companion
-    current_git_tracking_status: untracked
-    current_worktree_marker: "?? FREEZE_CANDIDATE_REVIEW_PACKET.md"
+    current_git_tracking_status: tracked_in_local_baseline_commit
+    current_worktree_marker: post_baseline_reconciliation_edit_pending_commit
+    local_baseline_commit: f3b7420
   recommended_local_baseline_set:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
@@ -479,12 +492,11 @@ canonical_copy_handling:
     - policy_accepted_for_candidate_authority
     - P0_closed
     - implementation_authorized
-    - commit_authorized
+    - additional_commit_authorized
     - push_authorized
     - executor_run_authorized
   future_required_authorizations_not_granted_by_this_packet:
-    - authorize_git_tracking_or_staging_of_exact_file_set
-    - authorize_local_baseline_commit_if_commit_is_desired
+    - authorize_post_baseline_packet_reconciliation_commit_if_desired
     - authorize_candidate_authoritative_policy_acceptance
     - authorize_canonical_hash_receipt_generation
     - authorize_hash_specific_freeze_candidate_confirmation
@@ -493,11 +505,11 @@ canonical_copy_handling:
 Canonical copy handling boundary:
 
 ```text id="canonical-copy-handling-boundary"
-The current recommended handling is to keep PROJECT_MASTER_TASKBOOK.md at the
-repo root as the canonical-copy candidate and keep
-FREEZE_CANDIDATE_REVIEW_PACKET.md as its non-authoritative companion review
-packet. Tracking or committing either file is a separate Git action and is not
-authorized by this packet.
+PROJECT_MASTER_TASKBOOK.md has been stored at the repo root in local baseline
+commit f3b7420 as the canonical-copy candidate. FREEZE_CANDIDATE_REVIEW_PACKET.md
+is its non-authoritative companion review packet. This local baseline commit
+does not promote the target to freeze_candidate, generate a canonical hash
+receipt, close P0, authorize push, or authorize runtime action.
 ```
 
 Future Commander authorization language draft:
@@ -534,11 +546,13 @@ Not allowed:
 1. Review this packet for factual accuracy as a non-authoritative draft.
 2. Run or review a non-authoritative post-patch readiness review for the
    current unaccepted snapshot hash.
-3. If and only if separately authorized, perform canonical-copy tracking or
-   staging for the exact approved file set.
+3. If and only if separately authorized, commit this post-baseline packet
+   reconciliation.
 4. If and only if separately authorized, prepare a future request about
-   canonical hash receipt handling.
+   candidate-authoritative policy acceptance.
 5. If and only if separately authorized, prepare a future request about
+   canonical hash receipt handling.
+6. If and only if separately authorized, prepare a future request about
    Commander hash-specific freeze-candidate confirmation.
 
 None of these next-step labels authorize file creation, status promotion,
