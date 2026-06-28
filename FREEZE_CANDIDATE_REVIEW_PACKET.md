@@ -3,9 +3,10 @@
 ```text id="non-authoritative-draft-banner"
 NON-AUTHORITATIVE DRAFT REVIEW PACKET.
 This packet does not establish freeze_candidate status, hash acceptance,
-policy acceptance, P0 closure, Commander confirmation, canonical custody,
-commit authorization, push authorization, executor authorization, bridge
-authorization, or runtime authorization.
+P0 closure, Commander freeze confirmation, canonical custody, commit
+authorization, push authorization, executor authorization, bridge
+authorization, or runtime authorization. It records only the explicit
+candidate-authority-for-review-only policy acceptance scope stated below.
 This packet remains non-authoritative even when edited under a narrow local
 review-packet draft update authorization.
 ```
@@ -104,7 +105,7 @@ push, PR creation, release, tag, deployment, or any external write.
 
 ## 3. Unaccepted Snapshot Hash
 
-This section records the current raw file hash as an unaccepted snapshot fingerprint for review. It is not a formal canonical hash receipt because canonicalization, candidate-authoritative policy acceptance, independent verification, and Commander confirmation are not yet closed.
+This section records the current raw file hash as an unaccepted snapshot fingerprint for review. It is not a formal canonical hash receipt because canonical hash generation, independent verification, P0 closure, and Commander hash-specific freeze confirmation are not yet closed.
 
 ```yaml id="unaccepted-snapshot-hash"
 unaccepted_snapshot_hash:
@@ -119,9 +120,9 @@ unaccepted_snapshot_hash:
   line_count_command: wc -l PROJECT_MASTER_TASKBOOK.md
   canonical_hash_status: not_generated
   snapshot_acceptance_status: not_accepted
-  canonicalization_policy_status: pending_candidate_authority_acceptance
-  hash_policy_status: accepted_for_review_use_only_not_candidate_authority
-  versioning_policy_status: accepted_for_review_use_only_not_candidate_authority
+  canonicalization_policy_status: candidate_authority_accepted_for_review_only
+  hash_policy_status: candidate_authority_accepted_for_review_only
+  versioning_policy_status: candidate_authority_accepted_for_review_only
   post_patch_sync_status: draft_packet_synced_to_current_unaccepted_snapshot
 ```
 
@@ -165,17 +166,31 @@ hash_freshness:
 ```yaml id="policy-acceptance-checklist"
 policy_acceptance:
   hash_policy:
-    status: accepted_for_review_use_only
-    required_before_status_promotion: separate Commander acceptance for candidate authority.
+    status: candidate_authority_accepted_for_review_only
+    accepted_scope: Hash Boundary Policy
+    accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
+    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
     protected_fields_include:
       - semantics_to_mechanics_translation_table
       - forbidden_claims_boundary_law
+      - freeze_process_and_canonicalization
   versioning_policy:
-    status: accepted_for_review_use_only
-    required_before_status_promotion: separate Commander acceptance for candidate authority.
+    status: candidate_authority_accepted_for_review_only
+    accepted_scope: Versioning Policy
+    accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
+    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
   boundary_policy:
-    status: accepted_for_review_use_only
-    required_before_status_promotion: separate Commander acceptance that boundary law is candidate-authoritative.
+    status: candidate_authority_accepted_for_review_only
+    accepted_scope:
+      - Semantics-to-Mechanics Translation Table
+      - Forbidden Claims / Boundary Law
+    accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
+    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
+  canonicalization_policy:
+    status: candidate_authority_accepted_for_review_only
+    accepted_scope: Freeze Process And Canonicalization
+    accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
+    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
   review_use_only_non_authorization:
     - does_not_establish_freeze_authority
     - does_not_authorize_status_promotion
@@ -187,11 +202,12 @@ policy_acceptance:
 Acceptance language draft:
 
 ```text id="policy-acceptance-language-draft"
-Hash policy, versioning policy, Semantics-to-Mechanics Translation Table, and
-Forbidden Claims / Boundary Law are accepted for review-use-only boundary
-language. This language is not freeze authority and does not authorize status
-promotion, canonicalization, P0 closure, git action, runtime action, or remote
-mutation.
+Hash Boundary Policy, Freeze Process And Canonicalization, Semantics-to-Mechanics
+Translation Table, Forbidden Claims / Boundary Law, and Versioning Policy are
+accepted as candidate-authoritative policy language for review use only. This
+acceptance is not freeze authority and does not authorize status promotion,
+canonical hash receipt generation, P0 closure, git action, runtime action, or
+remote mutation.
 ```
 
 ---
@@ -411,7 +427,7 @@ packet_cannot_prove:
   - remote push, PR, tag, release, or deployment safety
   - production readiness
   - AGENTS OS resident-Agent identity, growth rights, relationship rights, or presence rights
-  - policy acceptance
+  - policy acceptance beyond the recorded candidate-authority-for-review-only scope
   - P0 review closure
   - Commander freeze-candidate confirmation
   - that post-patch P1 findings are resolved or formally dispositioned
@@ -434,7 +450,6 @@ review_outcomes:
   - revise_and_rehash
   - run_non_authoritative_post_patch_readiness_review
   - reconcile_post_baseline_packet_facts
-  - proceed_to_candidate_policy_acceptance_review
   - proceed_to_canonical_hash_receipt_preparation
   - confirm_exact_accepted_hash_as_freeze_candidate
 ```
@@ -489,7 +504,7 @@ canonical_copy_handling:
     - freeze_candidate_status
     - active_status
     - canonical_hash_receipt_generated
-    - policy_accepted_for_candidate_authority
+    - policy_acceptance_beyond_recorded_candidate_authority_for_review_only
     - P0_closed
     - implementation_authorized
     - additional_commit_authorized
@@ -497,7 +512,7 @@ canonical_copy_handling:
     - executor_run_authorized
   future_required_authorizations_not_granted_by_this_packet:
     - authorize_post_baseline_packet_reconciliation_commit_if_desired
-    - authorize_candidate_authoritative_policy_acceptance
+    - authorize_policy_acceptance_beyond_recorded_scope_if_needed
     - authorize_canonical_hash_receipt_generation
     - authorize_hash_specific_freeze_candidate_confirmation
 ```
@@ -532,7 +547,7 @@ Not allowed:
 - freeze_candidate promotion
 - canonical hash receipt generation
 - P0 closure
-- policy acceptance for candidate authority
+- additional policy acceptance beyond the recorded candidate-authority-for-review-only scope
 - commit unless separately authorized
 - push / PR / tag / release / deploy
 - executor run / service restart / route transition
@@ -546,13 +561,11 @@ Not allowed:
 1. Review this packet for factual accuracy as a non-authoritative draft.
 2. Run or review a non-authoritative post-patch readiness review for the
    current unaccepted snapshot hash.
-3. If and only if separately authorized, commit this post-baseline packet
-   reconciliation.
+3. If and only if separately authorized, commit this policy-acceptance packet
+   update.
 4. If and only if separately authorized, prepare a future request about
-   candidate-authoritative policy acceptance.
-5. If and only if separately authorized, prepare a future request about
    canonical hash receipt handling.
-6. If and only if separately authorized, prepare a future request about
+5. If and only if separately authorized, prepare a future request about
    Commander hash-specific freeze-candidate confirmation.
 
 None of these next-step labels authorize file creation, status promotion,
