@@ -21,7 +21,7 @@ freeze_candidate_review_packet:
   project: ColaMeta
   observed_at: "2026-06-29"
   workspace: /home/jenn/src/colameta-dev
-  packet_sync_status: post_baseline_commit_reconciliation_draft
+  packet_sync_status: post_canonical_hash_receipt_draft_commit_reconciliation
   synced_after_master_updates:
     - hash_canonical_single_authority_patch
     - gateevent_commander_blocked_accepted_state_authority_patch
@@ -29,6 +29,10 @@ freeze_candidate_review_packet:
   local_baseline_commit:
     commit: f3b7420
     subject: "docs: add master taskbook baseline"
+    status: created_locally_not_pushed
+  latest_committed_packet_receipt_commit:
+    commit: 9fea935
+    subject: "docs: add canonical hash receipt draft"
     status: created_locally_not_pushed
 
   non_authorization:
@@ -82,11 +86,11 @@ accepted canonical hash receipt.
 ```yaml id="repository-reality-snapshot"
 repository_reality:
   branch: main
-  local_head: f3b7420
-  local_head_subject: "docs: add master taskbook baseline"
+  observed_committed_head_before_this_readiness_edit: 9fea935
+  observed_committed_head_subject: "docs: add canonical hash receipt draft"
   origin_main: 1caa0b2
   origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 3
+  ahead_origin_main: 6
   tracked_remote_sync_status: local_ahead_remote
   baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
@@ -175,8 +179,10 @@ canonical_hash_receipt_draft:
   receipt_id: canonical_hash_receipt_draft_20260629_current_master
   target_file: PROJECT_MASTER_TASKBOOK.md
   target_status_at_receipt_time: discussion_draft
-  current_head: 168cb8d
-  current_head_subject: "docs: record candidate policy acceptance"
+  receipt_generation_head: 168cb8d
+  receipt_generation_head_subject: "docs: record candidate policy acceptance"
+  receipt_storage_commit: 9fea935
+  receipt_storage_commit_subject: "docs: add canonical hash receipt draft"
   target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
 
   policy_basis:
@@ -229,6 +235,74 @@ canonical_hash_receipt_draft:
     - canonicalizer_version changes
     - any canonical field extraction fails
     - Commander confirmation references a different hash, scope, or boundary
+```
+
+---
+
+### 3.2 Hash-Specific Freeze Confirmation Readiness Draft
+
+`Hash-Specific Freeze Confirmation Readiness Draft` = 指定哈希冻结确认就绪草稿.
+
+This section prepares the exact confirmation language that would be needed if
+Commander later chooses to promote the current Master Taskbook candidate to
+`freeze_candidate`. It does not perform that promotion.
+
+```yaml id="hash-specific-freeze-confirmation-readiness-draft"
+hash_specific_freeze_confirmation_readiness_draft:
+  status: prompt_prepared_not_confirmed
+  target_file: PROJECT_MASTER_TASKBOOK.md
+  target_status_before_confirmation: discussion_draft
+  target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  draft_freeze_content_hash_sha256: 495fcd55b637b6d9d8eb11695792ad47a6e1abd485d63172146e782f7efceee3
+  canonical_fields_manifest_sha256: 0a7dc3c33f5b9b2705fdadeab9a0052f74c403e7186e69acbdf4a3dbd9a48cb1
+  canonical_payload_json_sha256: 3c57b4b4922549cd7778d8f35cf6ff167740d5531d5b49468efd162e11e09510
+  receipt_storage_commit: 9fea935
+  policy_status_required:
+    - hash_policy: candidate_authority_accepted_for_review_only
+    - canonicalization_policy: candidate_authority_accepted_for_review_only
+    - boundary_policy: candidate_authority_accepted_for_review_only
+    - versioning_policy: candidate_authority_accepted_for_review_only
+  known_remaining_gates:
+    - explicit_P0_closure_or_no_open_P0_confirmation
+    - Commander_hash_specific_freeze_confirmation
+  non_authorization:
+    - does_not_promote_target_to_freeze_candidate
+    - does_not_close_P0
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_executor_run
+    - does_not_authorize_route_transition
+```
+
+Commander confirmation prompt draft:
+
+```text id="hash-specific-freeze-confirmation-prompt-draft"
+CONFIRM_FREEZE_CANDIDATE_FOR_HASH_ONLY
+
+Target:
+- PROJECT_MASTER_TASKBOOK.md
+- target raw snapshot sha256:
+  1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+- draft freeze content hash sha256:
+  495fcd55b637b6d9d8eb11695792ad47a6e1abd485d63172146e782f7efceee3
+- canonical fields manifest sha256:
+  0a7dc3c33f5b9b2705fdadeab9a0052f74c403e7186e69acbdf4a3dbd9a48cb1
+- canonical payload json sha256:
+  3c57b4b4922549cd7778d8f35cf6ff167740d5531d5b49468efd162e11e09510
+
+Meaning:
+- promote this exact Master Taskbook candidate to freeze_candidate review status
+- bind the confirmation to the exact hashes above
+- keep implementation, commit, push, executor run, route transition, and remote action unauthorized
+
+Does not authorize:
+- implementation
+- commit
+- push
+- executor run
+- route transition
+- remote write
+- release / deploy
 ```
 
 ---
@@ -563,7 +637,7 @@ canonical_copy_handling:
     path: FREEZE_CANDIDATE_REVIEW_PACKET.md
     role: non_authoritative_review_packet_companion
     current_git_tracking_status: tracked_in_local_baseline_commit
-    current_worktree_marker: post_baseline_reconciliation_edit_pending_commit
+    current_worktree_marker: hash_specific_confirmation_readiness_edit_pending_commit
     local_baseline_commit: f3b7420
   recommended_local_baseline_set:
     - PROJECT_MASTER_TASKBOOK.md
@@ -633,12 +707,10 @@ Not allowed:
 1. Review this packet for factual accuracy as a non-authoritative draft.
 2. Run or review a non-authoritative post-patch readiness review for the
    current unaccepted snapshot hash.
-3. If and only if separately authorized, commit this policy-acceptance packet
-   update.
-4. If and only if separately authorized, commit this canonical hash receipt
-   draft packet update.
-5. If and only if separately authorized, prepare a future request about
-   Commander hash-specific freeze-candidate confirmation.
+3. If and only if separately authorized, commit this hash-specific confirmation
+   readiness packet update.
+4. If and only if Commander chooses to freeze, issue the exact hash-specific
+   freeze-candidate confirmation text above.
 
 None of these next-step labels authorize file creation, status promotion,
 canonicalization, P0 closure, git action, runtime action, executor action,
