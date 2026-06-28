@@ -1,23 +1,22 @@
 # Freeze Candidate Review Packet Draft
 
 ```text id="non-authoritative-draft-banner"
-NON-AUTHORITATIVE DRAFT REVIEW PACKET.
-This packet does not establish freeze_candidate status, hash acceptance,
-P0 closure, Commander freeze confirmation, canonical custody, commit
-authorization, push authorization, executor authorization, bridge
-authorization, or runtime authorization. It records only the explicit
-candidate-authority-for-review-only policy acceptance scope stated below.
-This packet remains non-authoritative even when edited under a narrow local
-review-packet draft update authorization.
+HASH-SPECIFIC FREEZE CANDIDATE CONFIRMATION PACKET.
+This packet records Commander confirmation that the exact Master Taskbook hash
+identified below is promoted to freeze_candidate review status. It does not
+establish active authority, implementation authority, P0 closure, canonical
+custody beyond the recorded hash, commit authorization, push authorization,
+executor authorization, bridge authorization, or runtime authorization.
 ```
 
 ```yaml id="freeze-candidate-review-packet-summary"
 freeze_candidate_review_packet:
   document_type: freeze_candidate_review_packet
   id: colameta_master_taskbook_v1_freeze_candidate_review_packet
-  status: draft_packet
+  status: hash_specific_freeze_candidate_confirmation_recorded
   target_document: PROJECT_MASTER_TASKBOOK.md
-  target_document_status: discussion_draft
+  target_document_embedded_status: discussion_draft
+  target_review_status: freeze_candidate_confirmed_for_exact_hash
   project: ColaMeta
   observed_at: "2026-06-29"
   workspace: /home/jenn/src/colameta-dev
@@ -36,23 +35,27 @@ freeze_candidate_review_packet:
     status: created_locally_not_pushed
 
   non_authorization:
-    - does_not_promote_target_to_freeze_candidate
-    - does_not_authorize_status_promotion
-    - does_not_authorize_canonicalization
+    - does_not_promote_target_to_active
+    - does_not_authorize_status_promotion_beyond_freeze_candidate_for_exact_hash
+    - does_not_authorize_new_canonicalization
     - does_not_authorize_p0_closure
     - does_not_authorize_commit
     - does_not_authorize_push
     - does_not_authorize_executor_run
-    - does_not_authorize_local_file_edits_outside_this_packet
+    - does_not_authorize_PROJECT_MASTER_TASKBOOK_md_mutation
     - does_not_authorize_rehash_as_accepted_or_canonical
-    - does_not_make_this_packet_authoritative
+    - does_not_make_this_packet_active_runtime_authority
     - does_not_authorize_codex_router_bridge
     - does_not_authorize_goal_boundary_contract_runtime
 ```
 
-This packet is a local review packet draft. It is used to collect the evidence needed before `PROJECT_MASTER_TASKBOOK.md` may be considered for `freeze_candidate` status.
+This packet records the hash-specific Commander confirmation needed for
+`PROJECT_MASTER_TASKBOOK.md` to be treated as a `freeze_candidate` review
+target for the exact hashes below.
 
-It is not itself a freeze, commit request, push request, executor instruction, route transition, bridge activation, or runtime implementation authorization.
+It is not a commit request, push request, executor instruction, route
+transition, bridge activation, active-state promotion, or runtime
+implementation authorization.
 
 ---
 
@@ -61,10 +64,10 @@ It is not itself a freeze, commit request, push request, executor instruction, r
 ```yaml id="proposed-review-target"
 proposed_review_target:
   canonical_copy_candidate: PROJECT_MASTER_TASKBOOK.md
-  current_status: discussion_draft
-  possible_future_status_after_all_gates: freeze_candidate
+  embedded_status: discussion_draft
+  current_review_status: freeze_candidate_confirmed_for_exact_hash
   status_promotion_authority: Commander
-  status_promotion_scope: not_authorized_by_this_packet
+  status_promotion_scope: freeze_candidate_for_exact_hash_only
   currently_tracked_by_git: true
   local_baseline_commit: f3b7420
   current_worktree_marker: tracked_in_local_baseline_commit
@@ -74,9 +77,9 @@ proposed_review_target:
 Readiness note:
 
 ```text id="proposed-review-target-readiness-note"
-The target document is a proposed review target only. It cannot become a
-canonical copy until it is intentionally stored, tracked, and tied to an
-accepted canonical hash receipt.
+The target document content is not rewritten because the confirmation is bound
+to the exact raw snapshot hash. The freeze_candidate review status is recorded
+in this packet as an external confirmation record for that exact hash.
 ```
 
 ---
@@ -107,9 +110,11 @@ push, PR creation, release, tag, deployment, or any external write.
 
 ---
 
-## 3. Unaccepted Snapshot Hash
+## 3. Hash-Specific Snapshot Record
 
-This section records the current raw file hash as an unaccepted snapshot fingerprint for review. It is not a formal canonical hash receipt because canonical hash generation, independent verification, P0 closure, and Commander hash-specific freeze confirmation are not yet closed.
+This section records the current raw file hash and the hash-specific
+freeze_candidate confirmation. The raw file hash is still a snapshot
+fingerprint, not active authority or implementation approval.
 
 ```yaml id="unaccepted-snapshot-hash"
 unaccepted_snapshot_hash:
@@ -122,22 +127,22 @@ unaccepted_snapshot_hash:
   line_count_at_hash_time: 4614
   snapshot_command: sha256sum PROJECT_MASTER_TASKBOOK.md
   line_count_command: wc -l PROJECT_MASTER_TASKBOOK.md
-  canonical_hash_status: draft_receipt_generated_not_accepted
-  snapshot_acceptance_status: not_accepted
+  canonical_hash_status: commander_confirmed_for_freeze_candidate_review
+  snapshot_acceptance_status: accepted_for_freeze_candidate_review_only
   canonicalization_policy_status: candidate_authority_accepted_for_review_only
   hash_policy_status: candidate_authority_accepted_for_review_only
   versioning_policy_status: candidate_authority_accepted_for_review_only
   post_patch_sync_status: draft_packet_synced_to_current_unaccepted_snapshot
 ```
 
-Required before any future freeze-candidate promotion. These are not
-authorized by this packet:
+Required before any future active promotion or implementation use. These are
+not authorized by this packet:
 
 ```text id="hash-receipt-required-before-promotion"
 1. Confirm candidate-authoritative canonicalization policy.
 2. Confirm candidate-authoritative hash policy.
 3. Generate canonical hash receipt for the exact target file.
-4. Tie Commander freeze-candidate confirmation to the generated hash.
+4. Treat freeze_candidate as active authority.
 ```
 
 Hash freshness / invalidation rule:
@@ -165,17 +170,18 @@ hash_freshness:
 
 ---
 
-### 3.1 Canonical Hash Receipt Draft
+### 3.1 Canonical Hash Receipt Record
 
-`Canonical Hash Receipt Draft` = 规范哈希回执草稿.
+`Canonical Hash Receipt Record` = 规范哈希回执记录.
 
-This receipt draft records a deterministic candidate canonical hash for review.
-It is not a freeze confirmation, not an accepted canonical receipt, not P0
-closure, and not implementation authority.
+This receipt records the deterministic candidate canonical hash confirmed for
+freeze_candidate review status. It is not P0 closure, active status, or
+implementation authority.
 
 ```yaml id="canonical-hash-receipt-draft"
 canonical_hash_receipt_draft:
-  status: draft_generated_not_accepted
+  record_type: canonical_hash_receipt_record
+  status: commander_confirmed_for_freeze_candidate_review
   receipt_id: canonical_hash_receipt_draft_20260629_current_master
   target_file: PROJECT_MASTER_TASKBOOK.md
   target_status_at_receipt_time: discussion_draft
@@ -218,14 +224,14 @@ canonical_hash_receipt_draft:
     yaml_blocks_parsed_before_receipt: true
 
   non_authorization:
-    - does_not_promote_target_to_freeze_candidate
-    - does_not_accept_the_hash
+    - does_not_promote_target_to_active
+    - does_not_make_hash_active_authority
     - does_not_close_P0
     - does_not_authorize_commit
     - does_not_authorize_push
     - does_not_authorize_executor_run
     - does_not_authorize_route_transition
-    - does_not_make_packet_authoritative
+    - does_not_make_packet_active_runtime_authority
 
   invalidates_when:
     - PROJECT_MASTER_TASKBOOK.md content changes
@@ -239,19 +245,22 @@ canonical_hash_receipt_draft:
 
 ---
 
-### 3.2 Hash-Specific Freeze Confirmation Readiness Draft
+### 3.2 Hash-Specific Freeze Confirmation Record
 
-`Hash-Specific Freeze Confirmation Readiness Draft` = 指定哈希冻结确认就绪草稿.
+`Hash-Specific Freeze Confirmation Record` = 指定哈希冻结确认记录.
 
-This section prepares the exact confirmation language that would be needed if
-Commander later chooses to promote the current Master Taskbook candidate to
-`freeze_candidate`. It does not perform that promotion.
+This section records the exact Commander confirmation that promotes the current
+Master Taskbook candidate to `freeze_candidate` review status for the exact
+hashes listed below. It does not authorize implementation, commit, push,
+executor run, route transition, remote action, or active-state promotion.
 
 ```yaml id="hash-specific-freeze-confirmation-readiness-draft"
 hash_specific_freeze_confirmation_readiness_draft:
-  status: prompt_prepared_not_confirmed
+  status: commander_confirmed_for_exact_hash
+  commander_confirmation: CONFIRM_FREEZE_CANDIDATE_FOR_HASH_ONLY
   target_file: PROJECT_MASTER_TASKBOOK.md
   target_status_before_confirmation: discussion_draft
+  target_review_status_after_confirmation: freeze_candidate
   target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
   draft_freeze_content_hash_sha256: 495fcd55b637b6d9d8eb11695792ad47a6e1abd485d63172146e782f7efceee3
   canonical_fields_manifest_sha256: 0a7dc3c33f5b9b2705fdadeab9a0052f74c403e7186e69acbdf4a3dbd9a48cb1
@@ -263,10 +272,11 @@ hash_specific_freeze_confirmation_readiness_draft:
     - boundary_policy: candidate_authority_accepted_for_review_only
     - versioning_policy: candidate_authority_accepted_for_review_only
   known_remaining_gates:
-    - explicit_P0_closure_or_no_open_P0_confirmation
-    - Commander_hash_specific_freeze_confirmation
+    - formal_P0_closure_if_required_before_active_status
+    - active_status_promotion_if_ever_desired
+    - remote_push_if_ever_desired
   non_authorization:
-    - does_not_promote_target_to_freeze_candidate
+    - does_not_promote_target_to_active
     - does_not_close_P0
     - does_not_authorize_commit
     - does_not_authorize_push
@@ -315,7 +325,7 @@ policy_acceptance:
     status: candidate_authority_accepted_for_review_only
     accepted_scope: Hash Boundary Policy
     accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
-    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
+    freeze_candidate_status_requirement: satisfied_by_hash_specific_commander_confirmation
     protected_fields_include:
       - semantics_to_mechanics_translation_table
       - forbidden_claims_boundary_law
@@ -324,23 +334,23 @@ policy_acceptance:
     status: candidate_authority_accepted_for_review_only
     accepted_scope: Versioning Policy
     accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
-    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
+    freeze_candidate_status_requirement: satisfied_by_hash_specific_commander_confirmation
   boundary_policy:
     status: candidate_authority_accepted_for_review_only
     accepted_scope:
       - Semantics-to-Mechanics Translation Table
       - Forbidden Claims / Boundary Law
     accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
-    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
+    freeze_candidate_status_requirement: satisfied_by_hash_specific_commander_confirmation
   canonicalization_policy:
     status: candidate_authority_accepted_for_review_only
     accepted_scope: Freeze Process And Canonicalization
     accepted_by_commander_instruction: AUTHORIZE_CANDIDATE_AUTHORITY_POLICY_ACCEPTANCE_FOR_REVIEW_ONLY
-    required_before_status_promotion: separate Commander freeze-candidate confirmation for the exact future canonical hash.
+    freeze_candidate_status_requirement: satisfied_by_hash_specific_commander_confirmation
   review_use_only_non_authorization:
-    - does_not_establish_freeze_authority
-    - does_not_authorize_status_promotion
-    - does_not_authorize_canonicalization
+    - does_not_establish_active_authority
+    - does_not_authorize_status_promotion_beyond_freeze_candidate_for_exact_hash
+    - does_not_authorize_new_canonicalization
     - does_not_authorize_p0_closure
     - does_not_authorize_git_or_runtime_action
 ```
@@ -475,7 +485,7 @@ commander_discussion_only_acknowledgement:
     - discussion_only_reference
   non_authorization:
     - does_not_authorize_review_preparation
-    - does_not_authorize_status_promotion
+    - historically_did_not_authorize_status_promotion_at_that_step
     - does_not_authorize_file_mutation
     - does_not_authorize_rehash
     - does_not_authorize_canonicalization
@@ -490,7 +500,7 @@ commander_current_packet_sync_instruction:
   target_packet: FREEZE_CANDIDATE_REVIEW_PACKET.md
   target_master_file: PROJECT_MASTER_TASKBOOK.md
   target_master_unaccepted_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
-  status: narrow_local_packet_sync_only
+  status: historical_packet_sync_instruction_superseded_by_hash_specific_freeze_confirmation
   allowed:
     - read_current_PROJECT_MASTER_TASKBOOK_md
     - read_current_FREEZE_CANDIDATE_REVIEW_PACKET_md
@@ -500,7 +510,7 @@ commander_current_packet_sync_instruction:
     - record_non_authoritative_readiness_review_summary
   not_allowed:
     - modify_PROJECT_MASTER_TASKBOOK_md
-    - promote_PROJECT_MASTER_TASKBOOK_md_to_freeze_candidate
+    - historically_did_not_authorize_freeze_candidate_promotion_at_that_step
     - generate_canonical_hash_receipt
     - close_P0_authoritatively
     - accept_candidate_policy_authoritatively
@@ -525,7 +535,7 @@ commander_local_review_packet_draft_update_authorization:
     - clarify_p0_checklist_limits
     - clarify_cannot_prove_limits
     - clarify_existing_review_outcomes_as_non_authoritative
-  not_allowed:
+  historical_not_allowed_at_that_step:
     - modify_PROJECT_MASTER_TASKBOOK_md
     - create_delete_rename_or_copy_files
     - modify_plan_prompts_runner_tests_or_implementation_files
@@ -534,7 +544,7 @@ commander_local_review_packet_draft_update_authorization:
     - rehash_PROJECT_MASTER_TASKBOOK_as_accepted_or_canonical
     - treat_this_packet_as_approved_accepted_canonical_or_authoritative
     - close_satisfy_accept_downgrade_or_partially_satisfy_any_p0_gate
-    - generate_freeze_candidate_status_or_canonical_copy
+    - historically_did_not_authorize_freeze_candidate_status_or_canonical_copy
     - generate_implementation_taskbook_or_executor_task
     - activate_codex_router_bridge
     - promote_Goal_Boundary_Contract_to_runtime
@@ -575,11 +585,11 @@ packet_cannot_prove:
   - AGENTS OS resident-Agent identity, growth rights, relationship rights, or presence rights
   - policy acceptance beyond the recorded candidate-authority-for-review-only scope
   - P0 review closure
-  - Commander freeze-candidate confirmation
+  - active status promotion
   - that post-patch P1 findings are resolved or formally dispositioned
   - that local baseline commit f3b7420 has been pushed or accepted remotely
   - that canonical copy storage is final after post-baseline packet reconciliation
-  - that the draft freeze content hash is accepted or freeze-confirmed
+  - that the freeze-confirmed hash is active authority or implementation authority
 ```
 
 ---
@@ -597,17 +607,16 @@ review_outcomes:
   - run_non_authoritative_post_patch_readiness_review
   - reconcile_post_baseline_packet_facts
   - canonical_hash_receipt_draft_prepared
-  - confirm_exact_accepted_hash_as_freeze_candidate
+  - freeze_candidate_confirmed_for_exact_hash
 ```
 
 Outcome boundary:
 
 ```text id="review-outcome-boundary"
-No review outcome in this draft packet can by itself support status promotion.
-Any future status promotion would require canonical copy storage, accepted
-candidate policy, canonical hash receipt, explicit P0 closure, and Commander
-hash-specific confirmation. Until those separate gates are explicitly closed,
-the target document remains discussion_draft.
+This packet records hash-specific freeze_candidate confirmation for the exact
+hashes listed above. No review outcome in this packet supports active status,
+implementation, commit, push, executor run, route transition, remote action, or
+P0 closure.
 ```
 
 ---
@@ -628,7 +637,8 @@ canonical_copy_handling:
   target_document:
     path: PROJECT_MASTER_TASKBOOK.md
     role: canonical_copy_candidate
-    current_status: discussion_draft
+    embedded_status: discussion_draft
+    current_review_status: freeze_candidate_confirmed_for_exact_hash
     current_git_tracking_status: tracked_in_local_baseline_commit
     current_worktree_marker: tracked_in_HEAD_f3b7420
     local_baseline_commit: f3b7420
@@ -647,7 +657,6 @@ canonical_copy_handling:
     - do_not_copy_or_rename_for_this_step
     - do_not_create_duplicate_canonical_paths
   does_not_mean:
-    - freeze_candidate_status
     - active_status
     - accepted_canonical_hash_receipt_generated
     - policy_acceptance_beyond_recorded_candidate_authority_for_review_only
@@ -659,21 +668,21 @@ canonical_copy_handling:
   future_required_authorizations_not_granted_by_this_packet:
     - authorize_post_baseline_packet_reconciliation_commit_if_desired
     - authorize_policy_acceptance_beyond_recorded_scope_if_needed
-    - authorize_canonical_hash_receipt_acceptance_or_freeze_confirmation
-    - authorize_hash_specific_freeze_candidate_confirmation
+    - authorize_active_status_promotion_if_ever_desired
+    - authorize_remote_push_if_ever_desired
 ```
 
 Canonical copy handling boundary:
 
 ```text id="canonical-copy-handling-boundary"
 PROJECT_MASTER_TASKBOOK.md has been stored at the repo root in local baseline
-commit f3b7420 as the canonical-copy candidate. FREEZE_CANDIDATE_REVIEW_PACKET.md
-is its non-authoritative companion review packet. This local baseline commit
-does not promote the target to freeze_candidate, generate a canonical hash
-receipt, close P0, authorize push, or authorize runtime action.
+commit f3b7420 as the canonical-copy candidate. The later hash-specific
+Commander confirmation, not the local baseline commit itself, records
+freeze_candidate review status for the exact confirmed hashes. Neither action
+closes P0, authorizes push, or authorizes runtime action.
 ```
 
-Future Commander authorization language draft:
+Historical Commander authorization language draft:
 
 ```text id="canonical-copy-handling-authorization-draft"
 AUTHORIZE_CANONICAL_COPY_TRACKING_PREP_FOR_CURRENT_MASTER_SNAPSHOT_ONLY
@@ -690,7 +699,7 @@ Allowed:
   only if the Commander explicitly includes Git staging/tracking permission
 
 Not allowed:
-- freeze_candidate promotion
+- freeze_candidate promotion at that earlier tracking step
 - accepted canonical hash receipt status
 - P0 closure
 - additional policy acceptance beyond the recorded candidate-authority-for-review-only scope
@@ -707,10 +716,10 @@ Not allowed:
 1. Review this packet for factual accuracy as a non-authoritative draft.
 2. Run or review a non-authoritative post-patch readiness review for the
    current unaccepted snapshot hash.
-3. If and only if separately authorized, commit this hash-specific confirmation
-   readiness packet update.
-4. If and only if Commander chooses to freeze, issue the exact hash-specific
-   freeze-candidate confirmation text above.
+3. If and only if separately authorized, commit this hash-specific freeze
+   confirmation record packet update.
+4. If and only if separately authorized later, prepare any active-status or
+   remote-push request as a separate non-runtime decision.
 
 None of these next-step labels authorize file creation, status promotion,
 canonicalization, P0 closure, git action, runtime action, executor action,
