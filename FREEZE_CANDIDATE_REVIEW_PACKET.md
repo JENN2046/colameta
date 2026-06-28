@@ -118,7 +118,7 @@ unaccepted_snapshot_hash:
   line_count_at_hash_time: 4614
   snapshot_command: sha256sum PROJECT_MASTER_TASKBOOK.md
   line_count_command: wc -l PROJECT_MASTER_TASKBOOK.md
-  canonical_hash_status: not_generated
+  canonical_hash_status: draft_receipt_generated_not_accepted
   snapshot_acceptance_status: not_accepted
   canonicalization_policy_status: candidate_authority_accepted_for_review_only
   hash_policy_status: candidate_authority_accepted_for_review_only
@@ -157,6 +157,78 @@ hash_freshness:
     - P0 checklist would need separate authorized recheck
     - repository reality snapshot would need separate authorized refresh
     - Commander confirmation prompt would need separate authorized reissue
+```
+
+---
+
+### 3.1 Canonical Hash Receipt Draft
+
+`Canonical Hash Receipt Draft` = 规范哈希回执草稿.
+
+This receipt draft records a deterministic candidate canonical hash for review.
+It is not a freeze confirmation, not an accepted canonical receipt, not P0
+closure, and not implementation authority.
+
+```yaml id="canonical-hash-receipt-draft"
+canonical_hash_receipt_draft:
+  status: draft_generated_not_accepted
+  receipt_id: canonical_hash_receipt_draft_20260629_current_master
+  target_file: PROJECT_MASTER_TASKBOOK.md
+  target_status_at_receipt_time: discussion_draft
+  current_head: 168cb8d
+  current_head_subject: "docs: record candidate policy acceptance"
+  target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+
+  policy_basis:
+    hash_policy_status: candidate_authority_accepted_for_review_only
+    canonicalization_policy_status: candidate_authority_accepted_for_review_only
+    boundary_policy_status: candidate_authority_accepted_for_review_only
+    versioning_policy_status: candidate_authority_accepted_for_review_only
+
+  canonicalizer:
+    canonicalizer_version: ColaMeta.freeze_candidate.v1.manual-draft-20260629
+    input_rule: sha256("ColaMeta.freeze_candidate.v1\n" + canonical_json)
+    source_of_truth: hash_policy.canonical_fields
+    derived_views_are_authoritative: false
+    fail_closed_on_missing_canonical_field: true
+    canonical_json_rules:
+      - UTF-8
+      - JSON object with sorted mapping keys
+      - compact separators
+      - preserved list order
+      - source-path extracted canonical fields only
+
+  canonical_payload_summary:
+    canonical_fields_count: 36
+    canonical_fields_manifest_sha256: 0a7dc3c33f5b9b2705fdadeab9a0052f74c403e7186e69acbdf4a3dbd9a48cb1
+    canonical_payload_json_sha256: 3c57b4b4922549cd7778d8f35cf6ff167740d5531d5b49468efd162e11e09510
+    canonical_json_byte_count: 58942
+    draft_freeze_content_hash_sha256: 495fcd55b637b6d9d8eb11695792ad47a6e1abd485d63172146e782f7efceee3
+
+  verification_summary:
+    all_canonical_fields_extracted: true
+    missing_canonical_fields: []
+    target_raw_hash_matched_authorized_scope: true
+    yaml_blocks_parsed_before_receipt: true
+
+  non_authorization:
+    - does_not_promote_target_to_freeze_candidate
+    - does_not_accept_the_hash
+    - does_not_close_P0
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_executor_run
+    - does_not_authorize_route_transition
+    - does_not_make_packet_authoritative
+
+  invalidates_when:
+    - PROJECT_MASTER_TASKBOOK.md content changes
+    - hash_policy.canonical_fields changes
+    - canonicalization policy changes
+    - accepted candidate policy scope changes
+    - canonicalizer_version changes
+    - any canonical field extraction fails
+    - Commander confirmation references a different hash, scope, or boundary
 ```
 
 ---
@@ -206,8 +278,8 @@ Hash Boundary Policy, Freeze Process And Canonicalization, Semantics-to-Mechanic
 Translation Table, Forbidden Claims / Boundary Law, and Versioning Policy are
 accepted as candidate-authoritative policy language for review use only. This
 acceptance is not freeze authority and does not authorize status promotion,
-canonical hash receipt generation, P0 closure, git action, runtime action, or
-remote mutation.
+accepted canonical hash receipt status, P0 closure, git action, runtime action,
+or remote mutation.
 ```
 
 ---
@@ -433,7 +505,7 @@ packet_cannot_prove:
   - that post-patch P1 findings are resolved or formally dispositioned
   - that local baseline commit f3b7420 has been pushed or accepted remotely
   - that canonical copy storage is final after post-baseline packet reconciliation
-  - that the current unaccepted snapshot hash is canonical or accepted
+  - that the draft freeze content hash is accepted or freeze-confirmed
 ```
 
 ---
@@ -450,7 +522,7 @@ review_outcomes:
   - revise_and_rehash
   - run_non_authoritative_post_patch_readiness_review
   - reconcile_post_baseline_packet_facts
-  - proceed_to_canonical_hash_receipt_preparation
+  - canonical_hash_receipt_draft_prepared
   - confirm_exact_accepted_hash_as_freeze_candidate
 ```
 
@@ -503,7 +575,7 @@ canonical_copy_handling:
   does_not_mean:
     - freeze_candidate_status
     - active_status
-    - canonical_hash_receipt_generated
+    - accepted_canonical_hash_receipt_generated
     - policy_acceptance_beyond_recorded_candidate_authority_for_review_only
     - P0_closed
     - implementation_authorized
@@ -513,7 +585,7 @@ canonical_copy_handling:
   future_required_authorizations_not_granted_by_this_packet:
     - authorize_post_baseline_packet_reconciliation_commit_if_desired
     - authorize_policy_acceptance_beyond_recorded_scope_if_needed
-    - authorize_canonical_hash_receipt_generation
+    - authorize_canonical_hash_receipt_acceptance_or_freeze_confirmation
     - authorize_hash_specific_freeze_candidate_confirmation
 ```
 
@@ -545,7 +617,7 @@ Allowed:
 
 Not allowed:
 - freeze_candidate promotion
-- canonical hash receipt generation
+- accepted canonical hash receipt status
 - P0 closure
 - additional policy acceptance beyond the recorded candidate-authority-for-review-only scope
 - commit unless separately authorized
@@ -563,8 +635,8 @@ Not allowed:
    current unaccepted snapshot hash.
 3. If and only if separately authorized, commit this policy-acceptance packet
    update.
-4. If and only if separately authorized, prepare a future request about
-   canonical hash receipt handling.
+4. If and only if separately authorized, commit this canonical hash receipt
+   draft packet update.
 5. If and only if separately authorized, prepare a future request about
    Commander hash-specific freeze-candidate confirmation.
 
