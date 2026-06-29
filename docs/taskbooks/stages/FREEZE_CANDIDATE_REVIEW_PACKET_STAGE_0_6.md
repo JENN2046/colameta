@@ -1,32 +1,38 @@
-# Stage 0-6 Freeze Candidate Review Packet Draft
+# Stage 0-6 Freeze Candidate Review Packet
 
-```text id="stage-0-6-freeze-packet-draft-banner"
-NON-AUTHORITATIVE STAGE FREEZE PACKET DRAFT.
-This packet records a review-ready hash bundle for the Stage 0-6 Taskbook set.
-It does not promote any Stage Taskbook to freeze_candidate status, does not
-close P0 items, does not authorize implementation, and does not authorize
-commit, push, executor run, route transition, bridge activation, or delivery
-state promotion.
+```text id="stage-0-6-freeze-packet-confirmation-banner"
+HASH-SPECIFIC STAGE FREEZE CANDIDATE CONFIRMATION RECORD.
+This packet records Commander confirmation that the exact Stage 0-6 Taskbook
+candidate set identified below is promoted to freeze_candidate review status
+only. It does not close P0 items, does not authorize implementation, and does
+not authorize commit, push, executor run, route transition, bridge activation,
+or delivery state promotion.
 ```
 
 ```yaml id="stage-0-6-freeze-packet-summary"
 stage_0_6_freeze_candidate_review_packet:
   document_type: stage_0_6_freeze_candidate_review_packet
-  schema_version: stage_0_6_freeze_packet.discussion_draft.v1
-  status: discussion_draft
-  authority_status: planning_reference_only
+  schema_version: stage_0_6_freeze_packet.confirmation_record.v1
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  authority_status: review_status_confirmation_record_only
   target_stage_set: stage_0_6_thin_governed_loop
   project: ColaMeta
   workspace: /home/jenn/src/colameta-dev
   generated_at: "2026-06-29"
   generation_head: fd2f60a
   generation_head_subject: "docs: align stage taskbooks for freeze readiness"
+  packet_storage_head: 0fc3fcc
+  packet_storage_head_subject: "docs: add stage freeze packet draft"
+  current_observed_head: 0fc3fcc
   branch: main
   origin_main_observed: 6bf9a85
-  ahead_origin_main: 1
+  stage_manifest_generation_ahead_origin_main: 1
+  current_ahead_origin_main: 2
   remote_sync_status: local_ahead_remote
-  target_review_status_requested_by_this_packet: none
-  freeze_candidate_confirmation_status: not_requested
+  target_review_status_requested_by_this_packet: freeze_candidate_for_exact_hash_only
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_0_6_FREEZE_CANDIDATE_FOR_HASH_ONLY
+  confirmed_packet_draft_sha256_after_repo_reality_patch: de5e0b98f50a9b684629a788c1ec9f1b122f9fb8e30a2ff1695b4eb40c5dbfaf
   canonical_receipt_status: not_generated
   implementation_authority: false
   executor_authority: false
@@ -38,8 +44,9 @@ delivery: baseline reality, Master anchoring, Stage taskbook management,
 external taskbook import, bounded execution evidence, reviewer handoff, and
 review feedback intake.
 
-中文解释：这份 packet 只是把 Stage 0-6 这组任务书进入冻结审查前所需的 hash、
-范围、检查结果先收好。它不是冻结确认，不是执行授权，也不是远端 push 授权。
+中文解释：这份 packet 记录 Commander 已经把这个精确 hash 绑定的 Stage 0-6
+任务书集合确认为 `freeze_candidate` 审查状态。它不是 accepted，不是执行授权，
+也不是远端 push 授权。
 
 ---
 
@@ -49,17 +56,17 @@ review feedback intake.
 target_scope:
   source_authority_candidate:
     meaning: english_stage_taskbook_source_set
-    manifest_status: unaccepted_draft_snapshot
+    manifest_status: commander_confirmed_for_freeze_candidate_review_only
     manifest_sha256: 9e7d52f98dbbb94f3143b8a1d104b6285cc305acee1204c3ca5a4dc915ae46b0
     file_count: 8
   chinese_companion_candidate:
     meaning: chinese_reference_companion_set
-    manifest_status: unaccepted_draft_snapshot
+    manifest_status: commander_confirmed_for_freeze_candidate_review_only
     manifest_sha256: c669b2f73b34cb0efe7206ed6824f6a757dd908c741dce9566c669d4c9d62aed
     file_count: 9
   combined_candidate:
     meaning: english_source_plus_chinese_companions
-    manifest_status: unaccepted_draft_snapshot
+    manifest_status: commander_confirmed_for_freeze_candidate_review_only
     manifest_sha256: 1bc115edf7e74ede02543308fe4a42cebcbf120670315f4abfdc320793297f14
     file_count: 17
 ```
@@ -149,7 +156,7 @@ chinese_companion_candidate_files:
 
 ```yaml id="stage-0-6-readiness-checklist"
 readiness_checklist:
-  status: draft_review_record
+  status: confirmation_recorded_not_p0_closure
   p0_status: no_known_p0_after_latest_read_only_review
   checked:
     - stage_0_6_readiness_contract_present
@@ -168,7 +175,8 @@ readiness_checklist:
 ```
 
 `P0` means a blocker that must be fixed before freeze_candidate review can be
-requested. This checklist is a draft review record, not P0 closure.
+requested. This checklist is a confirmation-supporting review record, not P0
+closure.
 
 中文解释：这里的 P0 是“冻结前必须修”的问题。当前草稿记录显示没有已知 P0，
 但这个记录本身不是最终关门盖章。
@@ -179,7 +187,7 @@ requested. This checklist is a draft review record, not P0 closure.
 
 ```yaml id="stage-0-6-invalidation-rule"
 invalidation_rule:
-  invalidates_this_packet_draft_when:
+  invalidates_this_confirmation_record_when:
     - any_source_authority_candidate_file_changes
     - any_chinese_companion_candidate_file_changes
     - generation_head_changes_before_review_confirmation
@@ -205,7 +213,7 @@ invalidation_rule:
 
 ```yaml id="stage-0-6-allowed-review-outcomes"
 allowed_review_outcomes:
-  - READY_FOR_COMMANDER_FREEZE_CANDIDATE_CONFIRMATION_PROMPT
+  - FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH
   - RETURN_TO_DRAFT_FIXES
   - INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE
   - BLOCKED_NEEDS_EXPLICIT_SCOPE_DECISION
@@ -216,8 +224,8 @@ forbidden_outcomes:
   - PUSH_AUTHORIZED
 ```
 
-中文解释：这一步最多只能说“可以进入 Commander 冻结候选确认提示词”，不能说
-Stage 已经 accepted，也不能说可以执行或 push。
+中文解释：这一步最多只能说“这个精确 hash 的 Stage 0-6 冻结候选确认已经记录”，
+不能说 Stage 已经 accepted，也不能说可以执行或 push。
 
 ---
 
@@ -239,13 +247,12 @@ cannot_prove:
 
 ---
 
-## 9. Future Commander Confirmation Prompt Draft
+## 9. Commander Confirmation Record
 
-This draft prompt is not issued by this packet. It may be used later only after
-the Commander explicitly asks to move from packet draft to hash-specific freeze
-confirmation.
+This prompt was supplied by the Commander and matched the observed repository
+facts and manifest hashes before this confirmation record was written.
 
-```text id="future-commander-confirmation-prompt-draft"
+```text id="commander-confirmation-record"
 CONFIRM_STAGE_0_6_FREEZE_CANDIDATE_FOR_HASH_ONLY
 
 Target:

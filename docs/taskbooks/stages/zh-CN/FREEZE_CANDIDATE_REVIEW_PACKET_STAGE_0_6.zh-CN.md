@@ -3,24 +3,26 @@
 ```yaml id="stage-0-6-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_0_6.md
-  source_sha256: 337608fbff1f61ad093cbe758306ab05eec2abb3fd777bab8017bcf4b570d5ee
+  source_sha256: 94ea9101a120e0935e834533ed0315a6fe3e77e3d4ecb48db37fa6851e75b5ce
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_0_6_freeze_packet:
-  status: discussion_draft
+  status: hash_specific_freeze_candidate_confirmation_recorded
   generated_from_head: fd2f60a
+  packet_storage_head: 0fc3fcc
+  current_observed_head: 0fc3fcc
 ```
 
 ## 1. 这份文件是什么
 
-这是一份中文 companion，也就是英文 Stage 0-6 freeze packet 草稿的完整中文解释版。
+这是一份中文 companion，也就是英文 Stage 0-6 freeze packet 确认记录的完整中文解释版。
 
 `Freeze Candidate Review Packet` 中文可以理解为“冻结候选审查包”。它的作用是：
 把一组准备进入冻结审查的文件、hash、范围、检查结论、不可证明事项、失效规则收在
-一起，方便 Commander 后续做精确确认。
+一起，并记录 Commander 对这个精确 hash 集合的冻结候选审查状态确认。
 
-它不是冻结确认，不是执行授权，不是 commit 授权，不是 push 授权，也不是
-executor run 授权。
+它记录的是 `freeze_candidate` 审查状态确认，不是 accepted，不是执行授权，
+不是 commit 授权，不是 push 授权，也不是 executor run 授权。
 
 ## 2. 当前绑定的现实
 
@@ -30,14 +32,22 @@ executor run 授权。
 fd2f60a docs: align stage taskbooks for freeze readiness
 ```
 
+这份 packet 草稿自身存放于本地提交：
+
+```text
+0fc3fcc docs: add stage freeze packet draft
+```
+
 当前观察到：
 
 - 分支是 `main`；
 - `origin/main` 是 `6bf9a85`；
-- 本地比远端 ahead 1；
-- 这个 packet 草稿没有授权 push；
-- 这个 packet 草稿没有授权 executor；
-- 这个 packet 草稿没有把 Stage 0-6 变成 accepted。
+- Stage manifest 生成时，本地比远端 ahead 1；
+- packet 存放后，当前本地比远端 ahead 2；
+- 这个 packet 记录了 Stage 0-6 的 hash-specific freeze_candidate 审查状态确认；
+- 这个 packet 没有授权 push；
+- 这个 packet 没有授权 executor；
+- 这个 packet 没有把 Stage 0-6 变成 accepted。
 
 ## 3. 三个 hash 集合是什么意思
 
@@ -115,10 +125,10 @@ hash 是：
 
 ## 6. 允许的审查结果
 
-这份 packet 草稿后续最多允许导向这些结果：
+这份 packet 确认记录后续最多允许导向这些结果：
 
-- `READY_FOR_COMMANDER_FREEZE_CANDIDATE_CONFIRMATION_PROMPT`
-  = 可以生成 Commander 冻结候选确认提示词；
+- `FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH`
+  = 这个精确 hash 的冻结候选确认已经记录；
 - `RETURN_TO_DRAFT_FIXES`
   = 返回草稿修复；
 - `INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE`
@@ -145,9 +155,9 @@ hash 是：
 - 中文翻译没有任何可争议表达；
 - 没有额外授权也能生成 canonical hash receipt。
 
-## 8. 未来可能使用的 Commander 确认提示词
+## 8. 已使用的 Commander 确认口令
 
-未来如果 Commander 决定进入 Stage 0-6 冻结候选确认，可以使用英文源文件里的
-`CONFIRM_STAGE_0_6_FREEZE_CANDIDATE_FOR_HASH_ONLY` 草稿。
+Commander 已经使用英文源文件里的
+`CONFIRM_STAGE_0_6_FREEZE_CANDIDATE_FOR_HASH_ONLY` 口令确认这个精确 hash 集合。
 
-但现在这份中文 companion 不发出确认，也不代表 Commander 已经确认。
+这份中文 companion 只是解释确认记录，不增加额外授权。
