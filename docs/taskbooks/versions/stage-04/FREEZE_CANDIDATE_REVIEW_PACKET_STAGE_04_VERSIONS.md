@@ -35,14 +35,14 @@ stage_04_version_set_freeze_candidate_review_packet:
   origin_main_observed_local_tracking_ref_full: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   ahead_origin_main_from_local_refs: 34
   behind_origin_main_from_local_refs: 0
-  packet_storage_head: pending_after_local_commit
-  packet_storage_head_full: pending_after_local_commit
-  packet_storage_head_subject: pending_after_local_commit
-  repo_reality_patch_commit_head: pending_after_repo_reality_patch
-  repo_reality_patch_commit_head_full: pending_after_repo_reality_patch
-  current_observed_head: d814040
-  current_observed_head_full: d814040b98dadebb60b6c2cb7fa6d1b2b1240ec4
-  current_ahead_origin_main_from_local_refs: 34
+  packet_storage_head: a22f9cc
+  packet_storage_head_full: a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9
+  packet_storage_head_subject: "docs: add stage 4 version freeze packet draft"
+  repo_reality_patch_commit_head: pending_until_after_this_repo_reality_patch_commit
+  repo_reality_patch_commit_head_full: pending_until_after_this_repo_reality_patch_commit
+  current_observed_head: a22f9cc
+  current_observed_head_full: a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9
+  current_ahead_origin_main_from_local_refs: 35
   current_behind_origin_main_from_local_refs: 0
   live_remote_status_not_validated: true
   worktree_status_at_generation: clean

@@ -3,7 +3,7 @@
 ```yaml id="stage-04-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-04/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_04_VERSIONS.md
-  source_sha256: a952565a32d965c02dffca1bd0233daaf5c9c7e47f92dd285c9447904304e3df
+  source_sha256: f26633ed2d121b4092e8a56bdd0ec2846fb4a530d2489599298f88dd3a7010a7
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_04_version_set_freeze_candidate_review_packet:
@@ -15,6 +15,9 @@ stage_04_version_set_freeze_candidate_review_packet:
   confirmation_token: not_provided
   commander_confirmation_prompt_status: not_generated
   generation_head: d814040
+  packet_storage_head: a22f9cc
+  current_observed_head: a22f9cc
+  current_ahead_origin_main_from_local_refs: 35
   source_authority_candidate_manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
   chinese_companion_candidate_manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
   combined_candidate_manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
@@ -50,6 +53,20 @@ transition。
 - 本地相对 `origin/main` behind：0；
 - 生成时 worktree：clean；
 - 没有验证 live remote 最新状态。
+
+这份 packet 草稿被写入本地 Git 后的当前观察现实是：
+
+- packet storage HEAD：`a22f9cc`；
+- packet storage HEAD 完整值：`a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9`；
+- packet storage HEAD 主题：`docs: add stage 4 version freeze packet draft`；
+- current observed HEAD：`a22f9cc`；
+- current observed HEAD 完整值：`a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9`；
+- 当前本地相对 `origin/main` ahead：35；
+- 当前本地相对 `origin/main` behind：0；
+- 当前 worktree：clean。
+
+生成时 ahead 34 是历史事实；packet 被本地 commit 存储后，当前本地 ahead 变为
+35。这个补充只更新仓库现实记录，不产生 freeze、授权或状态推进效果。
 
 ## 3. 目标范围
 
