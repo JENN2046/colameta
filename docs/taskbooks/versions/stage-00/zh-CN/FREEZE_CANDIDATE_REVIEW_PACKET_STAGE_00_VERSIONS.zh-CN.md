@@ -1,37 +1,42 @@
-# Stage 0 Version 集合冻结候选审查包草稿
+# Stage 0 Version 集合冻结候选确认记录
 
 ```yaml id="stage-00-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_00_VERSIONS.md
-  source_sha256: 722eaf55299e776b55bb2756e76ad7a696750f7f004db82ad5e6e53b1e788128
+  source_sha256: b3d838f5229a94e88dbaa405a0f65ae76f5208660ab000c1eecd777090897acc
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_00_version_set_freeze_candidate_review_packet:
   target_stage_id: stage_00_baseline_closeout
   target_version_set: stage_00_versions_v0_1_to_v0_5
-  status: packet_draft
-  authority_status: non_authoritative_review_packet_draft
-  freeze_candidate_confirmation_status: not_confirmed
-  commander_confirmation_prompt_status: not_generated
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  authority_status: review_status_confirmation_record_only
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_00_VERSION_SET_FREEZE_CANDIDATE_FOR_HASH_ONLY
+  commander_confirmation_prompt_status: commander_confirmed
   generation_head: 022a2be
+  packet_storage_head: e30b908
+  current_observed_head_at_confirmation: e30b908
+  confirmed_packet_draft_sha256: 722eaf55299e776b55bb2756e76ad7a696750f7f004db82ad5e6e53b1e788128
+  confirmed_source_authority_candidate_manifest_sha256: 8b5dcc59582786e1cee2075bcdf292b319c66252d255f8d6a155952924473ef9
 ```
 
 这是一份中文 companion，也就是“中文阅读 companion”。它帮助 Commander 用中文
-完整理解英文 packet 草稿，但不替代英文源文件，也不产生独立权威。
+完整理解英文确认记录，但不替代英文源文件，也不产生独立权威。
 
 ## 1. 这份 packet 是什么
 
-`Freeze Candidate Review Packet Draft` = 冻结候选审查包草稿。中文意思是：
-把 Stage 0 的 Version 任务书集合、hash、审查结果、失效规则和不能证明的事项
-集中整理出来，方便后续做精确 hash 绑定的 Commander 确认。
+`Confirmation Record` = 确认记录。中文意思是：Commander 已经按精确 hash
+确认这组 Stage 0 Version 任务书进入 `freeze_candidate` 审查状态。
 
-它现在只是草稿：
+它现在记录的状态是：
 
-- 不把 Version 任务书提升到 `freeze_candidate`；
+- 只把这一个精确 hash 绑定的 Version 集合提升到 `freeze_candidate` 审查状态；
 - 不关闭 P0；
 - 不授权实现；
 - 不授权 commit；
 - 不授权 push；
+- 不授权 fetch / pull；
 - 不授权 executor run；
 - 不授权 route transition；
 - 不授权远端写入；
@@ -43,7 +48,7 @@ stage_00_version_set_freeze_candidate_review_packet:
 
 ## 2. 当前仓库现实
 
-这份 packet 草稿生成时的本地现实是：
+这份 packet 确认记录绑定的本地现实是：
 
 - 项目：ColaMeta；
 - 项目目录：`/home/jenn/src/colameta-dev`；
@@ -51,10 +56,15 @@ stage_00_version_set_freeze_candidate_review_packet:
 - generation HEAD：`022a2be`；
 - generation HEAD 完整值：`022a2be5937206345c54692caf531830cc5166e2`；
 - generation HEAD 主题：`docs: align stage 0 version taskbook readiness`；
+- packet storage HEAD：`e30b908`；
+- packet storage HEAD 完整值：`e30b9085063271bea053b9ddaedafcf623c66c39`；
+- current observed HEAD at confirmation：`e30b908`；
 - 本地 `origin/main` tracking ref：`018ff63`；
-- 本地相对 `origin/main` ahead：6；
+- packet 生成时本地相对 `origin/main` ahead：6；
+- 确认时本地相对 `origin/main` ahead：7；
 - 本地相对 `origin/main` behind：0；
 - 生成时 worktree：clean；
+- 确认前 worktree：clean；
 - 没有验证 live remote 最新状态。
 
 `local tracking ref` = 本地远端跟踪引用。中文意思是：这里的 `origin/main` 是
@@ -109,7 +119,8 @@ f22ee3ed1619bc969e6410c836c43fe9a525715253bf4e6993d3f5823b36c6c6
 
 ## 5. 英文源文件候选集合
 
-英文源文件是后续可能进入 freeze review 的 source-authority candidate：
+英文源文件是本次 hash-specific freeze_candidate 审查状态的 source-authority
+candidate：
 
 | 文件 | hash |
 | --- | --- |
@@ -119,8 +130,8 @@ f22ee3ed1619bc969e6410c836c43fe9a525715253bf4e6993d3f5823b36c6c6
 | `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_4_EXECUTOR_SESSION_HEAD_CLASSIFICATION_REPORT.md` | `85c2ed6edf60cb96bd8a29230c117826b11a95229a1178a38f9ae7d042d00f42` |
 | `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_5_LOCAL_REMOTE_BASELINE_REPORT.md` | `a5a1a10aa0c0d73180399a1aa22e50d12a1b1215e762eb9d751299cdd9254bf0` |
 
-`source-authority candidate` = 候选源权威。中文意思是：如果以后要做 freeze，
-这些英文源文件才是被 hash 绑定的主对象。
+`source-authority candidate` = 候选源权威。中文意思是：本次确认绑定的主对象是
+这些英文源文件，而不是中文 companion。
 
 ## 6. 中文 companion 候选集合
 
@@ -140,7 +151,7 @@ f22ee3ed1619bc969e6410c836c43fe9a525715253bf4e6993d3f5823b36c6c6
 
 ## 7. 就绪审查结果
 
-这份 packet 记录的是一轮非权威就绪审查：
+这份 packet 记录的是支持确认记录的一轮就绪审查：
 
 - P0：未发现已知 P0；
 - P1：已在 packet 草稿前处理；
@@ -158,15 +169,16 @@ f22ee3ed1619bc969e6410c836c43fe9a525715253bf4e6993d3f5823b36c6c6
 - packet 生成前 `git diff --check` 通过。
 
 `P0` = 必须修，否则不能进入 freeze_candidate。中文意思是：它是冻结前硬阻断。
-这里说“未发现已知 P0”不是最终盖章，只是当前审查记录。
+这里说“未发现已知 P0”支持本次确认记录，但不等于用这份 packet 自己关闭 P0。
 
 ## 8. 失效规则
 
-发生以下任意情况，这份 packet 草稿失效：
+发生以下任意情况，这份确认记录失效：
 
 - 任一英文源文件变化；
 - 任一中文 companion 变化；
-- 在 hash-specific confirmation 之前 generation HEAD 变化；
+- 已确认的 packet draft hash 不再匹配记录里的 draft hash；
+- 已确认的 manifest hash 不再匹配记录里的 manifest hash；
 - Master 绑定变化；
 - Stage 绑定变化；
 - Stage 0-6 freeze packet 绑定变化；
@@ -174,16 +186,17 @@ f22ee3ed1619bc969e6410c836c43fe9a525715253bf4e6993d3f5823b36c6c6
 - canonicalization policy 变化；
 - 审查发现新 P0；
 - Version set 范围变化；
-- packet wording 被修改到足以影响审查结论。
+- confirmation record wording 被修改到足以影响审查结论。
 
 失效后必须重新计算文件 hash、manifest hash，重新做 readiness review，重新生成
-packet 草稿。如果仍然想 freeze，还要重新请求 hash-specific Commander confirmation。
+确认记录。如果仍然想保留 freeze_candidate 状态，还要重新请求 hash-specific
+Commander confirmation。
 
 ## 9. 允许的审查结果
 
-这份 packet 之后允许的审查输出只有：
+这份 packet 当前记录的允许审查输出是：
 
-- `READY_FOR_HASH_SPECIFIC_COMMANDER_CONFIRMATION_PROMPT`
+- `FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH`
 - `RETURN_TO_DRAFT_FIXES`
 - `INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE`
 - `BLOCKED_NEEDS_EXPLICIT_SCOPE_DECISION`
@@ -196,15 +209,15 @@ packet 草稿。如果仍然想 freeze，还要重新请求 hash-specific Comman
 - `EXECUTOR_RUN_AUTHORIZED`
 - `PUSH_AUTHORIZED`
 
-中文解释：如果这份 packet 保持有效，下一步最多只是生成一份精确 hash 绑定的
-Commander 确认 prompt。真正状态变化仍要 Commander 明确确认。
+中文解释：本次已经记录的是“这个精确 hash 集合进入 freeze_candidate 审查状态”。
+如果文件、范围或绑定变化，就必须重新确认。
 
 ## 10. 不能证明什么
 
 这份 packet 不能证明：
 
 - live remote 最新状态，因为没有授权 fetch 或远端探测；
-- runtime 服务健康，因为 packet 草稿不要求服务探测；
+- runtime 服务健康，因为确认记录不要求服务探测；
 - executor 安全可运行，因为没有授权 executor run；
 - 实现正确性，因为这些 Version Taskbook 仍是计划文档；
 - delivery state accepted，因为没有授权 Delivery State Gate transition；
@@ -226,7 +239,7 @@ Commander 确认 prompt。真正状态变化仍要 Commander 明确确认。
 - release；
 - deploy；
 - delivery state transition；
-- freeze_candidate promotion；
+- freeze_candidate promotion for any other hash or scope；
 - P0 closure。
 
 `future_required_checks_not_authorized_actions` = 未来需要做的检查，不是当前授权。
