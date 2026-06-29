@@ -62,6 +62,7 @@ stage_companion_freeze_readiness_note:
 | `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md` | `docs/taskbooks/versions/stage-00/zh-CN/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.zh-CN.md` | `companion_draft` | Stage 0 / v0.2 中文 companion 已生成，尚未授权执行或跑测试。 |
 | `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_3_RUNTIME_FRESHNESS_REPORT.md` | `docs/taskbooks/versions/stage-00/zh-CN/VERSION_STAGE_00_V0_3_RUNTIME_FRESHNESS_REPORT.zh-CN.md` | `companion_draft` | Stage 0 / v0.3 中文 companion 已生成，尚未授权执行、重启或 reload。 |
 | `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_4_EXECUTOR_SESSION_HEAD_CLASSIFICATION_REPORT.md` | `docs/taskbooks/versions/stage-00/zh-CN/VERSION_STAGE_00_V0_4_EXECUTOR_SESSION_HEAD_CLASSIFICATION_REPORT.zh-CN.md` | `companion_draft` | Stage 0 / v0.4 中文 companion 已生成，尚未授权执行、session cleanup 或 executor dispatch。 |
+| `docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_5_LOCAL_REMOTE_BASELINE_REPORT.md` | `docs/taskbooks/versions/stage-00/zh-CN/VERSION_STAGE_00_V0_5_LOCAL_REMOTE_BASELINE_REPORT.zh-CN.md` | `companion_draft` | Stage 0 / v0.5 中文 companion 已生成，尚未授权 fetch、push 或 route transition。 |
 | `.colameta/plan.json` | `.colameta/plan.zh-CN.md` | `companion_draft` | 机器计划 JSON 的中文可读镜像已生成。 |
 | `.colameta/prompts/v1.0.md` | `.colameta/prompts/zh-CN/v1.0.zh-CN.md` | `companion_draft` | Version prompt 中文 companion 已生成。 |
 | `.colameta/prompts/v1.1.md` | `.colameta/prompts/zh-CN/v1.1.zh-CN.md` | `companion_draft` | Version prompt 中文 companion 已生成。 |
