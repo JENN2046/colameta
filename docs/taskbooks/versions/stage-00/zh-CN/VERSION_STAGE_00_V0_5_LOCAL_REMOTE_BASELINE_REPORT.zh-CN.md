@@ -3,7 +3,7 @@
 ```yaml id="version-stage-00-v0-5-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_5_LOCAL_REMOTE_BASELINE_REPORT.md
-  source_sha256: cfbfb42286855774ba472a59d5e853f8199e848067b3c1f1dc0e13e791409f67
+  source_sha256: a5a1a10aa0c0d73180399a1aa22e50d12a1b1215e762eb9d751299cdd9254bf0
   translation_status: companion_draft
   authority_status: planning_reference_only
 version_execution_taskbook:

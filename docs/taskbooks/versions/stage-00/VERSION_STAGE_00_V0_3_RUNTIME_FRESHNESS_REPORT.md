@@ -30,7 +30,7 @@ version_execution_taskbook:
   created_from_head_meaning: historical_creation_baseline_not_execution_or_freeze_snapshot
   created_from_head_subject: "docs: add validation truth source version taskbook"
   origin_main_observed: 018ff63
-  remote_sync_status_at_creation: local_ahead_remote
+  local_tracking_ref_sync_status_at_creation: local_ahead_remote_tracking_ref
   local_ahead_origin_main_at_creation: 2
 ```
 
@@ -58,11 +58,11 @@ parent_binding:
     review_status: hash_specific_freeze_candidate_confirmation_recorded
   previous_version_taskbook_refs:
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
-      raw_snapshot_sha256: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
+      raw_snapshot_sha256: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
       version_id: stage_00_v0_1_repository_runtime_reality_snapshot
       status: local_baseline_commit_not_pushed_at_creation
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md
-      raw_snapshot_sha256: c2d903ce992e96f02a1672c61269a0a990cb8a163db7b8c56ccec4ccc68fcb26
+      raw_snapshot_sha256: 52adaf2a391081ef73a7dd1f91f1af48d8daea546da80232b9b3afe2ebbc2ec8
       version_id: stage_00_v0_2_validation_truth_source_report
       status: local_baseline_commit_not_pushed_at_creation
   supports_project_goal: true
@@ -114,8 +114,8 @@ execution_envelope_candidate:
     master_taskbook_hash: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
     stage_taskbook_hash: 12103877ba181c48056299b800c546e55ac7f68b7df82f4f657a4bd2f0e91489
     stage_freeze_packet_hash: 94ea9101a120e0935e834533ed0315a6fe3e77e3d4ecb48db37fa6851e75b5ce
-    previous_v0_1_taskbook_hash: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
-    previous_v0_2_taskbook_hash: c2d903ce992e96f02a1672c61269a0a990cb8a163db7b8c56ccec4ccc68fcb26
+    previous_v0_1_taskbook_hash: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
+    previous_v0_2_taskbook_hash: 52adaf2a391081ef73a7dd1f91f1af48d8daea546da80232b9b3afe2ebbc2ec8
   task_goal_ref: task_goal.primary_goal
   definition_of_good:
     - runtime freshness report exists at the declared reporting destination
@@ -244,8 +244,8 @@ acceptance_commands:
   preflight_read_only:
     - git status --short --branch
     - git rev-parse HEAD
-    - git rev-parse origin/main
-    - git rev-list --left-right --count origin/main...HEAD
+    - git rev-parse origin/main || true
+    - git rev-list --left-right --count origin/main...HEAD || true
     - test -x /home/jenn/tools/colameta/.venv/bin/colameta
   runtime_inventory:
     - readlink -f /home/jenn/tools/colameta/.venv/bin/colameta
@@ -264,11 +264,17 @@ If `curl` fails because the service is down, the report must record
 failure from aborting evidence capture. The report must not restart the service
 or convert the failure into a pass.
 
+If the local `origin/main` tracking ref is unavailable, the report must record
+`known_unknown` for local tracking ref context; it must not auto-fetch or contact
+the remote to fill the gap.
+
 Process command-line evidence from `ps -ef` must be redacted before it is
 recorded in any report. Reports must not include secrets, tokens, credential
 paths, private environment values, or unrelated process details.
 
 中文解释：这些命令只能观察。服务不可用就写不可用或未知，不能顺手重启。
+本地 `origin/main` 跟踪引用不可用时，也只能写 `known_unknown`，不能自动 `fetch`
+或联系远端。
 
 ---
 

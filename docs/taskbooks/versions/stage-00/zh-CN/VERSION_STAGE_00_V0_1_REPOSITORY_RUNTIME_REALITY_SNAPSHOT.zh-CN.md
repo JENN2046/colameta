@@ -3,7 +3,7 @@
 ```yaml id="version-stage-00-v0-1-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
-  source_sha256: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
+  source_sha256: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
   translation_status: companion_draft
   authority_status: planning_reference_only
 version_execution_taskbook:
@@ -58,7 +58,7 @@ Master 或 Stage 的边界。
 - 当前分支；
 - 当前 HEAD；
 - `origin/main`；
-- 本地和远端是否同步；
+- 本地与本地 `origin/main` 跟踪引用是否同步；
 - worktree 是否干净；
 - 是否有 untracked 文件；
 - 稳定服务目录 `/home/jenn/tools/colameta` 是否存在；
@@ -119,20 +119,21 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 
 - `git status --short --branch`
 - `git rev-parse HEAD`
-- `git rev-parse origin/main`
-- `git rev-list --left-right --count origin/main...HEAD`
+- `git rev-parse origin/main || true`
+- `git rev-list --left-right --count origin/main...HEAD || true`
 - `test -x /home/jenn/tools/colameta/.venv/bin/colameta`
 - `git log -1 --oneline`
 - `git diff --name-status`
 - `sha256sum PROJECT_MASTER_TASKBOOK.md docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md`
-- `curl -fsS http://127.0.0.1:8801/api/status`
+- `curl -fsS http://127.0.0.1:8801/api/status || true`
 - `git diff --check` 针对未来报告文件
 - `rg -n "known_unknowns|not_validated|remaining_risks|commands_run"` 针对未来报告文件
 - `rg -n "source_document|source_sha256|known_unknowns|not_validated|remaining_risks"` 针对未来中文报告文件
 
 这些命令现在只是候选命令，不代表已经执行，也不代表已经授权执行。
 
-如果服务接口不可读，不能假装通过，必须写成 known unknown。
+如果本地 `origin/main` 跟踪引用或服务接口不可读，不能假装通过，必须写成
+known unknown 或 unavailable；不能自动 `fetch`、重启服务、reload 代码或联系远端补齐。
 
 `known unknown` = 已知未知项。中文意思是：我们知道这件事还没确认，并且要写明
 为什么未知、怎样才能确认。

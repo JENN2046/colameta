@@ -3,7 +3,7 @@
 ```yaml id="version-stage-00-v0-4-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_4_EXECUTOR_SESSION_HEAD_CLASSIFICATION_REPORT.md
-  source_sha256: e7efc8b3560c8e3476d5ebeb9bc44659e74a95c725911ee82eaa27a33643452c
+  source_sha256: 85c2ed6edf60cb96bd8a29230c117826b11a95229a1178a38f9ae7d042d00f42
   translation_status: companion_draft
   authority_status: planning_reference_only
 version_execution_taskbook:
@@ -102,8 +102,8 @@ metadata、证据不足的 unknown，还是没有 mismatch。
 
 - `git status --short --branch`
 - `git rev-parse HEAD`
-- `git rev-parse origin/main`
-- `git rev-list --left-right --count origin/main...HEAD`
+- `git rev-parse origin/main || true`
+- `git rev-list --left-right --count origin/main...HEAD || true`
 - `test -e .colameta/runtime/executor-session.json && sha256sum ... || true`
 - `curl -fsS http://127.0.0.1:8801/api/status || true`
 - `rg -n "active_operation_head_mismatch|completed_idle_stale_session|unknown_head_mismatch|head_mismatch|executor_session_head_mismatch" runner/executor_session.py runner/web_console.py runner/web_console_presenter.py tests/test_executor_session_head_mismatch.py .colameta/prompts/v1.10.md`
@@ -115,6 +115,8 @@ metadata、证据不足的 unknown，还是没有 mismatch。
 
 如果 session 文件或 status endpoint 不可用，报告必须写成 known_unknown 或 unavailable，
 不能顺手创建、清理、重写或删除 session metadata。
+如果本地 `origin/main` 跟踪引用不存在，报告必须写成 `known_unknown`，不能自动
+`fetch` 或联系远端。
 
 ## 7. 证据包是什么意思
 

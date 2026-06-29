@@ -28,7 +28,7 @@ version_execution_taskbook:
   created_from_head_meaning: historical_creation_baseline_not_execution_or_freeze_snapshot
   created_from_head_subject: "docs: add stage 0 reality snapshot version taskbook"
   origin_main_observed: 018ff63
-  remote_sync_status_at_creation: local_ahead_remote
+  local_tracking_ref_sync_status_at_creation: local_ahead_remote_tracking_ref
   local_ahead_origin_main_at_creation: 1
 ```
 
@@ -56,7 +56,7 @@ parent_binding:
     review_status: hash_specific_freeze_candidate_confirmation_recorded
   previous_version_taskbook_ref:
     path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
-    raw_snapshot_sha256: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
+    raw_snapshot_sha256: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
     version_id: stage_00_v0_1_repository_runtime_reality_snapshot
     status: local_baseline_commit_not_pushed_at_creation
   supports_project_goal: true
@@ -107,7 +107,7 @@ execution_envelope_candidate:
     master_taskbook_hash: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
     stage_taskbook_hash: 12103877ba181c48056299b800c546e55ac7f68b7df82f4f657a4bd2f0e91489
     stage_freeze_packet_hash: 94ea9101a120e0935e834533ed0315a6fe3e77e3d4ecb48db37fa6851e75b5ce
-    previous_version_taskbook_hash: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
+    previous_version_taskbook_hash: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
   task_goal_ref: task_goal.primary_goal
   definition_of_good:
     - validation truth-source report exists at the declared reporting destination
@@ -115,6 +115,8 @@ execution_envelope_candidate:
     - report lists validation commands available without claiming they ran
     - report records commands_run and commands_not_run separately
     - report records validation_not_run_reason where applicable
+    - report records validation_inconsistent_or_none explicitly
+    - report covers executor report status vocabulary if observable
     - report does not map PASSED, COMPLETED, BLOCKED, or VERSION_PASSED into delivery_state
   allowed_autonomy_after_explicit_authorization:
     - local read-only inspection
@@ -136,6 +138,7 @@ allowed_files:
     - PROJECT_MASTER_TASKBOOK.zh-CN.md
     - docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md
     - docs/taskbooks/stages/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_0_6.md
+    - docs/taskbooks/**
     - docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
     - docs/taskbooks/versions/stage-00/zh-CN/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.zh-CN.md
     - docs/taskbooks/CHINESE_COMPANION_POLICY.md
@@ -143,6 +146,7 @@ allowed_files:
     - .colameta/plan.json
     - .colameta/plan.zh-CN.md
     - .colameta/state.json
+    - .colameta/prompts/**
     - runner/**
     - tests/**
     - pyproject.toml
@@ -206,6 +210,13 @@ evidence_collection_scope:
     - labels_observed
     - labels_not_backed_by_current_command_evidence
     - validation_not_run_reason
+    - validation_inconsistent_or_none
+  executor_report_status_vocabulary:
+    - executed
+    - validated
+    - blocked
+    - failed
+    - stale
   known_unknowns:
     - unknown_name
     - why_unknown
@@ -225,24 +236,29 @@ acceptance_commands:
   preflight_read_only:
     - git status --short --branch
     - git rev-parse HEAD
-    - git rev-parse origin/main
-    - git rev-list --left-right --count origin/main...HEAD
+    - git rev-parse origin/main || true
+    - git rev-list --left-right --count origin/main...HEAD || true
   validation_inventory:
-    - rg -n "unittest|pytest|compileall|smoke|validation|acceptance_commands|manual_acceptance|VERSION_PASSED|PASSED|COMPLETED|BLOCKED" runner tests docs .colameta
-    - find runner tests docs .colameta -maxdepth 3 -type f \( -name "pyproject.toml" -o -name "pytest.ini" -o -name "setup.cfg" -o -name "tox.ini" \) -print
-    - find . -maxdepth 1 -type f \( -name "pyproject.toml" -o -name "pytest.ini" -o -name "setup.cfg" -o -name "tox.ini" \) -print
+    - rg -n "unittest|pytest|compileall|smoke|validation|acceptance_commands|manual_acceptance|VERSION_PASSED|PASSED|COMPLETED|BLOCKED|executed|validated|failed|stale|validation_inconsistent" runner tests docs/taskbooks .colameta/plan.json .colameta/plan.zh-CN.md .colameta/state.json .colameta/prompts || true
+    - find runner tests docs/taskbooks .colameta/prompts -maxdepth 3 -type f \( -name "pyproject.toml" -o -name "pytest.ini" -o -name "setup.cfg" -o -name "tox.ini" \) -print || true
+    - find . -maxdepth 1 -type f \( -name "pyproject.toml" -o -name "pytest.ini" -o -name "setup.cfg" -o -name "tox.ini" \) -print || true
     - git log -5 --oneline
   taskbook_hash_checks:
     - sha256sum PROJECT_MASTER_TASKBOOK.md docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
   report_validation:
     - git diff --check -- docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md docs/taskbooks/versions/stage-00/evidence/zh-CN/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.zh-CN.md
-    - rg -n "commands_run|commands_not_run|labels_observed|validation_not_run_reason|known_unknowns|remaining_risks" docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md
+    - rg -n "commands_run|commands_not_run|labels_observed|validation_not_run_reason|validation_inconsistent_or_none|executor_report_status_vocabulary|known_unknowns|remaining_risks" docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md
     - rg -n "source_document|source_sha256|commands_run|commands_not_run|known_unknowns|remaining_risks" docs/taskbooks/versions/stage-00/evidence/zh-CN/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.zh-CN.md
 ```
 
 Running unit tests, smoke tests, or executor validation is out of scope for this
 version unless a later exact authorization expands the envelope. The report may
 inventory such commands, but it must mark them as not run.
+
+If the local `origin/main` tracking ref is unavailable, the report must record
+`known_unknown` for local tracking ref context; it must not auto-fetch or contact
+the remote. If validation evidence conflicts with summary labels, the report
+must record `validation_inconsistent_or_none` rather than hiding the conflict.
 
 中文解释：这份 v0.2 先盘点验证入口和验证声明，不直接跑测试。因为跑测试可能写
 缓存、改状态或产生副作用，必须另有授权。
@@ -257,7 +273,9 @@ manual_acceptance:
     - report separates validation evidence from summary labels
     - report lists commands_run and commands_not_run separately
     - report includes validation_not_run_reason for unrun checks
+    - report includes validation_inconsistent_or_none
     - report identifies whether PASSED, COMPLETED, BLOCKED, and VERSION_PASSED are labels or evidence-backed outcomes
+    - report distinguishes executor report status vocabulary: executed, validated, blocked, failed, and stale
     - report states that no Delivery State Gate transition was applied
     - Chinese report companion explains technical terms in Chinese
   reviewer_must_not_accept_if:
@@ -297,6 +315,8 @@ evidence_package_contract:
       - validation_inventory_check
       - taskbook_hash_check
       - label_vs_evidence_boundary_check
+      - validation_inconsistent_boundary_check
+      - executor_report_status_boundary_check
       - report_schema_check
   not_validated: required_even_when_empty
   remaining_risks: required_even_when_empty

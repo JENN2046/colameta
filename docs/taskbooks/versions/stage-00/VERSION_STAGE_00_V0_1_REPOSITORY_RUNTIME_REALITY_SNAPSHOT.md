@@ -27,7 +27,7 @@ version_execution_taskbook:
   created_from_head_meaning: historical_creation_baseline_not_execution_or_freeze_snapshot
   created_from_head_subject: "docs: record stage freeze confirmation"
   origin_main_observed: 018ff63
-  remote_sync_status_at_creation: synced
+  local_tracking_ref_sync_status_at_creation: synced
 ```
 
 `Version Execution Taskbook` = 版本执行任务书。中文意思是：它把某个 Stage
@@ -72,9 +72,10 @@ not as authority to reinterpret the parent documents.
 task_goal:
   primary_goal: >
     Produce a bounded, read-only Repository And Runtime Reality Snapshot report
-    that records the current repository state, remote sync state, worktree
-    state, stable runtime path, service status evidence, executor-session
-    freshness evidence, validation truth-source evidence, and known unknowns.
+    that records the current repository state, local remote-tracking-ref sync
+    state, worktree state, stable runtime path, service status evidence,
+    executor-session freshness evidence, validation truth-source evidence, and
+    known unknowns.
   minimum_readiness_claim: >
     The repository and runtime baseline is observable enough to support later
     governed claims without relying on stale session memory or summary labels.
@@ -186,6 +187,7 @@ evidence_collection_scope:
     - current_branch
     - current_head
     - origin_main_head
+    - origin_sync_state_or_known_unknown
     - ahead_behind_count
     - worktree_status
     - untracked_files
@@ -227,14 +229,14 @@ acceptance_commands:
   preflight_read_only:
     - git status --short --branch
     - git rev-parse HEAD
-    - git rev-parse origin/main
-    - git rev-list --left-right --count origin/main...HEAD
+    - git rev-parse origin/main || true
+    - git rev-list --left-right --count origin/main...HEAD || true
     - test -x /home/jenn/tools/colameta/.venv/bin/colameta
   evidence_probes:
     - git log -1 --oneline
     - git diff --name-status
     - sha256sum PROJECT_MASTER_TASKBOOK.md docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md
-    - curl -fsS http://127.0.0.1:8801/api/status
+    - curl -fsS http://127.0.0.1:8801/api/status || true
   report_validation:
     - git diff --check -- docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_1_REALITY_SNAPSHOT_REPORT.md docs/taskbooks/versions/stage-00/evidence/zh-CN/VERSION_STAGE_00_V0_1_REALITY_SNAPSHOT_REPORT.zh-CN.md
     - rg -n "known_unknowns|not_validated|remaining_risks|commands_run" docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_1_REALITY_SNAPSHOT_REPORT.md
@@ -244,6 +246,11 @@ acceptance_commands:
 `curl -fsS http://127.0.0.1:8801/api/status` may fail if the local service is
 down. That failure should be recorded as evidence or a known unknown; it must
 not be converted into a fake pass.
+
+If the local `origin/main` tracking ref or the localhost status endpoint is
+unavailable, the report must record `known_unknown` or `unavailable`; it must
+not auto-fetch, restart services, reload code, or contact a remote to fill the
+gap.
 
 中文解释：这些命令是未来执行时的候选验收命令。现在写在任务书里，不代表已经
 执行，也不代表已经授权。

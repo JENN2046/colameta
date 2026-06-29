@@ -3,7 +3,7 @@
 ```yaml id="version-stage-00-v0-3-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_3_RUNTIME_FRESHNESS_REPORT.md
-  source_sha256: dd630e615929d04cb3921f3312aaa45718b44bd8ab72f5c17993dcf35b342e1f
+  source_sha256: 7234b7a38116fcd72115023d8cf35335bb5b8f7324ecbc6613153c7946b7ea1c
   translation_status: companion_draft
   authority_status: planning_reference_only
 version_execution_taskbook:
@@ -105,8 +105,8 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 
 - `git status --short --branch`
 - `git rev-parse HEAD`
-- `git rev-parse origin/main`
-- `git rev-list --left-right --count origin/main...HEAD`
+- `git rev-parse origin/main || true`
+- `git rev-list --left-right --count origin/main...HEAD || true`
 - `test -x /home/jenn/tools/colameta/.venv/bin/colameta`
 - `readlink -f /home/jenn/tools/colameta/.venv/bin/colameta`
 - `ps -ef | rg "colameta|8801|8766" || true`
@@ -119,6 +119,8 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 
 如果 `curl` 失败，报告必须写成 unavailable 或 known_unknown，不能顺手重启服务。
 `|| true` 的作用是让 endpoint 不可用也能继续记录证据，而不是把失败伪装成通过。
+如果本地 `origin/main` 跟踪引用不存在，报告必须写成 `known_unknown`，不能自动
+`fetch` 或联系远端。
 
 `ps -ef` 看到的进程命令行证据必须先脱敏再写进报告。报告不能写入 secrets、
 tokens、credential paths、私有环境值或无关进程细节。

@@ -3,7 +3,7 @@
 ```yaml id="version-stage-00-v0-2-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md
-  source_sha256: c2d903ce992e96f02a1672c61269a0a990cb8a163db7b8c56ccec4ccc68fcb26
+  source_sha256: 52adaf2a391081ef73a7dd1f91f1af48d8daea546da80232b9b3afe2ebbc2ec8
   translation_status: companion_draft
   authority_status: planning_reference_only
 version_execution_taskbook:
@@ -62,6 +62,8 @@ Validation Truth Source Report
 - 哪些标签有当前命令证据支撑；
 - 哪些标签没有当前命令证据支撑；
 - 哪些验证还没有做；
+- 是否存在 `validation_inconsistent_or_none`，也就是验证证据和摘要标签是否冲突；
+- executor report 状态词表是否能区分 `executed`、`validated`、`blocked`、`failed`、`stale`；
 - 哪些未知项需要后续处理。
 
 它的目标不是修验证系统，也不是跑完整测试。
@@ -86,8 +88,8 @@ Validation Truth Source Report
 - `docs/taskbooks/versions/stage-00/evidence/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md`
 - `docs/taskbooks/versions/stage-00/evidence/zh-CN/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.zh-CN.md`
 
-它可以只读查看 Master、Stage、v0.1、plan、state、runner、tests、Git 状态和
-验证配置文件。
+它可以只读查看 Master、Stage、v0.1、docs/taskbooks、plan、state、prompts、
+runner、tests、Git 状态和验证配置文件。
 
 `.colameta/state.json` 只能作为易变运行态观测元数据。它不能作为 validation truth、
 delivery_state、accepted、blocked、executor truth 的权威来源，也不能替代命令证据。
@@ -111,10 +113,10 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 
 - `git status --short --branch`
 - `git rev-parse HEAD`
-- `git rev-parse origin/main`
-- `git rev-list --left-right --count origin/main...HEAD`
-- `rg -n "unittest|pytest|compileall|smoke|validation|acceptance_commands|manual_acceptance|VERSION_PASSED|PASSED|COMPLETED|BLOCKED" runner tests docs .colameta`
-- `find runner tests docs .colameta -maxdepth 3` 查找受控目录里的验证配置文件
+- `git rev-parse origin/main || true`
+- `git rev-list --left-right --count origin/main...HEAD || true`
+- `rg -n "unittest|pytest|compileall|smoke|validation|acceptance_commands|manual_acceptance|VERSION_PASSED|PASSED|COMPLETED|BLOCKED|executed|validated|failed|stale|validation_inconsistent" runner tests docs/taskbooks .colameta/plan.json .colameta/plan.zh-CN.md .colameta/state.json .colameta/prompts || true`
+- `find runner tests docs/taskbooks .colameta/prompts -maxdepth 3` 查找受控目录里的验证配置文件
 - `find . -maxdepth 1` 只查找 repo 顶层验证配置文件
 - `git log -5 --oneline`
 - `sha256sum` 检查 Master、Stage、v0.1 的 hash
@@ -125,6 +127,9 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 
 跑 unit tests、smoke tests 或 executor validation 都不在本版本范围内。报告可以
 盘点这些命令，但必须把它们标成 `commands_not_run`。
+如果本地 `origin/main` 跟踪引用不存在，报告必须写成 `known_unknown`，不能自动
+`fetch` 或联系远端。若验证证据和摘要标签冲突，必须写成
+`validation_inconsistent_or_none`，不能隐藏冲突。
 
 ## 7. 证据包是什么意思
 
@@ -141,6 +146,8 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 - validation inventory check；
 - taskbook hash check；
 - label vs evidence boundary check；
+- validation inconsistent boundary check；
+- executor report status boundary check；
 - report schema check；
 - not_validated；
 - remaining_risks。
@@ -150,6 +157,12 @@ delivery_state、accepted、blocked、executor truth 的权威来源，也不能
 `commands_not_run` = 未运行命令。中文意思是：存在或被声明过，但本次没有跑的命令。
 
 `labels_observed` = 观察到的标签。中文意思是：例如 `PASSED` 这类被看到的状态词。
+
+`validation_inconsistent_or_none` = 验证不一致或无不一致。中文意思是：如果命令证据、
+报告标签和 runtime 摘要互相矛盾，必须明确写出来；如果没有发现冲突，也要写 none。
+
+`executor report status vocabulary` = executor 报告状态词表。中文意思是：报告要能区分
+`executed`、`validated`、`blocked`、`failed`、`stale`，不能只看一个通过/失败摘要。
 
 ## 8. 停止条件
 

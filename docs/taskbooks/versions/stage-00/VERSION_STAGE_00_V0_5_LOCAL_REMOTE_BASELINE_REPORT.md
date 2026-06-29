@@ -64,19 +64,19 @@ parent_binding:
     review_status: hash_specific_freeze_candidate_confirmation_recorded
   previous_version_taskbook_refs:
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_1_REPOSITORY_RUNTIME_REALITY_SNAPSHOT.md
-      raw_snapshot_sha256: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
+      raw_snapshot_sha256: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
       version_id: stage_00_v0_1_repository_runtime_reality_snapshot
       status: local_baseline_commit_not_pushed_at_creation
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_2_VALIDATION_TRUTH_SOURCE_REPORT.md
-      raw_snapshot_sha256: c2d903ce992e96f02a1672c61269a0a990cb8a163db7b8c56ccec4ccc68fcb26
+      raw_snapshot_sha256: 52adaf2a391081ef73a7dd1f91f1af48d8daea546da80232b9b3afe2ebbc2ec8
       version_id: stage_00_v0_2_validation_truth_source_report
       status: local_baseline_commit_not_pushed_at_creation
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_3_RUNTIME_FRESHNESS_REPORT.md
-      raw_snapshot_sha256: dd630e615929d04cb3921f3312aaa45718b44bd8ab72f5c17993dcf35b342e1f
+      raw_snapshot_sha256: 7234b7a38116fcd72115023d8cf35335bb5b8f7324ecbc6613153c7946b7ea1c
       version_id: stage_00_v0_3_runtime_freshness_report
       status: local_baseline_commit_not_pushed_at_creation
     - path: docs/taskbooks/versions/stage-00/VERSION_STAGE_00_V0_4_EXECUTOR_SESSION_HEAD_CLASSIFICATION_REPORT.md
-      raw_snapshot_sha256: e7efc8b3560c8e3476d5ebeb9bc44659e74a95c725911ee82eaa27a33643452c
+      raw_snapshot_sha256: 85c2ed6edf60cb96bd8a29230c117826b11a95229a1178a38f9ae7d042d00f42
       version_id: stage_00_v0_4_executor_session_head_classification_report
       status: local_baseline_commit_not_pushed_at_creation
   supports_project_goal: true
@@ -133,10 +133,10 @@ execution_envelope_candidate:
     master_taskbook_hash: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
     stage_taskbook_hash: 12103877ba181c48056299b800c546e55ac7f68b7df82f4f657a4bd2f0e91489
     stage_freeze_packet_hash: 94ea9101a120e0935e834533ed0315a6fe3e77e3d4ecb48db37fa6851e75b5ce
-    previous_v0_1_taskbook_hash: 818727b598ecb11b6c2b6a61711b9cbe8bff48f98dc1448796f63cf370d94e6f
-    previous_v0_2_taskbook_hash: c2d903ce992e96f02a1672c61269a0a990cb8a163db7b8c56ccec4ccc68fcb26
-    previous_v0_3_taskbook_hash: dd630e615929d04cb3921f3312aaa45718b44bd8ab72f5c17993dcf35b342e1f
-    previous_v0_4_taskbook_hash: e7efc8b3560c8e3476d5ebeb9bc44659e74a95c725911ee82eaa27a33643452c
+    previous_v0_1_taskbook_hash: 6393181ffd38f46f319b2d3dd350e3749d59d22c0b588688a558308232897d8d
+    previous_v0_2_taskbook_hash: 52adaf2a391081ef73a7dd1f91f1af48d8daea546da80232b9b3afe2ebbc2ec8
+    previous_v0_3_taskbook_hash: 7234b7a38116fcd72115023d8cf35335bb5b8f7324ecbc6613153c7946b7ea1c
+    previous_v0_4_taskbook_hash: 85c2ed6edf60cb96bd8a29230c117826b11a95229a1178a38f9ae7d042d00f42
   task_goal_ref: task_goal.primary_goal
   definition_of_good:
     - report records current_branch and current_local_head separately
