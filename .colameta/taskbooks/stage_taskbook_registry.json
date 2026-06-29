@@ -1,0 +1,99 @@
+{
+  "ahead_behind_from_local_refs": {
+    "ahead": 54,
+    "behind": 0,
+    "source": "git rev-list --left-right --count origin/main...HEAD"
+  },
+  "authority_boundary": {
+    "registry_can_create_review_decision": false,
+    "registry_can_emit_gate_event": false,
+    "registry_can_override_delivery_state_gate": false,
+    "registry_is_delivery_state_authority": false,
+    "registry_is_execution_authority": false,
+    "registry_result_is_authority": false
+  },
+  "created_at": "2026-06-30T02:02:46+08:00",
+  "live_remote_status_not_validated": true,
+  "mutation_boundary": {
+    "registry_can_mutate_stage_taskbook": false,
+    "requires_separate_hash_specific_authorization": true,
+    "stage_taskbook_mutation_allowed": false
+  },
+  "observed_git_head": "ea1ab5614e1f52f6757dcea282e12449075c49be",
+  "observed_origin_main_local_tracking_ref": "018ff63b76872504407c537cd46e1e8a2ee5c22e",
+  "project": "ColaMeta",
+  "record_key": "stage_id",
+  "records": {
+    "stage_02_stage_taskbook_management": {
+      "authority_boundary": {
+        "gate_readiness_is_delivery_state": false,
+        "registered_stage_authorizes_execution": false,
+        "registered_stage_is_accepted_delivery_state": false,
+        "registry_can_mutate_stage_taskbook": false,
+        "registry_can_override_delivery_state_gate": false,
+        "registry_result_is_authority": false
+      },
+      "created_at": "2026-06-30T02:02:46+08:00",
+      "gate_readiness_summary": {
+        "criteria_count": 6,
+        "delivery_state_accepted": false,
+        "gate_question": "Are stage claims distinct from accepted state?",
+        "gate_readiness_is_delivery_state": false,
+        "minimum_readiness_claim": "Stage Taskbooks express bounded stage claims."
+      },
+      "master_taskbook_ref": {
+        "path": "PROJECT_MASTER_TASKBOOK.md",
+        "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+        "review_status": "freeze_candidate_confirmed_for_exact_hash"
+      },
+      "non_goals_summary": [
+        "no stage execution",
+        "no automatic stage-goal generation",
+        "no automatic master-goal adjustment",
+        "no dashboard requirement",
+        "no commit or push authorization"
+      ],
+      "observed_git_head": "ea1ab5614e1f52f6757dcea282e12449075c49be",
+      "source_version_taskbook_ref": {
+        "path": "docs/taskbooks/versions/stage-02/VERSION_STAGE_02_V2_2_STAGE_TASKBOOK_REGISTRY_V1.md",
+        "raw_snapshot_sha256": "d43c791d76df839b0fa361955dc6208af9cce24a7594d045feb4062892f69050",
+        "version_id": "stage_02_v2_2_stage_taskbook_registry_v1"
+      },
+      "stage_id": "stage_02_stage_taskbook_management",
+      "stage_name": "Stage Taskbook Management",
+      "stage_taskbook_path": "docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md",
+      "stage_taskbook_raw_snapshot_sha256": "b0e1a55121503df4116d9c49031eb07729858c483cc73e6c97730eca0a067876",
+      "supports_project_goal": true,
+      "validator_result": {
+        "creates_review_decision": false,
+        "emits_gate_event": false,
+        "fail_closed_result": "pass",
+        "fail_closed_violations": [],
+        "master_taskbook_ref": {
+          "path": "PROJECT_MASTER_TASKBOOK.md",
+          "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
+        },
+        "required_field_violations": [],
+        "stage_id": "stage_02_stage_taskbook_management",
+        "stage_name": "Stage Taskbook Management",
+        "stage_taskbook_hash": "b0e1a55121503df4116d9c49031eb07729858c483cc73e6c97730eca0a067876",
+        "stage_taskbook_path": "docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md",
+        "supports_project_goal": true,
+        "validation_result": "passed",
+        "validator_name": "runner.stage_taskbook_validator.validate_stage_taskbook",
+        "validator_result_consumed": true,
+        "validator_result_is_authority": false,
+        "validator_schema_version": "stage_taskbook_schema.v1",
+        "writes_delivery_state": false
+      }
+    }
+  },
+  "registry_record_id": "stage_taskbook.registry.current",
+  "schema_version": "stage_taskbook_registry.v1",
+  "source_version_taskbook_ref": {
+    "path": "docs/taskbooks/versions/stage-02/VERSION_STAGE_02_V2_2_STAGE_TASKBOOK_REGISTRY_V1.md",
+    "raw_snapshot_sha256": "d43c791d76df839b0fa361955dc6208af9cce24a7594d045feb4062892f69050",
+    "version_id": "stage_02_v2_2_stage_taskbook_registry_v1"
+  },
+  "workspace": "/home/jenn/src/colameta-dev"
+}
