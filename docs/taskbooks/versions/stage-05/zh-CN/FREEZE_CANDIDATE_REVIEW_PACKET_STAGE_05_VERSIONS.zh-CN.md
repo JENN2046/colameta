@@ -1,16 +1,17 @@
-# Stage 5 Version 集合冻结候选审查包草稿中文 Companion
+# Stage 5 Version 集合冻结候选确认记录中文 Companion
 
 ```yaml id="stage-05-version-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-05/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_05_VERSIONS.md
-  source_sha256: c6206ca7e1dc7bf1d350273c27e65ff28982df35eab1aa8ded931a89f92cceda
+  source_sha256: ca23f567af50038469e3198b9a5600b1625e595c3381f20d262ab3aa81d61ea8
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_05_version_set_freeze_candidate_review_packet:
   target_stage_id: stage_05_reviewer_handoff_package
   target_version_set: stage_05_versions_v5_1_to_v5_5
-  status: review_packet_draft
-  freeze_candidate_confirmation_status: not_commander_confirmed
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_05_VERSION_SET_FREEZE_CANDIDATE_FOR_HASH_ONLY
   source_authority_candidate_manifest_sha256: 1ef64f91d68f5b3caad5db3a9fa9c8bca2f31fbeba4f8836d272a3344d996281
   chinese_companion_candidate_manifest_sha256: 67277cc8cec89e000a2493594221deb42b1776fde66d2fa2030ba1526b3bfebd
   combined_candidate_manifest_sha256: d21a9aad2347d7f5d40228c0d8e39fefa5f0818f5ff01d185b9ce39153ad0144
@@ -18,20 +19,21 @@ stage_05_version_set_freeze_candidate_review_packet:
 
 ## 1. 这份 packet 是什么
 
-这是一份 Stage 5 Version 集合的 freeze candidate review packet 草稿中文 companion。
+这是一份 Stage 5 Version 集合的 freeze candidate confirmation record 中文 companion。
 
-`Freeze Candidate Review Packet Draft` = 冻结候选审查包草稿。
+`Confirmation Record` = 确认记录。
 
-中文意思是：它收集 Stage 5 v5.1-v5.5 的文件 hash、manifest hash、父级绑定、
-只读审查结果和权限边界，方便 Commander 后续按精确 hash 进行确认。
+中文意思是：它记录 Commander 已经按精确 hash 确认 Stage 5 v5.1-v5.5 进入
+`freeze_candidate` 审查状态。
 
-它本身不是 freeze confirmation，不关闭 P0，不授权实现，不授权 commit，不授权 push，
-不授权 fetch/pull，不授权 executor，不授权 route transition，不授权 review acceptance，
-不授权 Delivery State Gate transition，也不授权 accepted delivery state。
+它不关闭 P0，不授权实现，不授权 commit，不授权 push，不授权 fetch/pull，不授权
+executor，不授权 route transition，不授权 remote write，不授权 ReviewDecision creation，
+不授权 GateEvent emission，不授权 review acceptance，不授权 Delivery State Gate
+transition，也不授权 accepted delivery state。
 
 ## 2. 目标范围
 
-这份 packet 草稿覆盖 Stage 5 的 5 个英文 Version Taskbook：
+这份确认记录覆盖 Stage 5 的 5 个英文 Version Taskbook：
 
 - v5.1 `Reviewer Handoff Schema V1`
 - v5.2 `Reviewer Handoff Generator V1`
@@ -39,8 +41,8 @@ stage_05_version_set_freeze_candidate_review_packet:
 - v5.4 `Drift Question Pack V1`
 - v5.5 `Reviewer Package Report Surface V1`
 
-英文源文件是 source-authority candidate，也就是未来 hash-specific confirmation 的候选
-权威源。中文 companion 是 Commander 理解用的全文中文阅读 companion，不替代英文源，
+英文源文件是本次 hash-specific freeze_candidate review status 的 source-authority
+candidate。中文 companion 是 Commander 理解用的全文中文阅读 companion，不替代英文源，
 也不制造第二权威源。
 
 ## 3. Manifest Hash
@@ -67,19 +69,24 @@ packet 草稿最初提交后，本地实际状态是：
 
 - generation HEAD：`2f25024`
 - packet storage HEAD：`5bc8c62`
-- current observed HEAD：`5bc8c62`
-- current local ahead origin/main：`39`
+- repo reality patch commit HEAD：`e229fa0`
+- confirmation observed HEAD：`e229fa0`
+- current local ahead origin/main at confirmation：`40`
 - 原始 English packet draft hash：
   `0b29cc699a83f49783994330a39d6299187f501d71eb88bfcf7b898ab2f100b5`
 - 原始中文 packet companion hash：
   `a8e3e241ca23ecd4f9ee0f791a74a763c136abc31c441a6aa36e6fd3ad257320`
+- 确认绑定的 English packet draft hash：
+  `c6206ca7e1dc7bf1d350273c27e65ff28982df35eab1aa8ded931a89f92cceda`
+- 确认绑定的中文 packet companion hash：
+  `1be2b7185cd7847a71a3740528119f9fe9964022a441dfb5cf3c0d186c26e29f`
 
-中文解释：这个小补丁只是在 packet 里补真实 repo 状态，不改变 Stage 5 Version set
-本身，也不把草稿变成 Commander confirmation。
+中文解释：repo reality patch 记录 packet 被提交后的真实 repo 状态；本次 Commander
+confirmation 只确认精确 hash 的 freeze_candidate 审查状态，不授权实现或提交。
 
 ## 4. 父级绑定
 
-这份 packet 草稿绑定到：
+这份确认记录绑定到：
 
 - Master Taskbook hash：
   `1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34`
@@ -145,44 +152,54 @@ packet 草稿最初提交后，本地实际状态是：
 
 ## 7. 失效规则
 
-以下情况会让这份 packet 草稿失效：
+以下情况会让这份 confirmation record 失效：
 
 - 任意英文 source candidate 文件改变；
 - 任意中文 companion 文件改变；
 - manifest hash 不再匹配；
+- confirmed packet draft hash 不再匹配；
+- confirmed manifest hash 不再匹配；
 - Master 或 Stage 5 binding 改变；
 - Stage 0-6 或 Stage 0-4 confirmation binding 改变；
 - hash policy 或 canonicalization policy 改变；
 - review 发现新的 P0；
 - Stage 5 Version set scope 改变。
+- confirmation record wording 被改到影响审查结论。
 
 失效后必须重新生成 file hashes、manifest hashes、packet draft，并重新做
-non-authoritative review。
+readiness review；如果还要保持 freeze_candidate 状态，需要重新请求精确 hash
+Commander confirmation。
 
 ## 8. 允许的审查输出
 
-这份 packet 草稿之后只允许输出：
+这份 confirmation record 之后只允许输出：
 
-- `READY_FOR_COMMANDER_HASH_SPECIFIC_CONFIRMATION_PROMPT`
+- `FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH`
 - `RETURN_TO_DRAFT_FIXES`
+- `INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE`
+- `BLOCKED_NEEDS_EXPLICIT_SCOPE_DECISION`
 
 禁止输出：
 
-- `FREEZE_CANDIDATE_CONFIRMED`
+- `FREEZE_CANDIDATE_CONFIRMED_WITHOUT_COMMANDER_TOKEN`
 - `P0_CLOSED_BY_PACKET`
 - `IMPLEMENTATION_AUTHORIZED`
 - `REVIEW_ACCEPTANCE_GRANTED`
 - `DELIVERY_STATE_ACCEPTED`
+
+下面两条也是禁止输出，不是授权：
+
+- `REVIEW_DECISION_CREATION_AUTHORIZED`
+- `GATE_EVENT_EMISSION_AUTHORIZED`
 
 ## 9. 不能证明的东西
 
 这份 packet 不能证明：
 
 - live remote state 超过本地 `origin/main` tracking ref 的真实状态；
-- Commander 已经确认；
 - future review acceptance；
 - future delivery state transition；
 - 没有执行授权时的 implementation correctness。
 
-中文解释：这份 packet 能证明“当前文件怎么绑定、怎么审查”，不能证明未来已经确认、
-已经执行、已经通过审查或已经进入 accepted。
+中文解释：这份 packet 能证明“Commander 针对当前精确 hash 已确认 freeze_candidate
+审查状态”，不能证明已经执行、已经通过审查或已经进入 accepted。
