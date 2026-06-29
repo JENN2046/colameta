@@ -3,7 +3,7 @@
 ```yaml id="stage-05-version-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-05/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_05_VERSIONS.md
-  source_sha256: 0b29cc699a83f49783994330a39d6299187f501d71eb88bfcf7b898ab2f100b5
+  source_sha256: c6206ca7e1dc7bf1d350273c27e65ff28982df35eab1aa8ded931a89f92cceda
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_05_version_set_freeze_candidate_review_packet:
@@ -60,6 +60,22 @@ sha256。
   `67277cc8cec89e000a2493594221deb42b1776fde66d2fa2030ba1526b3bfebd`
 - 英文加中文 combined candidate manifest：
   `d21a9aad2347d7f5d40228c0d8e39fefa5f0818f5ff01d185b9ce39153ad0144`
+
+## 3.1 Repo Reality Patch
+
+packet 草稿最初提交后，本地实际状态是：
+
+- generation HEAD：`2f25024`
+- packet storage HEAD：`5bc8c62`
+- current observed HEAD：`5bc8c62`
+- current local ahead origin/main：`39`
+- 原始 English packet draft hash：
+  `0b29cc699a83f49783994330a39d6299187f501d71eb88bfcf7b898ab2f100b5`
+- 原始中文 packet companion hash：
+  `a8e3e241ca23ecd4f9ee0f791a74a763c136abc31c441a6aa36e6fd3ad257320`
+
+中文解释：这个小补丁只是在 packet 里补真实 repo 状态，不改变 Stage 5 Version set
+本身，也不把草稿变成 Commander confirmation。
 
 ## 4. 父级绑定
 
