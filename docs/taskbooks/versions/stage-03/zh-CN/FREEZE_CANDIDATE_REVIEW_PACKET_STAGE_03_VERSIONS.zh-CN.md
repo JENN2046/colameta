@@ -1,41 +1,46 @@
-# Stage 3 Version 集合冻结候选审查包草稿
+# Stage 3 Version 集合冻结候选确认记录
 
 ```yaml id="stage-03-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-03/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_03_VERSIONS.md
-  source_sha256: a205e34993f309bec6653731b14e283300f12aeeaea2622b74205539b2278346
+  source_sha256: 8695cf9f9b29608011dfc4691fd12df5a4f21f879e025e999c8bba5ae929e313
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_03_version_set_freeze_candidate_review_packet:
   target_stage_id: stage_03_external_taskbook_import
   target_version_set: stage_03_versions_v3_1_to_v3_5
-  status: freeze_candidate_review_packet_draft_not_confirmed
-  authority_status: non_authoritative_review_packet_draft
-  freeze_candidate_confirmation_status: not_confirmed
-  confirmation_token: not_provided
-  commander_confirmation_prompt_status: not_generated
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  authority_status: review_status_confirmation_record_only
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_03_VERSION_SET_FREEZE_CANDIDATE_FOR_HASH_ONLY
+  commander_confirmation_prompt_status: commander_confirmed
   generation_head: 53d97f3
   packet_storage_head: 1633dcd
+  repo_reality_patch_commit_head: 72ce3fd
   current_observed_head: 1633dcd
+  current_observed_head_at_confirmation: 72ce3fd
   current_ahead_origin_main_from_local_refs: 28
+  current_ahead_origin_main_from_local_refs_at_confirmation: 29
+  confirmed_packet_draft_sha256: a205e34993f309bec6653731b14e283300f12aeeaea2622b74205539b2278346
+  confirmed_chinese_companion_packet_sha256: 58da782c7a94a066120e06a6e6d4215d9982c960286787d71cfda04932a500fe
   source_authority_candidate_manifest_sha256: b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
   chinese_companion_candidate_manifest_sha256: 3ab2f95e73986b9e71e4ff8c56a4b75b8b20a958301ac13db679f817d5c487ca
   combined_candidate_manifest_sha256: 092d8bea1249c500d62722823f8f10c86b7bee7d7fc087db2155b08d603461a1
 ```
 
 这是一份中文 companion，也就是“中文阅读 companion”。它帮助 Commander 用中文完整
-理解英文 review packet draft，但不替代英文源文件，也不产生独立权威。
+理解英文 confirmation record，但不替代英文源文件，也不产生独立权威。
 
-## 1. 这份 packet 草稿是什么
+## 1. 这份 confirmation record 是什么
 
-`Freeze Candidate Review Packet Draft` = 冻结候选审查包草稿。
+`Freeze Candidate Confirmation Record` = 冻结候选确认记录。
 
-中文意思是：它把 Stage 3 的 Version 任务书集合 v3.1-v3.5 的精确文件 hash、父级
-绑定、就绪审查结果和边界规则收拢起来，方便下一步生成 Commander 精确 hash 确认
-prompt。
+中文意思是：Commander 已经按精确 hash 确认 Stage 3 的 Version 任务书集合
+v3.1-v3.5 进入 `freeze_candidate` 审查状态。
 
-它现在不是 confirmation record，也没有把 Stage 3 Version set 提升为
-`freeze_candidate`。
+它只确认这一件事：
+
+- 把这组精确 hash 的 Stage 3 Version 任务书提升到 `freeze_candidate` 审查状态。
 
 它仍然不授权：
 
@@ -85,12 +90,27 @@ prompt。
 生成时 ahead 27 是历史事实；packet 被本地 commit 存储后，当前本地 ahead 变为
 28。这个补充只更新仓库现实记录，不产生 freeze、授权或状态推进效果。
 
+Commander 做出精确 hash 确认时的本地观察现实是：
+
+- repo reality patch commit HEAD：`72ce3fd`；
+- repo reality patch commit HEAD 完整值：`72ce3fdfb0a3281ec8257b9eb2f01f25adb804d1`；
+- current observed HEAD at confirmation：`72ce3fd`；
+- current observed HEAD at confirmation 完整值：`72ce3fdfb0a3281ec8257b9eb2f01f25adb804d1`；
+- confirmation 时本地相对 `origin/main` ahead：29；
+- confirmation 前 worktree：clean；
+- confirmed packet draft hash：`a205e34993f309bec6653731b14e283300f12aeeaea2622b74205539b2278346`；
+- confirmed Chinese companion packet hash：`58da782c7a94a066120e06a6e6d4215d9982c960286787d71cfda04932a500fe`。
+
+中文解释：`confirmed packet draft hash` 是 Commander 确认时绑定的旧草稿 hash。
+当前这个确认记录文件写完后会有新的文件 hash；那是确认记录本身的 hash，不会替代
+Commander 当时确认的草稿 hash。
+
 `local tracking ref` = 本地远端跟踪引用。中文意思是：这里的 `origin/main` 是本地
 Git 已知的远端分支快照，不代表这次已经联网确认远端最新状态。
 
 ## 3. 目标范围
 
-本 packet 草稿只覆盖 Stage 3 的 v3.1 到 v3.5：
+本 confirmation record 只覆盖 Stage 3 的 v3.1 到 v3.5：
 
 - v3.1：External Taskbook Schema V1，也就是“外部任务书模式 V1”；
 - v3.2：External Taskbook Validator V1，也就是“外部任务书校验器 V1”；
@@ -142,7 +162,7 @@ b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
 
 ## 5. 英文源文件候选集合
 
-英文源文件是未来可能请求 `freeze_candidate` 的 source-authority candidate：
+英文源文件是本次精确 hash 绑定的 `freeze_candidate` source-authority candidate：
 
 | 文件 | hash |
 | --- | --- |
@@ -166,7 +186,7 @@ b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
 
 ## 7. 就绪审查结果
 
-这份 packet 草稿绑定的是一轮只读就绪审查记录：
+这份 confirmation record 绑定的是一轮只读就绪审查记录：
 
 - P0：未发现已知 P0；
 - P1：未发现已知 P1；
@@ -189,10 +209,12 @@ b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
 
 ## 8. 失效规则
 
-发生以下任意情况，这份 packet 草稿失效：
+发生以下任意情况，这份 confirmation record 失效：
 
 - 任一英文源文件变化；
 - 任一中文 companion 变化；
+- confirmed packet draft hash 不再匹配记录里的草稿；
+- confirmed manifest hash 不再匹配记录里的 manifest；
 - manifest hash 不再匹配；
 - Master 绑定变化；
 - Stage 3 绑定变化；
@@ -201,17 +223,17 @@ b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
 - hash policy 或 canonicalization policy 变化；
 - 审查发现新 P0；
 - Version set 范围变化；
-- packet wording 被修改到足以影响审查结论。
+- confirmation record wording 被修改到足以影响审查结论。
 
 失效后必须重新计算文件 hash、manifest hash，重新做 readiness review，重新生成
-packet 草稿。如果仍然想进入 freeze_candidate，还要重新请求 hash-specific Commander
-confirmation。
+confirmation record。如果仍然想保留 freeze_candidate 状态，还要重新请求
+hash-specific Commander confirmation。
 
 ## 9. 允许的审查结果
 
-这份 packet 草稿当前允许的审查输出是：
+这份 confirmation record 当前允许的审查输出是：
 
-- `READY_FOR_HASH_SPECIFIC_COMMANDER_CONFIRMATION_PROMPT`
+- `FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH`
 - `RETURN_TO_DRAFT_FIXES`
 - `INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE`
 - `BLOCKED_NEEDS_EXPLICIT_SCOPE_DECISION`
@@ -229,10 +251,10 @@ confirmation。
 
 ## 10. 不能证明什么
 
-这份 packet 草稿不能证明：
+这份 confirmation record 不能证明：
 
 - 远端实时状态，因为没有授权 fetch 或联网远端检查；
-- runtime service health，因为 packet 草稿不需要服务探测；
+- runtime service health，因为 confirmation record 不需要服务探测；
 - executor safety，因为没有授权 executor run；
 - implementation correctness，因为这些 Version taskbooks 是计划文档；
 - external taskbook ingestion safety，因为没有授权 import 实现；
@@ -244,7 +266,7 @@ confirmation。
 
 ## 11. 非授权边界
 
-这份 packet 草稿不授权：
+这份 confirmation record 不授权：
 
 - implementation；
 - code changes；
@@ -265,10 +287,10 @@ confirmation。
 - remote write；
 - release / deploy；
 - delivery state transition；
-- freeze_candidate promotion；
+- freeze_candidate promotion for any other hash or scope；
 - p0 closure。
 
 `future_required_checks_not_authorized_actions` = 未来需要做的检查，不是当前授权。
 
-中文意思是：后续计算 packet hash、补中文 source hash、审查洗权措辞、生成 Commander
-确认 prompt，都是流程检查或草稿动作，不等于已经授权 freeze、执行或计划修改。
+中文意思是：后续计算 confirmation record hash、补中文 source hash、审查洗权措辞，
+都是流程检查，不等于已经授权执行、commit、push、executor、计划修改或采纳导入。
