@@ -33,8 +33,16 @@ stage_02_version_set_freeze_candidate_review_packet:
   origin_main_observed_local_tracking_ref_full: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   ahead_origin_main_from_local_refs: 21
   behind_origin_main_from_local_refs: 0
+  packet_storage_head: 62a4651
+  packet_storage_head_full: 62a4651fa60e7ed62c177cc4b096ea86b2fe3385
+  packet_storage_head_subject: "docs: add stage 2 version freeze packet draft"
+  current_observed_head: 62a4651
+  current_observed_head_full: 62a4651fa60e7ed62c177cc4b096ea86b2fe3385
+  current_ahead_origin_main_from_local_refs: 22
+  current_behind_origin_main_from_local_refs: 0
   live_remote_status_not_validated: true
   worktree_status_at_generation: clean
+  worktree_status_at_current_observation: clean
   implementation_authority: false
   commit_authority: false
   push_authority: false
