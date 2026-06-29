@@ -1,0 +1,109 @@
+{
+  "authority_boundary_expectations": {
+    "external_taskbook_expands_allowed_files": false,
+    "external_taskbook_is_trusted_fact": false,
+    "external_taskbook_mutates_plan": false,
+    "external_taskbook_authorizes_execution": false,
+    "manual_acceptance_means_delivery_state_accepted": false,
+    "schema_result_is_authority": false,
+    "creates_review_decision": false,
+    "emits_gate_event": false,
+    "writes_delivery_state": false
+  },
+  "claim_kind": "external_version_execution_taskbook_claim.v1",
+  "field_definitions": [
+    {
+      "field": "source",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "provenance",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "external_taskbook_hash",
+      "required": true,
+      "type": "sha256"
+    },
+    {
+      "field": "expected_hash_authority_ref",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "master_taskbook_ref",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "stage_taskbook_ref",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "allowed_files",
+      "required": true,
+      "type": "list"
+    },
+    {
+      "field": "forbidden_files",
+      "required": true,
+      "type": "list"
+    },
+    {
+      "field": "acceptance_commands",
+      "required": true,
+      "type": "list"
+    },
+    {
+      "field": "manual_acceptance",
+      "required": true,
+      "type": "object"
+    },
+    {
+      "field": "out_of_scope",
+      "required": true,
+      "type": "list"
+    },
+    {
+      "field": "supports_stage_and_master_goals",
+      "required": true,
+      "type": "object"
+    }
+  ],
+  "forbidden_authority_claims": [
+    "external_taskbook_is_trusted_fact",
+    "external_taskbook_mutates_plan",
+    "external_taskbook_authorizes_execution",
+    "external_taskbook_expands_allowed_files",
+    "manual_acceptance_means_delivery_state_accepted"
+  ],
+  "normalized_output_fields": [
+    "normalized_claims",
+    "normalized_output_candidate",
+    "version_candidate_mapping"
+  ],
+  "rejection_fields": [
+    "rejected_fields",
+    "rejection_reasons",
+    "known_conflicts"
+  ],
+  "required_fields": [
+    "source",
+    "provenance",
+    "external_taskbook_hash",
+    "expected_hash_authority_ref",
+    "master_taskbook_ref",
+    "stage_taskbook_ref",
+    "allowed_files",
+    "forbidden_files",
+    "acceptance_commands",
+    "manual_acceptance",
+    "out_of_scope",
+    "supports_stage_and_master_goals"
+  ],
+  "schema_id": "external_taskbook.claim.schema.v1",
+  "schema_version": "external_taskbook_schema.v1"
+}
