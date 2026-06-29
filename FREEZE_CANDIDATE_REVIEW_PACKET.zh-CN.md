@@ -3,7 +3,7 @@
 ```yaml
 chinese_companion:
   source_document: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 2dc1761a5596fc0b41a33da8ef90536aa429d73e0b3f947f05ad4354260531ba
+  source_sha256: 4199671538a07d3422ef510f1ad8718724b587e24cfa9014ccb6f2a1e0ef1236
   translation_status: companion_draft
   authority_status: planning_reference_only
 ```

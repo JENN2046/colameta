@@ -60,6 +60,8 @@ stage_04_version_set_freeze_candidate_review_packet:
   source_authority_candidate_manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
   chinese_companion_candidate_manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
   combined_candidate_manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
+  companion_hash_detail_status: metadata_completed_after_closeout_review
+  companion_hash_detail_authority: audit_metadata_only_not_reconfirmation
   implementation_authority: false
   commit_authority: false
   push_authority: false
@@ -168,16 +170,20 @@ source_authority_candidate_files:
   - { path: docs/taskbooks/versions/stage-04/VERSION_STAGE_04_V4_8_SCOPE_EVIDENCE_PACK_V1.md, sha256: aef8eb8b4ba30ba640923f19045080166ecc31cf20a6f7213078d627241050e2 }
   - { path: docs/taskbooks/versions/stage-04/VERSION_STAGE_04_V4_9_AUDIT_PACKAGE_TASKBOOK_BINDING_V1.md, sha256: ffed528327ea766b665eb65f90ae197201df2575756ab02b0d6a3d89dfbc3af3 }
 chinese_companion_candidate_files:
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_1_MACHINE_CHECKABLE_EXECUTION_ENVELOPE_V1.zh-CN.md, source_sha256: 22e99e01a854c6d8fe1fc4f0ceba38f5d2b1ce28d796596f80f4292459071dfa }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_2_TASKBOOK_BOUND_EXECUTOR_RUN_PREVIEW_V1.zh-CN.md, source_sha256: e4f02abe34af18ea0b1ef8cc94006dc5dddf04e0e80f0ca65f9f393ae8b617a2 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_3_TASKBOOK_BOUND_LOCAL_EXECUTION_RECEIPT_V1.zh-CN.md, source_sha256: d1ff43bf57a3279ed801a6440d7a8ead382d23873035878d560c74bf277d1342 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_4_IMPORTED_EXECUTION_RECEIPT_V1.zh-CN.md, source_sha256: 24adc55f8176e41280ab2b7281d556f727cf714d86e7435124f66a6ed9c7ebc8 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_5_TASKBOOK_BOUND_EXECUTOR_REPORT_V1.zh-CN.md, source_sha256: 55bf66619ecf07ea0aa71a39a9795018f7f45d03b9788301eaf4846ae9582b2f }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_6_EXECUTION_EVIDENCE_RECEIPT_V1.zh-CN.md, source_sha256: 320366232e7ad5b436d73178a60452766d3ce526c1fdf963a7a6e9395a62c8a4 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_7_VALIDATION_TRUTH_INTEGRATION_V1.zh-CN.md, source_sha256: 755b33635c24eb450162de4bad1e0c8e17c38cf8a4eb83887cda985cf6dea8e5 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_8_SCOPE_EVIDENCE_PACK_V1.zh-CN.md, source_sha256: aef8eb8b4ba30ba640923f19045080166ecc31cf20a6f7213078d627241050e2 }
-  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_9_AUDIT_PACKAGE_TASKBOOK_BINDING_V1.zh-CN.md, source_sha256: ffed528327ea766b665eb65f90ae197201df2575756ab02b0d6a3d89dfbc3af3 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_1_MACHINE_CHECKABLE_EXECUTION_ENVELOPE_V1.zh-CN.md, companion_sha256: 5e8623208587b52f4a0d223109d6b6f2eb0f86efaa126bd91b181c12e19824d2, source_sha256: 22e99e01a854c6d8fe1fc4f0ceba38f5d2b1ce28d796596f80f4292459071dfa }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_2_TASKBOOK_BOUND_EXECUTOR_RUN_PREVIEW_V1.zh-CN.md, companion_sha256: b6ad78135eccbf47eaee631c89d56aaae8aaf16db548c1a3e2905ecaf13be0d5, source_sha256: e4f02abe34af18ea0b1ef8cc94006dc5dddf04e0e80f0ca65f9f393ae8b617a2 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_3_TASKBOOK_BOUND_LOCAL_EXECUTION_RECEIPT_V1.zh-CN.md, companion_sha256: 49924ee0cbc783c7a3600b9aceea639563568e54f5446e988a99775c89066a27, source_sha256: d1ff43bf57a3279ed801a6440d7a8ead382d23873035878d560c74bf277d1342 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_4_IMPORTED_EXECUTION_RECEIPT_V1.zh-CN.md, companion_sha256: c2e90fe5bd120034e9fa705319af16f8d8ad741b9b6a09dde117ba605540ed52, source_sha256: 24adc55f8176e41280ab2b7281d556f727cf714d86e7435124f66a6ed9c7ebc8 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_5_TASKBOOK_BOUND_EXECUTOR_REPORT_V1.zh-CN.md, companion_sha256: 4cf90d68fae45834232f49370e87c3c89a7df112b7a53277519fb4295acd639b, source_sha256: 55bf66619ecf07ea0aa71a39a9795018f7f45d03b9788301eaf4846ae9582b2f }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_6_EXECUTION_EVIDENCE_RECEIPT_V1.zh-CN.md, companion_sha256: b0225bc2b6af3bf631982a9b3f1f89d3064a99ccf08af1c60d959be31dd0f3fd, source_sha256: 320366232e7ad5b436d73178a60452766d3ce526c1fdf963a7a6e9395a62c8a4 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_7_VALIDATION_TRUTH_INTEGRATION_V1.zh-CN.md, companion_sha256: 12a789e79ff59f7e1b7da607386e07ea353e429970ec9bc67c6f20bf64874b76, source_sha256: 755b33635c24eb450162de4bad1e0c8e17c38cf8a4eb83887cda985cf6dea8e5 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_8_SCOPE_EVIDENCE_PACK_V1.zh-CN.md, companion_sha256: d2251ef8947dd2c95111593ec6993c21f6465fe7883a37dbc8d47791c1604cbc, source_sha256: aef8eb8b4ba30ba640923f19045080166ecc31cf20a6f7213078d627241050e2 }
+  - { path: docs/taskbooks/versions/stage-04/zh-CN/VERSION_STAGE_04_V4_9_AUDIT_PACKAGE_TASKBOOK_BINDING_V1.zh-CN.md, companion_sha256: 91f35fc08c0f6c019ef52c00430439fe39d18199b534a515446362f74fa33a09, source_sha256: ffed528327ea766b665eb65f90ae197201df2575756ab02b0d6a3d89dfbc3af3 }
 ```
+
+The `companion_sha256` values were added during closeout review as audit
+metadata only. They do not replace the Commander-confirmed manifest hashes
+above and do not create a new confirmation for Stage 4.
 
 ---
 

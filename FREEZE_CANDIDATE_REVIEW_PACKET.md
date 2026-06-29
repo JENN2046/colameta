@@ -1,4 +1,4 @@
-# Freeze Candidate Review Packet Draft
+# Freeze Candidate Review Packet Confirmation Record
 
 ```text id="non-authoritative-draft-banner"
 HASH-SPECIFIC FREEZE CANDIDATE CONFIRMATION PACKET.

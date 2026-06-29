@@ -3,7 +3,7 @@
 ```yaml id="stage-04-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-04/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_04_VERSIONS.md
-  source_sha256: b1da3ea7e105d48f5018c5be17bb59e0164779bfe06e8a36f8e7265b62031c6f
+  source_sha256: 2d5a5752e18d151682d0814d39303a17251e548188a36267d0d25d609437e1f2
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_04_version_set_freeze_candidate_review_packet:
@@ -119,6 +119,10 @@ combined manifest hash：
 ```text
 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
 ```
+
+英文源文件现在还在 Stage 4 中文 companion candidate 清单里补充记录了每个中文
+companion 文件自己的 `companion_sha256`。这只是 closeout review 后补上的审计元数据，
+不替代 Commander 当时确认的 manifest hash，也不构成新的 Stage 4 confirmation。
 
 ## 4. 就绪审查结果
 
