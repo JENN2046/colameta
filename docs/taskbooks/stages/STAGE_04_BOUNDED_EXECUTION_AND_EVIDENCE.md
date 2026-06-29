@@ -15,6 +15,7 @@ stage_taskbook:
   mvp_implementation_mode: thin_governed_loop
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Bounded Execution And Evidence` = 有边界执行与证据。中文意思是：执行必须被
@@ -32,9 +33,14 @@ Stage 4 是 `planned`，但这份 Stage Taskbook 文件本身仍然只是
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   requires_master_taskbook_ref: true
   requires_stage_taskbook_ref: true
   requires_version_taskbook_ref: true
+  supports_project_goal: true
 ```
 
 `ExecutionEnvelope` = 执行信封。中文意思是：把一次执行允许做什么、不能做
@@ -161,6 +167,22 @@ gate_readiness_criteria:
   - executor cannot automatically commit
   - executor cannot automatically continue across versions
   - executor cannot automatically promote delivery state
+```
+
+### 7.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_04_bounded_execution_and_evidence
+  minimum_readiness_claim: Execution is bounded and evidence-backed.
+  required_evidence:
+    - execution envelope
+    - runtime actions
+    - touched artifacts
+    - validation receipt
+    - risks
+  gate_question: Can acceptance be judged from evidence, not taskbook claims?
+  explicit_non_goal: Not general executor dispatch platform.
 ```
 
 ---

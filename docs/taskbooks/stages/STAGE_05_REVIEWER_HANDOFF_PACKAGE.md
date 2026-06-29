@@ -14,6 +14,7 @@ stage_taskbook:
   mvp_loop_name: Stage 0-6 Thin Governed Loop
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Reviewer Handoff Package` = 审查者交接包。中文意思是：把目标、任务、改动、
@@ -31,10 +32,15 @@ Stage 5 是 `planned`，但这份 Stage Taskbook 文件本身仍然只是
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   requires_master_taskbook_ref: true
   requires_stage_taskbook_ref: true
   requires_version_taskbook_ref: true
   requires_execution_receipt_ref: true
+  supports_project_goal: true
 ```
 
 ---
@@ -98,7 +104,7 @@ deliverables:
     - reviewer_handoff_package_generator
     - alignment_questions
     - drift_questions
-    - recommended_decision_options
+    - allowed_review_decision_options
     - minimum_handoff_template
     - diff_summary
     - validation_truth_summary
@@ -139,6 +145,21 @@ gate_readiness_criteria:
   - handoff package asks Reviewer to judge drift
   - handoff package offers only ACCEPT, NEEDS_FIX, PLAN_ADJUST, and ABORT
   - ACCEPT is ReviewDecision.ACCEPT only, never delivery_state accepted
+```
+
+### 7.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_05_reviewer_handoff_package
+  minimum_readiness_claim: Reviewer handoff is self-contained.
+  required_evidence:
+    - claim-to-evidence package
+    - validation status
+    - risks
+    - known gaps
+  gate_question: Can a reviewer decide without reconstructing context?
+  explicit_non_goal: Not acceptance itself.
 ```
 
 `Reviewer` = 审查者。中文意思是：负责判断执行结果是否满足任务、是否跑偏、

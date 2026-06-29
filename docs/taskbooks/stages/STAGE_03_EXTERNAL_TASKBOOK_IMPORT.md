@@ -15,6 +15,7 @@ stage_taskbook:
   mvp_implementation_mode: thin_by_default
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `External Taskbook Import Protocol` = 外部任务书导入协议。中文意思是：ChatGPT
@@ -33,9 +34,14 @@ Stage 3 是 `planned`，但这份 Stage Taskbook 文件本身仍然只是
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   requires_master_taskbook_ref: true
   requires_stage_taskbook_ref: true
   project_final_goal_ref: master_taskbook.project_final_goal
+  supports_project_goal: true
 ```
 
 `stage_taskbook_ref` = 阶段任务书引用。中文意思是：版本任务书必须说明自己属于
@@ -82,7 +88,7 @@ exit_criteria:
     - invalid format is rejected
     - hash mismatch fails closed
     - allowed_files and forbidden_files are required
-    - validation_commands and manual_review_requirements are explicit
+    - acceptance_commands and manual_acceptance are explicit
     - imported taskbook maps to a bounded version task candidate
   not_exit_criteria:
     - automatic plan mutation
@@ -137,8 +143,8 @@ gate_readiness_criteria:
   - Taskbook must contain master_taskbook_ref.
   - Taskbook must contain stage_taskbook_ref.
   - Taskbook must contain allowed_files and forbidden_files.
-  - Taskbook must contain validation_commands.
-  - Taskbook must contain manual_review_requirements.
+  - Taskbook must contain acceptance_commands.
+  - Taskbook must contain manual_acceptance.
   - Taskbook must contain out_of_scope.
   - Taskbook must explain how it supports stage and master goals.
   - Invalid format is rejected.
@@ -158,8 +164,8 @@ minimum_external_taskbook_fields:
     - stage_taskbook_ref
     - allowed_files
     - forbidden_files
-    - validation_commands
-    - manual_review_requirements
+    - acceptance_commands
+    - manual_acceptance
     - out_of_scope
     - supports_stage_and_master_goals
   rejection_fields:
@@ -179,11 +185,27 @@ minimum_external_taskbook_fields:
 `expected_hash_authority_ref` = 预期哈希权威引用。中文意思是：说明外部任务书的
 期望 hash 应该由哪份授权材料或回执来提供，不能凭空声称 hash 正确。
 
-`validation_commands` = 验证命令。中文意思是：这些命令用于验证候选任务，不是
-交付状态验收授权。
+`acceptance_commands` = 验收命令。中文意思是：这些命令用于验证候选任务，
+不是交付状态验收授权。
 
-`manual_review_requirements` = 人工审查要求。中文意思是：说明后续需要人工或
-Reviewer 看什么，不等于 `delivery_state: accepted`。
+`manual_acceptance` = 人工验收要求。中文意思是：说明后续需要人工或 Reviewer
+看什么，不等于 `delivery_state: accepted`。
+
+### 7.2 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_03_external_taskbook_import
+  minimum_readiness_claim: External taskbooks enter only as claims.
+  required_evidence:
+    - source
+    - provenance
+    - import receipt
+    - normalized claims
+    - conflicts
+  gate_question: Can imported claims be reviewed without becoming facts?
+  explicit_non_goal: Not trusted state import or general ingestion.
+```
 
 ---
 

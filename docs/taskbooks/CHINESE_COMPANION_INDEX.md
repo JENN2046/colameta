@@ -34,6 +34,24 @@ chinese_companion_index:
 | `docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md` | `docs/taskbooks/stages/zh-CN/STAGE_05_REVIEWER_HANDOFF_PACKAGE.zh-CN.md` | `companion_draft` | Stage 5 中文 companion 已生成。 |
 | `docs/taskbooks/stages/STAGE_06_REVIEW_FEEDBACK_INTAKE.md` | `docs/taskbooks/stages/zh-CN/STAGE_06_REVIEW_FEEDBACK_INTAKE.zh-CN.md` | `companion_draft` | Stage 6 中文 companion 已生成。 |
 
+```yaml id="stage-companion-freeze-readiness-note"
+stage_companion_freeze_readiness_note:
+  status: companion_draft_retained
+  freeze_readiness_effect: non_blocking_if_hash_matched_and_no_translation_conflict
+  required_before_companion_reference_acceptance:
+    - separate_companion_review
+    - source_hash_match_check
+    - translation_conflict_check
+  non_authorization:
+    - companion_draft_does_not_replace_english_source_authority
+    - companion_draft_does_not_authorize_freeze
+    - companion_draft_does_not_authorize_execution
+```
+
+中文解释：Stage 中文 companion 先保持 `companion_draft`。只要 source hash 匹配、
+没有翻译冲突，它本身不阻塞 Stage freeze readiness 审查；但它也不会自动成为
+同级权威副本。
+
 ---
 
 ## 3. Version / Prompt Taskbook 文档

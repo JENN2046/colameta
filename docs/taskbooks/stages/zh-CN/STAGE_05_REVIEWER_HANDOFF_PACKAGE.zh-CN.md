@@ -3,7 +3,7 @@
 ```yaml id="stage-05-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md
-  source_sha256: 9724f0faae94324b8239c5a82f8fd02629905567cbe3172e8a93d738c4edea82
+  source_sha256: 532d36ab5c99d37c1a88b094fbe9c37bdc342e17e572447468a0918afbdce43c
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
@@ -20,6 +20,8 @@ goal alignment。
 
 它不是 acceptance 本身。
 
+英文源文件里的 `created_from_head` 是历史创建基线，不是当前 freeze snapshot HEAD。
+
 ## 2. 绑定要求
 
 Reviewer handoff package 需要绑定：
@@ -28,6 +30,8 @@ Reviewer handoff package 需要绑定：
 - stage_taskbook_ref；
 - version_taskbook_ref；
 - execution_receipt_ref。
+
+本阶段显式绑定 `master_taskbook_ref`，并声明 `supports_project_goal=true`。
 
 ## 3. 进入条件
 
@@ -68,6 +72,21 @@ Stage 5 后续版本方向：
 - Reviewer Package Report Surface V1。
 
 这些只生成审查材料，不替 Reviewer 决策。
+
+## 5.1 Stage 0-6 就绪契约
+
+```yaml id="stage-0-6-readiness-contract-zh-cn"
+stage_0_6_readiness_contract:
+  stage_id: stage_05_reviewer_handoff_package
+  minimum_readiness_claim: Reviewer handoff 是自包含的。
+  required_evidence:
+    - claim-to-evidence package
+    - validation status
+    - risks
+    - known gaps
+  gate_question: Reviewer 是否能不重建上下文就做判断？
+  explicit_non_goal: 不做 acceptance 本身。
+```
 
 ## 6. 最小 handoff 模板
 

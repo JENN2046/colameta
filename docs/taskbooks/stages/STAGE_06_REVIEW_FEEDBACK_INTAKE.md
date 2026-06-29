@@ -15,6 +15,7 @@ stage_taskbook:
   mvp_implementation_mode: thin_by_default
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Review Feedback Intake` = 审查反馈接入。中文意思是：把审查者的反馈结构化，
@@ -32,12 +33,17 @@ Stage 6 是 `planned`，但这份 Stage Taskbook 文件本身仍然只是
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   requires_master_taskbook_ref: true
   requires_stage_taskbook_ref: true
   requires_version_taskbook_ref: true
   requires_reviewer_handoff_package_ref: true
   requires_execution_report_ref: true
   requires_workspace_snapshot_ref: true
+  supports_project_goal: true
 ```
 
 `ReviewDecision` = 审查决策记录。中文意思是：审查者说出的判断记录，但它本身
@@ -157,6 +163,20 @@ gate_readiness_criteria:
   - ABORT creates a Commander decision request; it never cancels, deletes, or reverts by itself
   - PASS alias is disabled unless explicit authorized pass_alias_policy_ref is present
   - feedback classification never mutates plan, route, delivery state, Git state, memory, executor continuation, commit, or push by itself
+```
+
+### 7.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_06_review_feedback_intake
+  minimum_readiness_claim: Feedback becomes a Commander next-state request.
+  required_evidence:
+    - feedback receipt
+    - classification
+    - requested next-state decision
+  gate_question: Can Commander authorize stop, rework, defer, accept, or next loop?
+  explicit_non_goal: Not plan mutation, state promotion, or execution continuation.
 ```
 
 `GateEvent` = 状态门事件。中文意思是：真正写入交付状态变化的事件记录，不是

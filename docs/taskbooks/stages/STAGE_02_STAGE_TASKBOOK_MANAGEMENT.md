@@ -14,6 +14,7 @@ stage_taskbook:
   mvp_loop_name: Stage 0-6 Thin Governed Loop
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Stage Taskbook Management` = 阶段任务书管理。中文意思是：让每个阶段任务书
@@ -31,8 +32,13 @@ Stage 2 是 `planned`，但这份 Stage Taskbook 文件本身仍然只是
 master_binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   stage_requires_master_ref: true
   project_final_goal_ref: master_taskbook.project_final_goal
+  supports_project_goal: true
 ```
 
 Stage 2 depends on Stage 1 producing a stable `master_taskbook_ref`.
@@ -195,6 +201,21 @@ gate_readiness_criteria:
 
 `supports_project_goal` = 支持项目最终目标。中文意思是：阶段任务书必须说明自己
 为什么服务于 `project_final_goal`。
+
+### 8.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_02_stage_taskbook_management
+  minimum_readiness_claim: Stage Taskbooks express bounded stage claims.
+  required_evidence:
+    - stage objective
+    - stage bounds
+    - evidence expectation
+    - gate-readiness criteria
+  gate_question: Are stage claims distinct from accepted state?
+  explicit_non_goal: Not state authority or workflow platform.
+```
 
 ---
 

@@ -3,7 +3,7 @@
 ```yaml id="stage-00-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md
-  source_sha256: f7e3cab7c19c9401d0366071f12e26844bda1e4b39516bef84825ab66224c483
+  source_sha256: 12103877ba181c48056299b800c546e55ac7f68b7df82f4f657a4bd2f0e91489
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
@@ -19,6 +19,8 @@ Stage 0 的任务是让当前现实足够清楚：代码库状态、远端同步
 
 它不是新产品能力阶段，也不是清理工程，更不是“自动修复一切状态问题”。
 
+英文源文件里的 `created_from_head` 是历史创建基线，不是当前 freeze snapshot HEAD。
+
 ## 2. Master 绑定
 
 本阶段绑定到 `PROJECT_MASTER_TASKBOOK.md`，源 Master hash 为：
@@ -27,6 +29,8 @@ Stage 0 的任务是让当前现实足够清楚：代码库状态、远端同步
 
 Master 中 Stage 0 的阶段状态引用是 `active_closeout`。但这份 Stage 中文任务书
 自身仍是 `discussion_draft`，不拥有状态权威。
+
+本阶段显式绑定 `master_taskbook_ref`，并声明 `supports_project_goal=true`。
 
 ## 3. 进入条件
 
@@ -83,6 +87,20 @@ Stage 0 的 gate-readiness 重点是：
 - runtime loaded-code freshness 可解释；
 - executor-session HEAD mismatch 可无变异分类；
 - local commit 和 remote sync state 分开记录。
+
+## 7.1 Stage 0-6 就绪契约
+
+```yaml id="stage-0-6-readiness-contract-zh-cn"
+stage_0_6_readiness_contract:
+  stage_id: stage_00_baseline_closeout
+  minimum_readiness_claim: 基线状态已清楚到足以开始治理声明。
+  required_evidence:
+    - 基线快照
+    - 已知未知项
+    - 本地运行态状态说明
+  gate_question: 后续声明是否从已声明的基线开始？
+  explicit_non_goal: 不做完整审计、清理工程或 dashboard。
+```
 
 ## 8. 最小证据包
 

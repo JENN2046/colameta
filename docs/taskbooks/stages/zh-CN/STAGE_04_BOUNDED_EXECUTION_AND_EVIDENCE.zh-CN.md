@@ -3,7 +3,7 @@
 ```yaml id="stage-04-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md
-  source_sha256: a71d1a6cf00cfecd67421c3a6ade6327156547aec49cba169909e39d1bf153c4
+  source_sha256: 05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
@@ -18,6 +18,10 @@ Stage 4 把另行授权的版本任务候选，准备成有边界、机器可检
 `ExecutionEnvelope`，并记录本地执行证据或外部执行回执。
 
 它不是通用 executor dispatch 平台。
+
+英文源文件里的 `created_from_head` 是历史创建基线，不是当前 freeze snapshot HEAD。
+
+本阶段显式绑定 `master_taskbook_ref`，并声明 `supports_project_goal=true`。
 
 ## 2. 关键概念
 
@@ -80,6 +84,22 @@ Stage 4 的关键 gate-readiness：
   授权时才可运行；
 - retry/fix/validation loop 不能扩展 files、commands、network、secrets、
   destructive operations、timeout、route 或 delivery state。
+
+## 6.1 Stage 0-6 就绪契约
+
+```yaml id="stage-0-6-readiness-contract-zh-cn"
+stage_0_6_readiness_contract:
+  stage_id: stage_04_bounded_execution_and_evidence
+  minimum_readiness_claim: 执行有边界且有证据支撑。
+  required_evidence:
+    - 执行信封
+    - 运行时动作
+    - 触碰的产物
+    - 验证回执
+    - 风险
+  gate_question: 是否能根据证据判断 acceptance，而不是根据 taskbook claim 判断？
+  explicit_non_goal: 不做通用 executor dispatch platform。
+```
 
 ## 7. 最小证据包
 

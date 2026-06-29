@@ -14,6 +14,7 @@ stage_taskbook:
   mvp_loop_name: Stage 0-6 Thin Governed Loop
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Baseline Closeout` = 基线收束。中文意思是：先把当前代码、远端、运行状态、
@@ -33,7 +34,12 @@ master_binding:
   master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
   review_packet_path: FREEZE_CANDIDATE_REVIEW_PACKET.md
   master_review_status: freeze_candidate_confirmed_for_exact_hash
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   project_final_goal_ref: master_taskbook.project_final_goal
+  supports_project_goal: true
 ```
 
 Stage 0 is bound to the Master as a planning reference only. It does not make
@@ -145,6 +151,20 @@ gate_readiness_criteria:
 
 `Gate-Readiness Criteria` = 状态门就绪条件。中文意思是：Stage 0 要准备哪些
 事实，后续状态门才有材料判断。
+
+### 7.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_00_baseline_closeout
+  minimum_readiness_claim: Baseline state is known enough to start governed claims.
+  required_evidence:
+    - baseline snapshot
+    - known unknowns
+    - local runtime state note
+  gate_question: Do later claims start from a declared baseline?
+  explicit_non_goal: Not full audit, cleanup, or dashboard.
+```
 
 ---
 

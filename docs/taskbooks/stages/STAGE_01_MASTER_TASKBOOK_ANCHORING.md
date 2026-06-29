@@ -14,6 +14,7 @@ stage_taskbook:
   mvp_loop_name: Stage 0-6 Thin Governed Loop
   target_repository: /home/jenn/src/colameta-dev
   created_from_head: c0ed30d
+  created_from_head_meaning: historical_creation_baseline_not_current_freeze_snapshot
 ```
 
 `Stage Taskbook` = 阶段任务书。它把 Master Taskbook 的总目标拆成一个
@@ -34,6 +35,10 @@ master_binding:
   review_packet_path: FREEZE_CANDIDATE_REVIEW_PACKET.md
   review_packet_sha256: 2dc1761a5596fc0b41a33da8ef90536aa429d73e0b3f947f05ad4354260531ba
   master_review_status: freeze_candidate_confirmed_for_exact_hash
+  master_taskbook_ref:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    review_status: freeze_candidate_confirmed_for_exact_hash
   master_authority_boundary:
     - freeze_candidate is review status only
     - not active authority
@@ -41,6 +46,7 @@ master_binding:
     - not executor authorization
     - not route transition authorization
   project_final_goal_ref: master_taskbook.project_final_goal
+  supports_project_goal: true
 ```
 
 Plain Chinese meaning: this Stage binds to the exact Master snapshot already
@@ -215,6 +221,21 @@ gate_readiness_criteria:
 
 `Gate-Readiness Criteria` = 状态门就绪条件。中文意思是：这些不是验收通过，
 而是进入状态门审查前必须准备好的判断材料。
+
+### 8.1 Stage 0-6 Readiness Contract
+
+```yaml id="stage-0-6-readiness-contract"
+stage_0_6_readiness_contract:
+  stage_id: stage_01_master_taskbook_anchoring
+  minimum_readiness_claim: Work is anchored to project_final_goal.
+  required_evidence:
+    - Master Taskbook goal
+    - MVP scope
+    - authority rules
+    - stage list
+  gate_question: Does every downstream claim trace to the single final goal?
+  explicit_non_goal: Not multi-goal portfolio planning.
+```
 
 ---
 
