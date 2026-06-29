@@ -3,7 +3,7 @@
 ```yaml id="stage-05-version-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-05/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_05_VERSIONS.md
-  source_sha256: ca23f567af50038469e3198b9a5600b1625e595c3381f20d262ab3aa81d61ea8
+  source_sha256: 807d9d90d16525af1282ee63bcc2e2e9de8fe11e1eb9e59dd021e3ce77d22a7c
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_05_version_set_freeze_candidate_review_packet:

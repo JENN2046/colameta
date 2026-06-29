@@ -152,7 +152,7 @@ parent_binding:
     effect_on_this_packet: previous_stage_version_set_anchor_only
   stage_4_version_set_confirmation_ref:
     path: docs/taskbooks/versions/stage-04/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_04_VERSIONS.md
-    raw_snapshot_sha256: b1da3ea7e105d48f5018c5be17bb59e0164779bfe06e8a36f8e7265b62031c6f
+    raw_snapshot_sha256: 2d5a5752e18d151682d0814d39303a17251e548188a36267d0d25d609437e1f2
     review_status: hash_specific_freeze_candidate_confirmation_recorded
     effect_on_this_packet: previous_stage_version_set_anchor_only
 ```
