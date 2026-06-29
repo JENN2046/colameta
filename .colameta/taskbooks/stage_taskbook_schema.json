@@ -1,0 +1,160 @@
+{
+  "schema_version": "stage_taskbook_schema.v1",
+  "document_type": "stage_taskbook_schema",
+  "authority_status": "schema_contract_only_not_delivery_authority",
+  "required_fields": [
+    {
+      "field": "stage_id",
+      "exact_keys": ["stage_id"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "stage_name",
+      "exact_keys": ["stage_name"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "chinese_name",
+      "exact_keys": ["chinese_name"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "status",
+      "exact_keys": ["status"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "authority_status",
+      "exact_keys": ["authority_status"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "master_taskbook_ref",
+      "exact_keys": ["master_taskbook_ref", "master_taskbook_raw_snapshot_sha256"],
+      "anchor_texts": ["Master Binding"],
+      "fail_closed": true
+    },
+    {
+      "field": "supports_project_goal",
+      "exact_keys": ["supports_project_goal"],
+      "anchor_texts": [],
+      "fail_closed": true
+    },
+    {
+      "field": "stage_purpose",
+      "exact_keys": ["stage_purpose"],
+      "anchor_texts": ["Stage Purpose"],
+      "fail_closed": true
+    },
+    {
+      "field": "entry_criteria",
+      "exact_keys": ["entry_criteria"],
+      "anchor_texts": ["Entry Criteria"],
+      "fail_closed": false
+    },
+    {
+      "field": "exit_criteria",
+      "exact_keys": ["exit_criteria"],
+      "anchor_texts": ["Exit Criteria"],
+      "fail_closed": false
+    },
+    {
+      "field": "deliverables",
+      "exact_keys": ["deliverables"],
+      "anchor_texts": ["Deliverables"],
+      "fail_closed": false
+    },
+    {
+      "field": "gate_readiness_criteria",
+      "exact_keys": ["gate_readiness_criteria"],
+      "anchor_texts": ["Gate-Readiness Criteria"],
+      "fail_closed": true
+    },
+    {
+      "field": "minimum_evidence_package",
+      "exact_keys": ["minimum_evidence_package"],
+      "anchor_texts": ["Minimum Evidence Package"],
+      "fail_closed": true
+    },
+    {
+      "field": "non_goals",
+      "exact_keys": ["non_goals"],
+      "anchor_texts": ["Non-Goals"],
+      "fail_closed": true
+    },
+    {
+      "field": "minimum_readiness_claim",
+      "exact_keys": ["minimum_readiness_claim"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "required_evidence",
+      "exact_keys": ["required_evidence"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "gate_question",
+      "exact_keys": ["gate_question"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "explicit_non_goal",
+      "exact_keys": ["explicit_non_goal"],
+      "anchor_texts": [],
+      "fail_closed": false
+    },
+    {
+      "field": "state_authority_boundary",
+      "exact_keys": ["state_authority_boundary"],
+      "anchor_texts": ["state authority", "accepted delivery state"],
+      "fail_closed": false
+    },
+    {
+      "field": "execution_authorization_boundary",
+      "exact_keys": ["execution_authorization_boundary"],
+      "anchor_texts": ["execution authorization", "executor dispatch"],
+      "fail_closed": false
+    },
+    {
+      "field": "mutation_boundary",
+      "exact_keys": ["mutation_boundary"],
+      "anchor_texts": ["mutation", "must not mutate"],
+      "fail_closed": false
+    }
+  ],
+  "master_binding": {
+    "required_path": "PROJECT_MASTER_TASKBOOK.md",
+    "required_raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
+  },
+  "minimum_evidence_package_required_fields": [
+    "stage_taskbook_path",
+    "stage_taskbook_hash",
+    "master_taskbook_ref",
+    "supports_project_goal_summary",
+    "non_goals",
+    "gate_readiness_criteria",
+    "validation_result"
+  ],
+  "forbidden_claim_patterns": [
+    "delivery_state accepted",
+    "delivery_state_accepted: true",
+    "accepted: true",
+    "review_acceptance: true",
+    "executor_run_authorized: true",
+    "execution_authority: granted"
+  ],
+  "result_authority_boundary": {
+    "validator_result_is_authority": false,
+    "creates_review_decision": false,
+    "emits_gate_event": false,
+    "writes_delivery_state": false
+  }
+}
