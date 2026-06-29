@@ -1,41 +1,46 @@
-# Stage 4 Version 集合冻结候选审查包草稿
+# Stage 4 Version 集合冻结候选确认记录
 
 ```yaml id="stage-04-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-04/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_04_VERSIONS.md
-  source_sha256: f26633ed2d121b4092e8a56bdd0ec2846fb4a530d2489599298f88dd3a7010a7
+  source_sha256: b1da3ea7e105d48f5018c5be17bb59e0164779bfe06e8a36f8e7265b62031c6f
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_04_version_set_freeze_candidate_review_packet:
   target_stage_id: stage_04_bounded_execution_and_evidence
   target_version_set: stage_04_versions_v4_1_to_v4_9
-  status: freeze_candidate_review_packet_draft_not_confirmed
-  authority_status: non_authoritative_review_packet_draft
-  freeze_candidate_confirmation_status: not_confirmed
-  confirmation_token: not_provided
-  commander_confirmation_prompt_status: not_generated
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  authority_status: review_status_confirmation_record_only
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_04_VERSION_SET_FREEZE_CANDIDATE_FOR_HASH_ONLY
+  commander_confirmation_prompt_status: commander_confirmed
   generation_head: d814040
   packet_storage_head: a22f9cc
+  repo_reality_patch_commit_head: e3bad66
   current_observed_head: a22f9cc
+  current_observed_head_at_confirmation: e3bad66
   current_ahead_origin_main_from_local_refs: 35
+  current_ahead_origin_main_from_local_refs_at_confirmation: 36
+  confirmed_packet_draft_sha256: f26633ed2d121b4092e8a56bdd0ec2846fb4a530d2489599298f88dd3a7010a7
+  confirmed_chinese_companion_packet_sha256: 27bde6d88c21555989875b0880180c3a5eb026caa8430ecae73fa5e3a12ffcaf
   source_authority_candidate_manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
   chinese_companion_candidate_manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
   combined_candidate_manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
 ```
 
-这是一份中文 companion。它帮助 Commander 用中文理解英文 review packet draft，
+这是一份中文 companion。它帮助 Commander 用中文理解英文 confirmation record，
 但不替代英文源文件，也不产生独立权威。
 
-## 1. 这份 packet 草稿是什么
+## 1. 这份 confirmation record 是什么
 
-`Freeze Candidate Review Packet Draft` = 冻结候选审查包草稿。
+`Freeze Candidate Confirmation Record` = 冻结候选确认记录。
 
-中文意思是：它把 Stage 4 的 Version 任务书集合 v4.1-v4.9 的精确文件 hash、父级
-绑定、就绪审查结果和边界规则收拢起来，方便下一步生成 Commander 精确 hash 确认
-prompt。
+中文意思是：Commander 已经按精确 hash 确认 Stage 4 的 Version 任务书集合
+v4.1-v4.9 进入 `freeze_candidate` 审查状态。
 
-它现在不是 confirmation record，也没有把 Stage 4 Version set 提升为
-`freeze_candidate`。
+它只确认这一件事：
+
+- 把这组精确 hash 的 Stage 4 Version 任务书提升到 `freeze_candidate` 审查状态。
 
 它不授权实现、commit、push、fetch/pull、executor run、local execution、imported
 receipt adoption、review acceptance、release / deploy 或 Delivery State Gate
@@ -68,9 +73,24 @@ transition。
 生成时 ahead 34 是历史事实；packet 被本地 commit 存储后，当前本地 ahead 变为
 35。这个补充只更新仓库现实记录，不产生 freeze、授权或状态推进效果。
 
+Commander 做出精确 hash 确认时的本地观察现实是：
+
+- repo reality patch commit HEAD：`e3bad66`；
+- repo reality patch commit HEAD 完整值：`e3bad663be96077387295e4a67cdd2f60074b91f`；
+- current observed HEAD at confirmation：`e3bad66`；
+- current observed HEAD at confirmation 完整值：`e3bad663be96077387295e4a67cdd2f60074b91f`；
+- confirmation 时本地相对 `origin/main` ahead：36；
+- confirmation 前 worktree：clean；
+- confirmed packet draft hash：`f26633ed2d121b4092e8a56bdd0ec2846fb4a530d2489599298f88dd3a7010a7`；
+- confirmed Chinese companion packet hash：`27bde6d88c21555989875b0880180c3a5eb026caa8430ecae73fa5e3a12ffcaf`。
+
+中文解释：`confirmed packet draft hash` 是 Commander 确认时绑定的旧草稿 hash。
+当前这个确认记录文件写完后会有新的文件 hash；那是确认记录本身的 hash，不会替代
+Commander 当时确认的草稿 hash。
+
 ## 3. 目标范围
 
-本 packet 草稿只覆盖 Stage 4 的 v4.1 到 v4.9：
+本 confirmation record 只覆盖 Stage 4 的 v4.1 到 v4.9：
 
 - v4.1：Machine-checkable Execution Envelope V1，也就是“机器可检查执行信封 V1”；
 - v4.2：Taskbook-bound Executor Run Preview V1，也就是“任务书绑定执行器运行预览 V1”；
@@ -102,7 +122,7 @@ combined manifest hash：
 
 ## 4. 就绪审查结果
 
-这份 packet 草稿绑定的是一轮只读就绪审查记录：
+这份 confirmation record 绑定的是一轮只读就绪审查记录：
 
 - P0：未发现已知 P0；
 - P1：未发现已知 P1；
@@ -119,13 +139,13 @@ combined manifest hash：
 
 ## 5. 失效规则
 
-任一源文件、中文 companion、manifest、父级绑定、hash policy、canonicalization policy、
-scope 或 packet wording 变化，本草稿失效。失效后必须重新计算 hash、重新审查、重新
-生成 packet。
+任一源文件、中文 companion、confirmed packet draft hash、manifest、父级绑定、
+hash policy、canonicalization policy、scope 或 confirmation record wording 变化，
+本确认记录失效。失效后必须重新计算 hash、重新审查、重新生成 confirmation record。
 
 ## 6. 非授权边界
 
-这份 packet 草稿不授权：
+这份 confirmation record 不授权：
 
 - implementation；
 - code changes；
@@ -142,5 +162,5 @@ scope 或 packet wording 变化，本草稿失效。失效后必须重新计算 
 - remote write；
 - release / deploy；
 - delivery state transition；
-- freeze_candidate promotion；
+- freeze_candidate promotion for any other hash or scope；
 - P0 closure。

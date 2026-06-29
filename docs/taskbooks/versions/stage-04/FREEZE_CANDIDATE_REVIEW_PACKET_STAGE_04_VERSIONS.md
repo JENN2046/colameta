@@ -1,10 +1,10 @@
-# Stage 4 Version Set Freeze Candidate Review Packet Draft
+# Stage 4 Version Set Freeze Candidate Confirmation Record
 
-```text id="stage-04-version-set-freeze-packet-draft-banner"
-HASH-BOUND STAGE 4 VERSION SET FREEZE CANDIDATE REVIEW PACKET DRAFT.
-This packet summarizes the exact Stage 4 Version Taskbook candidate set
-v4.1-v4.9 for possible freeze_candidate Commander confirmation. It is not a
-confirmation record. It does not close P0 items, does not authorize
+```text id="stage-04-version-set-freeze-packet-confirmation-banner"
+HASH-SPECIFIC STAGE 4 VERSION SET FREEZE CANDIDATE CONFIRMATION RECORD.
+This packet records Commander confirmation that the exact Stage 4 Version
+Taskbook candidate set v4.1-v4.9 identified below is promoted to
+freeze_candidate review status only. It does not close P0 items, does not authorize
 implementation, commit, push, fetch, pull, executor run, route transition,
 remote action, plan mutation, review acceptance, release, deploy, or Delivery
 State Gate transition.
@@ -13,16 +13,16 @@ State Gate transition.
 ```yaml id="stage-04-version-set-freeze-packet-summary"
 stage_04_version_set_freeze_candidate_review_packet:
   document_type: stage_04_version_set_freeze_candidate_review_packet
-  schema_version: stage_04_version_set_freeze_packet.draft.v1
-  status: freeze_candidate_review_packet_draft_not_confirmed
-  authority_status: non_authoritative_review_packet_draft
+  schema_version: stage_04_version_set_freeze_packet.confirmation_record.v1
+  status: hash_specific_freeze_candidate_confirmation_recorded
+  authority_status: review_status_confirmation_record_only
   target_stage_id: stage_04_bounded_execution_and_evidence
   target_stage_name: Bounded Execution And Evidence
   target_version_set: stage_04_versions_v4_1_to_v4_9
-  target_review_status_requested: freeze_candidate_for_exact_hash_only
-  freeze_candidate_confirmation_status: not_confirmed
-  confirmation_token: not_provided
-  commander_confirmation_prompt_status: not_generated
+  target_review_status_confirmed_by_this_packet: freeze_candidate_for_exact_hash_only
+  freeze_candidate_confirmation_status: commander_confirmed_for_exact_hash
+  confirmation_token: CONFIRM_STAGE_04_VERSION_SET_FREEZE_CANDIDATE_FOR_HASH_ONLY
+  commander_confirmation_prompt_status: commander_confirmed
   canonical_hash_receipt_status: not_generated
   project: ColaMeta
   workspace: /home/jenn/src/colameta-dev
@@ -38,16 +38,25 @@ stage_04_version_set_freeze_candidate_review_packet:
   packet_storage_head: a22f9cc
   packet_storage_head_full: a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9
   packet_storage_head_subject: "docs: add stage 4 version freeze packet draft"
-  repo_reality_patch_commit_head: pending_until_after_this_repo_reality_patch_commit
-  repo_reality_patch_commit_head_full: pending_until_after_this_repo_reality_patch_commit
+  repo_reality_patch_commit_head: e3bad66
+  repo_reality_patch_commit_head_full: e3bad663be96077387295e4a67cdd2f60074b91f
   current_observed_head: a22f9cc
   current_observed_head_full: a22f9ccf0b9ad4a4bf141e10f28ada67ac8435b9
+  current_observed_head_at_confirmation: e3bad66
+  current_observed_head_at_confirmation_full: e3bad663be96077387295e4a67cdd2f60074b91f
   current_ahead_origin_main_from_local_refs: 35
+  current_ahead_origin_main_from_local_refs_at_confirmation: 36
   current_behind_origin_main_from_local_refs: 0
   live_remote_status_not_validated: true
   worktree_status_at_generation: clean
   worktree_status_at_current_observation: clean
+  worktree_status_at_confirmation_pre_update: clean
   packet_self_hash_status: not_recorded_inside_self_hashing_document
+  confirmed_packet_draft_sha256: f26633ed2d121b4092e8a56bdd0ec2846fb4a530d2489599298f88dd3a7010a7
+  confirmed_chinese_companion_packet_sha256: 27bde6d88c21555989875b0880180c3a5eb026caa8430ecae73fa5e3a12ffcaf
+  confirmed_source_authority_candidate_manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
+  confirmed_chinese_companion_candidate_manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
+  confirmed_combined_candidate_manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
   source_authority_candidate_manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
   chinese_companion_candidate_manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
   combined_candidate_manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
@@ -63,9 +72,10 @@ stage_04_version_set_freeze_candidate_review_packet:
   delivery_state_transition_authority: false
 ```
 
-`Review Packet Draft` = 审查包草稿。中文意思是：它只把 Stage 4 Version set 的
-候选 hash、范围和边界收拢起来，方便后续 Commander 做精确 hash 确认；它本身不是
-确认记录，也不是 freeze。
+`Confirmation Record` = 确认记录。中文意思是：它记录 Commander 已经按精确 hash
+确认这一组 Stage 4 Version 任务书进入 `freeze_candidate` 审查状态；它不是执行
+授权，也不是 commit、push、executor、local execution、review acceptance 或 accepted
+授权。
 
 ---
 
@@ -75,25 +85,25 @@ stage_04_version_set_freeze_candidate_review_packet:
 target_scope:
   source_authority_candidate:
     meaning: english_stage_04_version_taskbook_source_set
-    manifest_status: candidate_for_possible_freeze_candidate_review_only
+    manifest_status: commander_confirmed_for_freeze_candidate_review_only
     manifest_sha256: ad1a7decf3456b3a89c9f0a35c08a6a999a334b6bcd05341f5e31d3ebb2eb33f
     file_count: 9
   chinese_companion_candidate:
     meaning: chinese_reference_companion_set
-    manifest_status: companion_candidate_for_review_only
+    manifest_status: commander_confirmed_companion_for_review_only
     manifest_sha256: a36a2b6a52f5ea4920e1962e59b82cd76245759e6e4a854c71a18e42712c4465
     file_count: 9
   combined_candidate:
     meaning: english_source_plus_chinese_companions
-    manifest_status: combined_snapshot_candidate_for_review_only
+    manifest_status: commander_confirmed_combined_snapshot_for_review_only
     manifest_sha256: 5566ba2bc02066af9e3bfd96fb3ced5c0686dd91c163fb3a769e7f4bb3550696
     file_count: 18
 ```
 
-The English Version Taskbooks are the source-authority candidate set for any
-future hash-specific freeze_candidate review status. The Chinese companions are
-full reading companions for Commander understanding; they do not replace the
-English source candidate and do not create a second authority source.
+The English Version Taskbooks are the source-authority candidate set for this
+hash-specific freeze_candidate review status. The Chinese companions are full
+reading companions for Commander understanding; they do not replace the English
+source candidate and do not create a second authority source.
 
 ---
 
@@ -139,7 +149,8 @@ parent_binding:
 ```
 
 This packet does not mutate Master, Stage 4, Stage 0-6, or Stage 0-3 status. It
-only prepares a review packet draft for the exact Stage 4 Version set hashes.
+only records the Commander-confirmed freeze_candidate review status for the
+exact Stage 4 Version set hashes declared here.
 
 ---
 
@@ -174,7 +185,7 @@ chinese_companion_candidate_files:
 
 ```yaml id="stage-04-version-readiness-checklist"
 readiness_checklist:
-  status: draft_review_packet_not_p0_closure
+  status: confirmation_recorded_not_p0_closure
   p0_status: no_known_p0_after_latest_read_only_review
   p1_status: no_known_p1_after_latest_read_only_review
   p2_status: no_known_p2_after_latest_read_only_review
@@ -198,8 +209,8 @@ readiness_checklist:
     - no_version_claims_delivery_state_accepted
 ```
 
-This checklist supports packet drafting only. It does not close P0 by authority,
-does not confirm freeze_candidate status, and does not authorize execution.
+This checklist supports the hash-specific confirmation record. It does not
+close P0 by authority and does not authorize execution.
 
 ---
 
@@ -207,12 +218,14 @@ does not confirm freeze_candidate status, and does not authorize execution.
 
 ```yaml id="stage-04-version-invalidation-rule"
 invalidation_rule:
-  invalidates_this_packet_draft_when:
+  invalidates_this_confirmation_record_when:
     - any_source_authority_candidate_file_changes
     - any_chinese_companion_candidate_file_changes
     - source_manifest_hash_no_longer_matches_the_recorded_manifest
     - chinese_companion_manifest_hash_no_longer_matches_the_recorded_manifest
     - combined_manifest_hash_no_longer_matches_the_recorded_manifest
+    - confirmed_packet_draft_hash_no_longer_matches_the_recorded_draft
+    - confirmed_manifest_hash_no_longer_matches_the_recorded_manifest
     - master_taskbook_binding_changes
     - stage_taskbook_binding_changes
     - stage_0_6_freeze_packet_binding_changes
@@ -221,12 +234,12 @@ invalidation_rule:
     - canonicalization_policy_changes
     - review_finds_new_p0
     - target_version_set_scope_changes
-    - packet_wording_is_revised_in_a_way_that_changes_review_conclusion
+    - confirmation_record_wording_is_revised_in_a_way_that_changes_review_conclusion
   required_after_invalidation:
     - regenerate_file_hashes
     - regenerate_manifest_hashes
     - rerun_readiness_review
-    - regenerate_packet_draft
+    - regenerate_confirmation_record
     - request_new_hash_specific_commander_confirmation_if_freeze_candidate_status_is_desired
 ```
 
@@ -236,7 +249,7 @@ invalidation_rule:
 
 ```yaml id="stage-04-version-allowed-review-outcomes"
 allowed_review_outcomes:
-  - READY_FOR_HASH_SPECIFIC_COMMANDER_CONFIRMATION_PROMPT
+  - FREEZE_CANDIDATE_CONFIRMATION_RECORDED_FOR_EXACT_HASH
   - RETURN_TO_DRAFT_FIXES
   - INVALIDATED_BY_CONTENT_OR_HEAD_CHANGE
   - BLOCKED_NEEDS_EXPLICIT_SCOPE_DECISION
@@ -257,7 +270,7 @@ forbidden_outcomes:
 ```yaml id="stage-04-version-cannot-prove"
 cannot_prove:
   - live_remote_state_because_no_fetch_or_network_remote_probe_was_authorized
-  - runtime_service_health_because_no_service_probe_is_required_for_packet_draft
+  - runtime_service_health_because_no_service_probe_is_required_for_confirmation_record
   - executor_safety_because_no_executor_run_was_authorized
   - implementation_correctness_because_version_taskbooks_are_planning_documents
   - review_acceptance_because_no_review_decision_was_authorized
@@ -289,13 +302,11 @@ non_authorization_boundary:
     - release
     - deploy
     - delivery_state_transition
-    - freeze_candidate_promotion
     - freeze_candidate_promotion_for_any_other_hash_or_scope
     - p0_closure
   future_required_checks_not_authorized_actions:
-    - packet_hash_calculation_after_this_file_is_written
+    - confirmation_record_hash_recalculation_after_this_file_is_written
     - chinese_companion_source_hash_patch
     - authority_laundering_wording_review
     - worktree_and_head_reality_recheck_before_any_future_confirmation
-    - commander_hash_specific_confirmation_prompt_generation
 ```
