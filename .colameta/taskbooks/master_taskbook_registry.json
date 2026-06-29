@@ -1,0 +1,54 @@
+{
+  "schema_version": "master_taskbook_registry.v1",
+  "registry_record_id": "master_taskbook.current",
+  "project": "ColaMeta",
+  "workspace": "/home/jenn/src/colameta-dev",
+  "master_taskbook_path": "PROJECT_MASTER_TASKBOOK.md",
+  "master_raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+  "master_review_status": "freeze_candidate_confirmed_for_exact_hash",
+  "master_authority_boundary": {
+    "review_status_is_reference_only": true,
+    "active_execution_authority": false,
+    "executor_authority": false,
+    "route_transition_authority": false,
+    "delivery_state_authority": false,
+    "review_acceptance_authority": false,
+    "freeze_candidate_implies_accepted": false
+  },
+  "project_final_goal_ref": {
+    "source_document": "PROJECT_MASTER_TASKBOOK.md",
+    "field_name": "project_final_goal",
+    "authority_boundary": "hash_bound_reference_only"
+  },
+  "source_stage_taskbook_ref": {
+    "path": "docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md",
+    "raw_snapshot_sha256": "f880585ed8d37639d215c9f440b37750defa9201f265b2fb7bd63cfdacf6c326",
+    "stage_id": "stage_01_master_taskbook_anchoring"
+  },
+  "source_version_taskbook_ref": {
+    "path": "docs/taskbooks/versions/stage-01/VERSION_STAGE_01_V1_1_MASTER_TASKBOOK_REGISTRY_V1.md",
+    "raw_snapshot_sha256": "503af0ff7cdac71c55b9fa3d47a09d3fc484c851daffb244a52385ac0dd2b896",
+    "version_id": "stage_01_v1_1_master_taskbook_registry_v1"
+  },
+  "observed_git_head": "49aa038d3a05e29bd0e2454a458ca2494937b428",
+  "observed_origin_main_local_tracking_ref": "018ff63b76872504407c537cd46e1e8a2ee5c22e",
+  "ahead_behind_from_local_refs": {
+    "ahead": 48,
+    "behind": 0,
+    "source": "git rev-list --left-right --count origin/main...HEAD"
+  },
+  "live_remote_status_not_validated": true,
+  "mutation_boundary": {
+    "master_taskbook_mutation_allowed": false,
+    "registry_can_mutate_master": false,
+    "requires_separate_hash_specific_authorization": true
+  },
+  "forbidden_authority_claims": [
+    "master_is_active_execution_authority",
+    "master_is_accepted_delivery_state",
+    "freeze_candidate_implies_executor_authority",
+    "registry_record_can_mutate_master",
+    "registry_record_can_override_delivery_state_gate"
+  ],
+  "created_at": "2026-06-29T22:31:47+08:00"
+}
