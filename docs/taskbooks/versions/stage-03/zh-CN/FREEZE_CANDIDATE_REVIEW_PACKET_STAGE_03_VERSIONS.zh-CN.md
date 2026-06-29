@@ -3,7 +3,7 @@
 ```yaml id="stage-03-version-set-freeze-packet-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/versions/stage-03/FREEZE_CANDIDATE_REVIEW_PACKET_STAGE_03_VERSIONS.md
-  source_sha256: ef9bc8ad72b48733d48d1aec51ad4b0790442d1c1e6ca8595caf99ef8b47be1a
+  source_sha256: a205e34993f309bec6653731b14e283300f12aeeaea2622b74205539b2278346
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage_03_version_set_freeze_candidate_review_packet:
@@ -15,6 +15,9 @@ stage_03_version_set_freeze_candidate_review_packet:
   confirmation_token: not_provided
   commander_confirmation_prompt_status: not_generated
   generation_head: 53d97f3
+  packet_storage_head: 1633dcd
+  current_observed_head: 1633dcd
+  current_ahead_origin_main_from_local_refs: 28
   source_authority_candidate_manifest_sha256: b85d7be24e96de2a12284c06046966d01e3c5da5cc95027e83e4dd93881cf390
   chinese_companion_candidate_manifest_sha256: 3ab2f95e73986b9e71e4ff8c56a4b75b8b20a958301ac13db679f817d5c487ca
   combined_candidate_manifest_sha256: 092d8bea1249c500d62722823f8f10c86b7bee7d7fc087db2155b08d603461a1
@@ -67,6 +70,20 @@ prompt。
 - 本地相对 `origin/main` behind：0；
 - 生成时 worktree：clean；
 - 没有验证 live remote 最新状态。
+
+这份 packet 草稿被写入本地 Git 后的当前观察现实是：
+
+- packet storage HEAD：`1633dcd`；
+- packet storage HEAD 完整值：`1633dcd419af29f1585e7a30c2b1007795f0fc7b`；
+- packet storage HEAD 主题：`docs: add stage 3 version freeze packet draft`；
+- current observed HEAD：`1633dcd`；
+- current observed HEAD 完整值：`1633dcd419af29f1585e7a30c2b1007795f0fc7b`；
+- 当前本地相对 `origin/main` ahead：28；
+- 当前本地相对 `origin/main` behind：0；
+- 当前 worktree：clean。
+
+生成时 ahead 27 是历史事实；packet 被本地 commit 存储后，当前本地 ahead 变为
+28。这个补充只更新仓库现实记录，不产生 freeze、授权或状态推进效果。
 
 `local tracking ref` = 本地远端跟踪引用。中文意思是：这里的 `origin/main` 是本地
 Git 已知的远端分支快照，不代表这次已经联网确认远端最新状态。
