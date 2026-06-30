@@ -40,10 +40,22 @@
 
 1. `get_web_gpt_service_entrypoint`
 2. `list_registered_projects`
-3. `analyze_project_state`，必须传入已登记的 `project_name`
-4. `manage_workflow_run`，用 `action=list` 查看最近证据
+3. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
+4. `analyze_project_state`，必须传入已登记的 `project_name`
+5. `manage_workflow_run`，用 `action=list` 查看最近证据
 
 示例：
+
+```json
+{
+  "name": "get_stable_promotion_readiness",
+  "arguments": {
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+这个工具只读，用来判断当前服务候选是否只是 dev 试用、是否可进入稳定晋升审查、以及还有哪些 local blockers / warnings。它不授权替换稳定服务。
 
 ```json
 {

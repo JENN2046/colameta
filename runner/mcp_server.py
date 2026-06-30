@@ -40,6 +40,7 @@ from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import get_runtime_version_status
+from runner.stable_promotion_readiness import get_stable_promotion_readiness
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -65,6 +66,7 @@ MCP_HARD_TOOL_RESULT_CHARS = 75000
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_web_gpt_service_entrypoint",
+    "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "analyze_project_state",
     "run_mcp_workflow",
@@ -135,6 +137,7 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
 
 
 PROJECT_NAME_REQUIRED_TOOLS = {
+    "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_plan_standards_report",
     "get_review_context",
@@ -266,6 +269,7 @@ class MCPPlanningBridgeServer:
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
+            "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_runner_status": self._tool_get_runner_status,
             "get_version_result": self._tool_get_version_result,
@@ -348,6 +352,26 @@ class MCPPlanningBridgeServer:
                         "project_name": {
                             "type": "string",
                             "description": "可选。若已知目标项目，可返回该项目的只读 identity 摘要；服务模式下仍不执行项目动作。",
+                        }
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_stable_promotion_readiness",
+                description=(
+                    f"[{self.project_hint}] 稳定服务晋升只读预检卡片。"
+                    "汇总运行中代码新鲜度、Git clean、MCP 入口能力、registry、稳定运行目录来源和晋升阻断项。"
+                    "它只输出 evidence，不授权重启、替换稳定服务、push、executor run、route transition、release 或 deploy。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目稳定晋升预检；服务模式下必须显式提供。",
                         }
                     },
                     "required": [],
@@ -3367,6 +3391,8 @@ class MCPPlanningBridgeServer:
     def _actions_readonly_tools(self) -> set[str]:
         return {
             "get_web_gpt_service_entrypoint",
+            "get_stable_promotion_readiness",
+            "get_runtime_version_status",
             "get_project_identity",
             "get_plan_standards_report",
             "get_runner_execution_standards",
@@ -4727,6 +4753,12 @@ class MCPPlanningBridgeServer:
                     "why": "服务模式下先确认可用 project_name；不要猜项目目录。",
                 },
                 {
+                    "step": "inspect_stable_promotion_readiness",
+                    "tool": "get_stable_promotion_readiness",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "确认当前服务是否只是 dev 试用、可进入稳定晋升审查，还是仍有本地阻断。",
+                },
+                {
                     "step": "inspect_project_state",
                     "tool": "analyze_project_state",
                     "arguments": {"project_name": "<registered project_name>"},
@@ -4800,7 +4832,8 @@ class MCPPlanningBridgeServer:
             },
             "web_gpt_handoff_prompt": (
                 "Start by calling get_web_gpt_service_entrypoint, then list_registered_projects, "
-                "then analyze_project_state with the selected project_name. For thin governed loop work, "
+                "then get_stable_promotion_readiness and analyze_project_state with the selected project_name. "
+                "For thin governed loop work, "
                 "use run_mcp_workflow input_mode=draft to generate generated_input_bundle and feed it back "
                 "as thin_loop_inputs with input_mode=provided. Treat all outputs as evidence unless Commander "
                 "explicitly authorizes a write, run, push, or stable promotion."
@@ -4832,6 +4865,17 @@ class MCPPlanningBridgeServer:
             }
             summary.append(item)
         return summary[:20]
+
+    def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        return get_stable_promotion_readiness(
+            project_root,
+            visible_tool_names=self._visible_tool_names(),
+            supported_workflows=list(_SUPPORTED_MCP_WORKFLOWS),
+            service_mode=self.service_mode,
+            mcp_exposure_profile=self.mcp_exposure_profile,
+            registered_projects=self._web_gpt_registered_project_summary(),
+        )
 
     def _tool_get_project_identity(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
