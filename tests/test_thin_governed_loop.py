@@ -121,6 +121,31 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.result["thin_loop"]["delivery_state_accepted"] is False
         assert output.result["forbidden_authority_outputs"]["delivery_state_accepted"] is False
 
+    def test_thin_loop_workflow_template_mode_returns_input_contract_only(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "input_mode": "template"},
+        )
+
+        assert output.ok is True
+        assert output.status == "succeeded"
+        assert output.requires_confirmation is False
+        assert output.changed_files == []
+        assert output.preview_ids == []
+        assert output.result["input_mode"] == "template"
+        assert output.result["thin_loop"]["thin_loop_status"] == "thin_governed_loop_input_template_ready"
+        contract = output.result["input_contract"]
+        assert contract["accepted_input_modes"] == ["example", "template", "provided"]
+        assert [item["field"] for item in contract["provided_mode_required_objects"]] == [
+            "external_taskbook_claim",
+            "execution_envelope",
+            "local_execution_receipt",
+            "review_feedback",
+        ]
+        assert contract["minimal_request_shape"]["input_mode"] == "provided"
+        assert contract["read_only_boundary"]["writes_delivery_state"] is False
+
     def test_thin_loop_workflow_fails_closed_when_provided_inputs_are_incomplete(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
         inputs = example_stage_3_6_inputs()
@@ -138,7 +163,22 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.result["input_mode"] == "provided"
         assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
         assert "缺少真实输入对象：execution_envelope" in output.blockers
+        assert output.result["input_contract"]["minimal_request_shape"]["workflow"] == "thin_governed_loop_preview"
         assert output.result["forbidden_authority_outputs"]["delivery_state_accepted"] is False
+
+    def test_thin_loop_workflow_rejects_unknown_input_mode_with_contract(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "input_mode": "surprise"},
+        )
+
+        assert output.ok is False
+        assert output.status == "blocked"
+        assert output.result["input_mode"] == "surprise"
+        assert output.result["thin_loop"]["blockers"][0]["code"] == "thin_loop_invalid_input_mode"
+        assert "input_mode 必须是 example、template 或 provided。" in output.blockers
+        assert "template" in output.result["input_contract"]["accepted_input_modes"]
 
 
 if __name__ == "__main__":

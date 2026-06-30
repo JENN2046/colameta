@@ -3171,17 +3171,30 @@ class WorkflowOrchestrator:
                 "thin_governed_loop_preview 只支持 preview / inspect / status；它不执行 apply、run、commit。",
             )
 
-        inputs, input_mode, input_blockers = self._thin_loop_inputs_from_params(params)
+        requested_input_mode = self._thin_loop_requested_input_mode(params)
         warning = (
             "thin_governed_loop_preview is read-only evidence; it does not authorize "
             "executor dispatch, ReviewDecision, GateEvent, Delivery State transition, commit, or push."
         )
+        if requested_input_mode == "template":
+            return self._thin_loop_template_result(phase=phase, warnings=[warning])
+
+        inputs, input_mode, input_blockers = self._thin_loop_inputs_from_params(params)
         if input_blockers:
-            blocker_items = [
-                {"code": "thin_loop_input_missing", "field": field}
-                for field in input_blockers
-            ]
-            blocker_messages = [f"缺少真实输入对象：{field}" for field in input_blockers]
+            invalid_input_mode = input_blockers == ["input_mode"]
+            if invalid_input_mode:
+                blocker_items = [{
+                    "code": "thin_loop_invalid_input_mode",
+                    "field": "input_mode",
+                    "allowed_values": ["example", "template", "provided"],
+                }]
+                blocker_messages = ["input_mode 必须是 example、template 或 provided。"]
+            else:
+                blocker_items = [
+                    {"code": "thin_loop_input_missing", "field": field}
+                    for field in input_blockers
+                ]
+                blocker_messages = [f"缺少真实输入对象：{field}" for field in input_blockers]
             thin_loop = {
                 "thin_loop_status": THIN_LOOP_FAILED_CLOSED,
                 "thin_loop_path": [
@@ -3223,6 +3236,33 @@ class WorkflowOrchestrator:
             warnings=[warning],
         )
 
+    def _thin_loop_template_result(self, *, phase: str, warnings: list[str]) -> 'CoreResult':
+        thin_loop = {
+            "thin_loop_status": "thin_governed_loop_input_template_ready",
+            "thin_loop_path": [
+                "external_taskbook_import",
+                "execution_envelope",
+                "local_execution_receipt",
+                "reviewer_handoff_package",
+                "review_feedback_intake",
+            ],
+            "stage_results": {},
+            "blockers": [],
+            "authority_boundary": self._thin_loop_authority_boundary(),
+            "delivery_state_accepted": False,
+            "review_decision_created": False,
+            "gate_event_emitted": False,
+            "executor_dispatch_authorized": False,
+        }
+        return self._thin_loop_core_result(
+            phase=phase,
+            input_mode="template",
+            thin_loop=thin_loop,
+            passed=True,
+            blocker_messages=[],
+            warnings=warnings,
+        )
+
     def _thin_loop_core_result(
         self,
         *,
@@ -3254,6 +3294,7 @@ class WorkflowOrchestrator:
                 "gate_event_emitted": False,
                 "executor_dispatch_authorized": False,
             },
+            "input_contract": self._thin_loop_input_contract(),
         }
         step = {
             "name": "thin_governed_loop_preview",
@@ -3282,18 +3323,12 @@ class WorkflowOrchestrator:
     def _thin_loop_inputs_from_params(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str, list[str]]:
         from runner.thin_governed_loop import example_stage_3_6_inputs
 
-        object_fields = (
-            "external_taskbook_claim",
-            "execution_envelope",
-            "local_execution_receipt",
-            "review_feedback",
-        )
+        object_fields = self._thin_loop_object_fields()
         bundle = params.get("thin_loop_inputs")
         if not isinstance(bundle, dict):
             bundle = {}
 
-        input_mode_raw = params.get("input_mode", bundle.get("input_mode", ""))
-        input_mode = str(input_mode_raw or "").strip().lower()
+        input_mode = self._thin_loop_requested_input_mode(params)
         if input_mode not in ("", "example", "provided"):
             return None, input_mode or "unknown", ["input_mode"]
 
@@ -3321,6 +3356,77 @@ class WorkflowOrchestrator:
         for field in object_fields:
             inputs[field] = provided[field]
         return inputs, "provided", []
+
+    def _thin_loop_requested_input_mode(self, params: dict[str, Any]) -> str:
+        bundle = params.get("thin_loop_inputs")
+        if not isinstance(bundle, dict):
+            bundle = {}
+        input_mode_raw = params.get("input_mode", bundle.get("input_mode", ""))
+        return str(input_mode_raw or "").strip().lower()
+
+    @staticmethod
+    def _thin_loop_object_fields() -> tuple[str, str, str, str]:
+        return (
+            "external_taskbook_claim",
+            "execution_envelope",
+            "local_execution_receipt",
+            "review_feedback",
+        )
+
+    def _thin_loop_input_contract(self) -> dict[str, Any]:
+        return {
+            "input_contract_version": "thin_governed_loop_inputs.v1",
+            "accepted_input_modes": ["example", "template", "provided"],
+            "provided_mode_required_objects": [
+                {
+                    "field": "external_taskbook_claim",
+                    "stage": "stage_03_import",
+                    "purpose": "外部任务书声明对象；作为 bounded claim 验证，不直接采信。",
+                },
+                {
+                    "field": "execution_envelope",
+                    "stage": "stage_04_execution_evidence",
+                    "purpose": "受控执行 envelope；声明可执行边界、命令、文件范围和停止条件。",
+                },
+                {
+                    "field": "local_execution_receipt",
+                    "stage": "stage_04_execution_evidence",
+                    "purpose": "本地执行 receipt；记录实际执行结果、文件触达和验证结果。",
+                },
+                {
+                    "field": "review_feedback",
+                    "stage": "stage_06_feedback_intake",
+                    "purpose": "审查反馈对象；只生成反馈分类和 Commander 下一步请求。",
+                },
+            ],
+            "transport": {
+                "direct_fields": list(self._thin_loop_object_fields()),
+                "bundle_field": "thin_loop_inputs",
+                "bundle_allowed_fields": [
+                    "input_mode",
+                    "current_head",
+                    *self._thin_loop_object_fields(),
+                ],
+            },
+            "minimal_request_shape": {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "provided",
+                "project_name": "<managed project_name when using service mode>",
+                "current_head": "<optional git head>",
+                "external_taskbook_claim": "<object>",
+                "execution_envelope": "<object>",
+                "local_execution_receipt": "<object>",
+                "review_feedback": "<object>",
+            },
+            "read_only_boundary": {
+                "authorizes_executor_dispatch": False,
+                "creates_review_decision": False,
+                "emits_gate_event": False,
+                "writes_delivery_state": False,
+                "commits_or_pushes": False,
+            },
+        }
 
     def _thin_loop_current_head(self, params: dict[str, Any], bundle: dict[str, Any]) -> str:
         for value in (params.get("current_head"), bundle.get("current_head")):

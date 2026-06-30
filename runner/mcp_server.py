@@ -2406,8 +2406,8 @@ class MCPPlanningBridgeServer:
                         },
                         "input_mode": {
                             "type": "string",
-                            "enum": ["example", "provided"],
-                            "description": "thin_governed_loop_preview 可选。example 使用内置样例；provided 要求同时提供 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback。",
+                            "enum": ["example", "template", "provided"],
+                            "description": "thin_governed_loop_preview 可选。example 使用内置样例；template 只返回真实输入契约和最小请求形状；provided 要求同时提供 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback。",
                         },
                         "thin_loop_inputs": {
                             "type": "object",
