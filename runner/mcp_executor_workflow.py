@@ -25,6 +25,11 @@ from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.executor_session import ExecutorSessionStore
 from runner.executor_status import apply_claim_to_status, read_executor_events_for_status, status_base_result
 from runner.executor_registry import is_supported_execution_provider
+from runner.final_version_closeout import (
+    ARTIFACT_KIND as FINAL_VERSION_CLOSEOUT_ARTIFACT_KIND,
+    apply_final_version_closeout_artifact,
+    build_final_version_closeout_preview,
+)
 from runner.param_utils import bounded_int
 from runner.path_glob import match as glob_match, match_any as glob_match_any, normalize as glob_normalize
 from runner.plan_allowed_files import current_plan_allowed_patterns
@@ -118,6 +123,8 @@ class MCPExecutorWorkflowManager:
             "scope_mismatch_apply": self._scope_mismatch_apply,
             "state_lineage_reconciliation_preview": self._state_lineage_reconciliation_preview,
             "state_lineage_reconciliation_apply": self._state_lineage_reconciliation_apply,
+            "final_version_closeout_preview": self._final_version_closeout_preview,
+            "final_version_closeout_apply": self._final_version_closeout_apply,
             "reconcile_orphaned_claims_preview": self._reconcile_orphaned_claims_preview,
             "reconcile_orphaned_claims_apply": self._reconcile_orphaned_claims_apply,
             "status": self._status,
@@ -127,7 +134,7 @@ class MCPExecutorWorkflowManager:
             return {
                 "ok": False,
                 "error_code": "UNKNOWN_ACTION",
-                "message": "不支持的操作。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。",
+                "message": "不支持的操作。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、final_version_closeout_preview、final_version_closeout_apply、reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。",
             }
         return handler(params)
 
@@ -2025,6 +2032,139 @@ class MCPExecutorWorkflowManager:
             "message": "Runner state lineage reconciliation 已受控写入 state.json；未运行 executor、未执行 Git 远端操作。",
         }
 
+    def _final_version_closeout_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        context = self._load_state_lineage_context()
+        if not context.get("ok"):
+            return {
+                "ok": False,
+                "action": "final_version_closeout_preview",
+                "status": "failed",
+                "risk_level": "blocked",
+                "error_code": str(context.get("error_code") or "PLAN_OR_STATE_LOAD_FAILED"),
+                "message": str(context.get("message") or "加载 plan/state 失败。"),
+                "blockers": self._str_list(context.get("blockers")),
+                "warnings": self._str_list(context.get("warnings")),
+            }
+
+        accepted_commit = self._str_param(params.get("accepted_commit") or params.get("commit_hash"), default="")
+        commit_fact = self._final_version_commit_fact(accepted_commit)
+        current_head = self._str_param(self._service._get_git_head(), default="")
+        current_branch = self._str_param(self._service._get_git_branch(), default="")
+        git_status_short = self._service._get_git_status_short()
+        preview_result = build_final_version_closeout_preview(
+            plan=context["plan"],
+            state=context["state"],
+            target_version=self._str_param(params.get("target_version") or params.get("version"), default=""),
+            accepted_commit=accepted_commit,
+            accepted_commit_subject=self._str_param(
+                params.get("accepted_commit_subject")
+                or params.get("commit_subject")
+                or params.get("commit_message"),
+                default="",
+            ),
+            expected_head=self._str_param(params.get("expected_head"), default=""),
+            current_head=current_head,
+            git_status_short=git_status_short,
+            now=self._now_iso(),
+            state_file=str(context.get("state_file") or ""),
+            project_root=self.project_root,
+            expected_branch=self._str_param(params.get("expected_branch"), default=""),
+            current_branch=current_branch,
+            commit_exists=bool(commit_fact.get("exists")),
+            commit_subject=self._str_param(commit_fact.get("subject"), default=""),
+            commit_files=self._str_list(params.get("commit_files")),
+            evidence_refs=self._str_list(params.get("evidence_refs")),
+            evidence_summary=self._str_param(params.get("evidence_summary"), default=""),
+            reason=self._str_param(params.get("reason"), default=""),
+        )
+        response = dict(preview_result)
+        response.pop("proposed_state", None)
+        if preview_result.get("can_apply"):
+            preview_id = self._generate_preview_key(prefix="final_closeout")
+            expires_at = self._now_iso_ts(PREVIEW_TTL_SECONDS)
+            artifact = dict(preview_result)
+            artifact["preview_id"] = preview_id
+            artifact["expires_at"] = expires_at
+            self._write_preview_artifact(preview_id, artifact)
+            response["preview_id"] = preview_id
+            response["expires_at"] = expires_at
+            response["next_actions"] = [{
+                "tool": "manage_executor_workflow",
+                "action": "final_version_closeout_apply",
+                "params": {"action": "final_version_closeout_apply", "preview_id": preview_id},
+                "reason": "使用 preview_id 受控写入最后一个版本 closeout 结果。",
+                "requires_confirmation": True,
+                "risk_level": "commit",
+            }]
+        else:
+            response["why_blocked"] = "final version closeout preview 存在阻断项，apply 不可用。"
+        return response
+
+    def _final_version_closeout_apply(self, params: dict[str, Any]) -> dict[str, Any]:
+        preview_id = self._str_param(params.get("preview_id"), default="")
+        if not preview_id:
+            return self._error("final_version_closeout_apply", "PREVIEW_ID_REQUIRED", "final_version_closeout_apply 需要 preview_id。")
+        artifact = self._read_preview_artifact(preview_id)
+        if artifact is None:
+            return self._error("final_version_closeout_apply", "PREVIEW_NOT_FOUND", "preview_id 不存在或已过期。")
+        if str(artifact.get("artifact_kind") or "") != FINAL_VERSION_CLOSEOUT_ARTIFACT_KIND:
+            return self._error("final_version_closeout_apply", "PREVIEW_KIND_MISMATCH", "preview_id 类型不匹配。")
+        guard_error = self._preview_guard_error(
+            "final_version_closeout_apply",
+            preview_id,
+            artifact,
+            expired_message="preview_id 已过期，请重新生成 preview。",
+        )
+        if guard_error is not None:
+            return guard_error
+
+        context = self._load_state_lineage_context()
+        if not context.get("ok"):
+            return self._error(
+                "final_version_closeout_apply",
+                str(context.get("error_code") or "PLAN_OR_STATE_LOAD_FAILED"),
+                str(context.get("message") or "加载 plan/state 失败。"),
+            )
+        commit_fact = self._final_version_commit_fact(self._str_param(artifact.get("accepted_commit"), default=""))
+        apply_result = apply_final_version_closeout_artifact(
+            artifact=artifact,
+            current_state=context["state"],
+            preview_id=preview_id,
+            current_head=self._str_param(self._service._get_git_head(), default=""),
+            git_status_short=self._service._get_git_status_short(),
+            current_branch=self._str_param(self._service._get_git_branch(), default=""),
+            commit_exists=bool(commit_fact.get("exists")),
+            commit_subject=self._str_param(commit_fact.get("subject"), default=""),
+        )
+        if not apply_result.get("ok"):
+            return apply_result
+        try:
+            StateMutationGateway().save_raw(
+                apply_result["updated_state"],
+                str(context.get("state_file") or ""),
+                expected_hash=self._str_param(artifact.get("state_hash"), default=""),
+            )
+        except Exception:
+            return self._error("final_version_closeout_apply", "STATE_SAVE_FAILED", "写入 state 失败。")
+        self._delete_preview_artifact(preview_id)
+        return {
+            "ok": True,
+            "action": "final_version_closeout_apply",
+            "status": "succeeded",
+            "risk_level": "commit",
+            "preview_id": preview_id,
+            "state_file": str(context.get("state_file") or ""),
+            "before_state_summary": apply_result.get("before_state_summary", {}),
+            "after_state_summary": apply_result.get("after_state_summary", {}),
+            "versions_updated": apply_result.get("versions_updated", []),
+            "files_touched": [
+                str(item).replace("<preview_id>", preview_id)
+                for item in apply_result.get("files_touched", [])
+            ],
+            "forbidden_side_effects": apply_result.get("forbidden_side_effects", []),
+            "message": "最后一个版本 closeout 已受控写入 state.json；未运行 executor、未写 ReviewDecision/GateEvent/Delivery accepted、未执行 Git 远端操作。",
+        }
+
     def _manual_validation_apply(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id"), default="")
         if not preview_id:
@@ -2993,6 +3133,19 @@ class MCPExecutorWorkflowManager:
             else:
                 subjects[commit_hash] = ""
         return {"exists": exists, "subjects": subjects}
+
+    def _final_version_commit_fact(self, commit_hash: str) -> dict[str, Any]:
+        commit_hash = self._str_param(commit_hash, default="")
+        if not commit_hash:
+            return {"exists": False, "subject": ""}
+        ok, _, _ = self._service._run_git_cmd(["cat-file", "-e", f"{commit_hash}^{{commit}}"])
+        if not ok:
+            return {"exists": False, "subject": ""}
+        subject_ok, subject_out, _ = self._service._run_git_cmd(["show", "-s", "--format=%s", commit_hash])
+        return {
+            "exists": True,
+            "subject": subject_out.strip() if subject_ok else "",
+        }
 
     def _load_recheck_plan_state_context(self, requested_version: str) -> dict[str, Any]:
         workspace_root = self.project_root
