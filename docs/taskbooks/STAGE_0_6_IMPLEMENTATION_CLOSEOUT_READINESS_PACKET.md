@@ -13,7 +13,7 @@ GateEvent emission, review acceptance, or Delivery State Gate transition.
 stage_0_6_implementation_closeout_readiness:
   document_type: stage_0_6_implementation_closeout_readiness_packet
   schema_version: implementation_closeout_readiness_packet.v1
-  status: ready_for_commander_push_decision_review
+  status: ready_for_commander_push_decision_review_not_push_authorization
   authority_status: readiness_evidence_only
   project: ColaMeta
   workspace: /home/jenn/src/colameta-dev
@@ -23,6 +23,11 @@ stage_0_6_implementation_closeout_readiness:
   generation_head: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
   generation_head_short: 1219846
   generation_head_subject: "feat(taskbooks): add review decision adapter"
+  generation_head_meaning: implementation_closeout_head_before_packet_storage
+  packet_storage_note: >
+    This packet is stored by a later local commit. Any hash-specific push
+    authorization must bind the current observed HEAD at authorization time,
+    not only the implementation closeout generation HEAD recorded here.
   local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   local_ahead_origin_main_from_local_refs: 81
   local_behind_origin_main_from_local_refs: 0
@@ -215,7 +220,8 @@ push_readiness_decision_state:
     name: origin
     url: git@github.com:JENN2046/colameta.git
     branch: main
-  current_head: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
+  implementation_closeout_head_before_packet_storage: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
+  push_target_head_must_be_current_observed_head_at_authorization: true
   local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   ahead_behind_from_local_refs:
     behind: 0
@@ -269,6 +275,8 @@ Target:
 - Workspace: /home/jenn/src/colameta-dev
 - Branch: main
 - Current HEAD:
+  <CURRENT_OBSERVED_HEAD_AT_PUSH_AUTHORIZATION>
+- Implementation closeout generation HEAD before packet storage:
   1219846e5ad2ddd800582d43d9dc450e7711d1ab
 - Local origin/main tracking ref:
   018ff63b76872504407c537cd46e1e8a2ee5c22e
@@ -280,7 +288,7 @@ Target:
   not_recorded_inside_self_hashing_document
 
 Allowed:
-- verify current HEAD still equals the exact HEAD above
+- verify current HEAD still equals the exact current observed HEAD supplied in the final Commander confirmation
 - verify worktree is clean
 - verify local origin/main tracking ref still equals the exact ref above
 - run git push origin main as a non-force push
@@ -305,4 +313,3 @@ Not allowed:
 
 The prompt above is a draft only. It becomes usable only if Commander explicitly
 confirms it and the current repository still matches the bound facts.
-

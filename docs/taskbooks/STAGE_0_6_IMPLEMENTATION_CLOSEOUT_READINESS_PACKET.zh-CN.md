@@ -6,7 +6,7 @@ companion_binding:
   companion_type: full_chinese_reading_companion
   authority_status: non_authoritative_companion
   source_document: docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md
-  source_sha256: 34a9b1649c64e1cd0fabce6196d519ff538d210674d845e4fb28264e87785f52
+  source_sha256: c097eea8b0fd855cdbd874391b2713b1323d8a05b381c2662662111338b8b21e
 ```
 
 ## 这份文件是什么
@@ -29,6 +29,7 @@ repo_reality:
   branch: main
   current_head: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
   current_head_subject: "feat(taskbooks): add review decision adapter"
+  current_head_meaning: implementation_closeout_head_before_packet_storage
   local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   local_ahead_origin_main_from_local_refs: 81
   local_behind_origin_main_from_local_refs: 0
@@ -36,7 +37,9 @@ repo_reality:
   worktree_status_at_generation: clean
 ```
 
-中文解释：现在本地 `main` 比本地记录的 `origin/main` 超前 81 个 commit。这里没有做
+中文解释：这里的 `current_head` 是 packet 生成时、还没提交 packet 前的实现收口 HEAD。
+packet 自己提交后，仓库 HEAD 会继续前进，所以真正 push 授权必须绑定最终确认时的当前
+HEAD。现在本地 `main` 比本地记录的 `origin/main` 超前 81 个 commit。这里没有做
 `fetch`，所以只能说“基于本地 tracking ref 看是 ahead 81 / behind 0”，不能证明远端此刻
 没有新变化。
 
@@ -146,7 +149,8 @@ push_readiness_decision_state:
   readiness_outcome: ready_for_commander_push_decision_review
   can_prepare_push_confirmation_prompt: true
   push_authorized_by_this_packet: false
-  current_head: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
+  implementation_closeout_head_before_packet_storage: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
+  push_target_head_must_be_current_observed_head_at_authorization: true
   local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
   ahead_behind_from_local_refs:
     behind: 0
@@ -185,6 +189,8 @@ Target:
 - Workspace: /home/jenn/src/colameta-dev
 - Branch: main
 - Current HEAD:
+  <CURRENT_OBSERVED_HEAD_AT_PUSH_AUTHORIZATION>
+- Implementation closeout generation HEAD before packet storage:
   1219846e5ad2ddd800582d43d9dc450e7711d1ab
 - Local origin/main tracking ref:
   018ff63b76872504407c537cd46e1e8a2ee5c22e
@@ -192,7 +198,7 @@ Target:
   ahead=81 behind=0
 
 Allowed:
-- verify current HEAD still equals the exact HEAD above
+- verify current HEAD still equals the exact current observed HEAD supplied in the final Commander confirmation
 - verify worktree is clean
 - verify local origin/main tracking ref still equals the exact ref above
 - run git push origin main as a non-force push
