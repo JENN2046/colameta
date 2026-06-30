@@ -456,6 +456,7 @@ class WorkflowOrchestrator:
             working_tree_clean,
             runner,
             executor,
+            plan=plan_status,
         )
 
         pending_warnings = self._build_pending_queue_warnings(
@@ -579,7 +580,7 @@ class WorkflowOrchestrator:
     def _summarize_analyzed_state(
         self, mode: str, has_plan: bool, has_state: bool,
         working_tree_clean: bool | None, runner: dict[str, Any],
-        executor: dict[str, Any],
+        executor: dict[str, Any], plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         has_runner_state = runner.get("has_runner_state", False)
         has_executor_session = executor.get("has_session", False)
@@ -587,13 +588,40 @@ class WorkflowOrchestrator:
         can_use_mcp_plan_onboarding = mode == "source_only"
         can_commit = working_tree_clean is False
         direct_count = int(runner.get("unreconciled_direct_version_count", 0) or 0)
+        plan_summary = plan.get("plan_summary") if isinstance(plan, dict) else None
+        if not isinstance(plan_summary, dict):
+            plan_summary = {}
+        try:
+            plan_version_count = int(plan_summary.get("version_count", 0) or 0)
+        except Exception:
+            plan_version_count = 0
+        try:
+            enabled_plan_version_count = int(
+                plan_summary.get("enabled_version_count", plan_version_count) or 0
+            )
+        except Exception:
+            enabled_plan_version_count = plan_version_count
+        has_plan_versions = plan_version_count > 0 or enabled_plan_version_count > 0
 
         if mode == "source_only":
             one_line = "项目处于 source-only 模式，尚未纳入 Runner 管理。推荐使用 run_mcp_workflow workflow=source_onboarding phase=preview 生成纳管预览（仅创建 .colameta 基础结构，不创建开发版本）。"
         elif mode == "runner_managed":
             pending_count = int(runner.get("pending_count", 0) or 0)
-            if pending_count <= 0:
+            if pending_count <= 0 and not has_plan_versions:
                 one_line = "项目已纳入 Runner 管理，尚无开发版本。推荐先保存 prompt 文件，再通过 manage_plan_version insert_from_prompt_file_preview 插入第一个开发版本。"
+            elif pending_count <= 0:
+                current_version = str(runner.get("current_version") or "").strip()
+                current_status = str(runner.get("current_version_status") or "").strip()
+                current_text = (
+                    f"当前版本 {current_version} 状态为 {current_status or 'unknown'}"
+                    if current_version
+                    else "当前没有 active 版本"
+                )
+                one_line = (
+                    f"项目已纳入 Runner 管理，计划中有 {plan_version_count} 个版本，"
+                    f"{current_text}，暂无待执行版本。推荐使用 run_mcp_workflow workflow=project_status "
+                    "phase=inspect 查看完整状态，或为下一轮优化保存 prompt 并插入新版本。"
+                )
             else:
                 one_line = "项目已纳入 Runner 管理。推荐使用 run_mcp_workflow workflow=project_status phase=inspect 查看完整状态。"
         elif mode == "plan_without_state":
@@ -623,6 +651,9 @@ class WorkflowOrchestrator:
             "can_use_mcp_plan_onboarding": can_use_mcp_plan_onboarding,
             "can_commit": can_commit,
             "recommended_primary_action": recommended_primary_action,
+            "plan_version_count": plan_version_count,
+            "enabled_plan_version_count": enabled_plan_version_count,
+            "has_plan_versions": has_plan_versions,
         }
 
     def _build_pending_queue_warnings(
