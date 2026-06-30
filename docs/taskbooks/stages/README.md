@@ -16,9 +16,9 @@ stage_taskbook_index:
 拆成一个阶段内可审查、可引用、可继续细分的交付边界。
 
 This directory contains discussion-draft Stage Taskbooks for the Stage 0-6
-Thin Governed Loop. They are planning artifacts only. They do not authorize
-implementation, executor runs, commits, pushes, route transitions, or delivery
-state promotion.
+Thin Governed Loop and post-MVP Stage 7-9 preparation drafts. They are planning
+artifacts only. They do not authorize implementation, executor runs, commits,
+pushes, route transitions, or delivery state promotion.
 
 ## MVP Stage Drafts
 
@@ -31,6 +31,17 @@ state promotion.
 | Stage 4 | `STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md` | 有边界执行与证据 | Bind execution to envelope and evidence. |
 | Stage 5 | `STAGE_05_REVIEWER_HANDOFF_PACKAGE.md` | 审查者交接包 | Give reviewers enough context to decide. |
 | Stage 6 | `STAGE_06_REVIEW_FEEDBACK_INTAKE.md` | 审查反馈接入 | Convert review feedback into next-state requests. |
+
+## Post-MVP Stage Drafts
+
+| Stage | File | Chinese Meaning | Preparation Role |
+| --- | --- | --- | --- |
+| Stage 7 | `STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md` | 漂移证据与纠偏 | Organize drift evidence so a Reviewer can decide whether work still serves the master goal. |
+| Stage 8 | `STAGE_08_PLAN_ADJUSTMENT_CONTROL.md` | 计划调整控制面 | Turn `PLAN_ADJUST` into a bounded preview instead of direct plan mutation. |
+| Stage 9 | `STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md` | 受控继续与长期追踪 | Define the review-gated continue path and long-run project trace. |
+
+These Stage 7-9 files make the next work visible and bounded. They do not make
+Stage 7-9 implemented, accepted, or eligible for automatic execution.
 
 ## Common Boundary
 
