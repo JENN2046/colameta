@@ -29,6 +29,7 @@ from runner.runner_paths import (
     resolve_project_runner_rel_dir,
 )
 from runner.service_lifecycle_store import ServiceLifecycleStore
+from runner.runtime_observability import get_connector_runtime_health_status
 
 
 SERVICE_WAIT_TIMEOUT_SECONDS = 2.0
@@ -286,6 +287,54 @@ def _probe_service_health(metadata: dict[str, object]) -> tuple[str | None, str 
             else "starting"
         )
     return web_state, mcp_state
+
+
+def _print_connector_runtime_health_summary(
+    *,
+    project_path: str,
+    metadata: dict[str, object] | None,
+    state: str,
+    web_state: str | None,
+    mcp_state: str | None,
+) -> None:
+    local_service: dict[str, object] | None
+    if isinstance(metadata, dict):
+        local_service = {
+            "state": state,
+            "health_source": "process_table" if metadata.get("discovered_from_process_table") else "metadata",
+            "pid": metadata.get("pid"),
+            "project_root": metadata.get("project_root") or _resolve_path(project_path),
+            "metadata_project_matches": _metadata_matches_project_path(metadata, project_path),
+            "discovered_from_process_table": metadata.get("discovered_from_process_table"),
+            "enable_web": metadata.get("enable_web"),
+            "web_state": web_state,
+            "web_url": metadata.get("web_url"),
+            "web_host": metadata.get("web_host"),
+            "web_port": metadata.get("web_port"),
+            "enable_mcp": metadata.get("enable_mcp"),
+            "mcp_state": mcp_state,
+            "mcp_url": metadata.get("mcp_url"),
+            "mcp_host": metadata.get("mcp_host"),
+            "mcp_port": metadata.get("mcp_port"),
+        }
+    else:
+        local_service = {
+            "state": state,
+            "health_source": "metadata_absent",
+            "project_root": _resolve_path(project_path),
+        }
+    health = get_connector_runtime_health_status(local_service=local_service)
+    local = health["local_service"]
+    external = health["external_connector"]
+    reasons = ",".join(health["reason_codes"][:8])
+    print(
+        "Connector/runtime: "
+        f"local_service={local.get('status')} "
+        f"source={local.get('health_source')} "
+        f"external_connector={external.get('status')} "
+        f"reasons={reasons}",
+        file=sys.stderr,
+    )
 
 
 def _metadata_matches_project_path(metadata: dict[str, object], project_path: str) -> bool:
@@ -1330,6 +1379,13 @@ def _run_service_status(args: list[str]) -> int:
                 log_path=None,
                 stderr=sys.stderr,
             )
+            _print_connector_runtime_health_summary(
+                project_path=project_path,
+                metadata=discovered,
+                state="running",
+                web_state=web_state,
+                mcp_state=mcp_state,
+            )
             return 0
         cli_output.print_service_status_summary(
             project_path=project_path,
@@ -1341,6 +1397,13 @@ def _run_service_status(args: list[str]) -> int:
             mcp_state=None,
             log_path=_service_paths(project_path)["log"] if os.path.isfile(_service_paths(project_path)["log"]) else None,
             stderr=sys.stderr,
+        )
+        _print_connector_runtime_health_summary(
+            project_path=project_path,
+            metadata=None,
+            state="stopped",
+            web_state=None,
+            mcp_state=None,
         )
         return 1
     pid = int(metadata.get("pid", 0) or 0)
@@ -1360,6 +1423,13 @@ def _run_service_status(args: list[str]) -> int:
                 log_path=None,
                 stderr=sys.stderr,
             )
+            _print_connector_runtime_health_summary(
+                project_path=project_path,
+                metadata=discovered,
+                state="running",
+                web_state=web_state,
+                mcp_state=mcp_state,
+            )
             return 0
         web_state, mcp_state = _probe_service_health(metadata)
         cli_output.print_service_status_summary(
@@ -1373,6 +1443,13 @@ def _run_service_status(args: list[str]) -> int:
             log_path=str(metadata.get("log_path") or "") or None,
             stderr=sys.stderr,
         )
+        _print_connector_runtime_health_summary(
+            project_path=project_path,
+            metadata=metadata,
+            state="stale",
+            web_state=web_state,
+            mcp_state=mcp_state,
+        )
         return 1
     web_state, mcp_state = _probe_service_health(metadata)
     cli_output.print_service_status_summary(
@@ -1385,6 +1462,13 @@ def _run_service_status(args: list[str]) -> int:
         mcp_state=mcp_state,
         log_path=str(metadata.get("log_path") or "") or None,
         stderr=sys.stderr,
+    )
+    _print_connector_runtime_health_summary(
+        project_path=project_path,
+        metadata=metadata,
+        state="running",
+        web_state=web_state,
+        mcp_state=mcp_state,
     )
     return 0
 

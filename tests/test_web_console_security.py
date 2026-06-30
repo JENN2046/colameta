@@ -611,6 +611,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert status == 200
         assert registry.get("ok") is True
 
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/status",
+            web_read_token=read_token,
+        )
+        assert status == 200
+        assert payload["connector_runtime_health"]["read_only"] is True
+        assert payload["connector_runtime_health"]["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
+        assert payload["connector_runtime_health"]["external_connector"]["status"] == "unverified"
+
     def test_high_sensitivity_read_routes_require_web_read_auth(self) -> None:
         self.start_web()
         read_token = self.read_token_from_page()

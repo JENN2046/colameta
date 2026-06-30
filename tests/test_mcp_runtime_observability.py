@@ -10,6 +10,7 @@ from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
 from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
+from runner.runtime_observability import get_connector_runtime_health_status
 
 
 HEAD_A = "a" * 40
@@ -65,9 +66,66 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["read_only"] is True
         assert data["side_effects"] is False
         assert data["project_checkout"]["project_root"] == os.path.abspath(str(project))
+        health = data["connector_runtime_health"]
+        assert health["read_only"] is True
+        assert health["local_service"]["status"] == "unverified"
+        assert health["external_connector"]["status"] == "unverified"
+        assert "CONNECTOR_HEALTH_UNVERIFIED" in health["reason_codes"]
         for forbidden_field in ("restart", "reload", "kill", "apply"):
             assert forbidden_field not in result
             assert forbidden_field not in data
+
+    def test_connector_runtime_health_separates_local_and_external_evidence(self) -> None:
+        health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "installed_package_matches_project_checkout",
+                "loaded_runtime": {"source_root": "/tmp/colameta-runtime"},
+                "project_checkout": {"project_root": str(self.tmp_path)},
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "project_root": str(self.tmp_path),
+                "discovered_from_process_table": True,
+                "enable_web": True,
+                "web_state": "healthy",
+                "web_url": "http://127.0.0.1:8801",
+                "web_host": "127.0.0.1",
+                "web_port": 8801,
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+                "mcp_url": "http://127.0.0.1:8766/mcp",
+                "mcp_host": "127.0.0.1",
+                "mcp_port": 8766,
+            },
+        )
+
+        assert health["ok"] is True
+        assert health["read_only"] is True
+        assert health["side_effects"] is False
+        assert health["runtime"]["status"] == "healthy"
+        assert health["local_service"]["status"] == "healthy"
+        assert health["local_service"]["health_source"] == "process_table"
+        assert health["local_service"]["pid"] == 12345
+        assert health["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
+        assert health["local_service"]["mcp"]["reason_code"] == "MCP_ENDPOINT_HEALTHY"
+        assert health["external_connector"]["status"] == "unverified"
+        assert health["external_connector"]["tunnel_client"]["reason_code"] == "CONNECTOR_HEALTH_UNVERIFIED"
+        assert health["external_connector"]["control_plane"]["reason_code"] == "TUNNEL_CONTROL_PLANE_UNVERIFIED"
+        assert health["safety_boundary"]["does_not_read_provider_auth"] is True
+
+    def test_connector_runtime_health_fails_closed_without_evidence(self) -> None:
+        health = get_connector_runtime_health_status()
+
+        assert health["overall_status"] == "local_runtime_observed_external_connector_unverified"
+        assert health["runtime"]["status"] == "unverified"
+        assert health["local_service"]["status"] == "unverified"
+        assert health["external_connector"]["status"] == "unverified"
+        assert "LOCAL_SERVICE_HEALTH_UNVERIFIED" in health["reason_codes"]
+        assert "CONNECTOR_HEALTH_UNVERIFIED" in health["reason_codes"]
 
     def test_web_gpt_service_entrypoint_is_read_only_and_guides_project_routing(self) -> None:
         project = self.make_git_checkout()

@@ -66,6 +66,7 @@ from runner.web_console_presenter import (
     build_executor_session_display,
     extract_model_display_from_plan_data,
 )
+from runner.runtime_observability import get_connector_runtime_health_status
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
 WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
@@ -1468,6 +1469,15 @@ class WebConsoleServer:
         data["remote_git"] = self._api_remote_git_status()
         data["execution_display"] = self._api_execution_display()
         data["project_registry"] = self._api_project_registry()
+        data["connector_runtime_health"] = get_connector_runtime_health_status(
+            local_service={
+                "state": "unknown",
+                "health_source": "web_console_api_status",
+                "project_root": self.project_root,
+                "web": {"enabled": True, "state": "healthy"},
+                "mcp": {"enabled": None, "state": "unknown"},
+            }
+        )
         try:
             data["executor_session_status"] = self.executor_session_store.get_status()
         except Exception:

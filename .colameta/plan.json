@@ -1281,6 +1281,81 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.11",
+      "name": "Connector / runtime health observability",
+      "description": "Add read-only observability for the ColaMeta stable service, MCP tunnel/client path, and runtime health signals so local Codex, Web GPT, planner, and reviewer users can quickly distinguish ColaMeta service failures from external connector/control-plane/network failures.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.11.md",
+      "enabled": true,
+      "context_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "scripts/runner_cli.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runner_cli.py",
+        "docs/runtime-loaded-code-verification.md"
+      ],
+      "allowed_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "runner/web_console.py",
+        "runner/service_lifecycle_store.py",
+        "scripts/runner_cli.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runner_cli.py",
+        "tests/test_web_console_security.py",
+        "docs/runtime-loaded-code-verification.md",
+        "docs/connector-runtime-health-observability.md"
+      ],
+      "forbidden_files": [
+        ".env",
+        ".env.*",
+        "**/.env",
+        "PROJECT_MASTER_TASKBOOK.md",
+        ".colameta/plan.json",
+        ".colameta/state.json",
+        ".colameta/decisions.json",
+        ".colameta/memory.md",
+        ".colameta/todolist.json",
+        "/home/jenn/tools/colameta/**",
+        "/home/jenn/tools/tunnel-client/**",
+        "~/.codex/**",
+        "~/.config/tunnel-client/**",
+        "**/*secret*",
+        "**/*token*",
+        "**/*credential*"
+      ],
+      "acceptance_commands": [
+        {
+          "command": "python -m compileall runner/runtime_observability.py runner/mcp_server.py runner/web_console.py runner/service_lifecycle_store.py scripts/runner_cli.py",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "pytest tests/test_mcp_runtime_observability.py tests/test_runner_cli.py tests/test_web_console_security.py -q",
+          "timeout_seconds": 240,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "A local user can identify whether ColaMeta MCP/Web is healthy, whether the running service PID/port matches status, and whether connector/control-plane/tunnel evidence is missing or degraded without exposing secrets.",
+        "Health diagnostics are read-only and fail closed when tunnel-client metadata, logs, admin UI, or runtime key state is unavailable.",
+        "No auth tokens, API keys, cookies, subscription URLs, provider raw responses, or private memory are read or emitted."
+      ],
+      "out_of_scope": [
+        "Do not replace or restart the stable service.",
+        "Do not modify tunnel-client, Mihomo/Clash, Windows proxy, Codex, OpenAI provider, auth, token, cookie, or secret configuration.",
+        "Do not create, read, print, summarize, or commit raw secrets, tokens, cookies, provider responses, or private memory.",
+        "Do not perform executor run, route transition, stable promotion, release, deploy, package publish, database write, git push, or git commit.",
+        "Do not mark ReviewDecision, GateEvent, Delivery State accepted, or any production readiness state.",
+        "Do not broaden the implementation into general network repair or proxy management."
+      ]
     }
   ]
 }

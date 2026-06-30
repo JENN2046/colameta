@@ -91,7 +91,7 @@ def get_runtime_version_status(
         installed_package_verification,
     )
 
-    return {
+    status = {
         "ok": True,
         "source": "runtime_version_observability",
         "scope": "mcp:read",
@@ -127,6 +127,68 @@ def get_runtime_version_status(
         "possibly_stale_surfaces": reload_awareness["possibly_stale_surfaces"],
         "loaded_module_verification": module_verification,
         "installed_package_verification": installed_package_verification,
+    }
+    status["connector_runtime_health"] = get_connector_runtime_health_status(runtime_status=status)
+    return status
+
+
+def get_connector_runtime_health_status(
+    *,
+    runtime_status: dict[str, Any] | None = None,
+    local_service: dict[str, Any] | None = None,
+    tunnel_client: dict[str, Any] | None = None,
+    control_plane: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a read-only local-vs-external connector health card.
+
+    The helper only summarizes evidence handed to it by safe status surfaces.
+    It does not inspect tunnel-client config, proxy config, credentials, logs,
+    provider state, or private memory.
+    """
+    runtime = _runtime_health_summary(runtime_status)
+    service = _local_service_health_summary(local_service)
+    tunnel = _external_component_summary(
+        tunnel_client,
+        component="tunnel_client",
+        unknown_reason_code="CONNECTOR_HEALTH_UNVERIFIED",
+    )
+    plane = _external_component_summary(
+        control_plane,
+        component="tunnel_control_plane",
+        unknown_reason_code="TUNNEL_CONTROL_PLANE_UNVERIFIED",
+    )
+    reason_codes = _unique_reason_codes(
+        runtime.get("reason_codes"),
+        service.get("reason_codes"),
+        tunnel.get("reason_codes"),
+        plane.get("reason_codes"),
+    )
+
+    return {
+        "ok": True,
+        "source": "connector_runtime_health_observability",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "overall_status": _connector_overall_status(runtime, service, tunnel, plane),
+        "reason_codes": reason_codes,
+        "runtime": runtime,
+        "local_service": service,
+        "external_connector": {
+            "status": _external_connector_status(tunnel, plane),
+            "tunnel_client": tunnel,
+            "control_plane": plane,
+        },
+        "safety_boundary": {
+            "does_not_read_tunnel_client_config": True,
+            "does_not_read_proxy_config": True,
+            "does_not_read_provider_auth": True,
+            "does_not_read_tokens_or_cookies": True,
+            "does_not_read_private_memory": True,
+            "does_not_probe_paid_provider_api": True,
+            "does_not_modify_service_state": True,
+            "does_not_modify_network_or_proxy_state": True,
+        },
     }
 
 
@@ -281,6 +343,272 @@ def _reload_awareness(
         "reload_awareness_reason": reason,
         "possibly_stale_surfaces": surfaces,
     }
+
+
+def _runtime_health_summary(runtime_status: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(runtime_status, dict):
+        return {
+            "status": "unverified",
+            "reason_code": "RUNTIME_HEALTH_UNVERIFIED",
+            "reason_codes": ["RUNTIME_HEALTH_UNVERIFIED"],
+            "reload_needed_for_verification": None,
+            "runtime_loaded_code_stale": None,
+            "reload_awareness_reason": None,
+        }
+
+    stale = runtime_status.get("runtime_loaded_code_stale")
+    reload_needed = runtime_status.get("reload_needed_for_verification")
+    if stale is False and reload_needed is False:
+        status = "healthy"
+        reason_code = "RUNTIME_LOADED_CODE_CURRENT"
+    elif stale is True:
+        status = "stale"
+        reason_code = "RUNTIME_LOADED_CODE_STALE"
+    elif reload_needed is True:
+        status = "unverified"
+        reason_code = "RUNTIME_RELOAD_NEEDED_FOR_VERIFICATION"
+    else:
+        status = "unverified"
+        reason_code = "RUNTIME_HEALTH_UNVERIFIED"
+
+    loaded_runtime = runtime_status.get("loaded_runtime")
+    project_checkout = runtime_status.get("project_checkout")
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "reason_codes": [reason_code],
+        "reload_needed_for_verification": reload_needed if isinstance(reload_needed, bool) else None,
+        "runtime_loaded_code_stale": stale if isinstance(stale, bool) else None,
+        "reload_awareness_reason": _clean_status_text(runtime_status.get("reload_awareness_reason")),
+        "loaded_source_root": (
+            _clean_status_text(loaded_runtime.get("source_root")) if isinstance(loaded_runtime, dict) else None
+        ),
+        "project_root": (
+            _clean_status_text(project_checkout.get("project_root")) if isinstance(project_checkout, dict) else None
+        ),
+    }
+
+
+def _local_service_health_summary(local_service: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(local_service, dict):
+        return {
+            "status": "unverified",
+            "reason_code": "LOCAL_SERVICE_HEALTH_UNVERIFIED",
+            "reason_codes": ["LOCAL_SERVICE_HEALTH_UNVERIFIED"],
+            "pid": None,
+            "state": "unknown",
+            "health_source": "unavailable",
+            "discovered_from_process_table": None,
+            "web": _endpoint_summary(None, "web"),
+            "mcp": _endpoint_summary(None, "mcp"),
+        }
+
+    state = _clean_status_text(local_service.get("state")) or "unknown"
+    source = _clean_status_text(local_service.get("health_source"))
+    if source is None:
+        source = "process_table" if local_service.get("discovered_from_process_table") is True else "metadata"
+    web = _endpoint_summary(local_service, "web")
+    mcp = _endpoint_summary(local_service, "mcp")
+
+    if state == "stopped":
+        status = "unavailable"
+        reason_code = "LOCAL_SERVICE_UNAVAILABLE"
+    elif state == "stale":
+        status = "stale"
+        reason_code = "LOCAL_SERVICE_STALE"
+    elif state == "running" and _endpoint_ready(web) and _endpoint_ready(mcp):
+        status = "healthy"
+        reason_code = "LOCAL_SERVICE_HEALTHY"
+    elif state == "running":
+        status = "degraded"
+        reason_code = "LOCAL_SERVICE_DEGRADED"
+    else:
+        status = "unverified"
+        reason_code = "LOCAL_SERVICE_HEALTH_UNVERIFIED"
+
+    reason_codes = [reason_code]
+    for endpoint in (web, mcp):
+        endpoint_code = endpoint.get("reason_code")
+        if isinstance(endpoint_code, str):
+            reason_codes.append(endpoint_code)
+
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "reason_codes": _unique_reason_codes(reason_codes),
+        "pid": _clean_positive_int(local_service.get("pid")),
+        "state": state,
+        "health_source": source,
+        "metadata_project_matches": (
+            local_service.get("metadata_project_matches")
+            if isinstance(local_service.get("metadata_project_matches"), bool)
+            else None
+        ),
+        "discovered_from_process_table": (
+            local_service.get("discovered_from_process_table")
+            if isinstance(local_service.get("discovered_from_process_table"), bool)
+            else None
+        ),
+        "project_root": _clean_status_text(local_service.get("project_root")),
+        "web": web,
+        "mcp": mcp,
+    }
+
+
+def _endpoint_summary(local_service: dict[str, Any] | None, endpoint: str) -> dict[str, Any]:
+    nested = local_service.get(endpoint) if isinstance(local_service, dict) else None
+    if isinstance(nested, dict):
+        enabled_raw = nested.get("enabled")
+        state_raw = nested.get("state")
+        url_raw = nested.get("url")
+        host_raw = nested.get("host")
+        port_raw = nested.get("port")
+    elif isinstance(local_service, dict):
+        enabled_raw = local_service.get(f"enable_{endpoint}")
+        state_raw = local_service.get(f"{endpoint}_state")
+        url_raw = local_service.get(f"{endpoint}_url")
+        host_raw = local_service.get(f"{endpoint}_host")
+        port_raw = local_service.get(f"{endpoint}_port")
+    else:
+        enabled_raw = state_raw = url_raw = host_raw = port_raw = None
+
+    enabled = enabled_raw if isinstance(enabled_raw, bool) else None
+    state = _clean_status_text(state_raw) or ("disabled" if enabled is False else "unknown")
+    if enabled is False:
+        status = "disabled"
+        reason_code = f"{endpoint.upper()}_ENDPOINT_DISABLED"
+    elif state == "healthy":
+        status = "healthy"
+        reason_code = f"{endpoint.upper()}_ENDPOINT_HEALTHY"
+    elif state in {"starting", "degraded", "unhealthy"}:
+        status = "degraded"
+        reason_code = f"{endpoint.upper()}_ENDPOINT_DEGRADED"
+    else:
+        status = "unverified"
+        reason_code = f"{endpoint.upper()}_ENDPOINT_UNVERIFIED"
+
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "enabled": enabled,
+        "state": state,
+        "url": _clean_local_service_url(url_raw),
+        "host": _clean_status_text(host_raw),
+        "port": _clean_positive_int(port_raw),
+    }
+
+
+def _external_component_summary(
+    component_status: dict[str, Any] | None,
+    *,
+    component: str,
+    unknown_reason_code: str,
+) -> dict[str, Any]:
+    if not isinstance(component_status, dict):
+        return {
+            "component": component,
+            "status": "unverified",
+            "reason_code": unknown_reason_code,
+            "reason_codes": [unknown_reason_code],
+            "evidence_source": "not_collected",
+        }
+
+    raw_status = _clean_status_text(component_status.get("status")) or "unverified"
+    if raw_status in {"healthy", "ready", "running", "ok"}:
+        status = "healthy"
+        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_HEALTHY"
+    elif raw_status in {"unavailable", "missing", "stopped"}:
+        status = "unavailable"
+        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_UNAVAILABLE"
+    elif raw_status in {"degraded", "failing", "failed"}:
+        status = "degraded"
+        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_DEGRADED"
+    else:
+        status = "unverified"
+        reason_code = _clean_status_text(component_status.get("reason_code")) or unknown_reason_code
+
+    return {
+        "component": component,
+        "status": status,
+        "reason_code": reason_code,
+        "reason_codes": [reason_code],
+        "evidence_source": _clean_status_text(component_status.get("evidence_source")) or "provided_status",
+        "last_observed_at": _clean_status_text(component_status.get("last_observed_at")),
+    }
+
+
+def _connector_overall_status(
+    runtime: dict[str, Any],
+    service: dict[str, Any],
+    tunnel: dict[str, Any],
+    control_plane: dict[str, Any],
+) -> str:
+    local_status = service.get("status")
+    runtime_status = runtime.get("status")
+    external_status = _external_connector_status(tunnel, control_plane)
+    if local_status == "healthy" and runtime_status == "healthy" and external_status == "healthy":
+        return "healthy"
+    if local_status in {"degraded", "stale", "unavailable"} or runtime_status in {"stale", "degraded"}:
+        return "local_or_runtime_attention_needed"
+    if external_status == "degraded":
+        return "local_runtime_observed_external_connector_degraded"
+    if external_status == "unverified":
+        return "local_runtime_observed_external_connector_unverified"
+    return "health_unverified"
+
+
+def _external_connector_status(tunnel: dict[str, Any], control_plane: dict[str, Any]) -> str:
+    statuses = {tunnel.get("status"), control_plane.get("status")}
+    if "degraded" in statuses or "unavailable" in statuses:
+        return "degraded"
+    if statuses == {"healthy"}:
+        return "healthy"
+    return "unverified"
+
+
+def _endpoint_ready(endpoint: dict[str, Any]) -> bool:
+    return endpoint.get("enabled") is False or endpoint.get("status") == "healthy"
+
+
+def _unique_reason_codes(*groups: Any) -> list[str]:
+    result: list[str] = []
+    for group in groups:
+        items = group if isinstance(group, list) else [group]
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            candidate = item.strip().upper()
+            if candidate and candidate not in result:
+                result.append(candidate)
+    return result
+
+
+def _clean_positive_int(value: Any) -> int | None:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if candidate > 0 else None
+
+
+def _clean_status_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate or None
+
+
+def _clean_local_service_url(value: Any) -> str | None:
+    candidate = _clean_status_text(value)
+    if candidate is None:
+        return None
+    candidate = candidate.split("?", 1)[0].split("#", 1)[0]
+    lowered = candidate.lower()
+    if "@" in candidate or any(token in lowered for token in ("token=", "key=", "secret=", "auth=")):
+        return None
+    if not lowered.startswith(("http://", "https://")):
+        return None
+    return candidate
 
 
 def verify_installed_package_against_project(project_root: str | None) -> dict[str, Any]:
