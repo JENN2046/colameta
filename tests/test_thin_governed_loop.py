@@ -177,12 +177,20 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert draft_output.result["thin_loop"]["stage_results"] == {}
         assert draft_output.result["generated_input_bundle_summary"]["reusable_as"] == "thin_loop_inputs"
         assert "allowed_files" in draft_output.result["generated_input_bundle_summary"]["seed_fields_applied"]
+        assert draft_output.result["generated_input_bundle_summary"]["seed_fields_ignored"] == ["unknown_seed_field"]
+        assert draft_output.result["generated_input_bundle_summary"]["seed_fields_unknown"] == ["unknown_seed_field"]
+        assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["thin_loop_inputs"] == "<generated_input_bundle>"
+        assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["project_name"] == (
+            "<same managed project_name or route used for this draft call>"
+        )
         assert draft_output.result["forbidden_authority_outputs"]["executor_dispatch_authorized"] is False
         bundle = draft_output.result["generated_input_bundle"]
         assert bundle["input_mode"] == "provided"
         assert isinstance(bundle["current_head"], str)
         assert bundle["current_head"]
         assert bundle["draft_seed_applied"] == expected_applied_seed_fields
+        assert bundle["draft_seed_ignored"] == ["unknown_seed_field"]
+        assert bundle["draft_seed_unknown"] == ["unknown_seed_field"]
         assert "unknown_seed_field" not in bundle["draft_seed_applied"]
         for field in (
             "external_taskbook_claim",
@@ -226,6 +234,8 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert draft_output.ok is True
         bundle = draft_output.result["generated_input_bundle"]
         assert "review_decision_value" not in bundle["draft_seed_applied"]
+        assert bundle["draft_seed_ignored"] == ["review_decision_value"]
+        assert bundle["draft_seed_unknown"] == []
         assert bundle["review_feedback"]["review_decision_value"] == "NEEDS_FIX"
 
         provided_output = orchestrator.handle(

@@ -3299,6 +3299,8 @@ class WorkflowOrchestrator:
                     "submit_with_input_mode": "provided",
                     "current_head": generated_input_bundle.get("current_head"),
                     "seed_fields_applied": generated_input_bundle.get("draft_seed_applied", []),
+                    "seed_fields_ignored": generated_input_bundle.get("draft_seed_ignored", []),
+                    "seed_fields_unknown": generated_input_bundle.get("draft_seed_unknown", []),
                     "object_fields": list(self._thin_loop_object_fields()),
                     "editable_before_submit": [
                         "external_taskbook_claim",
@@ -3306,6 +3308,12 @@ class WorkflowOrchestrator:
                         "local_execution_receipt",
                         "review_feedback",
                     ],
+                    "next_request_shape": {
+                        "workflow": "thin_governed_loop_preview",
+                        "phase": "preview",
+                        "project_name": params.get("project_name") or "<same managed project_name or route used for this draft call>",
+                        "thin_loop_inputs": "<generated_input_bundle>",
+                    },
                     "authority_note": (
                         "Draft generation is read-only input preparation; it does not run the "
                         "thin loop, authorize execution, create ReviewDecision, emit GateEvent, "
@@ -3387,10 +3395,13 @@ class WorkflowOrchestrator:
         inputs["project_root"] = self.project_root
         inputs["current_head"] = current_head
         applied_seed_fields = self._thin_loop_apply_draft_seed(inputs, draft_seed)
+        ignored_seed_fields = self._thin_loop_ignored_seed_fields(draft_seed, applied_seed_fields)
         generated = {
             "input_mode": "provided",
             "current_head": current_head,
             "draft_seed_applied": applied_seed_fields,
+            "draft_seed_ignored": ignored_seed_fields,
+            "draft_seed_unknown": self._thin_loop_unknown_seed_fields(draft_seed),
         }
         for field in self._thin_loop_object_fields():
             generated[field] = inputs[field]
@@ -3402,6 +3413,29 @@ class WorkflowOrchestrator:
             if isinstance(candidate, dict):
                 return candidate
         return {}
+
+    @staticmethod
+    def _thin_loop_known_draft_seed_fields() -> frozenset[str]:
+        return frozenset(
+            {
+                "allowed_files",
+                "forbidden_files",
+                "validation_commands",
+                "allowed_commands",
+                "source_id",
+                "review_decision_value",
+                "pass_alias_policy_id_when_used",
+                "reviewer_notes",
+            }
+        )
+
+    def _thin_loop_ignored_seed_fields(self, seed: dict[str, Any], applied_seed_fields: list[str]) -> list[str]:
+        applied = set(applied_seed_fields)
+        return sorted(str(key) for key in seed.keys() if str(key) not in applied)
+
+    def _thin_loop_unknown_seed_fields(self, seed: dict[str, Any]) -> list[str]:
+        known = self._thin_loop_known_draft_seed_fields()
+        return sorted(str(key) for key in seed.keys() if str(key) not in known)
 
     def _thin_loop_apply_draft_seed(self, inputs: dict[str, Any], draft_seed: dict[str, Any]) -> list[str]:
         if not draft_seed:
@@ -3610,6 +3644,8 @@ class WorkflowOrchestrator:
                 "field": "generated_input_bundle",
                 "submit_as": "thin_loop_inputs",
                 "submit_with_input_mode": "provided",
+                "ignored_seed_fields": "generated_input_bundle.draft_seed_ignored",
+                "unknown_seed_fields": "generated_input_bundle.draft_seed_unknown",
                 "authority": "draft_input_only_not_execution_or_acceptance_authority",
             },
             "draft_seed_fields": {
