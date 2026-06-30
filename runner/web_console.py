@@ -2911,6 +2911,40 @@ class WebConsoleServer:
         orchestrator = WorkflowOrchestrator(self.project_root)
         core_output = orchestrator.handle("project_status", {"include_reports": True})
         result = self._json_safe(core_output)
+        try:
+            thin_loop_preview = orchestrator.handle(
+                "thin_governed_loop_preview",
+                {"phase": "preview", "input_mode": "example"},
+            )
+        except Exception as exc:
+            thin_loop_preview = {
+                "ok": False,
+                "workflow": "thin_governed_loop_preview",
+                "status": "failed",
+                "risk_level": "info",
+                "requires_confirmation": False,
+                "blockers": [str(exc)],
+                "warnings": [
+                    "thin_governed_loop_preview is read-only evidence; it does not authorize executor dispatch, ReviewDecision, GateEvent, Delivery State transition, commit, or push."
+                ],
+                "result": {
+                    "ok": False,
+                    "read_only": True,
+                    "side_effects": False,
+                    "input_mode": "example",
+                    "thin_loop": {
+                        "thin_loop_status": "thin_governed_loop_failed_closed",
+                        "blockers": [{"code": "thin_loop_preview_failed", "message": str(exc)}],
+                    },
+                    "forbidden_authority_outputs": {
+                        "delivery_state_accepted": False,
+                        "review_decision_created": False,
+                        "gate_event_emitted": False,
+                        "executor_dispatch_authorized": False,
+                    },
+                },
+            }
+        result["thin_governed_loop_preview"] = self._json_safe(thin_loop_preview)
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)

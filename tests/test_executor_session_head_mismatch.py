@@ -258,6 +258,31 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
                 self.project_root = project_root
 
             def handle(self, workflow: str, params: dict[str, Any]) -> dict[str, Any]:
+                if workflow == "thin_governed_loop_preview":
+                    return {
+                        "ok": True,
+                        "workflow": "thin_governed_loop_preview",
+                        "status": "succeeded",
+                        "risk_level": "info",
+                        "requires_confirmation": False,
+                        "changed_files": [],
+                        "preview_ids": [],
+                        "result": {
+                            "read_only": True,
+                            "side_effects": False,
+                            "input_mode": "example",
+                            "thin_loop": {
+                                "thin_loop_status": "thin_governed_loop_passed",
+                                "blockers": [],
+                            },
+                            "forbidden_authority_outputs": {
+                                "delivery_state_accepted": False,
+                                "review_decision_created": False,
+                                "gate_event_emitted": False,
+                                "executor_dispatch_authorized": False,
+                            },
+                        },
+                    }
                 return {
                     "ok": True,
                     "runner_status": "VERSION_PASSED",
@@ -285,6 +310,8 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
         assert display["state"] == "stale_session"
         assert display["head_mismatch_classification_status"] == "completed_idle_stale_session"
         assert "历史会话残留" in display["text"]
+        assert payload["thin_governed_loop_preview"]["result"]["read_only"] is True
+        assert payload["thin_governed_loop_preview"]["result"]["forbidden_authority_outputs"]["delivery_state_accepted"] is False
 
 
 if __name__ == "__main__":

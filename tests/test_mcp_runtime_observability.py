@@ -64,6 +64,38 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             assert forbidden_field not in result
             assert forbidden_field not in data
 
+    def test_thin_governed_loop_preview_workflow_is_read_only_and_callable(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        server = MCPPlanningBridgeServer(str(project))
+        tool_defs = {tool.name: tool for tool in server.tool_defs}
+
+        assert "run_mcp_workflow" in tool_defs
+        workflow_enum = tool_defs["run_mcp_workflow"].input_schema["properties"]["workflow"]["enum"]
+        assert "thin_governed_loop_preview" in workflow_enum
+        assert server.get_required_scope_for_tool(
+            "run_mcp_workflow",
+            {"workflow": "thin_governed_loop_preview", "phase": "preview"},
+        ) == "mcp:read"
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {"workflow": "thin_governed_loop_preview", "phase": "preview"},
+        )
+
+        assert result["ok"] is True
+        assert result["tool"] == "run_mcp_workflow"
+        data = result["data"]
+        assert data["ok"] is True
+        assert data["workflow"] == "thin_governed_loop_preview"
+        assert data["status"] == "succeeded"
+        assert data["requires_confirmation"] is False
+        assert data["changed_files"] == []
+        assert data["preview_ids"] == []
+        assert data["result"]["read_only"] is True
+        assert data["result"]["side_effects"] is False
+        assert data["result"]["thin_loop"]["thin_loop_status"] == "thin_governed_loop_passed"
+        assert data["result"]["forbidden_authority_outputs"]["delivery_state_accepted"] is False
+
     def test_service_mode_missing_project_name_gives_operator_hint(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=True)

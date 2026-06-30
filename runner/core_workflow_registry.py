@@ -6,7 +6,7 @@ SUPPORTED_CORE_WORKFLOWS: frozenset[str] = frozenset({
     "auto_preview", "project_status", "source_onboarding", "plan_update",
     "small_project_patch", "docs_update", "git_commit",
     "git_restore_file", "git_revert", "git_undo_version", "agent_dispatch",
-    "prompt_to_plan",
+    "prompt_to_plan", "thin_governed_loop_preview",
 })
 
 

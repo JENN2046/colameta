@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import unittest
+from pathlib import Path
 
+from runner.core_orchestrator import WorkflowOrchestrator
 from runner.thin_governed_loop import (
     THIN_LOOP_FAILED_CLOSED,
     THIN_LOOP_PASSED,
@@ -70,6 +72,73 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
         assert any(item["field"] == "review_decision_adapter" for item in result["blockers"])
         assert result["delivery_state_accepted"] is False
+
+    def test_thin_loop_workflow_entrypoint_is_read_only_preview(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview"},
+        )
+
+        assert output.ok is True
+        assert output.workflow == "thin_governed_loop_preview"
+        assert output.status == "succeeded"
+        assert output.risk_level == "info"
+        assert output.requires_confirmation is False
+        assert output.changed_files == []
+        assert output.preview_ids == []
+        assert output.result["read_only"] is True
+        assert output.result["side_effects"] is False
+        assert output.result["input_mode"] == "example"
+        assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert output.result["forbidden_authority_outputs"] == {
+            "delivery_state_accepted": False,
+            "review_decision_created": False,
+            "gate_event_emitted": False,
+            "executor_dispatch_authorized": False,
+        }
+
+    def test_thin_loop_workflow_accepts_real_input_objects(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        inputs = example_stage_3_6_inputs()
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "provided",
+                "current_head": inputs["current_head"],
+                "external_taskbook_claim": inputs["external_taskbook_claim"],
+                "execution_envelope": inputs["execution_envelope"],
+                "local_execution_receipt": inputs["local_execution_receipt"],
+                "review_feedback": inputs["review_feedback"],
+            },
+        )
+
+        assert output.ok is True
+        assert output.status == "succeeded"
+        assert output.result["input_mode"] == "provided"
+        assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert output.result["thin_loop"]["delivery_state_accepted"] is False
+        assert output.result["forbidden_authority_outputs"]["delivery_state_accepted"] is False
+
+    def test_thin_loop_workflow_fails_closed_when_provided_inputs_are_incomplete(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        inputs = example_stage_3_6_inputs()
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "provided",
+                "external_taskbook_claim": inputs["external_taskbook_claim"],
+            },
+        )
+
+        assert output.ok is False
+        assert output.status == "blocked"
+        assert output.result["input_mode"] == "provided"
+        assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        assert "缺少真实输入对象：execution_envelope" in output.blockers
+        assert output.result["forbidden_authority_outputs"]["delivery_state_accepted"] is False
 
 
 if __name__ == "__main__":

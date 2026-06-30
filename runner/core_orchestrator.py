@@ -153,6 +153,7 @@ class WorkflowOrchestrator:
             "git_undo_version": self._workflow_git_undo_version,
             "agent_dispatch": self._workflow_agent_dispatch,
             "prompt_to_plan": self._workflow_prompt_to_plan,
+            "thin_governed_loop_preview": self._workflow_thin_governed_loop_preview,
         }
         handler = workflow_map.get(workflow)
         if handler is None:
@@ -3154,6 +3155,209 @@ class WorkflowOrchestrator:
         # We avoid _record_workflow_if_needed here because the workflow router
         # is the orchestrator; the underlying tool record is secondary.
         return server._tool_manage_plan_version(full_params)
+
+    def _workflow_thin_governed_loop_preview(self, params: dict[str, Any]) -> 'CoreResult':
+        from runner.thin_governed_loop import (
+            THIN_LOOP_FAILED_CLOSED,
+            THIN_LOOP_PASSED,
+            run_stage_3_6_thin_governed_loop,
+        )
+
+        phase = str(params.get("phase") or "preview").strip().lower()
+        if phase not in ("preview", "inspect", "status"):
+            return self._error_result(
+                "thin_governed_loop_preview",
+                "PHASE_NOT_SUPPORTED",
+                "thin_governed_loop_preview 只支持 preview / inspect / status；它不执行 apply、run、commit。",
+            )
+
+        inputs, input_mode, input_blockers = self._thin_loop_inputs_from_params(params)
+        warning = (
+            "thin_governed_loop_preview is read-only evidence; it does not authorize "
+            "executor dispatch, ReviewDecision, GateEvent, Delivery State transition, commit, or push."
+        )
+        if input_blockers:
+            blocker_items = [
+                {"code": "thin_loop_input_missing", "field": field}
+                for field in input_blockers
+            ]
+            blocker_messages = [f"缺少真实输入对象：{field}" for field in input_blockers]
+            thin_loop = {
+                "thin_loop_status": THIN_LOOP_FAILED_CLOSED,
+                "thin_loop_path": [
+                    "external_taskbook_import",
+                    "execution_envelope",
+                    "local_execution_receipt",
+                    "reviewer_handoff_package",
+                    "review_feedback_intake",
+                ],
+                "stage_results": {},
+                "blockers": blocker_items,
+                "authority_boundary": self._thin_loop_authority_boundary(),
+                "delivery_state_accepted": False,
+                "review_decision_created": False,
+                "gate_event_emitted": False,
+                "executor_dispatch_authorized": False,
+            }
+            return self._thin_loop_core_result(
+                phase=phase,
+                input_mode=input_mode,
+                thin_loop=thin_loop,
+                passed=False,
+                blocker_messages=blocker_messages,
+                warnings=[warning],
+            )
+
+        thin_loop = run_stage_3_6_thin_governed_loop(inputs)
+        passed = thin_loop.get("thin_loop_status") == THIN_LOOP_PASSED
+        blocker_messages = [
+            self._thin_loop_blocker_text(blocker)
+            for blocker in thin_loop.get("blockers", [])
+        ]
+        return self._thin_loop_core_result(
+            phase=phase,
+            input_mode=input_mode,
+            thin_loop=thin_loop,
+            passed=passed,
+            blocker_messages=blocker_messages,
+            warnings=[warning],
+        )
+
+    def _thin_loop_core_result(
+        self,
+        *,
+        phase: str,
+        input_mode: str,
+        thin_loop: dict[str, Any],
+        passed: bool,
+        blocker_messages: list[str],
+        warnings: list[str],
+    ) -> 'CoreResult':
+        requested_action = str(thin_loop.get("requested_commander_action") or "")
+        result = {
+            "ok": passed,
+            "read_only": True,
+            "side_effects": False,
+            "input_mode": input_mode,
+            "thin_loop": thin_loop,
+            "summary": {
+                "thin_loop_status": thin_loop.get("thin_loop_status"),
+                "stage_count": len(thin_loop.get("stage_results", {}) or {}),
+                "blocker_count": len(thin_loop.get("blockers", []) or []),
+                "requested_commander_action": requested_action,
+            },
+            "authority_boundary": thin_loop.get("authority_boundary") or self._thin_loop_authority_boundary(),
+            "requested_commander_action": requested_action,
+            "forbidden_authority_outputs": {
+                "delivery_state_accepted": False,
+                "review_decision_created": False,
+                "gate_event_emitted": False,
+                "executor_dispatch_authorized": False,
+            },
+        }
+        step = {
+            "name": "thin_governed_loop_preview",
+            "tool": "run_mcp_workflow",
+            "action": "thin_governed_loop_preview",
+            "ok": passed,
+            "risk_level": STEP_RISK_INFO,
+            "preview_id": None,
+            "changed_files": [],
+            "blockers": blocker_messages,
+            "warnings": warnings,
+        }
+        return self._build_core_result(
+            workflow="thin_governed_loop_preview",
+            steps=[step],
+            risk_level=STEP_RISK_INFO,
+            status="succeeded" if passed else "blocked",
+            requires_confirmation=False,
+            next_actions=[],
+            blockers=blocker_messages,
+            warnings=warnings,
+            result=result,
+            phase=phase,
+        )
+
+    def _thin_loop_inputs_from_params(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str, list[str]]:
+        from runner.thin_governed_loop import example_stage_3_6_inputs
+
+        object_fields = (
+            "external_taskbook_claim",
+            "execution_envelope",
+            "local_execution_receipt",
+            "review_feedback",
+        )
+        bundle = params.get("thin_loop_inputs")
+        if not isinstance(bundle, dict):
+            bundle = {}
+
+        input_mode_raw = params.get("input_mode", bundle.get("input_mode", ""))
+        input_mode = str(input_mode_raw or "").strip().lower()
+        if input_mode not in ("", "example", "provided"):
+            return None, input_mode or "unknown", ["input_mode"]
+
+        provided: dict[str, Any] = {}
+        for field in object_fields:
+            if field in params:
+                provided[field] = params.get(field)
+            elif field in bundle:
+                provided[field] = bundle.get(field)
+
+        if input_mode == "example" or (input_mode == "" and not provided):
+            inputs = example_stage_3_6_inputs()
+            inputs["project_root"] = self.project_root
+            inputs["current_head"] = self._thin_loop_current_head(params, bundle)
+            return inputs, "example", []
+
+        missing = [field for field in object_fields if not isinstance(provided.get(field), dict)]
+        if missing:
+            return None, "provided", missing
+
+        inputs = {
+            "project_root": self.project_root,
+            "current_head": self._thin_loop_current_head(params, bundle),
+        }
+        for field in object_fields:
+            inputs[field] = provided[field]
+        return inputs, "provided", []
+
+    def _thin_loop_current_head(self, params: dict[str, Any], bundle: dict[str, Any]) -> str:
+        for value in (params.get("current_head"), bundle.get("current_head")):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        try:
+            project_identity = build_project_identity(self.project_root)
+            head = project_identity.get("git_head")
+            if isinstance(head, str) and head.strip():
+                return head.strip()
+        except Exception:
+            pass
+        return "unknown"
+
+    @staticmethod
+    def _thin_loop_authority_boundary() -> dict[str, bool]:
+        return {
+            "thin_loop_result_is_authority": False,
+            "thin_loop_authorizes_executor_dispatch": False,
+            "thin_loop_creates_review_decision": False,
+            "thin_loop_emits_gate_event": False,
+            "thin_loop_writes_delivery_state": False,
+        }
+
+    @staticmethod
+    def _thin_loop_blocker_text(blocker: Any) -> str:
+        if isinstance(blocker, dict):
+            code = blocker.get("code") or "thin_loop_blocker"
+            stage = blocker.get("stage")
+            field = blocker.get("field")
+            expected = blocker.get("expected")
+            actual = blocker.get("actual")
+            location = ".".join(str(part) for part in (stage, field) if part)
+            if location:
+                return f"{code}: {location} expected {expected!r}, actual {actual!r}"
+            return f"{code}: {json.dumps(blocker, ensure_ascii=False, sort_keys=True)}"
+        return str(blocker)
 
     # ================================================================
     # auto_preview

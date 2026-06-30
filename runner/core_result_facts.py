@@ -128,7 +128,14 @@ def _confirmation_from_result_data(
         "workflow", "phase", "tool", "result",
     })
     def _strip(data: dict[str, Any]) -> dict[str, Any]:
-        return {k: v for k, v in data.items() if k not in _non_preview_keys}
+        stripped: dict[str, Any] = {}
+        for k, v in data.items():
+            if k in _non_preview_keys:
+                continue
+            if k == "preview_ids" and isinstance(v, list) and not v:
+                continue
+            stripped[k] = v
+        return stripped
 
     fact = confirmation_fact_from_preview_result(_strip(data))
     if fact is not None:

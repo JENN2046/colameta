@@ -2153,8 +2153,11 @@ class MCPPlanningBridgeServer:
                     "在 apply/commit/executor-run 边界停止。推荐 ChatGPT 首选入口。"
                     "prompt_to_plan（v1.84.58）：串联 prompt 文件保存、plan insert preview、plan patch apply，"
                     "停在 executor preflight/run_once_preview 边界。"
+                    "thin_governed_loop_preview：Stage 3-6 薄治理闭环只读预览，"
+                    "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
+                    "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan。"
+                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview。"
                     "不执行 executor，不自动 commit，写入类默认停 preview。"
                     "commit 只确认已有受控预览(preview_id)，不执行任意 shell，不 git add .，不绕过 preview。"
                     "没有匹配的 stored preview_id 不能创建 commit。"
@@ -2170,9 +2173,9 @@ class MCPPlanningBridgeServer:
                                 "auto_preview", "project_status", "source_onboarding",
                                 "plan_update", "small_project_patch", "docs_update",
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                                "agent_dispatch", "prompt_to_plan",
+                                "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 3-6 只读薄治理闭环预览。",
                         },
                         "phase": {
                             "type": "string",
@@ -2400,6 +2403,40 @@ class MCPPlanningBridgeServer:
                         "prompt_file": {
                             "type": "string",
                             "description": "prompt_to_plan plan_preview 必填。prompt 文件名，例如 v1.84.58.md。只接受文件名，不接受路径。",
+                        },
+                        "input_mode": {
+                            "type": "string",
+                            "enum": ["example", "provided"],
+                            "description": "thin_governed_loop_preview 可选。example 使用内置样例；provided 要求同时提供 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback。",
+                        },
+                        "thin_loop_inputs": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview 可选。真实输入对象包；可包含 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback、current_head。",
+                            "additionalProperties": True,
+                        },
+                        "external_taskbook_claim": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview provided 模式必填。外部任务书声明对象，作为 bounded claim 验证。",
+                            "additionalProperties": True,
+                        },
+                        "execution_envelope": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview provided 模式必填。受控执行 envelope 对象。",
+                            "additionalProperties": True,
+                        },
+                        "local_execution_receipt": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview provided 模式必填。本地执行 receipt 对象。",
+                            "additionalProperties": True,
+                        },
+                        "review_feedback": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview provided 模式必填。审查反馈对象。",
+                            "additionalProperties": True,
+                        },
+                        "current_head": {
+                            "type": "string",
+                            "description": "thin_governed_loop_preview 可选。用于 evidence preview 的 HEAD 绑定；不传时读取当前 checkout HEAD。",
                         },
                     },
                     "required": ["workflow"],
@@ -4382,6 +4419,8 @@ class MCPPlanningBridgeServer:
                     required_scope = "mcp:preview"
                 else:
                     required_scope = "mcp:commit"
+            elif workflow == "thin_governed_loop_preview":
+                required_scope = "mcp:read"
             else:
                 required_scope = "mcp:commit"
         elif name == "manage_prompt_file":

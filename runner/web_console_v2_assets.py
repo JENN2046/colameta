@@ -41,7 +41,8 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .layout-left .todo-copy-btn:hover { background: #30363d; }
 .layout-left .todo-content { color: #c9d1d9; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
-#live-run-panel-slot { flex: 1; min-height: 0; display: flex; }
+#center-observation-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+#live-run-panel-slot { flex: 1 1 auto; min-height: 0; display: flex; }
 .layout-center .summary-card { border-left: 4px solid #58a6ff; padding: 16px; }
 .layout-center .summary-card.ok { border-left-color: #3fb950; }
 .layout-center .summary-card.failed { border-left-color: #f85149; }
@@ -59,6 +60,10 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .layout-center .live-session-mode { flex: 0 0 auto; }
 .layout-center .live-session-copy { background: transparent; border: none; color: #58a6ff; cursor: pointer; font: inherit; padding: 0 2px; line-height: 1; flex: 0 0 auto; }
 .layout-center .live-session-copy:hover { color: #79c0ff; }
+.layout-center .thin-loop-preview-card { flex: 0 0 auto; margin-bottom: 0; border-left: 4px solid #58a6ff; }
+.layout-center .thin-loop-preview-card.blocked { border-left-color: #f85149; }
+.layout-center .thin-loop-path { color: #c9d1d9; font-size: 12px; word-break: break-word; padding: 4px 0; }
+.layout-center .thin-loop-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
 .layout-right .action-btn:hover { background: #30363d; }
@@ -1116,6 +1121,40 @@ function renderLiveRunPanel(lr, data) {{
   return h;
 }}
 
+function renderThinGovernedLoopPreview(data) {{
+  data = data || {{}};
+  const preview = data.thin_governed_loop_preview || {{}};
+  const result = preview.result || {{}};
+  const thinLoop = result.thin_loop || {{}};
+  const summary = result.summary || {{}};
+  const status = thinLoop.thin_loop_status || summary.thin_loop_status || preview.status || "unknown";
+  const passed = status === "thin_governed_loop_passed" || result.ok === true;
+  const blocked = status === "thin_governed_loop_failed_closed" || preview.ok === false;
+  const cardClass = blocked && !passed ? "blocked" : "";
+  const badgeCls = passed ? "badge-ok" : (blocked ? "badge-err" : "badge-warn");
+  const statusText = passed ? "薄闭环预览已通过" : (blocked ? "薄闭环预览已阻断" : "薄闭环预览不可用");
+  const blockers = Array.isArray(thinLoop.blockers) ? thinLoop.blockers : (Array.isArray(preview.blockers) ? preview.blockers : []);
+  const path = Array.isArray(thinLoop.thin_loop_path) && thinLoop.thin_loop_path.length
+    ? thinLoop.thin_loop_path.join(" -> ")
+    : "external_taskbook_import -> execution_envelope -> local_execution_receipt -> reviewer_handoff_package -> review_feedback_intake";
+  const requestedAction = result.requested_commander_action || summary.requested_commander_action || thinLoop.requested_commander_action || "-";
+  const inputMode = result.input_mode || "-";
+  let h = `<div class="card summary-card thin-loop-preview-card ${{cardClass}}">`;
+  h += `<div class="card-title">Stage 3-6 Thin Governed Loop</div>`;
+  h += `<div class="summary-title">${{esc(statusText)}}</div>`;
+  h += `<div class="badge-row">`;
+  h += `<span class="badge ${{badgeCls}}">${{esc(status)}}</span>`;
+  h += `<span class="badge badge-info">只读观察</span>`;
+  h += `<span class="badge badge-info">input: ${{esc(inputMode)}}</span>`;
+  h += `</div>`;
+  h += `<div class="thin-loop-path">${{esc(path)}}</div>`;
+  h += r("阻断数", blockers.length);
+  h += r("Commander 下一步", requestedAction);
+  h += `<div class="thin-loop-boundary">只读预览，不授权执行器、ReviewDecision、GateEvent、Delivery State、commit 或 push。</div>`;
+  h += `</div>`;
+  return h;
+}}
+
 function collapseConsecutiveEvents(events) {{
   if (!events || !events.length) return [];
   const result = [];
@@ -1169,7 +1208,10 @@ function updateLiveRunPanel(liveRun, statusData) {{
 function renderCenterColumn(data) {{
   data = data || {{}};
   const liveRun = data.live_run || {{}};
-  let h = `<div id="live-run-panel-slot">${{renderLiveRunPanel(liveRun, data)}}</div>`;
+  let h = `<div id="center-observation-stack">`;
+  h += `<div id="live-run-panel-slot">${{renderLiveRunPanel(liveRun, data)}}</div>`;
+  h += renderThinGovernedLoopPreview(data);
+  h += `</div>`;
   $("layout-center").innerHTML = h;
 }}
 
