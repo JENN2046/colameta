@@ -164,6 +164,42 @@ class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
                 {"operation": action_name},
             ) is None
 
+    def test_project_registry_dangerous_preview_uses_operator_facing_chinese_copy(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer.__new__(WebConsoleServer)
+        server.project_root = "/tmp/current-project"
+
+        class StubRegistry:
+            def list_projects(self) -> dict[str, Any]:
+                return {
+                    "projects": [
+                        {
+                            "project_id": "prj_other",
+                            "project_name": "other-project",
+                            "project_root": "/tmp/other-project",
+                        }
+                    ]
+                }
+
+        server.project_registry = StubRegistry()
+
+        policy = server._dangerous_action_policy(
+            "/api/v2/action",
+            {
+                "next_action": {
+                    "action": "project_registry_unregister",
+                    "params": {"project_root": "/tmp/other-project"},
+                }
+            },
+        )
+
+        assert policy is not None
+        assert policy["display_summary"]["title"] == "移出项目登记"
+        assert "other-project" in policy["display_summary"]["target"]
+        assert "只移出登记" in policy["display_summary"]["target"]
+        assert "不删除磁盘文件" in policy["display_summary"]["target"]
+
 
 def free_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

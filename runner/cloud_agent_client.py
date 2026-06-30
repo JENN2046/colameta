@@ -190,15 +190,21 @@ class CloudRelayToolBridge:
                 message="tool_name 不能为空。",
             )
 
+        server = self._get_server()
         if self.service_mode and request.tool_name in PROJECT_NAME_REQUIRED_TOOLS:
             project_name = request.arguments.get("project_name")
             if not isinstance(project_name, str) or not project_name.strip():
+                message, details = server.project_name_required_guidance(
+                    request.tool_name,
+                    include_available_projects=False,
+                )
                 return RelayResponse(
                     request_id=request.request_id,
                     ok=False,
                     tool=request.tool_name,
                     error_code="PROJECT_NAME_REQUIRED",
-                    message="服务模式下项目级工具必须显式提供 project_name。",
+                    message=message,
+                    data=details,
                 )
 
         effective_scopes = [s for s in request.scopes if s in credential.scopes]
@@ -213,7 +219,6 @@ class CloudRelayToolBridge:
             "scopes": effective_scopes,
         }
 
-        server = self._get_server()
         result = server.call_tool_for_agent(request.tool_name, request.arguments, auth_context)
 
         return RelayResponse(

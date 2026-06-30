@@ -41,7 +41,62 @@ class _NoBridge:
         raise AssertionError(f"unexpected bridge read for {project_root}")
 
 
+class _StatusBridge:
+    def __init__(self, data: dict[str, Any]):
+        self.data = dict(data)
+
+    def get_runner_status(self, project_root: str) -> dict[str, Any]:
+        return dict(self.data)
+
+
+class _SessionStore:
+    def __init__(self, status: dict[str, Any]):
+        self.status = status
+
+    def get_status(self) -> dict[str, Any]:
+        return self.status
+
+    def get_continuation_preview(self) -> dict[str, Any]:
+        return {}
+
+    def get_continuation_decision(self, *, requested_provider: str) -> dict[str, Any]:
+        return {}
+
+    def get_resume_invocation_preview(self, *, requested_provider: str) -> dict[str, Any]:
+        return {}
+
+
 class ExecutorSessionHeadMismatchTests(unittest.TestCase):
+    def make_minimal_web_console_server(self, project_root: str) -> WebConsoleServer:
+        server = WebConsoleServer.__new__(WebConsoleServer)
+        server.project_root = project_root
+        server.plan_file = str(Path(project_root) / ".colameta" / "plan.json")
+        server.runner_rel_dir = ".colameta"
+        server.operation_lock = threading.Lock()
+        server.operation_running = False
+        server.operation_name = None
+        server.operation_started_at = None
+        server.last_operation_result = None
+        server.pending_commit_preview = None
+        server.job = {"status": "idle"}
+        server.bridge = _StatusBridge({
+            "runner_status": "VERSION_PASSED",
+            "current_version_status": "PASSED",
+        })
+        server.executor_session_store = _SessionStore(session_status())
+        server._latest_run_evidence_for_classification = lambda live_run=None: ("completed", None, {"available": False})
+        server._read_worktree_clean_for_status = lambda: True
+        server._is_plan_reload_needed = lambda: False
+        server._api_remote_git_status = lambda: {}
+        server._api_execution_display = lambda: {
+            "provider": "codex",
+            "provider_display": "codex",
+            "model_display": "default",
+        }
+        server._api_project_registry = lambda: {"projects": [], "project_count": 0}
+        server._resolve_current_execution_provider = lambda fallback_provider=None: "codex"
+        return server
+
     def test_matching_session_head_has_no_mismatch_classification(self) -> None:
         classification = classify_executor_session_head_mismatch(
             executor_session_status=session_status(session_head=HEAD_A, current_head=HEAD_A),
@@ -179,8 +234,57 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
 
         assert display["state"] == "stale_session"
         assert display["head_mismatch_classification_status"] == "completed_idle_stale_session"
-        assert "历史 HEAD 不一致" in display["text"]
+        assert "历史会话残留" in display["text"]
         assert "运行中" not in display["text"]
+
+    def test_v1_status_payload_includes_executor_session_display(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="colameta-head-mismatch-v1-payload-") as tmp:
+            server = self.make_minimal_web_console_server(str(Path(tmp)))
+
+            payload = server._api_status()
+
+        display = payload["executor_session_display"]
+        assert display["state"] == "stale_session"
+        assert display["head_mismatch_classification_status"] == "completed_idle_stale_session"
+        assert "历史会话残留" in display["text"]
+
+    def test_v2_status_payload_includes_executor_session_display(self) -> None:
+        from runner import web_console
+
+        original = web_console.WorkflowOrchestrator
+
+        class StubWorkflowOrchestrator:
+            def __init__(self, project_root: str):
+                self.project_root = project_root
+
+            def handle(self, workflow: str, params: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "ok": True,
+                    "runner_status": "VERSION_PASSED",
+                    "current_version_status": "PASSED",
+                    "fact_snapshot": {
+                        "project_identity": {
+                            "project_name": "demo-project",
+                            "project_root": self.project_root,
+                        }
+                    },
+                }
+
+        web_console.WorkflowOrchestrator = StubWorkflowOrchestrator
+        self.addCleanup(lambda: setattr(web_console, "WorkflowOrchestrator", original))
+
+        with tempfile.TemporaryDirectory(prefix="colameta-head-mismatch-v2-payload-") as tmp:
+            server = self.make_minimal_web_console_server(str(Path(tmp)))
+            server._api_v2_live_run = lambda: {"available": False}
+            server._enrich_latest_report_identity = lambda result: None
+            server._build_plan_version_list_for_v2 = lambda: []
+
+            payload = server._api_v2_status()
+
+        display = payload["executor_session_display"]
+        assert display["state"] == "stale_session"
+        assert display["head_mismatch_classification_status"] == "completed_idle_stale_session"
+        assert "历史会话残留" in display["text"]
 
 
 if __name__ == "__main__":

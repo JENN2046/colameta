@@ -67,7 +67,7 @@ def build_executor_session_display(
         text = "执行会话：HEAD 不一致（运行中）"
         state = "blocked"
     elif head_mismatch_status == "completed_idle_stale_session":
-        text = "执行会话：历史 HEAD 不一致"
+        text = "执行会话：历史会话残留（HEAD 不一致，未在执行）"
         state = "stale_session"
     elif head_mismatch_status == "unknown_head_mismatch":
         text = "执行会话：HEAD 不一致（证据不足）"
@@ -98,7 +98,7 @@ def build_executor_session_display(
             text = "执行会话：不可继续"
             state = "not_resumable"
         else:
-            text = "执行会话：已记录"
+            text = "执行会话：已记录（未确认可继续）"
             state = "recorded"
 
     return {

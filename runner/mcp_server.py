@@ -4096,6 +4096,39 @@ class MCPPlanningBridgeServer:
                 "recommended_next_reads": self._actions_default_next_reads(tool_name),
             }
 
+    def project_name_required_guidance(
+        self,
+        tool_name: str,
+        *,
+        include_available_projects: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        available_names: list[str] = []
+        hint = "请先调用 list_registered_projects 查看可用项目，然后重试并传入 project_name。"
+        if include_available_projects:
+            try:
+                projects = self.project_registry.list_projects().get("projects", [])
+            except Exception:
+                projects = []
+            if isinstance(projects, list):
+                for project in projects:
+                    if not isinstance(project, dict):
+                        continue
+                    name = project.get("project_name")
+                    if isinstance(name, str) and name.strip() and name.strip() not in available_names:
+                        available_names.append(name.strip())
+            if available_names:
+                sample = ", ".join(available_names[:6])
+                hint = f"已登记 project_name 示例：{sample}。如需完整列表，请先调用 list_registered_projects。"
+        message = f"服务模式下项目级工具必须显式提供已登记 project_name，不能使用默认项目。{hint}"
+        details = {
+            "tool": tool_name,
+            "required_param": "project_name",
+            "next_action": "call list_registered_projects, then retry this tool with project_name",
+        }
+        if include_available_projects:
+            details["available_project_names"] = available_names[:20]
+        return message, details
+
     def _call_tool(
         self,
         name: Any,
@@ -4120,11 +4153,16 @@ class MCPPlanningBridgeServer:
         if (self.service_mode or auth_context is not None) and name in PROJECT_NAME_REQUIRED_TOOLS:
             project_name = params.get("project_name")
             if not isinstance(project_name, str) or not project_name.strip():
+                include_available_projects = self.service_mode and auth_context is None
+                message, details = self.project_name_required_guidance(
+                    name,
+                    include_available_projects=include_available_projects,
+                )
                 return self._tool_error(
                     name,
                     "PROJECT_NAME_REQUIRED",
-                    "服务模式下项目级工具必须显式提供 project_name，不能使用默认项目。",
-                    {"tool": name},
+                    message,
+                    details,
                 )
         scope_error = self._oauth_scope_error(name, params, auth_context)
         if scope_error is not None:

@@ -1010,6 +1010,7 @@ class WebConsoleServer:
             if action_name not in DANGEROUS_REGISTRY_ACTIONS:
                 return None
             params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
+            display_summary = self._registry_action_display_summary(action_name, params)
             return {
                 "action_type": action_name,
                 "risk_class": "identity_or_registry_action",
@@ -1017,12 +1018,41 @@ class WebConsoleServer:
                     "action": action_name,
                     "project": self._dangerous_target_project_summary(params),
                 },
-                "display_summary": {
-                    "title": "Project registry mutation",
-                    "target": action_name,
-                },
+                "display_summary": display_summary,
             }
         return None
+
+    def _registry_action_display_summary(self, action_name: str, params: dict[str, Any]) -> dict[str, str]:
+        target = self._dangerous_target_project_summary(params)
+        project_label = (
+            target.get("project_name")
+            or target.get("project_id")
+            or target.get("project_root")
+            or "目标项目"
+        )
+        project_root = target.get("project_root")
+        if action_name == "project_registry_unregister":
+            target_text = str(project_label)
+            if project_root and project_root != project_label:
+                target_text = f"{target_text} ｜ {project_root}"
+            return {
+                "title": "移出项目登记",
+                "target": f"{target_text}（只移出登记，不删除磁盘文件）",
+            }
+        if action_name == "project_registry_prune_unavailable":
+            return {
+                "title": "清理不可用项目登记",
+                "target": "不可用登记（保留当前项目，不删除磁盘文件）",
+            }
+        if action_name == "project_registry_prune_temporary":
+            return {
+                "title": "清理临时项目登记",
+                "target": "临时登记（保留当前项目，不删除磁盘文件）",
+            }
+        return {
+            "title": "项目登记操作",
+            "target": str(action_name or "unknown"),
+        }
 
     def _dangerous_executor_action_policy(
         self,
@@ -2937,6 +2967,12 @@ class WebConsoleServer:
         if not (isinstance(live_run, dict) and live_run.get("available") is True):
             self._enrich_latest_report_identity(result)
         self._apply_executor_session_head_mismatch_classification(result, live_run=live_run)
+        result["executor_session_display"] = build_executor_session_display(
+            executor_session_status=result.get("executor_session_status"),
+            continuation_decision=result.get("executor_continuation_decision"),
+            resume_invocation_preview=result.get("executor_resume_invocation_preview"),
+            continuation_preview=result.get("executor_continuation_preview"),
+        )
         try:
             result["plan_versions"] = self._build_plan_version_list_for_v2()
         except Exception:

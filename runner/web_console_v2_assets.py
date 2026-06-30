@@ -661,6 +661,7 @@ function renderLeftColumn(data) {{
   const ps = fs.plan_status || {{}};
   const lr = fs.latest_report || {{}};
   const ar = fs.active_run || {{}};
+  const sessionDisplay = data.executor_session_display || {{}};
   const clean = gs.working_tree_clean === true ? "干净" : gs.working_tree_clean === false ? "有改动" : "-";
   const changedCount = (gs.changed_files || []).length;
   const untrackedCount = (gs.untracked_files || []).length;
@@ -671,7 +672,8 @@ function renderLeftColumn(data) {{
   const blockerCount = Array.isArray(data.blockers) && data.blockers.length ? data.blockers.length : (ps.lint_blocking_issue_count || 0);
   const warningCount = Array.isArray(data.warnings) ? data.warnings.length : 0;
   const reportText = lr.available ? "可用" : "无";
-  const sessionText = ar.has_session ? "是" : "否";
+  let sessionText = sessionDisplay.text ? String(sessionDisplay.text).replace(/^执行会话：/, "") : "";
+  if (!sessionText) sessionText = ar.has_session ? "已记录（状态待判定）" : "未记录";
 
   let h = "";
   h += `<div class="card left-tab-card">`;
@@ -689,7 +691,7 @@ function renderLeftColumn(data) {{
   h += `<div class="compact-row"><span class="key">计划：</span><span class="val">计划文件 ${{esc(planText)}} ｜ 运行状态 ${{esc(stateText)}}</span></div>`;
   h += issueLink("阻断问题", blockerCount, "blockers");
   h += issueLink("警告", warningCount, "warnings");
-  h += `<div class="compact-row"><span class="key">执行报告：</span><span class="val">报告 ${{esc(reportText)}} ｜ 活跃会话 ${{esc(sessionText)}}</span></div>`;
+  h += `<div class="compact-row"><span class="key">执行：</span><span class="val">报告 ${{esc(reportText)}} ｜ 会话 ${{esc(sessionText)}}</span></div>`;
   h += `<div style="margin-top:8px;">`;
   if (fs.next_not_started_version != null) h += r("下一未开始", fs.next_not_started_version);
   if (fs.pending_count != null) h += r("挂起版本", fs.pending_count);
@@ -1506,9 +1508,10 @@ function renderProjectManagementModal(data) {{
 function renderProjectManagement(data) {{
   const registry = data.project_registry || {{}};
   const projects = Array.isArray(registry.projects) ? registry.projects : [];
+  const currentRoot = currentProjectRootForSwitcher(data || {{}});
   let h = "";
   h += `<div class="card"><div class="card-title">项目登记管理</div>`;
-  h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">仅删除登记记录，不会删除磁盘文件。</div>`;
+  h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">这里管理项目登记元数据。移出/清理只修改登记记录，不会删除磁盘文件；应用迁移会按预览修改 registry / plan / state / settings。当前项目会标注“当前”，/mnt/... 会标注为 Windows 挂载路径。</div>`;
 
   if (projects.length === 0) {{
     h += `<div class="empty-state">无登记项目</div>`;
@@ -1518,6 +1521,8 @@ function renderProjectManagement(data) {{
       const projectId = p.project_id || "";
       const available = p.available === true;
       const isTemp = p.is_temp === true;
+      const isCurrent = currentRoot && root === currentRoot;
+      const isWindowsMount = typeof root === "string" && root.startsWith("/mnt/");
       const isEditing = !!projectIdentityEditor && projectIdentityEditor.project_id === projectId;
       h += `<div style="padding:6px 0;border-top:1px solid #21262d;font-size:12px;">`;
       h += `<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
@@ -1528,19 +1533,21 @@ function renderProjectManagement(data) {{
       h += `</div>`;
       h += `<div style="color:#8b949e;font-size:11px;word-break:break-all;margin-top:2px;">${{esc(root)}}</div>`;
       h += `<div style="margin-top:3px;display:flex;gap:4px;">`;
+      if (isCurrent) h += `<span class="badge badge-info">当前</span>`;
       h += `<span class="badge ${{available ? "badge-ok" : "badge-err"}}">${{available ? "可用" : "不可用"}}</span>`;
+      if (isWindowsMount) h += `<span class="badge badge-warn">Windows 挂载路径</span>`;
       if (isTemp) h += `<span class="badge badge-warn">临时</span>`;
       h += `</div>`;
       h += `</div>`;
       h += `<div style="display:flex;gap:6px;flex:0 0 auto;margin-left:8px;">`;
-      h += `<button class="action-btn" style="width:auto;padding:3px 10px;font-size:11px;margin:0;" data-project-id="${{escAttr(projectId)}}" data-project-name="${{escAttr(p.project_name || "")}}" data-display-name="${{escAttr(p.display_name || p.project_name || "")}}" data-project-root="${{escAttr(root)}}" onclick="openProjectIdentityEditor(this)">编辑</button>`;
-      h += `<button class="action-btn" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})">移出</button>`;
+      h += `<button class="action-btn" title="编辑登记元数据，不修改磁盘文件。" style="width:auto;padding:3px 10px;font-size:11px;margin:0;" data-project-id="${{escAttr(projectId)}}" data-project-name="${{escAttr(p.project_name || "")}}" data-display-name="${{escAttr(p.display_name || p.project_name || "")}}" data-project-root="${{escAttr(root)}}" onclick="openProjectIdentityEditor(this)">编辑登记</button>`;
+      h += `<button class="action-btn" title="仅移出登记记录，不删除磁盘文件。" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})">移出登记</button>`;
       h += `</div>`;
       h += `</div>`;
       if (isEditing) {{
         const editor = projectIdentityEditor || {{}};
         h += `<div class="card" style="margin:8px 0 2px 0;background:#0d1117;">`;
-        h += `<div class="card-title">编辑项目：${{esc(pLabel)}}</div>`;
+        h += `<div class="card-title">编辑项目登记：${{esc(pLabel)}}</div>`;
         h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;word-break:break-all;">project_id=${{esc(projectId)}}</div>`;
         h += `<input id="project-identity-id" type="hidden" value="${{escAttr(projectId)}}">`;
         h += `<div style="display:grid;gap:8px;">`;
@@ -1557,8 +1564,8 @@ function renderProjectManagement(data) {{
   }}
 
   h += `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">`;
-  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})">清理不可用项目</button>`;
-  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})">清理临时项目</button>`;
+  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})">清理不可用登记</button>`;
+  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})">清理临时登记</button>`;
   h += `</div>`;
   h += `</div>`;
   return h;

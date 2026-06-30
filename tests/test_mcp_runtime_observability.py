@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
+from runner.cloud_pairing import CloudAgentCredential
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_registry import ProjectRegistry
 
 
 HEAD_A = "a" * 40
@@ -28,6 +31,20 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         (ref_dir / branch).write_text(f"{head}\n", encoding="utf-8")
         return project
 
+    def temp_registry(self) -> ProjectRegistry:
+        return ProjectRegistry(
+            registry_path=str(self.tmp_path / "project-registry.json"),
+            user_settings_path=str(self.tmp_path / "settings.json"),
+        )
+
+    def register_demo_project(self, registry: ProjectRegistry, project: Path) -> None:
+        registered = registry.register_project(
+            str(project),
+            project_name="demo-project",
+            last_selected=False,
+        )
+        assert registered["ok"] is True
+
     def test_runtime_version_status_tool_is_registered_read_only_and_scoped(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project))
@@ -46,6 +63,71 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         for forbidden_field in ("restart", "reload", "kill", "apply"):
             assert forbidden_field not in result
             assert forbidden_field not in data
+
+    def test_service_mode_missing_project_name_gives_operator_hint(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent("manage_git", {"action": "push_status"})
+
+        assert result["ok"] is False
+        assert result["error_code"] == "PROJECT_NAME_REQUIRED"
+        assert "list_registered_projects" in result["message"]
+        assert "已登记 project_name 示例" in result["message"]
+        assert "可用 project_name 示例" not in result["message"]
+        assert "demo-project" in result["message"]
+        assert result["details"]["required_param"] == "project_name"
+        assert "demo-project" in result["details"]["available_project_names"]
+
+    def test_auth_context_missing_project_name_does_not_enumerate_projects(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent(
+            "manage_git",
+            {"action": "push_status"},
+            auth_context={"mode": "cloud-relay", "device_id": "device-a", "scopes": ["mcp:read"]},
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "PROJECT_NAME_REQUIRED"
+        assert "list_registered_projects" in result["message"]
+        assert "demo-project" not in result["message"]
+        assert "available_project_names" not in result["details"]
+
+    def test_cloud_relay_missing_project_name_returns_controlled_error(self) -> None:
+        project = self.make_git_checkout()
+        bridge = CloudRelayToolBridge(str(project), service_mode=True)
+        server = bridge._get_server()
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        request = RelayRequest(
+            request_id="req-1",
+            tool_name="manage_git",
+            arguments={"action": "push_status"},
+            scopes=["mcp:read"],
+        )
+        credential = CloudAgentCredential(
+            device_id="device-a",
+            relay_url="http://example.invalid",
+            agent_token="token",
+            scopes=["mcp:read"],
+            created_at="now",
+        )
+
+        response = bridge.handle_relay_request(request, credential)
+
+        assert response.ok is False
+        assert response.error_code == "PROJECT_NAME_REQUIRED"
+        assert response.message is not None
+        assert "list_registered_projects" in response.message
+        assert "demo-project" not in response.message
+        assert isinstance(response.data, dict)
+        assert "available_project_names" not in response.data
 
 
 if __name__ == "__main__":
