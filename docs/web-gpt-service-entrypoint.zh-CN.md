@@ -1,0 +1,161 @@
+# Web GPT Service Entrypoint Guide
+
+状态：`dev_runtime_ready_for_web_gpt_trial`
+
+本文给网页端 GPT 使用 ColaMeta 项目服务时做入口说明。它不是稳定服务晋升授权，不授权 executor run、commit、push、route transition、release、deploy 或替换 `/home/jenn/tools/colameta`。
+
+## 当前服务边界
+
+- 稳定服务目录：`/home/jenn/tools/colameta`
+- 稳定服务 MCP：`http://127.0.0.1:8766/mcp`
+- 稳定服务 Web：`http://127.0.0.1:8801`
+- 当前 dev 测试服务 MCP：`http://127.0.0.1:8776/mcp`
+- 当前 dev 测试服务 Web：`http://127.0.0.1:8811`
+- 当前 dev repo：`/home/jenn/src/colameta-dev`
+
+网页端 GPT 需要优先连接当前被明确授权的 MCP endpoint。没有稳定晋升授权时，使用 dev 测试服务验证新能力；不要假定稳定服务已经包含 dev repo 最新能力。
+
+## 首个工具
+
+网页端 GPT 连接 MCP 后，第一步调用：
+
+```json
+{
+  "name": "get_web_gpt_service_entrypoint",
+  "arguments": {}
+}
+```
+
+这个工具只读，返回：
+
+- 服务 profile
+- 是否需要 `project_name`
+- 已登记项目摘要
+- 推荐首调用顺序
+- 薄治理闭环 `draft -> provided` 用法
+- 验证运行 `preview -> run -> status` 用法
+- 禁止动作边界
+
+## 推荐首调用顺序
+
+1. `get_web_gpt_service_entrypoint`
+2. `list_registered_projects`
+3. `analyze_project_state`，必须传入已登记的 `project_name`
+4. `manage_workflow_run`，用 `action=list` 查看最近证据
+
+示例：
+
+```json
+{
+  "name": "analyze_project_state",
+  "arguments": {
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+## 薄治理闭环输入草稿
+
+网页端 GPT 不应该手拼四个完整 JSON 对象。推荐先让服务生成草稿：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "thin_governed_loop_preview",
+    "phase": "preview",
+    "project_name": "colameta-self-dev",
+    "input_mode": "draft",
+    "draft_seed": {
+      "allowed_files": ["runner/example.py", "tests/test_example.py"],
+      "validation_commands": ["python -m unittest tests.test_example", "git diff --check"],
+      "review_decision_value": "NEEDS_FIX",
+      "reviewer_notes": "Review note here."
+    }
+  }
+}
+```
+
+然后把返回的 `result.generated_input_bundle` 原样回填：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "thin_governed_loop_preview",
+    "phase": "preview",
+    "project_name": "colameta-self-dev",
+    "thin_loop_inputs": "<generated_input_bundle>"
+  }
+}
+```
+
+注意：这些输出是 evidence，不是执行授权，也不是 review acceptance 或 delivery state accepted。
+
+## 验证运行
+
+网页端 GPT 不需要自己拼 shell 命令。推荐：
+
+```json
+{
+  "name": "manage_validation_run",
+  "arguments": {
+    "action": "preview",
+    "scope": "target_files",
+    "project_name": "colameta-self-dev",
+    "target_files": ["runner/example.py", "tests/test_example.py"]
+  }
+}
+```
+
+拿到 `preview_id` 后：
+
+```json
+{
+  "name": "manage_validation_run",
+  "arguments": {
+    "action": "run",
+    "project_name": "colameta-self-dev",
+    "preview_id": "<preview_id>"
+  }
+}
+```
+
+拿到 `run_id` 后轮询：
+
+```json
+{
+  "name": "manage_validation_run",
+  "arguments": {
+    "action": "status",
+    "project_name": "colameta-self-dev",
+    "run_id": "<run_id>"
+  }
+}
+```
+
+## 禁止动作
+
+除非 Commander 给出明确、当前有效、范围精确的授权，网页端 GPT 不得：
+
+- 替换稳定服务
+- push
+- executor run
+- route transition
+- release / deploy
+- 创建 ReviewDecision
+- emit GateEvent
+- 写 Delivery State accepted
+- 修改 `/home/jenn/tools/colameta`
+
+## 手感检查
+
+网页端 GPT 使用服务时，应能回答：
+
+- 我连接的是 dev 测试服务还是稳定服务？
+- 当前目标 `project_name` 是什么？
+- 最近 workflow 证据在哪里？
+- 这一步是 read-only、preview、run 还是 commit？
+- 输出是 evidence，还是 Commander 已授权的状态迁移？
+
+如果这些问题回答不清楚，应先停在只读检查，不进入写操作。
