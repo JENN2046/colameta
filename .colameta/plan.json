@@ -1377,12 +1377,12 @@
       "forbidden_files": [],
       "acceptance_commands": [
         {
-          "command": "python -m compileall runner/drift_evidence_schema.py tests/test_drift_evidence_schema.py",
+          "command": ".venv/bin/python -m compileall runner/drift_evidence_schema.py tests/test_drift_evidence_schema.py",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
         {
-          "command": "pytest tests/test_drift_evidence_schema.py tests/test_reviewer_drift_questions.py tests/test_review_feedback_schema.py -q",
+          "command": ".venv/bin/python -m pytest tests/test_drift_evidence_schema.py tests/test_reviewer_drift_questions.py tests/test_review_feedback_schema.py -q",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
@@ -1436,12 +1436,12 @@
       "forbidden_files": [],
       "acceptance_commands": [
         {
-          "command": "python -m compileall runner/drift_evidence_schema.py runner/drift_evidence_pack_builder.py tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py",
+          "command": ".venv/bin/python -m compileall runner/drift_evidence_schema.py runner/drift_evidence_pack_builder.py tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
         {
-          "command": "pytest tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py tests/test_reviewer_drift_questions.py tests/test_reviewer_alignment_questions.py tests/test_audit_package_taskbook_binding.py -q",
+          "command": ".venv/bin/python -m pytest tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py tests/test_reviewer_drift_questions.py tests/test_reviewer_alignment_questions.py tests/test_audit_package_taskbook_binding.py -q",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
@@ -1494,12 +1494,12 @@
       "forbidden_files": [],
       "acceptance_commands": [
         {
-          "command": "python -m compileall runner/plan_adjustment_preview.py tests/test_plan_adjustment_preview.py",
+          "command": ".venv/bin/python -m compileall runner/plan_adjustment_preview.py tests/test_plan_adjustment_preview.py",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
         {
-          "command": "pytest tests/test_plan_adjustment_preview.py tests/test_commander_decision_request.py tests/test_review_feedback_classification.py tests/test_master_taskbook_mutation_gate.py -q",
+          "command": ".venv/bin/python -m pytest tests/test_plan_adjustment_preview.py tests/test_commander_decision_request.py tests/test_review_feedback_classification.py tests/test_master_taskbook_mutation_gate.py -q",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
@@ -1553,12 +1553,12 @@
       "forbidden_files": [],
       "acceptance_commands": [
         {
-          "command": "python -m compileall runner/controlled_continue_readiness.py tests/test_controlled_continue_readiness.py",
+          "command": ".venv/bin/python -m compileall runner/controlled_continue_readiness.py tests/test_controlled_continue_readiness.py",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
         {
-          "command": "pytest tests/test_controlled_continue_readiness.py tests/test_final_version_closeout.py tests/test_review_decision_adapter.py -q",
+          "command": ".venv/bin/python -m pytest tests/test_controlled_continue_readiness.py tests/test_final_version_closeout.py tests/test_review_decision_adapter.py -q",
           "timeout_seconds": 600,
           "continue_on_failure": false
         },
