@@ -218,7 +218,76 @@ class FinalVersionCloseoutTests(unittest.TestCase):
             assert updated["current_version"] == "v1.11"
             assert updated["status"] == "COMPLETED"
             assert updated["versions"][1]["commit_hash"] == commit_v11
+            metadata = updated["versions"][1]["metadata"]["final_version_closeout"]
+            assert metadata["evidence_file_fingerprints"][0]["path"] == ".colameta/reports/executor-runs/v1.11/receipt.md"
             assert self._git_out(project, "status", "--short") == ""
+
+    def test_manager_apply_blocks_when_evidence_deleted_after_preview(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="colameta-final-closeout-evidence-") as tmp:
+            project, manager, commit_v11, receipt = self._prepare_manager_project(tmp)
+            result = manager.handle("final_version_closeout_preview", {
+                "expected_head": commit_v11,
+                "expected_branch": "main",
+                "target_version": "v1.11",
+                "accepted_commit": commit_v11,
+                "accepted_commit_subject": SUBJECT_V11,
+                "evidence_refs": ["path:.colameta/reports/executor-runs/v1.11/receipt.md"],
+                "reason": "manual controlled v1.11 closeout",
+            })
+
+            assert result["status"] == "preview_ready"
+            receipt.unlink()
+            apply_result = manager.handle("final_version_closeout_apply", {
+                "preview_id": result["preview_id"],
+            })
+
+            assert apply_result["ok"] is False
+            assert apply_result["error_code"] == "EVIDENCE_PATH_NOT_FOUND"
+            assert self._git_out(project, "status", "--short") == ""
+
+    def test_manager_apply_blocks_when_evidence_changes_after_preview(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="colameta-final-closeout-evidence-") as tmp:
+            project, manager, commit_v11, receipt = self._prepare_manager_project(tmp)
+            result = manager.handle("final_version_closeout_preview", {
+                "expected_head": commit_v11,
+                "expected_branch": "main",
+                "target_version": "v1.11",
+                "accepted_commit": commit_v11,
+                "accepted_commit_subject": SUBJECT_V11,
+                "evidence_refs": ["path:.colameta/reports/executor-runs/v1.11/receipt.md"],
+                "reason": "manual controlled v1.11 closeout",
+            })
+
+            assert result["status"] == "preview_ready"
+            receipt.write_text("changed evidence\n", encoding="utf-8")
+            apply_result = manager.handle("final_version_closeout_apply", {
+                "preview_id": result["preview_id"],
+            })
+
+            assert apply_result["ok"] is False
+            assert apply_result["error_code"] == "EVIDENCE_FINGERPRINT_MISMATCH"
+            assert self._git_out(project, "status", "--short") == ""
+
+    def _prepare_manager_project(self, tmp: str) -> tuple[Path, MCPExecutorWorkflowManager, str, Path]:
+        project = Path(tmp)
+        (project / ".colameta" / "reports" / "executor-runs" / "v1.11").mkdir(parents=True)
+        (project / ".gitignore").write_text(
+            ".colameta/state.json\n.colameta/runtime/**\n.colameta/reports/**\n",
+            encoding="utf-8",
+        )
+        (project / ".colameta" / "plan.json").write_text(json.dumps(self.plan()), encoding="utf-8")
+        (project / ".colameta" / "state.json").write_text(json.dumps(self.state()), encoding="utf-8")
+        receipt = project / ".colameta" / "reports" / "executor-runs" / "v1.11" / "receipt.md"
+        receipt.write_text("v1.11 closeout evidence\n", encoding="utf-8")
+
+        self._git(project, "init")
+        self._git(project, "checkout", "-b", "main")
+        self._git(project, "config", "user.name", "Test")
+        self._git(project, "config", "user.email", "test@example.com")
+        self._git(project, "add", ".gitignore", ".colameta/plan.json")
+        self._git(project, "commit", "-m", "initial plan")
+        commit_v11 = self._commit_file(project, "health.txt", "v1.11\n", SUBJECT_V11)
+        return project, MCPExecutorWorkflowManager(str(project)), commit_v11, receipt
 
     def _commit_file(self, project: Path, name: str, content: str, subject: str) -> str:
         (project / name).write_text(content, encoding="utf-8")

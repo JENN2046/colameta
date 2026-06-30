@@ -87,7 +87,8 @@ def build_final_version_closeout_preview(
         blockers.append(_blocker("REASON_REQUIRED", "final version closeout requires a reason."))
     if not evidence_items and not evidence_summary:
         blockers.append(_blocker("EVIDENCE_REQUIRED", "final version closeout requires evidence_refs or evidence_summary."))
-    blockers.extend(_local_evidence_blockers(evidence_items, project_root))
+    evidence_facts = _local_evidence_facts(evidence_items, project_root)
+    blockers.extend(evidence_facts["blockers"])
 
     plan_versions = _version_index(plan.get("versions"))
     state_versions = _version_index(state.get("versions"))
@@ -150,6 +151,7 @@ def build_final_version_closeout_preview(
         accepted_commit_subject=accepted_commit_subject,
         commit_files=commit_file_items,
         evidence_refs=evidence_items,
+        evidence_file_fingerprints=evidence_facts["files"],
         evidence_summary=evidence_summary,
         reason=reason,
         now=now,
@@ -183,6 +185,7 @@ def build_final_version_closeout_preview(
         "commit_files": commit_file_items,
         "evidence_refs": evidence_items,
         "evidence_summary": evidence_summary,
+        "evidence_file_fingerprints": evidence_facts["files"],
         "reason": reason,
         "files_apply_would_touch": list(APPLY_TOUCHES),
         "forbidden_side_effects": list(FORBIDDEN_SIDE_EFFECTS),
@@ -220,6 +223,15 @@ def apply_final_version_closeout_artifact(
         return _apply_blocked("WORKTREE_DIRTY", "worktree must be clean before applying final version closeout.")
     if state_content_hash(current_state) != _clean_str(artifact.get("state_hash")):
         return _apply_blocked("STATE_CHANGED_SINCE_PREVIEW", "state changed since preview.")
+    evidence_check = _verify_evidence_file_fingerprints(
+        artifact.get("evidence_file_fingerprints"),
+        project_root=_clean_str(artifact.get("project_root")),
+    )
+    if not evidence_check["ok"]:
+        return _apply_blocked(
+            evidence_check["error_code"],
+            evidence_check["message"],
+        )
 
     accepted_commit = _clean_str(artifact.get("accepted_commit"))
     accepted_subject = _clean_str(artifact.get("accepted_commit_subject"))
@@ -257,6 +269,7 @@ def _build_proposed_state(
     accepted_commit_subject: str,
     commit_files: list[str],
     evidence_refs: list[str],
+    evidence_file_fingerprints: list[dict[str, Any]],
     evidence_summary: str,
     reason: str,
     now: str,
@@ -274,6 +287,7 @@ def _build_proposed_state(
             "accepted_commit": accepted_commit,
             "accepted_commit_subject": accepted_commit_subject,
             "evidence_refs": list(evidence_refs),
+            "evidence_file_fingerprints": copy.deepcopy(evidence_file_fingerprints),
             "evidence_summary": evidence_summary,
             "reason": reason,
             "recorded_at": now,
@@ -295,10 +309,11 @@ def _build_proposed_state(
     return proposed
 
 
-def _local_evidence_blockers(evidence_refs: list[str], project_root: str) -> list[dict[str, str]]:
+def _local_evidence_facts(evidence_refs: list[str], project_root: str) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
+    files: list[dict[str, Any]] = []
     if not project_root:
-        return blockers
+        return {"blockers": blockers, "files": files}
     root = os.path.realpath(project_root)
     for ref in evidence_refs:
         path = _evidence_ref_path(ref)
@@ -310,7 +325,81 @@ def _local_evidence_blockers(evidence_refs: list[str], project_root: str) -> lis
             blockers.append(_blocker("EVIDENCE_PATH_OUTSIDE_PROJECT", f"evidence ref path is outside project: {ref}"))
         elif not os.path.isfile(real_candidate):
             blockers.append(_blocker("EVIDENCE_PATH_NOT_FOUND", f"evidence ref path not found: {ref}"))
-    return blockers
+        else:
+            files.append(_evidence_file_fingerprint(ref=ref, path=path, real_path=real_candidate))
+    return {"blockers": blockers, "files": files}
+
+
+def _verify_evidence_file_fingerprints(value: Any, project_root: str) -> dict[str, Any]:
+    if value is None:
+        return {"ok": True}
+    if not isinstance(value, list):
+        return {
+            "ok": False,
+            "error_code": "EVIDENCE_FINGERPRINTS_INVALID",
+            "message": "evidence file fingerprints are invalid.",
+        }
+    if not value:
+        return {"ok": True}
+    if not project_root:
+        return {
+            "ok": False,
+            "error_code": "PROJECT_ROOT_REQUIRED_FOR_EVIDENCE",
+            "message": "project_root is required to verify evidence file fingerprints.",
+        }
+    root = os.path.realpath(project_root)
+    for item in value:
+        if not isinstance(item, dict):
+            return {
+                "ok": False,
+                "error_code": "EVIDENCE_FINGERPRINTS_INVALID",
+                "message": "evidence file fingerprint entry is invalid.",
+            }
+        ref = _clean_str(item.get("ref"))
+        path = _clean_str(item.get("path"))
+        expected_sha = _clean_str(item.get("sha256"))
+        expected_size = item.get("size_bytes")
+        if not path or not expected_sha or not isinstance(expected_size, int):
+            return {
+                "ok": False,
+                "error_code": "EVIDENCE_FINGERPRINTS_INVALID",
+                "message": "evidence file fingerprint entry is incomplete.",
+            }
+        candidate = path if os.path.isabs(path) else os.path.join(root, path)
+        real_candidate = os.path.realpath(candidate)
+        if not (real_candidate == root or real_candidate.startswith(root + os.sep)):
+            return {
+                "ok": False,
+                "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT",
+                "message": f"evidence ref path is outside project: {ref or path}",
+            }
+        if not os.path.isfile(real_candidate):
+            return {
+                "ok": False,
+                "error_code": "EVIDENCE_PATH_NOT_FOUND",
+                "message": f"evidence ref path not found: {ref or path}",
+            }
+        actual = _evidence_file_fingerprint(ref=ref, path=path, real_path=real_candidate)
+        if actual["size_bytes"] != expected_size or actual["sha256"] != expected_sha:
+            return {
+                "ok": False,
+                "error_code": "EVIDENCE_FINGERPRINT_MISMATCH",
+                "message": f"evidence file changed since preview: {ref or path}",
+            }
+    return {"ok": True}
+
+
+def _evidence_file_fingerprint(*, ref: str, path: str, real_path: str) -> dict[str, Any]:
+    hasher = hashlib.sha256()
+    with open(real_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return {
+        "ref": ref,
+        "path": path,
+        "size_bytes": os.path.getsize(real_path),
+        "sha256": hasher.hexdigest(),
+    }
 
 
 def _evidence_ref_path(value: str) -> str:
