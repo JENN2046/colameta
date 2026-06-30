@@ -65,6 +65,7 @@ MCP_HARD_TOOL_RESULT_CHARS = 75000
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
+    "get_agent_consumer_contract",
     "get_web_gpt_service_entrypoint",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
@@ -268,6 +269,7 @@ class MCPPlanningBridgeServer:
         common_output_schema = self._build_common_output_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
+            "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
@@ -332,6 +334,20 @@ class MCPPlanningBridgeServer:
             MCPToolDef(
                 name="list_registered_projects",
                 description=f"[{self.project_hint}] 列出本地 registry 中已登记项目。只接受本地 allowlist 项目，不解析任意 project_root。",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_agent_consumer_contract",
+                description=(
+                    f"[{self.project_hint}] 读取 Agent 消费者契约。"
+                    "说明 MCP tool 成功/失败 envelope、project_name 路由规则、只读/副作用字段、packaged 大结果和权限边界。scope=mcp:read。"
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {},
@@ -3390,6 +3406,7 @@ class MCPPlanningBridgeServer:
 
     def _actions_readonly_tools(self) -> set[str]:
         return {
+            "get_agent_consumer_contract",
             "get_web_gpt_service_entrypoint",
             "get_stable_promotion_readiness",
             "get_runtime_version_status",
@@ -4739,6 +4756,84 @@ class MCPPlanningBridgeServer:
     def _tool_list_registered_projects(self, _: dict[str, Any]) -> dict[str, Any]:
         return self._list_registered_projects_payload()
 
+    def _tool_get_agent_consumer_contract(self, _: dict[str, Any]) -> dict[str, Any]:
+        visible_tools = self._visible_tool_names()
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "contract_version": "agent_consumer_contract.v1",
+            "scope": "mcp:read",
+            "service_mode": bool(self.service_mode),
+            "mcp_exposure_profile": self.mcp_exposure_profile,
+            "visible_tool_count": len(visible_tools),
+            "outer_tool_result_envelope": {
+                "success_required_fields": ["ok", "tool", "data"],
+                "success_shape": {
+                    "ok": True,
+                    "tool": "<tool_name>",
+                    "data": "<tool-specific payload>",
+                },
+                "error_required_fields": ["ok", "tool", "error_code", "message", "details"],
+                "error_shape": {
+                    "ok": False,
+                    "tool": "<tool_name>",
+                    "error_code": "<machine_readable_code>",
+                    "message": "<human_readable_message>",
+                    "details": "<structured object>",
+                },
+                "large_result_shape": {
+                    "ok": "<original ok>",
+                    "tool": "<tool_name>",
+                    "packaged": True,
+                    "package_mode": "manifest",
+                    "summary": "<compact summary>",
+                    "omitted_fields": ["data"],
+                    "recommended_next_reads": "<follow-up reads>",
+                },
+            },
+            "data_payload_recommendation": {
+                "standard_success_fields": ["ok", "read_only", "side_effects"],
+                "meaning": {
+                    "ok": "Payload-level success flag when the payload can independently report success.",
+                    "read_only": "True means the tool only read evidence or produced a preview.",
+                    "side_effects": "False means the payload declares no state mutation.",
+                },
+                "compatibility_note": (
+                    "Older payloads may omit payload-level ok/read_only/side_effects; "
+                    "agents must first trust the outer envelope and then use payload fields when present."
+                ),
+            },
+            "project_routing_contract": {
+                "service_mode_project_tools_require_project_name": bool(self.service_mode),
+                "do_not_send_project_root_when_project_name_is_used": True,
+                "discover_projects_first": "list_registered_projects",
+                "missing_project_name_error_code": "PROJECT_NAME_REQUIRED",
+                "invalid_project_name_error_code": "INVALID_PROJECT_NAME",
+                "project_root_override_error_code": "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED",
+                "source_only_managed_workflow_error_code": "PROJECT_MODE_UNSUPPORTED",
+            },
+            "authority_boundary": {
+                "read_only_tools_do_not_authorize_executor_dispatch": True,
+                "read_only_tools_do_not_create_review_decision": True,
+                "read_only_tools_do_not_emit_gate_event": True,
+                "read_only_tools_do_not_write_delivery_state": True,
+                "stable_promotion_requires_external_commander_authorization": True,
+            },
+            "recommended_first_reads": [
+                {"tool": "list_registered_projects", "why": "Discover allowed project_name values."},
+                {"tool": "get_agent_consumer_contract", "why": "Load this consumer contract."},
+                {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
+                {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
+                {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
+            ],
+            "thin_loop_consumer_rule": {
+                "draft_mode": "Call run_mcp_workflow with input_mode=draft and draft_seed.",
+                "provided_mode": "Review result.generated_input_bundle, then send result.next_request_payload directly.",
+                "authority": "thin_governed_loop_preview remains read-only evidence and does not authorize acceptance or execution.",
+            },
+        }
+
     def _tool_get_web_gpt_service_entrypoint(self, params: dict[str, Any]) -> dict[str, Any]:
         visible_names = self._visible_tool_names()
         project_identity: dict[str, Any] | None = None
@@ -4769,6 +4864,12 @@ class MCPPlanningBridgeServer:
                     "tool": "list_registered_projects",
                     "arguments": {},
                     "why": "服务模式下先确认可用 project_name；不要猜项目目录。",
+                },
+                {
+                    "step": "read_agent_consumer_contract",
+                    "tool": "get_agent_consumer_contract",
+                    "arguments": {},
+                    "why": "确认统一 envelope、project_name 路由、只读边界和错误处理规则。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -4853,11 +4954,12 @@ class MCPPlanningBridgeServer:
                 ],
             },
             "web_gpt_handoff_prompt": (
-                "Start by calling get_web_gpt_service_entrypoint, then list_registered_projects, "
-                "then get_stable_promotion_readiness and analyze_project_state with the selected project_name. "
+                "Start by calling list_registered_projects, get_agent_consumer_contract, "
+                "then get_web_gpt_service_entrypoint, get_stable_promotion_readiness, "
+                "and analyze_project_state with the selected project_name. "
                 "For thin governed loop work, "
-                "use run_mcp_workflow input_mode=draft to generate generated_input_bundle and feed it back "
-                "as thin_loop_inputs with input_mode=provided. Treat all outputs as evidence unless Commander "
+                "use run_mcp_workflow input_mode=draft, review result.generated_input_bundle, "
+                "then send result.next_request_payload directly. Treat all outputs as evidence unless Commander "
                 "explicitly authorizes a write, run, push, or stable promotion."
             ),
             "visible_tool_names": visible_names,

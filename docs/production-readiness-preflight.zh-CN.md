@@ -23,6 +23,7 @@
 - 当前项目 Git HEAD、branch、worktree clean 状态
 - 本地与 `origin/main` 的 ahead/behind 只读摘要
 - 网页端 GPT 所需 MCP 入口工具是否可见
+- `get_agent_consumer_contract` 是否可见
 - `thin_governed_loop_preview` 是否可用
 - 稳定运行目录 `/home/jenn/tools/colameta` 是否存在、是否有可证明 Git HEAD
 - 候选 tracked-file artifact manifest 摘要与 `manifest_sha256`
@@ -62,6 +63,7 @@
 - 当前运行服务无法证明加载了当前 checkout 代码
 - worktree 不是 clean
 - 缺少网页端 GPT 必需入口工具
+- 缺少 Agent 消费者契约工具
 - 缺少 `thin_governed_loop_preview`
 - 无法确认项目 HEAD
 

@@ -76,10 +76,13 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         self.register_demo_project(server.project_registry, project)
         tool_defs = {tool.name: tool for tool in server.tool_defs}
 
+        assert "get_agent_consumer_contract" in tool_defs
         assert "get_web_gpt_service_entrypoint" in tool_defs
         assert "get_stable_promotion_readiness" in tool_defs
+        assert "get_agent_consumer_contract" in server._visible_tool_names()
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
+        assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
 
@@ -95,8 +98,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["service_profile"]["project_name_required_for_project_tools"] is True
         assert "demo-project" in [item["project_name"] for item in data["registered_projects"]]
         assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
-        assert data["entry_sequence"][1]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][2]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
+        assert data["entry_sequence"][2]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][3]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
@@ -105,6 +109,37 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
+    def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+
+        result = server.call_tool_for_agent("get_agent_consumer_contract", {})
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_agent_consumer_contract"
+        data = result["data"]
+        assert data["ok"] is True
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["contract_version"] == "agent_consumer_contract.v1"
+        assert data["outer_tool_result_envelope"]["success_required_fields"] == ["ok", "tool", "data"]
+        assert data["outer_tool_result_envelope"]["error_required_fields"] == [
+            "ok",
+            "tool",
+            "error_code",
+            "message",
+            "details",
+        ]
+        assert data["data_payload_recommendation"]["standard_success_fields"] == [
+            "ok",
+            "read_only",
+            "side_effects",
+        ]
+        assert data["project_routing_contract"]["missing_project_name_error_code"] == "PROJECT_NAME_REQUIRED"
+        assert data["project_routing_contract"]["project_root_override_error_code"] == "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED"
+        assert data["authority_boundary"]["read_only_tools_do_not_write_delivery_state"] is True
+        assert data["thin_loop_consumer_rule"]["provided_mode"].startswith("Review result.generated_input_bundle")
 
     def test_thin_loop_draft_next_payload_preserves_routed_project_name(self) -> None:
         project = self.make_git_checkout(managed=True)

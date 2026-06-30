@@ -15,9 +15,25 @@
 
 网页端 GPT 需要优先连接当前被明确授权的 MCP endpoint。没有稳定晋升授权时，使用 dev 测试服务验证新能力；不要假定稳定服务已经包含 dev repo 最新能力。
 
-## 首个工具
+## 首批工具
 
-网页端 GPT 连接 MCP 后，第一步调用：
+网页端 GPT 连接 MCP 后，先读取项目列表和 Agent 消费者契约：
+
+```json
+{
+  "name": "list_registered_projects",
+  "arguments": {}
+}
+```
+
+```json
+{
+  "name": "get_agent_consumer_contract",
+  "arguments": {}
+}
+```
+
+然后调用服务入口卡片：
 
 ```json
 {
@@ -29,6 +45,7 @@
 这个工具只读，返回：
 
 - 服务 profile
+- Agent 消费者契约入口
 - 是否需要 `project_name`
 - 已登记项目摘要
 - 推荐首调用顺序
@@ -38,11 +55,12 @@
 
 ## 推荐首调用顺序
 
-1. `get_web_gpt_service_entrypoint`
-2. `list_registered_projects`
-3. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
-4. `analyze_project_state`，必须传入已登记的 `project_name`
-5. `manage_workflow_run`，用 `action=list` 查看最近证据
+1. `list_registered_projects`
+2. `get_agent_consumer_contract`
+3. `get_web_gpt_service_entrypoint`
+4. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
+5. `analyze_project_state`，必须传入已登记的 `project_name`
+6. `manage_workflow_run`，用 `action=list` 查看最近证据
 
 示例：
 

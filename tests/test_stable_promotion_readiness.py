@@ -81,6 +81,7 @@ class StablePromotionReadinessTests(unittest.TestCase):
         }
         assert result["git"]["worktree_clean"] is True
         assert result["git"]["ahead"] == 0
+        assert result["tool_support"]["agent_consumer_contract_visible"] is True
         assert result["tool_support"]["stable_readiness_tool_visible"] is True
         assert result["safety_boundary"]["does_not_authorize_stable_replacement"] is True
 
@@ -111,6 +112,16 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert result["stable_promotion_review_candidate"] is False
         assert "REQUIRED_MCP_TOOLS_MISSING" in {item["code"] for item in result["local_blockers"]}
         assert result["tool_support"]["web_gpt_entrypoint_visible"] is False
+
+    def test_missing_agent_consumer_contract_blocks_review_candidate(self) -> None:
+        repo, head = self.make_repo_with_origin()
+        visible = [tool for tool in REQUIRED_VISIBLE_TOOLS if tool != "get_agent_consumer_contract"]
+
+        result = self.readiness(repo, head, visible_tool_names=visible)
+
+        assert result["stable_promotion_review_candidate"] is False
+        assert "REQUIRED_MCP_TOOLS_MISSING" in {item["code"] for item in result["local_blockers"]}
+        assert result["tool_support"]["agent_consumer_contract_visible"] is False
 
     def run_cmd(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
