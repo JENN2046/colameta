@@ -4684,6 +4684,7 @@ class MCPPlanningBridgeServer:
         original_project_name = params.get("project_name")
         result = routed_tool(routed_params)
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
+            self._inject_project_name_into_routed_result(result, original_project_name.strip())
             next_actions = _find_next_actions(result)
             if next_actions is not None:
                 for action in next_actions:
@@ -4692,6 +4693,23 @@ class MCPPlanningBridgeServer:
                         if isinstance(action_params, dict) and "project_name" not in action_params:
                             action_params["project_name"] = original_project_name.strip()
         return result
+
+    def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
+        workflow = result.get("workflow")
+        payload_result = result.get("result")
+        if workflow != "thin_governed_loop_preview" or not isinstance(payload_result, dict):
+            return
+
+        for key in ("next_request_payload", "copy_paste_next_request"):
+            payload = payload_result.get(key)
+            if isinstance(payload, dict):
+                payload["project_name"] = project_name
+
+        bundle_summary = payload_result.get("generated_input_bundle_summary")
+        if isinstance(bundle_summary, dict):
+            next_shape = bundle_summary.get("next_request_shape")
+            if isinstance(next_shape, dict):
+                next_shape["project_name"] = project_name
 
     def _list_registered_projects_payload(self) -> dict[str, Any]:
         listed = self.project_registry.list_projects()
@@ -4786,11 +4804,15 @@ class MCPPlanningBridgeServer:
                             "reviewer_notes": "<optional reviewer note>",
                         },
                     },
-                    "next_step": "Send result.generated_input_bundle back as thin_loop_inputs with input_mode=provided.",
+                    "next_step": (
+                        "Review result.generated_input_bundle, then send result.next_request_payload "
+                        "directly as the next run_mcp_workflow arguments."
+                    ),
                     "provided_arguments": {
                         "workflow": "thin_governed_loop_preview",
                         "phase": "preview",
                         "project_name": "<same registered project_name>",
+                        "input_mode": "provided",
                         "thin_loop_inputs": "<generated_input_bundle>",
                     },
                     "authority": "read_only_evidence_not_execution_or_acceptance_authority",

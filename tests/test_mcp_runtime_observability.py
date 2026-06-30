@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
@@ -22,13 +23,17 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def make_git_checkout(self, head: str = HEAD_A, branch: str = "main") -> Path:
+    def make_git_checkout(self, head: str = HEAD_A, branch: str = "main", *, managed: bool = False) -> Path:
         project = self.tmp_path / f"project-{branch}"
         git_dir = project / ".git"
         ref_dir = git_dir / "refs" / "heads"
         ref_dir.mkdir(parents=True)
         (git_dir / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
         (ref_dir / branch).write_text(f"{head}\n", encoding="utf-8")
+        if managed:
+            runner_dir = project / ".colameta"
+            runner_dir.mkdir()
+            (runner_dir / "plan.json").write_text(json.dumps({"project_name": "demo-project"}), encoding="utf-8")
         return project
 
     def temp_registry(self) -> ProjectRegistry:
@@ -95,9 +100,41 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
+        assert "result.next_request_payload" in thin_flow["next_step"]
+        assert thin_flow["provided_arguments"]["input_mode"] == "provided"
         assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
+    def test_thin_loop_draft_next_payload_preserves_routed_project_name(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "project_name": "demo-project",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "source_id": "routed-demo",
+                    "allowed_files": ["docs/demo.md"],
+                    "validation_commands": ["git status --short"],
+                    "review_decision_value": "NEEDS_FIX",
+                },
+            },
+        )
+
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["ok"] is True
+        next_payload = data["result"]["next_request_payload"]
+        assert next_payload["project_name"] == "demo-project"
+        assert data["result"]["copy_paste_next_request"]["project_name"] == "demo-project"
+        assert data["result"]["generated_input_bundle_summary"]["next_request_shape"]["project_name"] == "demo-project"
 
     def test_stable_promotion_readiness_tool_is_read_only_and_non_authorizing(self) -> None:
         project = self.make_git_checkout()

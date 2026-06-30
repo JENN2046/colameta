@@ -3267,6 +3267,13 @@ class WorkflowOrchestrator:
 
     def _thin_loop_draft_result(self, *, params: dict[str, Any], phase: str, warnings: list[str]) -> 'CoreResult':
         generated_input_bundle = self._thin_loop_generated_input_bundle(params)
+        next_request_payload = {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": params.get("project_name") or "<same managed project_name or route used for this draft call>",
+            "input_mode": "provided",
+            "thin_loop_inputs": generated_input_bundle,
+        }
         thin_loop = {
             "thin_loop_status": "thin_governed_loop_input_draft_ready",
             "thin_loop_path": [
@@ -3293,10 +3300,13 @@ class WorkflowOrchestrator:
             warnings=warnings,
             extra_result={
                 "generated_input_bundle": generated_input_bundle,
+                "next_request_payload": next_request_payload,
+                "copy_paste_next_request": next_request_payload,
                 "generated_input_bundle_summary": {
                     "bundle_kind": "draft_input_bundle",
                     "reusable_as": "thin_loop_inputs",
                     "submit_with_input_mode": "provided",
+                    "copy_paste_field": "next_request_payload",
                     "current_head": generated_input_bundle.get("current_head"),
                     "seed_fields_applied": generated_input_bundle.get("draft_seed_applied", []),
                     "seed_fields_ignored": generated_input_bundle.get("draft_seed_ignored", []),
@@ -3312,7 +3322,15 @@ class WorkflowOrchestrator:
                         "workflow": "thin_governed_loop_preview",
                         "phase": "preview",
                         "project_name": params.get("project_name") or "<same managed project_name or route used for this draft call>",
+                        "input_mode": "provided",
                         "thin_loop_inputs": "<generated_input_bundle>",
+                    },
+                    "copy_paste_next_request_shape": {
+                        "field": "next_request_payload",
+                        "description": (
+                            "Use result.next_request_payload directly as the next run_mcp_workflow "
+                            "arguments after reviewing and editing generated_input_bundle."
+                        ),
                     },
                     "authority_note": (
                         "Draft generation is read-only input preparation; it does not run the "

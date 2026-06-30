@@ -88,7 +88,12 @@
 }
 ```
 
-然后把返回的 `result.generated_input_bundle` 原样回填：
+然后检查返回的 `result.generated_input_bundle`。如果内容无误，下一步优先直接使用
+`result.next_request_payload` 作为新的 `run_mcp_workflow` 参数，不需要手工重拼四个对象。
+
+返回里也会保留等价的 `result.copy_paste_next_request`，用于需要复制整段 payload 的界面。
+
+等价展开形状如下：
 
 ```json
 {
@@ -97,6 +102,7 @@
     "workflow": "thin_governed_loop_preview",
     "phase": "preview",
     "project_name": "colameta-self-dev",
+    "input_mode": "provided",
     "thin_loop_inputs": "<generated_input_bundle>"
   }
 }

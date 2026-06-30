@@ -179,12 +179,24 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert "allowed_files" in draft_output.result["generated_input_bundle_summary"]["seed_fields_applied"]
         assert draft_output.result["generated_input_bundle_summary"]["seed_fields_ignored"] == ["unknown_seed_field"]
         assert draft_output.result["generated_input_bundle_summary"]["seed_fields_unknown"] == ["unknown_seed_field"]
+        assert draft_output.result["generated_input_bundle_summary"]["copy_paste_field"] == "next_request_payload"
         assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["thin_loop_inputs"] == "<generated_input_bundle>"
+        assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["input_mode"] == "provided"
+        assert (
+            draft_output.result["generated_input_bundle_summary"]["copy_paste_next_request_shape"]["field"]
+            == "next_request_payload"
+        )
         assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["project_name"] == (
             "<same managed project_name or route used for this draft call>"
         )
         assert draft_output.result["forbidden_authority_outputs"]["executor_dispatch_authorized"] is False
         bundle = draft_output.result["generated_input_bundle"]
+        next_request_payload = draft_output.result["next_request_payload"]
+        assert draft_output.result["copy_paste_next_request"] == next_request_payload
+        assert next_request_payload["workflow"] == "thin_governed_loop_preview"
+        assert next_request_payload["phase"] == "preview"
+        assert next_request_payload["input_mode"] == "provided"
+        assert next_request_payload["thin_loop_inputs"] == bundle
         assert bundle["input_mode"] == "provided"
         assert isinstance(bundle["current_head"], str)
         assert bundle["current_head"]
@@ -212,7 +224,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
 
         provided_output = orchestrator.handle(
             "thin_governed_loop_preview",
-            {"phase": "preview", "thin_loop_inputs": bundle},
+            next_request_payload,
         )
 
         assert provided_output.ok is True
