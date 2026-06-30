@@ -273,7 +273,7 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
         feedback_preview,
         {"mapping_policy_id": "stage-06-v6-4-decision-mapping"},
     )
-    decision_adapter = adapt_review_decision_value(review_feedback["review_decision_value"])
+    decision_adapter = adapt_review_decision_value(str(review_feedback.get("review_decision_value") or "UNKNOWN"))
 
     stage_results = {
         "stage_03_import": {

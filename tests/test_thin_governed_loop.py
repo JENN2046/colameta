@@ -60,6 +60,17 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert result["requested_commander_action"] == "ask_whether_to_return_for_clarification"
         assert result["delivery_state_accepted"] is False
 
+    def test_stage_3_6_thin_loop_fails_closed_on_missing_review_value(self) -> None:
+        inputs = example_stage_3_6_inputs()
+        inputs["review_feedback"] = copy.deepcopy(inputs["review_feedback"])
+        del inputs["review_feedback"]["review_decision_value"]
+
+        result = run_stage_3_6_thin_governed_loop(inputs)
+
+        assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        assert any(item["field"] == "review_decision_adapter" for item in result["blockers"])
+        assert result["delivery_state_accepted"] is False
+
 
 if __name__ == "__main__":
     unittest.main()
