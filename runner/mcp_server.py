@@ -66,6 +66,7 @@ MCP_HARD_TOOL_RESULT_CHARS = 75000
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_agent_consumer_contract",
+    "get_service_entry_profile",
     "get_web_gpt_service_entrypoint",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
@@ -270,6 +271,7 @@ class MCPPlanningBridgeServer:
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
+            "get_service_entry_profile": self._tool_get_service_entry_profile,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
@@ -351,6 +353,25 @@ class MCPPlanningBridgeServer:
                 input_schema={
                     "type": "object",
                     "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_service_entry_profile",
+                description=(
+                    f"[{self.project_hint}] 按 profile_id 读取服务入口画像。"
+                    "用于网页 GPT、本地 Codex、Reviewer、Planner、Source Observer 等 agent 选择自己的最小进入路径。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "profile_id": {
+                            "type": "string",
+                            "description": "可选。为空时返回默认 web_gpt_commander 和可选 profile 列表。",
+                        }
+                    },
                     "required": [],
                     "additionalProperties": False,
                 },
@@ -3407,6 +3428,7 @@ class MCPPlanningBridgeServer:
     def _actions_readonly_tools(self) -> set[str]:
         return {
             "get_agent_consumer_contract",
+            "get_service_entry_profile",
             "get_web_gpt_service_entrypoint",
             "get_stable_promotion_readiness",
             "get_runtime_version_status",
@@ -4848,6 +4870,40 @@ class MCPPlanningBridgeServer:
             },
         ]
 
+    def _tool_get_service_entry_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        profiles = self._service_entry_profiles()
+        profile_by_id = {item["profile_id"]: item for item in profiles if isinstance(item.get("profile_id"), str)}
+        raw_profile_id = params.get("profile_id")
+        if raw_profile_id is None or raw_profile_id == "":
+            profile_id = "web_gpt_commander"
+        elif isinstance(raw_profile_id, str):
+            profile_id = raw_profile_id.strip()
+        else:
+            raise MCPToolInputError(
+                "INVALID_SERVICE_ENTRY_PROFILE",
+                "profile_id 必须是字符串。",
+                {"available_profile_ids": list(profile_by_id)},
+            )
+        if profile_id not in profile_by_id:
+            raise MCPToolInputError(
+                "UNKNOWN_SERVICE_ENTRY_PROFILE",
+                "未知服务入口画像。",
+                {"profile_id": profile_id, "available_profile_ids": list(profile_by_id)},
+            )
+        selected = profile_by_id[profile_id]
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "profile_id": profile_id,
+            "default_profile_id": "web_gpt_commander",
+            "available_profile_ids": list(profile_by_id),
+            "selected_profile": selected,
+            "recommended_next_reads": selected.get("first_reads", []),
+            "authority": selected.get("default_authority"),
+            "write_boundary": selected.get("write_boundary"),
+        }
+
     def _tool_get_agent_consumer_contract(self, _: dict[str, Any]) -> dict[str, Any]:
         visible_tools = self._visible_tool_names()
         return {
@@ -4915,6 +4971,7 @@ class MCPPlanningBridgeServer:
             "recommended_first_reads": [
                 {"tool": "list_registered_projects", "why": "Discover allowed project_name values."},
                 {"tool": "get_agent_consumer_contract", "why": "Load this consumer contract."},
+                {"tool": "get_service_entry_profile", "why": "Select a consumer-specific entry profile."},
                 {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
@@ -4966,6 +5023,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_agent_consumer_contract",
                     "arguments": {},
                     "why": "确认统一 envelope、project_name 路由、只读边界和错误处理规则。",
+                },
+                {
+                    "step": "select_service_entry_profile",
+                    "tool": "get_service_entry_profile",
+                    "arguments": {"profile_id": "web_gpt_commander"},
+                    "why": "按当前消费者角色读取最小进入路径，不把其他 agent 的路径混进来。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -5051,8 +5114,9 @@ class MCPPlanningBridgeServer:
             },
             "web_gpt_handoff_prompt": (
                 "Start by calling list_registered_projects, get_agent_consumer_contract, "
-                "then get_web_gpt_service_entrypoint, get_stable_promotion_readiness, "
-                "and analyze_project_state with the selected project_name. "
+                "get_service_entry_profile with profile_id=web_gpt_commander, then "
+                "get_web_gpt_service_entrypoint, get_stable_promotion_readiness, and "
+                "analyze_project_state with the selected project_name. "
                 "For thin governed loop work, "
                 "use run_mcp_workflow input_mode=draft, review result.generated_input_bundle, "
                 "then send result.next_request_payload directly. Treat all outputs as evidence unless Commander "

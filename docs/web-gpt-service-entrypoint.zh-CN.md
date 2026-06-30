@@ -57,10 +57,11 @@
 
 1. `list_registered_projects`
 2. `get_agent_consumer_contract`
-3. `get_web_gpt_service_entrypoint`
-4. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
-5. `analyze_project_state`，必须传入已登记的 `project_name`
-6. `manage_workflow_run`，用 `action=list` 查看最近证据
+3. `get_service_entry_profile`，传入 `profile_id=web_gpt_commander`
+4. `get_web_gpt_service_entrypoint`
+5. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
+6. `analyze_project_state`，必须传入已登记的 `project_name`
+7. `manage_workflow_run`，用 `action=list` 查看最近证据
 
 网页端 GPT 应选择 `service_entry_profiles` 里的 `web_gpt_commander` 画像。这个画像的意思是：网页 GPT 可以负责读服务入口、整理 payload、向 Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。
 

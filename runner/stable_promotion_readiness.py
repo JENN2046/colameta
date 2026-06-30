@@ -13,6 +13,7 @@ DEFAULT_STABLE_RUNTIME_DIR = "/home/jenn/tools/colameta"
 REQUIRED_VISIBLE_TOOLS = (
     "get_web_gpt_service_entrypoint",
     "get_agent_consumer_contract",
+    "get_service_entry_profile",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "list_registered_projects",
@@ -295,6 +296,7 @@ def _tool_support(
         "missing_workflows": missing_workflows,
         "web_gpt_entrypoint_visible": "get_web_gpt_service_entrypoint" in visible,
         "agent_consumer_contract_visible": "get_agent_consumer_contract" in visible,
+        "service_entry_profile_visible": "get_service_entry_profile" in visible,
         "stable_readiness_tool_visible": "get_stable_promotion_readiness" in visible,
         "thin_governed_loop_preview_supported": "thin_governed_loop_preview" in workflows,
     }

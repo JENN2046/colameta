@@ -77,12 +77,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         tool_defs = {tool.name: tool for tool in server.tool_defs}
 
         assert "get_agent_consumer_contract" in tool_defs
+        assert "get_service_entry_profile" in tool_defs
         assert "get_web_gpt_service_entrypoint" in tool_defs
         assert "get_stable_promotion_readiness" in tool_defs
         assert "get_agent_consumer_contract" in server._visible_tool_names()
+        assert "get_service_entry_profile" in server._visible_tool_names()
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_service_entry_profile", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
 
@@ -109,8 +112,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert profiles["reviewer_agent"]["default_authority"] == "review_only"
         assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
         assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
-        assert data["entry_sequence"][2]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][3]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
+        assert data["entry_sequence"][3]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][4]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
@@ -155,6 +159,33 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert profiles["planner_agent"]["write_boundary"].endswith("review acceptance.")
         assert profiles["source_observer"]["primary_workflow"] == "source_observation"
         assert data["thin_loop_consumer_rule"]["provided_mode"].startswith("Review result.generated_input_bundle")
+
+    def test_service_entry_profile_selector_defaults_and_fails_closed(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+
+        default_result = server.call_tool_for_agent("get_service_entry_profile", {})
+
+        assert default_result["ok"] is True
+        assert default_result["tool"] == "get_service_entry_profile"
+        default_data = default_result["data"]
+        assert default_data["ok"] is True
+        assert default_data["read_only"] is True
+        assert default_data["side_effects"] is False
+        assert default_data["profile_id"] == "web_gpt_commander"
+        assert default_data["selected_profile"]["consumer_kind"] == "web_gpt"
+        assert default_data["recommended_next_reads"][0]["tool"] == "list_registered_projects"
+
+        reviewer_result = server.call_tool_for_agent("get_service_entry_profile", {"profile_id": "reviewer_agent"})
+
+        assert reviewer_result["ok"] is True
+        assert reviewer_result["data"]["selected_profile"]["default_authority"] == "review_only"
+
+        invalid_result = server.call_tool_for_agent("get_service_entry_profile", {"profile_id": "unknown"})
+
+        assert invalid_result["ok"] is False
+        assert invalid_result["error_code"] == "UNKNOWN_SERVICE_ENTRY_PROFILE"
+        assert "reviewer_agent" in invalid_result["details"]["available_profile_ids"]
 
     def test_thin_loop_draft_next_payload_preserves_routed_project_name(self) -> None:
         project = self.make_git_checkout(managed=True)
