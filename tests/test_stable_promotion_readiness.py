@@ -71,8 +71,11 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert result["stable_promotion_review_candidate"] is True
         assert result["stable_production_ready"] is False
         assert result["local_blockers"] == []
+        assert result["candidate_artifact_manifest"]["available"] is True
+        assert result["candidate_artifact_manifest"]["file_count"] == 1
+        assert len(result["candidate_artifact_manifest"]["manifest_sha256"]) == 64
         assert {item["code"] for item in result["external_required_before_stable_replacement"]} == {
-            "PROMOTION_ARTIFACT_NOT_BOUND",
+            "PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED",
             "ROLLBACK_REHEARSAL_NOT_PROVEN",
             "COMMANDER_STABLE_REPLACEMENT_AUTHORIZATION_ABSENT",
         }

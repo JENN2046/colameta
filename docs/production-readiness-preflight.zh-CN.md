@@ -25,6 +25,7 @@
 - 网页端 GPT 所需 MCP 入口工具是否可见
 - `thin_governed_loop_preview` 是否可用
 - 稳定运行目录 `/home/jenn/tools/colameta` 是否存在、是否有可证明 Git HEAD
+- 候选 tracked-file artifact manifest 摘要与 `manifest_sha256`
 - `local_blockers`
 - `warnings`
 - 稳定替换前仍需要的外部材料
@@ -37,11 +38,22 @@
 
 它仍然需要：
 
-- artifact manifest 与 sha256
+- 把 `candidate_artifact_manifest` 摘要与 sha256 写入晋升材料
 - rollback / rehearsal 证明
 - Commander 对稳定服务替换的精确授权
 
 `stable_production_ready` 当前必须保持 `false`，因为只读工具不能替代部署授权、发布物证明或 rollback receipt。
+
+## candidate_artifact_manifest
+
+`candidate_artifact_manifest` 是服务现场计算的只读候选摘要：
+
+- 只覆盖 Git tracked files
+- 不包含 `.git`、`.venv`、build artifacts、ignored runtime state、untracked files
+- 返回 `manifest_sha256`、tracked path list hash、文件数量和总字节数
+- 默认不把完整文件条目塞进 MCP 响应，避免输出臃肿
+
+它能把候选版本推进到“可哈希绑定”的审查状态，但还不是已经持久化的 release artifact。正式稳定替换前，仍要把该摘要写入晋升材料，并完成 rehearsal / rollback 证明。
 
 ## local_blockers
 
