@@ -227,6 +227,14 @@ def _read_process_cmdline(pid: int) -> str | None:
     return ServiceLifecycleStore.read_process_cmdline(pid)
 
 
+def _read_process_cmdline_parts(pid: int) -> list[str] | None:
+    return ServiceLifecycleStore.read_process_cmdline_parts(pid)
+
+
+def _iter_process_ids() -> list[int]:
+    return ServiceLifecycleStore.iter_process_ids()
+
+
 def _service_pid_matches_metadata(pid: int, metadata: dict[str, object]) -> bool | None:
     return ServiceLifecycleStore.pid_matches_metadata(
         pid,
@@ -278,6 +286,135 @@ def _probe_service_health(metadata: dict[str, object]) -> tuple[str | None, str 
             else "starting"
         )
     return web_state, mcp_state
+
+
+def _metadata_matches_project_path(metadata: dict[str, object], project_path: str) -> bool:
+    root = metadata.get("project_root")
+    if not isinstance(root, str) or not root.strip():
+        return False
+    try:
+        return os.path.realpath(_resolve_path(root)) == os.path.realpath(_resolve_path(project_path))
+    except Exception:
+        return False
+
+
+def _option_value(tokens: list[str], flag: str, default: str) -> str:
+    try:
+        idx = tokens.index(flag)
+    except ValueError:
+        return default
+    if idx + 1 >= len(tokens):
+        return default
+    value = tokens[idx + 1]
+    return value if isinstance(value, str) and value else default
+
+
+def _option_int(tokens: list[str], flag: str, default: int) -> int:
+    raw = _option_value(tokens, flag, str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _project_token_matches(token: object, project_path: str) -> bool:
+    if not isinstance(token, str) or not token.strip():
+        return False
+    try:
+        return os.path.realpath(_resolve_path(token)) == os.path.realpath(_resolve_path(project_path))
+    except Exception:
+        return False
+
+
+def _metadata_from_colameta_service_cmdline(
+    *,
+    pid: int,
+    project_path: str,
+    cmdline_parts: list[str],
+) -> dict[str, object] | None:
+    for idx, token in enumerate(cmdline_parts):
+        if token == "serve" and idx + 1 < len(cmdline_parts) and _project_token_matches(cmdline_parts[idx + 1], project_path):
+            args = cmdline_parts[idx + 2:]
+            enable_web = "--no-web" not in args
+            enable_mcp = "--no-mcp" not in args
+            web_host = _option_value(args, "--web-host", DEFAULT_WEB_HOST)
+            web_port = _option_int(args, "--web-port", 8799)
+            mcp_host = _option_value(args, "--mcp-host", DEFAULT_MCP_HOST)
+            mcp_port = _option_int(args, "--mcp-port", 8765)
+            return {
+                "pid": pid,
+                "project_root": _resolve_path(project_path),
+                "web_host": web_host,
+                "web_port": web_port,
+                "mcp_host": mcp_host,
+                "mcp_port": mcp_port,
+                "web_url": _web_console_url(web_host, web_port) if enable_web else None,
+                "mcp_url": _mcp_endpoint_url(mcp_host, mcp_port) if enable_mcp else None,
+                "enable_web": enable_web,
+                "enable_mcp": enable_mcp,
+                "log_path": None,
+                "discovered_from_process_table": True,
+                "register_as_selected": "--no-register-selected" not in args,
+                "service_child": "--service-child" in args,
+                "command_kind": "serve",
+            }
+        if (
+            token == "mcp-http-server"
+            and idx + 1 < len(cmdline_parts)
+            and _project_token_matches(cmdline_parts[idx + 1], project_path)
+        ):
+            args = cmdline_parts[idx + 2:]
+            mcp_host = _option_value(args, "--host", DEFAULT_MCP_HOST)
+            mcp_port = _option_int(args, "--port", 8765)
+            return {
+                "pid": pid,
+                "project_root": _resolve_path(project_path),
+                "web_host": DEFAULT_WEB_HOST,
+                "web_port": 0,
+                "mcp_host": mcp_host,
+                "mcp_port": mcp_port,
+                "web_url": None,
+                "mcp_url": _mcp_endpoint_url(mcp_host, mcp_port),
+                "enable_web": False,
+                "enable_mcp": True,
+                "log_path": None,
+                "discovered_from_process_table": True,
+                "register_as_selected": "--no-register-selected" not in args,
+                "service_child": "--service-child" in args,
+                "command_kind": "mcp-http-server",
+            }
+    return None
+
+
+def _service_discovery_sort_key(metadata: dict[str, object]) -> tuple[int, int, int, int]:
+    combined_service = bool(metadata.get("enable_web")) and bool(metadata.get("enable_mcp"))
+    return (
+        1 if metadata.get("register_as_selected") else 0,
+        1 if metadata.get("service_child") else 0,
+        1 if combined_service else 0,
+        int(metadata.get("pid", 0) or 0),
+    )
+
+
+def _discover_running_service_metadata(project_path: str) -> dict[str, object] | None:
+    requested = _resolve_path(project_path)
+    candidates: list[dict[str, object]] = []
+    for pid in _iter_process_ids():
+        if not _is_pid_running(pid):
+            continue
+        parts = _read_process_cmdline_parts(pid)
+        if not parts:
+            continue
+        metadata = _metadata_from_colameta_service_cmdline(
+            pid=pid,
+            project_path=requested,
+            cmdline_parts=parts,
+        )
+        if metadata is not None:
+            candidates.append(metadata)
+    if not candidates:
+        return None
+    return max(candidates, key=_service_discovery_sort_key)
 
 
 def _service_health_ready(metadata: dict[str, object], web_state: str | None, mcp_state: str | None) -> bool:
@@ -1179,6 +1316,21 @@ def _run_service_status(args: list[str]) -> int:
         project_path = _default_service_project_root()
     metadata = _read_service_metadata(project_path)
     if metadata is None:
+        discovered = _discover_running_service_metadata(project_path)
+        if discovered is not None:
+            web_state, mcp_state = _probe_service_health(discovered)
+            cli_output.print_service_status_summary(
+                project_path=project_path,
+                pid=int(discovered.get("pid", 0) or 0),
+                state="running",
+                web_url=str(discovered.get("web_url") or "") or None,
+                web_state=web_state,
+                mcp_url=str(discovered.get("mcp_url") or "") or None,
+                mcp_state=mcp_state,
+                log_path=None,
+                stderr=sys.stderr,
+            )
+            return 0
         cli_output.print_service_status_summary(
             project_path=project_path,
             pid=None,
@@ -1192,7 +1344,23 @@ def _run_service_status(args: list[str]) -> int:
         )
         return 1
     pid = int(metadata.get("pid", 0) or 0)
-    if not _is_pid_running(pid):
+    metadata_project_matches = _metadata_matches_project_path(metadata, project_path)
+    if not metadata_project_matches or not _is_pid_running(pid):
+        discovered = _discover_running_service_metadata(project_path)
+        if discovered is not None:
+            web_state, mcp_state = _probe_service_health(discovered)
+            cli_output.print_service_status_summary(
+                project_path=project_path,
+                pid=int(discovered.get("pid", 0) or 0),
+                state="running",
+                web_url=str(discovered.get("web_url") or "") or None,
+                web_state=web_state,
+                mcp_url=str(discovered.get("mcp_url") or "") or None,
+                mcp_state=mcp_state,
+                log_path=None,
+                stderr=sys.stderr,
+            )
+            return 0
         web_state, mcp_state = _probe_service_health(metadata)
         cli_output.print_service_status_summary(
             project_path=project_path,

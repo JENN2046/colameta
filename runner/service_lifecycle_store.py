@@ -96,6 +96,11 @@ class ServiceLifecycleStore:
 
     @staticmethod
     def read_process_cmdline(pid: int) -> str | None:
+        parts = ServiceLifecycleStore.read_process_cmdline_parts(pid)
+        return " ".join(parts) if parts else None
+
+    @staticmethod
+    def read_process_cmdline_parts(pid: int) -> list[str] | None:
         if pid <= 0:
             return None
         try:
@@ -104,7 +109,7 @@ class ServiceLifecycleStore:
                     raw = f.read()
                 parts = raw.rstrip(b"\x00").split(b"\x00")
                 decoded = [p.decode(sys.getfilesystemencoding(), errors="replace") for p in parts if p]
-                return " ".join(decoded) if decoded else None
+                return decoded if decoded else None
             elif sys.platform == "darwin":
                 result = subprocess.run(
                     ["ps", "-p", str(pid), "-o", "command="],
@@ -114,11 +119,41 @@ class ServiceLifecycleStore:
                 )
                 if result.returncode != 0 or not result.stdout.strip():
                     return None
-                return result.stdout.strip()
+                return result.stdout.strip().split()
             else:
                 return None
         except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
             return None
+
+    @staticmethod
+    def iter_process_ids() -> list[int]:
+        if sys.platform == "linux":
+            try:
+                return sorted(
+                    int(name)
+                    for name in os.listdir("/proc")
+                    if name.isdigit()
+                )
+            except OSError:
+                return []
+        if sys.platform == "darwin":
+            try:
+                result = subprocess.run(
+                    ["ps", "-axo", "pid="],
+                    capture_output=True,
+                    timeout=5,
+                    text=True,
+                )
+            except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+                return []
+            pids: list[int] = []
+            for line in result.stdout.splitlines():
+                try:
+                    pids.append(int(line.strip()))
+                except ValueError:
+                    continue
+            return sorted(pids)
+        return []
 
     @staticmethod
     def pid_matches_metadata(
