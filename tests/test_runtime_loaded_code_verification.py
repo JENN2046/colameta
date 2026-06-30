@@ -4,8 +4,10 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+import runner.runtime_observability as runtime_observability
 from runner.runtime_observability import (
     get_runtime_version_status,
     loaded_runner_module_fingerprints,
@@ -169,6 +171,109 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert status["side_effects"] is False
         self.assert_no_forbidden_runtime_mutation_fields(status)
 
+    def test_installed_package_matching_project_checkout_clears_reload_verification(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages"
+        files = {
+            "runner/runtime_observability.py": "loaded = 'runtime'\n",
+            "scripts/runner_cli.py": "loaded = 'cli'\n",
+        }
+        for relative_path, content in files.items():
+            project_file = project / relative_path
+            project_file.parent.mkdir(parents=True, exist_ok=True)
+            project_file.write_text(content, encoding="utf-8")
+            installed_file = installed_root / relative_path
+            installed_file.parent.mkdir(parents=True, exist_ok=True)
+            installed_file.write_text(content, encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, list(files))
+        loaded_fingerprints = self.module_fingerprint(
+            installed_root / "runner/runtime_observability.py",
+            module_name="runner.runtime_observability",
+        )
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                status = get_runtime_version_status(
+                    str(project),
+                    loaded_runtime_head="",
+                    loaded_module_fingerprints=loaded_fingerprints,
+                )
+
+        assert status["restart_needed_state"] == "unknown"
+        assert status["runtime_loaded_code_stale"] is False
+        assert status["reload_needed_for_verification"] is False
+        assert status["reload_awareness_reason"] == "installed_package_matches_project_checkout"
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "match"
+        assert package["matches_project_checkout"] is True
+        assert package["checked_file_count"] == len(files)
+        assert package["mismatched_file_count"] == 0
+
+    def test_installed_package_mismatch_keeps_reload_verification_blocked(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages-mismatch"
+        relative_path = "runner/runtime_observability.py"
+        project_file = project / relative_path
+        project_file.parent.mkdir(parents=True, exist_ok=True)
+        project_file.write_text("loaded = 'project'\n", encoding="utf-8")
+        installed_file = installed_root / relative_path
+        installed_file.parent.mkdir(parents=True, exist_ok=True)
+        installed_file.write_text("loaded = 'installed'\n", encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, [relative_path])
+        loaded_fingerprints = self.module_fingerprint(installed_file)
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                status = get_runtime_version_status(
+                    str(project),
+                    loaded_runtime_head="",
+                    loaded_module_fingerprints=loaded_fingerprints,
+                )
+
+        assert status["runtime_loaded_code_stale"] is None
+        assert status["reload_needed_for_verification"] is True
+        assert status["reload_awareness_reason"] == "unknown_runtime_or_checkout_head"
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "mismatch"
+        assert package["matches_project_checkout"] is False
+        assert package["mismatched_file_count"] == 1
+
+    def test_installed_package_match_does_not_clear_unverified_loaded_modules(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages-unverified"
+        relative_path = "runner/runtime_observability.py"
+        for root in (project, installed_root):
+            target = root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("loaded = 'same'\n", encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, [relative_path])
+        loaded_fingerprints = {
+            "runner.runtime_observability": {
+                "module_name": "runner.runtime_observability",
+                "source_path": str(installed_root / relative_path),
+                "fingerprint_available": False,
+                "captured_at_process_start": True,
+            }
+        }
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                status = get_runtime_version_status(
+                    str(project),
+                    loaded_runtime_head="",
+                    loaded_module_fingerprints=loaded_fingerprints,
+                )
+
+        assert status["runtime_loaded_code_stale"] is None
+        assert status["reload_needed_for_verification"] is True
+        assert status["reload_awareness_reason"] == "loaded_module_fingerprint_unknown"
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "match"
+        assert package["matches_project_checkout"] is True
+
     def test_no_runtime_or_external_mutation_authority_is_exposed(self) -> None:
         project = self.make_git_checkout(HEAD_A)
         source_path = self.make_module_file("loaded = 'same'\n")
@@ -241,6 +346,20 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         elif isinstance(value, list):
             for nested in value:
                 self.assert_no_forbidden_runtime_mutation_fields(nested)
+
+    def fake_distribution(self, root: Path, files: list[str]):
+        class FakeDistribution:
+            version = "0.1.2"
+
+            def __init__(self, root_path: Path, relative_files: list[str]):
+                self._root = root_path
+                self.files = [Path(item) for item in relative_files]
+
+            def locate_file(self, path: object) -> Path:
+                text = str(path)
+                return self._root / text if text else self._root
+
+        return FakeDistribution(root, files)
 
 
 if __name__ == "__main__":

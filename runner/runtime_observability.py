@@ -4,6 +4,7 @@ import os
 import re
 import hashlib
 import sys
+import importlib.metadata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,7 +83,13 @@ def get_runtime_version_status(
     project_head = _clean_head(project.get("head"))
     restart_needed, reason = _restart_needed(loaded_head, project_head)
     module_verification = verify_loaded_module_sources(loaded_module_fingerprints)
-    reload_awareness = _reload_awareness(loaded_head, project_head, module_verification)
+    installed_package_verification = verify_installed_package_against_project(project_root)
+    reload_awareness = _reload_awareness(
+        loaded_head,
+        project_head,
+        module_verification,
+        installed_package_verification,
+    )
 
     return {
         "ok": True,
@@ -119,6 +126,7 @@ def get_runtime_version_status(
         "changed_loaded_modules": module_verification["changed_loaded_modules"],
         "possibly_stale_surfaces": reload_awareness["possibly_stale_surfaces"],
         "loaded_module_verification": module_verification,
+        "installed_package_verification": installed_package_verification,
     }
 
 
@@ -220,24 +228,40 @@ def _reload_awareness(
     loaded_head: str | None,
     project_head: str | None,
     module_verification: dict[str, Any],
+    installed_package_verification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     changed_modules = module_verification.get("changed_loaded_modules")
     unverified_modules = module_verification.get("unverified_loaded_modules")
     module_changed = module_verification.get("loaded_module_source_changed") is True
+    module_verification_complete = module_verification.get("module_fingerprint_verification_complete") is True
+    package_matches_project = (
+        isinstance(installed_package_verification, dict)
+        and installed_package_verification.get("matches_project_checkout") is True
+    )
 
     if module_changed:
         reason = "loaded_module_source_changed"
         stale: bool | None = True
         reload_needed = True
         surfaces = _surfaces_from_modules(changed_modules)
+    elif loaded_head and project_head and loaded_head != project_head:
+        reason = "loaded_head_differs_from_project_head"
+        stale = True
+        reload_needed = True
+        surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
+    elif project_head and package_matches_project and module_verification_complete:
+        reason = "installed_package_matches_project_checkout"
+        stale = False
+        reload_needed = False
+        surfaces = []
+    elif project_head and package_matches_project:
+        reason = "loaded_module_fingerprint_unknown"
+        stale = None
+        reload_needed = True
+        surfaces = _surfaces_from_modules(unverified_modules) or list(_ALL_POSSIBLY_STALE_SURFACES)
     elif not loaded_head or not project_head:
         reason = "unknown_runtime_or_checkout_head"
         stale = None
-        reload_needed = True
-        surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
-    elif loaded_head != project_head:
-        reason = "loaded_head_differs_from_project_head"
-        stale = True
         reload_needed = True
         surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
     elif not module_verification.get("module_fingerprint_verification_complete"):
@@ -256,6 +280,141 @@ def _reload_awareness(
         "reload_needed_for_verification": reload_needed,
         "reload_awareness_reason": reason,
         "possibly_stale_surfaces": surfaces,
+    }
+
+
+def verify_installed_package_against_project(project_root: str | None) -> dict[str, Any]:
+    project = git_checkout_metadata(project_root)
+    project_root_clean = project.get("project_root") if isinstance(project.get("project_root"), str) else None
+    base = {
+        "source": "installed_package_project_checkout_comparison",
+        "package_name": "colameta",
+        "runtime_source_root": LOADED_SOURCE_ROOT,
+        "project_root": project_root_clean,
+        "project_head": _clean_head(project.get("head")),
+        "read_only": True,
+    }
+    if not project_root_clean or not os.path.isdir(project_root_clean):
+        return {
+            **base,
+            "verification_status": "unverified",
+            "matches_project_checkout": None,
+            "unavailable_reason": "missing_project_root",
+        }
+
+    try:
+        distribution = importlib.metadata.distribution("colameta")
+    except importlib.metadata.PackageNotFoundError:
+        return {
+            **base,
+            "verification_status": "not_installed_package",
+            "matches_project_checkout": None,
+            "unavailable_reason": "distribution_not_found",
+        }
+
+    try:
+        distribution_root = os.path.abspath(str(distribution.locate_file("")))
+        root_common = os.path.commonpath([distribution_root, LOADED_SOURCE_ROOT])
+    except (OSError, ValueError):
+        distribution_root = ""
+        root_common = ""
+    if not distribution_root or root_common != distribution_root:
+        return {
+            **base,
+            "package_version": _distribution_version(distribution),
+            "distribution_root": distribution_root or None,
+            "verification_status": "not_loaded_from_installed_package",
+            "matches_project_checkout": None,
+            "unavailable_reason": "loaded_source_root_outside_distribution",
+        }
+
+    files = list(distribution.files or [])
+    runtime_relative_files = _runtime_distribution_source_files(files)
+    if not runtime_relative_files:
+        return {
+            **base,
+            "package_version": _distribution_version(distribution),
+            "distribution_root": distribution_root,
+            "verification_status": "unverified",
+            "matches_project_checkout": None,
+            "unavailable_reason": "no_runtime_distribution_files",
+        }
+
+    checked_count = 0
+    matched_count = 0
+    mismatched: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    installed_total_size = 0
+    project_total_size = 0
+    installed_digest = hashlib.sha256()
+    project_digest = hashlib.sha256()
+
+    for relative_path in runtime_relative_files:
+        installed_path = os.path.join(distribution_root, relative_path)
+        project_path = os.path.join(project_root_clean, relative_path)
+        installed_fingerprint = _fingerprint_source_file(installed_path)
+        project_fingerprint = _fingerprint_source_file(project_path)
+        if not installed_fingerprint.get("fingerprint_available") or not project_fingerprint.get("fingerprint_available"):
+            unverified.append(
+                {
+                    "path": relative_path,
+                    "installed_available": bool(installed_fingerprint.get("fingerprint_available")),
+                    "project_available": bool(project_fingerprint.get("fingerprint_available")),
+                    "installed_unavailable_reason": installed_fingerprint.get("unavailable_reason"),
+                    "project_unavailable_reason": project_fingerprint.get("unavailable_reason"),
+                }
+            )
+            continue
+        checked_count += 1
+        installed_sha = _clean_sha256(installed_fingerprint.get("sha256"))
+        project_sha = _clean_sha256(project_fingerprint.get("sha256"))
+        installed_size = int(installed_fingerprint.get("size_bytes") or 0)
+        project_size = int(project_fingerprint.get("size_bytes") or 0)
+        installed_total_size += installed_size
+        project_total_size += project_size
+        installed_digest.update(relative_path.encode("utf-8") + b"\0" + str(installed_sha).encode("ascii") + b"\0")
+        project_digest.update(relative_path.encode("utf-8") + b"\0" + str(project_sha).encode("ascii") + b"\0")
+        if installed_sha == project_sha:
+            matched_count += 1
+        else:
+            mismatched.append(
+                {
+                    "path": relative_path,
+                    "installed_sha256": installed_sha,
+                    "project_sha256": project_sha,
+                    "installed_size_bytes": installed_size,
+                    "project_size_bytes": project_size,
+                }
+            )
+
+    if mismatched:
+        verification_status = "mismatch"
+        matches_project_checkout: bool | None = False
+    elif unverified:
+        verification_status = "unverified"
+        matches_project_checkout = None
+    else:
+        verification_status = "match"
+        matches_project_checkout = True
+
+    return {
+        **base,
+        "package_version": _distribution_version(distribution),
+        "distribution_root": distribution_root,
+        "verification_status": verification_status,
+        "matches_project_checkout": matches_project_checkout,
+        "checked_file_count": checked_count,
+        "matched_file_count": matched_count,
+        "mismatched_file_count": len(mismatched),
+        "unverified_file_count": len(unverified),
+        "installed_total_size_bytes": installed_total_size,
+        "project_total_size_bytes": project_total_size,
+        "installed_runtime_files_sha256": installed_digest.hexdigest() if checked_count else None,
+        "project_runtime_files_sha256": project_digest.hexdigest() if checked_count else None,
+        "included_roots": ["adapters", "runner", "schemas", "scripts"],
+        "mismatched_files": mismatched[:20],
+        "unverified_files": unverified[:20],
+        "truncated_mismatch_or_unverified_lists": len(mismatched) > 20 or len(unverified) > 20,
     }
 
 
@@ -373,6 +532,34 @@ def _clean_surfaces(value: Any) -> list[str]:
         if candidate and candidate not in cleaned:
             cleaned.append(candidate)
     return cleaned
+
+
+def _distribution_version(distribution: importlib.metadata.Distribution) -> str | None:
+    try:
+        version = distribution.version
+    except Exception:
+        return None
+    return version if isinstance(version, str) and version.strip() else None
+
+
+def _runtime_distribution_source_files(files: list[Any]) -> list[str]:
+    allowed_roots = {"adapters", "runner", "schemas", "scripts"}
+    result: list[str] = []
+    for file_ref in files:
+        relative_path = str(file_ref).replace("\\", "/").strip("/")
+        if not relative_path or relative_path in result:
+            continue
+        parts = relative_path.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            continue
+        if not parts or parts[0] not in allowed_roots:
+            continue
+        if "__pycache__" in parts:
+            continue
+        if relative_path.endswith((".pyc", ".pyo")):
+            continue
+        result.append(relative_path)
+    return sorted(result)
 
 
 def _clean_source_path(value: Any) -> str | None:
