@@ -168,6 +168,18 @@ class DriftEvidenceSchemaTests(unittest.TestCase):
                 assert "FORBIDDEN_DRIFT_EVIDENCE_AUTHORITY_CLAIM" in {item["code"] for item in result["rejection_reasons"]}
                 assert any(item["claim"] == claim_key for item in result["known_conflicts"])
 
+    def test_plan_adjust_action_claims_fail_closed(self) -> None:
+        for claim_key in ("plan_diff_created", "plan_patch_created", "apply_request_created", "taskbook_mutation_created"):
+            with self.subTest(claim_key=claim_key):
+                pack = example_drift_evidence_pack()
+                pack["plan_adjustment_trigger_conditions"][0][claim_key] = True
+
+                result = validate_drift_evidence_schema(pack)
+
+                assert result["drift_evidence_schema_check_result"] == DRIFT_EVIDENCE_SCHEMA_CHECK_FAILED_CLOSED
+                assert "FORBIDDEN_DRIFT_EVIDENCE_AUTHORITY_CLAIM" in {item["code"] for item in result["rejection_reasons"]}
+                assert any(item["claim"] == claim_key for item in result["known_conflicts"])
+
     def test_result_contract_rejects_truthy_authority_boundary(self) -> None:
         result = validate_drift_evidence_schema(example_drift_evidence_pack())
         mutated = copy.deepcopy(result)
