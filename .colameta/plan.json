@@ -1356,6 +1356,238 @@
         "Do not mark ReviewDecision, GateEvent, Delivery State accepted, or any production readiness state.",
         "Do not broaden the implementation into general network repair or proxy management."
       ]
+    },
+    {
+      "version": "v1.12",
+      "name": "Stage 7 Drift Evidence Schema V1",
+      "description": "Add a fail-closed Stage 7 drift evidence schema and validator without semantic drift judgment, plan mutation, Delivery State transition, executor continuation, commit, or push.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.12.md",
+      "enabled": true,
+      "context_files": [
+        "docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md",
+        "runner/reviewer_drift_questions.py",
+        "runner/reviewer_alignment_questions.py",
+        "runner/review_feedback_schema.py",
+        "runner/commander_decision_request.py"
+      ],
+      "allowed_files": [
+        "runner/drift_evidence_schema.py",
+        "tests/test_drift_evidence_schema.py"
+      ],
+      "forbidden_files": [],
+      "acceptance_commands": [
+        {
+          "command": "python -m compileall runner/drift_evidence_schema.py tests/test_drift_evidence_schema.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "pytest tests/test_drift_evidence_schema.py tests/test_reviewer_drift_questions.py tests/test_review_feedback_schema.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [],
+      "out_of_scope": [
+        "drift evidence pack builder",
+        "automatic semantic drift judgment",
+        "default no-drift result",
+        "Stage 8 plan adjustment preview",
+        "plan patch generation or apply",
+        "Master Taskbook mutation",
+        "Delivery State transition",
+        "ReviewDecision creation",
+        "GateEvent emission",
+        "executor continuation or run",
+        "git commit or push",
+        "stable service replacement"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
+    },
+    {
+      "version": "v1.13",
+      "name": "Stage 7 Drift Evidence Pack Builder V1",
+      "description": "Build the Stage 7 drift evidence pack preview on top of the schema, preserving evidence, questions, risks, and PLAN_ADJUST trigger conditions without making semantic judgments or mutating plan/state.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.13.md",
+      "enabled": true,
+      "context_files": [
+        "docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md",
+        "runner/drift_evidence_schema.py",
+        "runner/audit_package_taskbook_binding.py",
+        "runner/scope_evidence_pack.py",
+        "runner/reviewer_handoff_schema.py",
+        "runner/reviewer_handoff_generator.py",
+        "runner/reviewer_alignment_questions.py",
+        "runner/reviewer_drift_questions.py"
+      ],
+      "allowed_files": [
+        "runner/drift_evidence_schema.py",
+        "runner/drift_evidence_pack_builder.py",
+        "tests/test_drift_evidence_schema.py",
+        "tests/test_drift_evidence_pack_builder.py"
+      ],
+      "forbidden_files": [],
+      "acceptance_commands": [
+        {
+          "command": "python -m compileall runner/drift_evidence_schema.py runner/drift_evidence_pack_builder.py tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "pytest tests/test_drift_evidence_schema.py tests/test_drift_evidence_pack_builder.py tests/test_reviewer_drift_questions.py tests/test_reviewer_alignment_questions.py tests/test_audit_package_taskbook_binding.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [],
+      "out_of_scope": [
+        "Stage 8 plan adjustment request or preview",
+        "plan patch generation or apply",
+        "automatic semantic drift judgment",
+        "default no-drift result",
+        "Reviewer answer fabrication",
+        "Master Taskbook mutation",
+        "Delivery State transition",
+        "ReviewDecision creation",
+        "GateEvent emission",
+        "executor continuation or run",
+        "git commit or push",
+        "MCP/Web integration",
+        "stable service replacement"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
+    },
+    {
+      "version": "v1.14",
+      "name": "Stage 8 Plan Adjustment Request Preview V1",
+      "description": "Add a preview-only Stage 8 plan adjustment request surface for PLAN_ADJUST, explicitly blocking apply, plan mutation, master-goal mutation, Reviewer bypass, executor continuation, commit, and push.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.14.md",
+      "enabled": true,
+      "context_files": [
+        "docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md",
+        "runner/review_feedback_classification.py",
+        "runner/commander_decision_request.py",
+        "runner/review_feedback_validator.py",
+        "runner/review_decision_adapter.py",
+        "runner/master_taskbook_mutation_gate.py",
+        "runner/planning_bridge.py",
+        "runner/plan_patch_workflow.py"
+      ],
+      "allowed_files": [
+        "runner/plan_adjustment_preview.py",
+        "tests/test_plan_adjustment_preview.py"
+      ],
+      "forbidden_files": [],
+      "acceptance_commands": [
+        {
+          "command": "python -m compileall runner/plan_adjustment_preview.py tests/test_plan_adjustment_preview.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "pytest tests/test_plan_adjustment_preview.py tests/test_commander_decision_request.py tests/test_review_feedback_classification.py tests/test_master_taskbook_mutation_gate.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [],
+      "out_of_scope": [
+        "plan adjustment apply route",
+        "PlanningBridge.apply_plan_patch call",
+        "PlanPatchAutoApplyService use",
+        "plan/state mutation",
+        "Master Taskbook mutation",
+        "stage scope expansion",
+        "Reviewer bypass",
+        "ReviewDecision creation",
+        "GateEvent emission",
+        "Delivery State transition",
+        "executor continuation or run",
+        "git commit or push",
+        "MCP/Web integration",
+        "stable service replacement"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
+    },
+    {
+      "version": "v1.15",
+      "name": "Stage 9 Next Action Continue Readiness Report V1",
+      "description": "Add a read-only Stage 9 next-action and continue readiness report that explains whether continuation is allowed, missing evidence or gates, no-pending-version noop state, and forbidden side effects without calling continue, executor, commit, or push.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.15.md",
+      "enabled": true,
+      "context_files": [
+        "docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md",
+        "runner/final_version_closeout.py",
+        "runner/continue_version_workflow.py",
+        "runner/state_machine.py",
+        "runner/state_store.py",
+        "runner/workflow_engine.py",
+        "runner/review_decision_adapter.py",
+        "runner/mcp_executor_workflow.py"
+      ],
+      "allowed_files": [
+        "runner/controlled_continue_readiness.py",
+        "tests/test_controlled_continue_readiness.py"
+      ],
+      "forbidden_files": [],
+      "acceptance_commands": [
+        {
+          "command": "python -m compileall runner/controlled_continue_readiness.py tests/test_controlled_continue_readiness.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "pytest tests/test_controlled_continue_readiness.py tests/test_final_version_closeout.py tests/test_review_decision_adapter.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [],
+      "out_of_scope": [
+        "ContinueNextVersionService call",
+        "StateMachine.continue_next_version call",
+        "state mutation",
+        "executor preflight or run",
+        "automatic continue loop",
+        "ReviewDecision creation",
+        "GateEvent emission",
+        "Delivery State transition",
+        "PLAN_ADJUST handling beyond blocked pointer to Stage 8",
+        "plan patch generation or apply",
+        "git commit or push",
+        "deploy release or package publish",
+        "MCP/Web integration",
+        "stable service replacement"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
