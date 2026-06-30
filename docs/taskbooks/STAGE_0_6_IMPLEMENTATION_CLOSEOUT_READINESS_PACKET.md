@@ -28,9 +28,9 @@ stage_0_6_implementation_closeout_readiness:
     This packet is stored by a later local commit. Any hash-specific push
     authorization must bind the current observed HEAD at authorization time,
     not only the implementation closeout generation HEAD recorded here.
-  local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
-  local_ahead_origin_main_from_local_refs: 81
-  local_behind_origin_main_from_local_refs: 0
+  generation_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
+  generation_ahead_origin_main_from_local_refs: 81
+  generation_behind_origin_main_from_local_refs: 0
   live_remote_status_not_validated: true
   worktree_status_at_generation: clean
   push_authority: false
@@ -47,6 +47,36 @@ stage_0_6_implementation_closeout_readiness:
 `Implementation Closeout Readiness Packet` means this is a push-decision
 preflight evidence packet for the already-local implementation route. It is not
 itself a push authorization.
+
+---
+
+## 0. Commander Quick Read
+
+```yaml id="commander-quick-read"
+commander_quick_read:
+  current_decision: decide_whether_to_prepare_final_non_force_push_authorization
+  local_closeout_status: Stage 1-6 implementation evidence recorded and tests passed
+  latest_validated_test_result: "505 tests passed via .venv/bin/python -m unittest discover -s tests"
+  worktree_requirement_for_push: clean_at_final_authorization_time
+  final_push_facts_required:
+    - current_HEAD_observed_immediately_before_authorization
+    - current_origin_main_local_tracking_ref_observed_immediately_before_authorization
+    - current_ahead_behind_from_local_refs_observed_immediately_before_authorization
+  generation_facts_are_not_final_push_facts: true
+  still_missing_for_push_authority: explicit Commander confirmation
+  must_not_do:
+    - force_push
+    - fetch_or_pull_without_separate_authorization
+    - executor_run
+    - route_transition
+    - delivery_state_transition
+```
+
+Read this packet as a handoff surface: first confirm that the local
+implementation closeout is coherent, then decide whether to issue a fresh
+hash-specific push authorization prompt. Do not copy generation-time HEAD or
+ahead/behind values into the final push authorization without re-observing the
+current repository state.
 
 ---
 
@@ -113,8 +143,8 @@ push or any route transition.
 implementation_artifact_manifests:
   manifest_method: sha256_of_sorted_sha256sum_manifest_lines
   combined_stage_1_6_artifact_manifest:
-    file_count: 140
-    sha256: 1797fc5993ea32d74d323793c4c8ffc424fad3cc2b81996bdde66c90a9853223
+    file_count: 138
+    sha256: f8f38c816511b4efa6c8563952fed1cab11f495f4630ade03ea7e9c8c8bd0610
     included_roots:
       - .colameta/taskbooks
       - runner
@@ -136,8 +166,8 @@ implementation_artifact_manifests:
       file_count: 21
       sha256: 02580220952da3ee1b27c6403de12e49eed4706762b5373b4de95bc74ff1ce07
     stage_04:
-      file_count: 38
-      sha256: 4ee891df24b3c44dca439e80178a45ba8f8512e7e1c7e537c3c1456f51586414
+      file_count: 36
+      sha256: 00380e463173b2a9fc1dbda4a6472043a45f6aecc63c6be0cab01fac9e8fcde0
     stage_05:
       file_count: 20
       sha256: 3ea7e9aca085df84ab800b617818d88d3d9f310d5bd8ef8392373e367d0a41bb
@@ -148,6 +178,70 @@ implementation_artifact_manifests:
 
 The artifact manifests are implementation evidence hashes, not canonical
 Delivery State Gate receipts.
+
+Manifest recomputation must be run from the WSL repository root
+`/home/jenn/src/colameta-dev`. The Stage 1-6 implementation artifact set is the
+bounded set of files produced by these implementation slices: their
+`.colameta/taskbooks` contracts, their `runner/` helpers, their focused tests,
+and their English/Chinese evidence reports. It is not a blanket hash of every
+file under `runner/` or `tests/`.
+
+```bash id="manifest-recompute-command"
+# Run from /home/jenn/src/colameta-dev
+.venv/bin/python - <<'PY'
+from pathlib import Path
+import hashlib
+import subprocess
+
+stages = {
+    "stage_01": {
+        "contracts": [".colameta/taskbooks/master_taskbook_registry.json"],
+        "modules": "master_taskbook_registry master_taskbook_reader master_taskbook_validator master_taskbook_hash_binding master_taskbook_mutation_gate".split(),
+    },
+    "stage_02": {
+        "contracts": [".colameta/taskbooks/stage_taskbook_schema.json", ".colameta/taskbooks/stage_taskbook_registry.json"],
+        "modules": "stage_taskbook_validator stage_taskbook_registry stage_to_master_binding stage_taskbook_gate_readiness".split(),
+    },
+    "stage_03": {
+        "contracts": [".colameta/taskbooks/external_taskbook_schema.json"],
+        "modules": "external_taskbook_schema external_taskbook_validator taskbook_import_preview taskbook_version_candidate_mapping taskbook_import_adoption_preview".split(),
+    },
+    "stage_04": {
+        "contracts": [],
+        "modules": "execution_envelope executor_run_preview local_execution_receipt imported_execution_receipt executor_report execution_evidence_receipt validation_truth scope_evidence_pack audit_package_taskbook_binding".split(),
+    },
+    "stage_05": {
+        "contracts": [],
+        "modules": "reviewer_handoff_schema reviewer_handoff_generator reviewer_alignment_questions reviewer_drift_questions reviewer_package_report_surface".split(),
+    },
+    "stage_06": {
+        "contracts": [],
+        "modules": "review_feedback_schema review_feedback_validator review_feedback_preview review_feedback_classification commander_decision_request review_decision_adapter".split(),
+    },
+}
+
+def manifest(files):
+    lines = [subprocess.check_output(["sha256sum", f]).decode().strip()
+             for f in sorted(dict.fromkeys(files))]
+    payload = "\n".join(lines) + "\n"
+    return len(lines), hashlib.sha256(payload.encode()).hexdigest()
+
+combined = []
+for stage_id, data in stages.items():
+    stage_number = stage_id[-2:]
+    files = list(data["contracts"])
+    files += [f"runner/{module}.py" for module in data["modules"]]
+    files += [f"tests/test_{module}.py" for module in data["modules"]]
+    files += sorted(
+        str(path)
+        for path in Path(f"docs/taskbooks/versions/stage-{stage_number}/evidence").rglob("*")
+        if path.is_file()
+    )
+    combined.extend(files)
+    print(stage_id, *manifest(files))
+print("combined", *manifest(combined))
+PY
+```
 
 ---
 
@@ -181,6 +275,10 @@ stage_closeout_summary:
 
 ```yaml id="validation-results"
 validation_results:
+  validation_command_context:
+    default_working_directory: /home/jenn/src/colameta-dev
+    shell_context: WSL/Linux repository root
+    powershell_wrapper_if_needed: "wsl -d Ubuntu-24.04 --cd /home/jenn/src/colameta-dev -- bash -lc '<command>'"
   latest_stage_05_package_review:
     command: .venv/bin/python -m unittest tests.test_reviewer_handoff_schema tests.test_reviewer_handoff_generator tests.test_reviewer_alignment_questions tests.test_reviewer_drift_questions tests.test_reviewer_package_report_surface
     result: passed
@@ -200,6 +298,10 @@ validation_results:
     result: passed
   stage_06_forbidden_authority_effect_scan:
     result: passed
+    scan_note: >
+      Use key-level positive authority patterns. Crude value-only grep can
+      falsely match negative boundary fields such as
+      does_not_mean_delivery_state_accepted: true.
 ```
 
 `unittest discover` without `-s tests` was also tried and found zero tests
@@ -209,7 +311,24 @@ tests`.
 
 ---
 
-## 6. Push Readiness Decision State
+## 6. Reviewer Reading Path
+
+| Step | Read | Why |
+| --- | --- | --- |
+| 1 | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md` and `.zh-CN.md` | Start with the route-level closeout, authority boundary, tests, and push-decision state. |
+| 2 | `docs/taskbooks/versions/stage-05/evidence/VERSION_STAGE_05_V5_5_REVIEWER_PACKAGE_REPORT_SURFACE_REPORT.md` and `docs/taskbooks/versions/stage-05/evidence/zh-CN/VERSION_STAGE_05_V5_5_REVIEWER_PACKAGE_REPORT_SURFACE_REPORT.zh-CN.md` | See the final reviewer handoff surface from Stage 5. |
+| 3 | `docs/taskbooks/versions/stage-06/evidence/VERSION_STAGE_06_V6_1_REVIEW_FEEDBACK_SCHEMA_REPORT.md` through `VERSION_STAGE_06_V6_5_REVIEW_DECISION_ADAPTER_REPORT.md`, plus the matching files under `docs/taskbooks/versions/stage-06/evidence/zh-CN/` | Follow the feedback intake chain from bounded reviewer input to non-authoritative adapter output. |
+| 4 | `runner/reviewer_package_report_surface.py`, `runner/review_feedback_*.py`, `runner/commander_decision_request.py`, and `runner/review_decision_adapter.py` | Inspect the user-visible and review-feedback mechanics. |
+| 5 | The validation commands in this packet | Re-run the nearest confidence checks before any final push authorization. |
+
+Chinese evidence companions may use either `source_document` or `source_report`
+as the source-binding key depending on when they were introduced. They are
+equivalent for this closeout review when paired with `source_sha256`; the
+validation requirement is that the referenced source file hash matches.
+
+---
+
+## 7. Push Readiness Decision State
 
 ```yaml id="push-readiness-decision-state"
 push_readiness_decision_state:
@@ -222,10 +341,16 @@ push_readiness_decision_state:
     branch: main
   implementation_closeout_head_before_packet_storage: 1219846e5ad2ddd800582d43d9dc450e7711d1ab
   push_target_head_must_be_current_observed_head_at_authorization: true
-  local_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
-  ahead_behind_from_local_refs:
+  generation_origin_main_tracking_ref: 018ff63b76872504407c537cd46e1e8a2ee5c22e
+  generation_ahead_behind_from_local_refs:
     behind: 0
     ahead: 81
+  final_push_prompt_must_use_fresh_observation: true
+  stale_generation_values_must_not_be_copied_into_final_push_prompt: true
+  current_values_to_fill_at_final_authorization:
+    current_head: "<CURRENT_OBSERVED_HEAD_AT_PUSH_AUTHORIZATION>"
+    current_origin_main_tracking_ref: "<CURRENT_OBSERVED_ORIGIN_MAIN_LOCAL_REF_AT_PUSH_AUTHORIZATION>"
+    current_ahead_behind_from_local_refs: "<CURRENT_OBSERVED_AHEAD_BEHIND_AT_PUSH_AUTHORIZATION>"
   live_remote_status_not_validated: true
   worktree_clean: true
   push_authorized_by_this_packet: false
@@ -238,7 +363,7 @@ separate fetch authorization or equivalent remote check is required.
 
 ---
 
-## 7. Forbidden Actions
+## 8. Forbidden Actions
 
 ```yaml id="forbidden-actions"
 forbidden_actions:
@@ -265,7 +390,7 @@ forbidden_actions:
 
 ---
 
-## 8. Commander Push Confirmation Prompt Draft
+## 9. Commander Push Confirmation Prompt Draft
 
 ```text id="commander-push-confirmation-prompt-draft"
 AUTHORIZE_PUSH_STAGE_0_6_IMPLEMENTATION_CLOSEOUT_COMMITS_FOR_CURRENT_HEAD_ONLY
@@ -279,9 +404,9 @@ Target:
 - Implementation closeout generation HEAD before packet storage:
   1219846e5ad2ddd800582d43d9dc450e7711d1ab
 - Local origin/main tracking ref:
-  018ff63b76872504407c537cd46e1e8a2ee5c22e
+  <CURRENT_OBSERVED_ORIGIN_MAIN_LOCAL_REF_AT_PUSH_AUTHORIZATION>
 - Local ahead/behind from local refs:
-  ahead=81 behind=0
+  <CURRENT_OBSERVED_AHEAD_BEHIND_AT_PUSH_AUTHORIZATION>
 - Closeout readiness packet:
   docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md
 - Closeout readiness packet self-hash:
@@ -290,7 +415,7 @@ Target:
 Allowed:
 - verify current HEAD still equals the exact current observed HEAD supplied in the final Commander confirmation
 - verify worktree is clean
-- verify local origin/main tracking ref still equals the exact ref above
+- verify local origin/main tracking ref still equals the exact current observed ref supplied in the final Commander confirmation
 - run git push origin main as a non-force push
 
 Not allowed:
