@@ -2220,7 +2220,7 @@ class MCPPlanningBridgeServer:
                         },
                         "project_name": {
                             "type": "string",
-                            "description": "可选。project_status inspect、plan_update、prompt_to_plan、small_project_patch 支持按已登记 managed project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
+                            "description": "可选。service mode 下项目级 workflow 必须传入已登记 managed project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview 支持按 project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
                         },
                         "goal": {
                             "type": "string",

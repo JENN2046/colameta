@@ -1132,24 +1132,40 @@ function renderThinGovernedLoopPreview(data) {{
   const blocked = status === "thin_governed_loop_failed_closed" || preview.ok === false;
   const cardClass = blocked && !passed ? "blocked" : "";
   const badgeCls = passed ? "badge-ok" : (blocked ? "badge-err" : "badge-warn");
-  const statusText = passed ? "薄闭环预览已通过" : (blocked ? "薄闭环预览已阻断" : "薄闭环预览不可用");
+  const statusLabel = passed ? "链路可用" : (blocked ? "链路阻断" : "状态未知");
+  const statusText = passed ? "薄治理闭环观察可用" : (blocked ? "薄治理闭环观察已阻断" : "薄治理闭环观察不可用");
   const blockers = Array.isArray(thinLoop.blockers) ? thinLoop.blockers : (Array.isArray(preview.blockers) ? preview.blockers : []);
-  const path = Array.isArray(thinLoop.thin_loop_path) && thinLoop.thin_loop_path.length
-    ? thinLoop.thin_loop_path.join(" -> ")
-    : "external_taskbook_import -> execution_envelope -> local_execution_receipt -> reviewer_handoff_package -> review_feedback_intake";
+  const pathLabels = {{
+    "external_taskbook_import": "导入任务书",
+    "execution_envelope": "执行 Envelope",
+    "local_execution_receipt": "本地 Receipt",
+    "reviewer_handoff_package": "Reviewer Handoff",
+    "review_feedback_intake": "Feedback Intake",
+  }};
+  const rawPath = Array.isArray(thinLoop.thin_loop_path) && thinLoop.thin_loop_path.length
+    ? thinLoop.thin_loop_path
+    : ["external_taskbook_import", "execution_envelope", "local_execution_receipt", "reviewer_handoff_package", "review_feedback_intake"];
+  const path = rawPath.map(item => pathLabels[item] || item).join(" -> ");
   const requestedAction = result.requested_commander_action || summary.requested_commander_action || thinLoop.requested_commander_action || "-";
+  const requestedActionLabels = {{
+    "ask_whether_to_prepare_rework_or_gate_return": "请 Commander 决定：返工准备，还是回到状态门",
+    "ask_whether_to_return_for_clarification": "请 Commander 补充澄清",
+    "none": "暂无人工动作",
+  }};
+  const requestedActionText = requestedActionLabels[requestedAction] || requestedAction;
   const inputMode = result.input_mode || "-";
+  const inputModeText = inputMode === "provided" ? "真实输入" : (inputMode === "example" ? "样例自检" : inputMode);
   let h = `<div class="card summary-card thin-loop-preview-card ${{cardClass}}">`;
-  h += `<div class="card-title">Stage 3-6 Thin Governed Loop</div>`;
+  h += `<div class="card-title">Stage 3-6 薄治理闭环观察</div>`;
   h += `<div class="summary-title">${{esc(statusText)}}</div>`;
   h += `<div class="badge-row">`;
-  h += `<span class="badge ${{badgeCls}}">${{esc(status)}}</span>`;
+  h += `<span class="badge ${{badgeCls}}">${{esc(statusLabel)}}</span>`;
   h += `<span class="badge badge-info">只读观察</span>`;
-  h += `<span class="badge badge-info">input: ${{esc(inputMode)}}</span>`;
+  h += `<span class="badge badge-info">${{esc(inputModeText)}}</span>`;
   h += `</div>`;
   h += `<div class="thin-loop-path">${{esc(path)}}</div>`;
   h += r("阻断数", blockers.length);
-  h += r("Commander 下一步", requestedAction);
+  h += r("Commander 下一步", requestedActionText);
   h += `<div class="thin-loop-boundary">只读预览，不授权执行器、ReviewDecision、GateEvent、Delivery State、commit 或 push。</div>`;
   h += `</div>`;
   return h;
