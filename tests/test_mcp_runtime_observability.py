@@ -136,6 +136,26 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["result"]["copy_paste_next_request"]["project_name"] == "demo-project"
         assert data["result"]["generated_input_bundle_summary"]["next_request_shape"]["project_name"] == "demo-project"
 
+    def test_list_executor_run_reports_has_standard_success_shape(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent(
+            "list_executor_run_reports",
+            {"project_name": "demo-project", "limit": 5},
+        )
+
+        assert result["ok"] is True
+        assert result["tool"] == "list_executor_run_reports"
+        data = result["data"]
+        assert data["ok"] is True
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["reports"] == []
+        assert data["message"] == "No executor run reports found."
+
     def test_stable_promotion_readiness_tool_is_read_only_and_non_authorizing(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project))

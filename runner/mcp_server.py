@@ -6223,7 +6223,12 @@ class MCPPlanningBridgeServer:
         limit = self._bounded_int_param(params.get("limit"), default=10, minimum=1, maximum=50)
         store = ExecutorRunReportStore(self.project_root)
         reports = store.list_reports(version=version, limit=limit)
-        result = {"reports": reports}
+        result = {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "reports": reports,
+        }
         if not reports:
             result["message"] = "No executor run reports found."
         return result
