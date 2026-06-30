@@ -398,11 +398,10 @@ class WorkflowRecordStore:
         except Exception as e:
             return {"ok": True, "runs": [], "warnings": [f"cannot list workflows: {e}"]}
 
+        matching_records: list[dict[str, Any]] = []
         for fname in entries:
             if not fname.endswith(".json"):
                 continue
-            if len(runs) >= limit:
-                break
             filepath = os.path.join(self.workflows_dir, fname)
             if not os.path.isfile(filepath):
                 continue
@@ -420,9 +419,22 @@ class WorkflowRecordStore:
                 if record.get("status") != status:
                     continue
 
-            runs.append(_summarize_run(record))
+            matching_records.append(record)
 
+        matching_records.sort(key=self._list_sort_key, reverse=True)
+        runs = [_summarize_run(record) for record in matching_records[:limit]]
         return {"ok": True, "runs": runs, "warnings": warnings if warnings else None}
+
+    @staticmethod
+    def _list_sort_key(record: dict[str, Any]) -> tuple[str, str, str]:
+        created_at = record.get("created_at")
+        updated_at = record.get("updated_at")
+        workflow_id = record.get("workflow_id")
+        return (
+            created_at if isinstance(created_at, str) else "",
+            updated_at if isinstance(updated_at, str) else "",
+            workflow_id if isinstance(workflow_id, str) else "",
+        )
 
     def get_run(self, workflow_id: str) -> dict[str, Any]:
         try:
