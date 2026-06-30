@@ -143,6 +143,27 @@ class MasterTaskbookRegistryTests(unittest.TestCase):
         assert result["master_expected_sha256"] == sha256_file(self.master)
         assert result["master_actual_sha256"] == sha256_file(self.master)
         assert result["record"]["master_authority_boundary"]["active_execution_authority"] is False
+        assert result["workspace_relocated"] is False
+
+    def test_default_registry_path_allows_workspace_relocation_for_portable_checkout(self) -> None:
+        record = self.valid_record()
+        record["workspace"] = "/home/jenn/src/colameta-dev"
+        self.write_record(record)
+
+        result = load_master_taskbook_registry(
+            self.project,
+            expected_source_refs=self.expected_source_refs(),
+        )
+
+        assert result["ok"] is True
+        assert result["workspace_relocated"] is True
+        assert result["workspace_binding"]["relocation_allowed_by_default_registry_path"] is True
+
+    def test_explicit_registry_path_rejects_workspace_relocation(self) -> None:
+        record = self.valid_record()
+        record["workspace"] = "/home/jenn/src/colameta-dev"
+
+        self.assert_registry_error(record, "WORKSPACE_MISMATCH")
 
     def test_missing_required_field_fails_closed(self) -> None:
         record = self.valid_record()

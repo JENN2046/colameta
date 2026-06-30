@@ -195,6 +195,7 @@ def load_stage_taskbook_registry(
     expected_source_version_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     root = Path(project_root).expanduser().resolve()
+    default_registry_requested = registry_path is None
     path = _resolve_registry_path(root, registry_path)
     if not path.is_file():
         raise StageTaskbookRegistryError(
@@ -218,6 +219,7 @@ def load_stage_taskbook_registry(
         registry_path=path,
         expected_master_taskbook_ref=expected_master_taskbook_ref,
         expected_source_version_ref=expected_source_version_ref,
+        allow_workspace_relocation=default_registry_requested,
     )
 
 
@@ -228,6 +230,7 @@ def validate_stage_taskbook_registry(
     registry_path: str | Path | None = None,
     expected_master_taskbook_ref: dict[str, str] | None = None,
     expected_source_version_ref: dict[str, str] | None = None,
+    allow_workspace_relocation: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(registry, dict):
         raise StageTaskbookRegistryError("REGISTRY_INVALID", "Stage Taskbook registry must be a JSON object.")
@@ -242,13 +245,12 @@ def validate_stage_taskbook_registry(
 
     root = Path(project_root).expanduser().resolve()
     path = _resolve_registry_path(root, registry_path)
-    workspace = _required_str(registry, "workspace")
-    if Path(workspace).expanduser().resolve() != root:
-        raise StageTaskbookRegistryError(
-            "WORKSPACE_MISMATCH",
-            "Stage Taskbook registry workspace does not match the current project root.",
-            details={"workspace": workspace, "project_root": str(root)},
-        )
+    workspace_status = _validate_workspace_binding(
+        registry=registry,
+        root=root,
+        path=path,
+        allow_workspace_relocation=allow_workspace_relocation,
+    )
 
     _require_exact_str(registry, "schema_version", EXPECTED_SCHEMA_VERSION)
     _require_exact_str(registry, "registry_record_id", EXPECTED_REGISTRY_RECORD_ID)
@@ -315,11 +317,46 @@ def validate_stage_taskbook_registry(
         "records": validated_records,
         "stage_hashes_verified": True,
         "validator_results_verified": True,
+        "workspace_binding": workspace_status,
+        "workspace_relocated": workspace_status["workspace_relocated"],
         "registry_result_is_authority": False,
         "creates_review_decision": False,
         "emits_gate_event": False,
         "writes_delivery_state": False,
     }
+
+
+def _validate_workspace_binding(
+    *,
+    registry: dict[str, Any],
+    root: Path,
+    path: Path,
+    allow_workspace_relocation: bool,
+) -> dict[str, Any]:
+    workspace = _required_str(registry, "workspace")
+    recorded_workspace = Path(workspace).expanduser().resolve()
+    default_registry = default_stage_taskbook_registry_path(root).resolve()
+    if recorded_workspace == root:
+        return {
+            "recorded_workspace": str(recorded_workspace),
+            "current_project_root": str(root),
+            "workspace_matches_current_root": True,
+            "workspace_relocated": False,
+            "relocation_allowed_by_default_registry_path": False,
+        }
+    if allow_workspace_relocation and path == default_registry:
+        return {
+            "recorded_workspace": str(recorded_workspace),
+            "current_project_root": str(root),
+            "workspace_matches_current_root": False,
+            "workspace_relocated": True,
+            "relocation_allowed_by_default_registry_path": True,
+        }
+    raise StageTaskbookRegistryError(
+        "WORKSPACE_MISMATCH",
+        "Stage Taskbook registry workspace does not match the current project root.",
+        details={"workspace": workspace, "project_root": str(root)},
+    )
 
 
 def _validate_stage_record(

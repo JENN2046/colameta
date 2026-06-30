@@ -261,6 +261,28 @@ class StageTaskbookRegistryTests(unittest.TestCase):
         assert result["validator_results_verified"] is True
         assert result["registry_result_is_authority"] is False
         assert result["stage_ids"] == ["stage_02_stage_taskbook_management"]
+        assert result["workspace_relocated"] is False
+
+    def test_default_registry_path_allows_workspace_relocation_for_portable_checkout(self) -> None:
+        record = self.valid_record()
+        record["workspace"] = "/home/jenn/src/colameta-dev"
+        self.write_registry(record)
+
+        result = load_stage_taskbook_registry(
+            self.project,
+            expected_master_taskbook_ref=self.expected_master_ref(),
+            expected_source_version_ref=self.expected_source_ref(),
+        )
+
+        assert result["ok"] is True
+        assert result["workspace_relocated"] is True
+        assert result["workspace_binding"]["relocation_allowed_by_default_registry_path"] is True
+
+    def test_explicit_registry_path_rejects_workspace_relocation(self) -> None:
+        record = self.valid_record()
+        record["workspace"] = "/home/jenn/src/colameta-dev"
+
+        self.assert_registry_error(record, "WORKSPACE_MISMATCH")
 
     def test_missing_validator_result_fails_closed(self) -> None:
         record = self.valid_record()

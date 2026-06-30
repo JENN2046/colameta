@@ -128,6 +128,7 @@ def load_master_taskbook_registry(
     expected_source_refs: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     root = Path(project_root).expanduser().resolve()
+    default_registry_requested = registry_path is None
     path = _resolve_registry_path(root, registry_path)
     if not path.is_file():
         raise MasterTaskbookRegistryError(
@@ -151,6 +152,7 @@ def load_master_taskbook_registry(
         registry_path=path,
         verify_master_hash=verify_master_hash,
         expected_source_refs=expected_source_refs,
+        allow_workspace_relocation=default_registry_requested,
     )
 
 
@@ -161,6 +163,7 @@ def validate_master_taskbook_registry(
     registry_path: str | Path | None = None,
     verify_master_hash: bool = True,
     expected_source_refs: dict[str, dict[str, str]] | None = None,
+    allow_workspace_relocation: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(record, dict):
         raise MasterTaskbookRegistryError("REGISTRY_RECORD_INVALID", "Master Taskbook registry must be a JSON object.")
@@ -186,13 +189,12 @@ def validate_master_taskbook_registry(
         registry_path = default_master_taskbook_registry_path(root)
     registry = _resolve_registry_path(root, registry_path)
 
-    workspace = _required_str(record, "workspace")
-    if Path(workspace).expanduser().resolve() != root:
-        raise MasterTaskbookRegistryError(
-            "WORKSPACE_MISMATCH",
-            "Registry workspace does not match the current project root.",
-            details={"workspace": workspace, "project_root": str(root)},
-        )
+    workspace_status = _validate_workspace_binding(
+        record=record,
+        root=root,
+        registry=registry,
+        allow_workspace_relocation=allow_workspace_relocation,
+    )
     _require_exact_str(record, "schema_version", EXPECTED_SCHEMA_VERSION)
     _require_exact_str(record, "registry_record_id", EXPECTED_REGISTRY_RECORD_ID)
     _require_exact_str(record, "project", EXPECTED_PROJECT)
@@ -271,8 +273,43 @@ def validate_master_taskbook_registry(
         "master_expected_sha256": expected_hash,
         "master_actual_sha256": actual_hash,
         "master_hash_verified": verify_master_hash,
+        "workspace_binding": workspace_status,
+        "workspace_relocated": workspace_status["workspace_relocated"],
         "record": record,
     }
+
+
+def _validate_workspace_binding(
+    *,
+    record: dict[str, Any],
+    root: Path,
+    registry: Path,
+    allow_workspace_relocation: bool,
+) -> dict[str, Any]:
+    workspace = _required_str(record, "workspace")
+    recorded_workspace = Path(workspace).expanduser().resolve()
+    default_registry = default_master_taskbook_registry_path(root).resolve()
+    if recorded_workspace == root:
+        return {
+            "recorded_workspace": str(recorded_workspace),
+            "current_project_root": str(root),
+            "workspace_matches_current_root": True,
+            "workspace_relocated": False,
+            "relocation_allowed_by_default_registry_path": False,
+        }
+    if allow_workspace_relocation and registry == default_registry:
+        return {
+            "recorded_workspace": str(recorded_workspace),
+            "current_project_root": str(root),
+            "workspace_matches_current_root": False,
+            "workspace_relocated": True,
+            "relocation_allowed_by_default_registry_path": True,
+        }
+    raise MasterTaskbookRegistryError(
+        "WORKSPACE_MISMATCH",
+        "Registry workspace does not match the current project root.",
+        details={"workspace": workspace, "project_root": str(root)},
+    )
 
 
 def _resolve_registry_path(root: Path, registry_path: str | Path | None) -> Path:
