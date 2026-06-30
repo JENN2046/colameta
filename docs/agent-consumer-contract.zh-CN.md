@@ -163,3 +163,20 @@ Agent 应按 `recommended_next_reads` 分步续读，不要把 packaged manifest
 - commit / push / release / deploy
 
 这些动作必须另走 Commander 精确授权。
+
+## 本地 Agent Consumer Smoke = Agent 消费者冒烟验收
+
+开发仓库提供一个只读 smoke：
+
+```bash
+.venv/bin/python scripts/agent_consumer_smoke.py --project-root /home/jenn/src/colameta-dev --project-name colameta-self-dev
+```
+
+它使用临时 registry，不写真实项目登记，不连接稳定端口，不启动 executor。它检查：
+
+- 必备 MCP 工具是否可见。
+- `get_agent_consumer_contract` 是否返回契约。
+- 五个 `service_entry_profiles` 是否一致。
+- `get_service_entry_profile` 是否能选择每个画像。
+- 未知画像是否 fail closed。
+- `get_stable_promotion_readiness` 是否能看到消费者契约和画像选择器。

@@ -5532,6 +5532,8 @@ class MCPPlanningBridgeServer:
 
         legacy = {
             "ok": True,
+            "read_only": True,
+            "side_effects": False,
             "project_identity": fact_snapshot.project_identity,
             "mcp_exposure_profile": self.mcp_exposure_profile,
             "visible_tool_count": len(self._visible_tool_names()),
