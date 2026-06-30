@@ -2406,12 +2406,17 @@ class MCPPlanningBridgeServer:
                         },
                         "input_mode": {
                             "type": "string",
-                            "enum": ["example", "template", "provided"],
-                            "description": "thin_governed_loop_preview 可选。example 使用内置样例；template 只返回真实输入契约和最小请求形状；provided 要求同时提供 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback。",
+                            "enum": ["example", "template", "draft", "provided"],
+                            "description": "thin_governed_loop_preview 可选。example 使用内置样例；template 只返回真实输入契约和最小请求形状；draft 生成可编辑的四对象输入包但不执行闭环；provided 要求同时提供 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback。",
                         },
                         "thin_loop_inputs": {
                             "type": "object",
-                            "description": "thin_governed_loop_preview 可选。真实输入对象包；可包含 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback、current_head。",
+                            "description": "thin_governed_loop_preview 可选。真实输入对象包；可包含 external_taskbook_claim、execution_envelope、local_execution_receipt、review_feedback、current_head；draft 模式也可在此携带 draft_seed。",
+                            "additionalProperties": True,
+                        },
+                        "draft_seed": {
+                            "type": "object",
+                            "description": "thin_governed_loop_preview draft 模式可选。用少量上游字段生成四对象输入包，例如 allowed_files、forbidden_files、validation_commands、allowed_commands、review_decision_value、reviewer_notes。",
                             "additionalProperties": True,
                         },
                         "external_taskbook_claim": {

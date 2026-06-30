@@ -74,6 +74,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "thin_governed_loop_preview" in workflow_enum
         input_mode_enum = tool_defs["run_mcp_workflow"].input_schema["properties"]["input_mode"]["enum"]
         assert "template" in input_mode_enum
+        assert "draft" in input_mode_enum
+        assert "draft_seed" in tool_defs["run_mcp_workflow"].input_schema["properties"]
         assert server.get_required_scope_for_tool(
             "run_mcp_workflow",
             {"workflow": "thin_governed_loop_preview", "phase": "preview"},

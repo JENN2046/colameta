@@ -136,7 +136,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.result["input_mode"] == "template"
         assert output.result["thin_loop"]["thin_loop_status"] == "thin_governed_loop_input_template_ready"
         contract = output.result["input_contract"]
-        assert contract["accepted_input_modes"] == ["example", "template", "provided"]
+        assert contract["accepted_input_modes"] == ["example", "template", "draft", "provided"]
         assert [item["field"] for item in contract["provided_mode_required_objects"]] == [
             "external_taskbook_claim",
             "execution_envelope",
@@ -144,7 +144,97 @@ class ThinGovernedLoopTests(unittest.TestCase):
             "review_feedback",
         ]
         assert contract["minimal_request_shape"]["input_mode"] == "provided"
+        assert contract["draft_request_shape"]["input_mode"] == "draft"
+        assert contract["draft_mode_output"]["submit_as"] == "thin_loop_inputs"
         assert contract["read_only_boundary"]["writes_delivery_state"] is False
+
+    def test_thin_loop_workflow_draft_mode_returns_reusable_input_bundle(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        orchestrator = WorkflowOrchestrator(project_root)
+        draft_seed = {
+            "source_id": "seeded-thin-loop-taskbook",
+            "allowed_files": ["runner/seeded_feature.py", "tests/test_seeded_feature.py"],
+            "forbidden_files": ["PROJECT_MASTER_TASKBOOK.md", ".colameta/plan.json", "**/.env"],
+            "validation_commands": ["python -m unittest tests.test_seeded_feature", "git diff --check"],
+            "review_decision_value": "PLAN_ADJUST",
+            "reviewer_notes": "Seeded review says the plan needs adjustment.",
+            "unknown_seed_field": "ignored",
+        }
+        expected_applied_seed_fields = sorted(set(draft_seed) - {"unknown_seed_field"})
+
+        draft_output = orchestrator.handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "input_mode": "draft", "draft_seed": draft_seed},
+        )
+
+        assert draft_output.ok is True
+        assert draft_output.status == "succeeded"
+        assert draft_output.requires_confirmation is False
+        assert draft_output.changed_files == []
+        assert draft_output.preview_ids == []
+        assert draft_output.result["input_mode"] == "draft"
+        assert draft_output.result["thin_loop"]["thin_loop_status"] == "thin_governed_loop_input_draft_ready"
+        assert draft_output.result["thin_loop"]["stage_results"] == {}
+        assert draft_output.result["generated_input_bundle_summary"]["reusable_as"] == "thin_loop_inputs"
+        assert "allowed_files" in draft_output.result["generated_input_bundle_summary"]["seed_fields_applied"]
+        assert draft_output.result["forbidden_authority_outputs"]["executor_dispatch_authorized"] is False
+        bundle = draft_output.result["generated_input_bundle"]
+        assert bundle["input_mode"] == "provided"
+        assert isinstance(bundle["current_head"], str)
+        assert bundle["current_head"]
+        assert bundle["draft_seed_applied"] == expected_applied_seed_fields
+        assert "unknown_seed_field" not in bundle["draft_seed_applied"]
+        for field in (
+            "external_taskbook_claim",
+            "execution_envelope",
+            "local_execution_receipt",
+            "review_feedback",
+        ):
+            assert isinstance(bundle[field], dict)
+        assert bundle["external_taskbook_claim"]["source"]["source_id"] == "seeded-thin-loop-taskbook"
+        assert bundle["external_taskbook_claim"]["allowed_files"] == draft_seed["allowed_files"]
+        assert bundle["execution_envelope"]["allowed_files"] == draft_seed["allowed_files"]
+        assert bundle["execution_envelope"]["validation_commands"] == draft_seed["validation_commands"]
+        assert bundle["local_execution_receipt"]["touched_files"] == draft_seed["allowed_files"]
+        assert bundle["local_execution_receipt"]["validation_commands"] == draft_seed["validation_commands"]
+        assert bundle["review_feedback"]["review_decision_value"] == "PLAN_ADJUST"
+        assert bundle["review_feedback"]["reviewer_notes"] == draft_seed["reviewer_notes"]
+        assert "draft" in draft_output.result["input_contract"]["accepted_input_modes"]
+        assert "draft_seed" in draft_output.result["input_contract"]["transport"]["bundle_allowed_fields"]
+
+        provided_output = orchestrator.handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "thin_loop_inputs": bundle},
+        )
+
+        assert provided_output.ok is True
+        assert provided_output.status == "succeeded"
+        assert provided_output.result["input_mode"] == "provided"
+        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert provided_output.result["thin_loop"]["requested_commander_action"] == "ask_whether_to_prepare_plan_adjustment_draft"
+        assert provided_output.result["thin_loop"]["delivery_state_accepted"] is False
+
+    def test_thin_loop_workflow_draft_ignores_pass_alias_without_policy(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        orchestrator = WorkflowOrchestrator(project_root)
+
+        draft_output = orchestrator.handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "input_mode": "draft", "draft_seed": {"review_decision_value": "PASS"}},
+        )
+
+        assert draft_output.ok is True
+        bundle = draft_output.result["generated_input_bundle"]
+        assert "review_decision_value" not in bundle["draft_seed_applied"]
+        assert bundle["review_feedback"]["review_decision_value"] == "NEEDS_FIX"
+
+        provided_output = orchestrator.handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "thin_loop_inputs": bundle},
+        )
+
+        assert provided_output.ok is True
+        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
 
     def test_thin_loop_workflow_fails_closed_when_provided_inputs_are_incomplete(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
@@ -177,7 +267,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.status == "blocked"
         assert output.result["input_mode"] == "surprise"
         assert output.result["thin_loop"]["blockers"][0]["code"] == "thin_loop_invalid_input_mode"
-        assert "input_mode 必须是 example、template 或 provided。" in output.blockers
+        assert "input_mode 必须是 example、template、draft 或 provided。" in output.blockers
         assert "template" in output.result["input_contract"]["accepted_input_modes"]
 
 

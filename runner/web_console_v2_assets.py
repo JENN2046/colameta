@@ -1154,7 +1154,13 @@ function renderThinGovernedLoopPreview(data) {{
   }};
   const requestedActionText = requestedActionLabels[requestedAction] || requestedAction;
   const inputMode = result.input_mode || "-";
-  const inputModeText = inputMode === "provided" ? "真实输入" : (inputMode === "example" ? "样例自检" : inputMode);
+  const inputModeLabels = {{
+    "provided": "真实输入",
+    "example": "样例自检",
+    "template": "输入契约",
+    "draft": "输入草稿",
+  }};
+  const inputModeText = inputModeLabels[inputMode] || inputMode;
   let h = `<div class="card summary-card thin-loop-preview-card ${{cardClass}}">`;
   h += `<div class="card-title">Stage 3-6 薄治理闭环观察</div>`;
   h += `<div class="summary-title">${{esc(statusText)}}</div>`;

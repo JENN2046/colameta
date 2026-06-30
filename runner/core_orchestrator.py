@@ -3178,6 +3178,8 @@ class WorkflowOrchestrator:
         )
         if requested_input_mode == "template":
             return self._thin_loop_template_result(phase=phase, warnings=[warning])
+        if requested_input_mode == "draft":
+            return self._thin_loop_draft_result(params=params, phase=phase, warnings=[warning])
 
         inputs, input_mode, input_blockers = self._thin_loop_inputs_from_params(params)
         if input_blockers:
@@ -3186,9 +3188,9 @@ class WorkflowOrchestrator:
                 blocker_items = [{
                     "code": "thin_loop_invalid_input_mode",
                     "field": "input_mode",
-                    "allowed_values": ["example", "template", "provided"],
+                    "allowed_values": ["example", "template", "draft", "provided"],
                 }]
-                blocker_messages = ["input_mode 必须是 example、template 或 provided。"]
+                blocker_messages = ["input_mode 必须是 example、template、draft 或 provided。"]
             else:
                 blocker_items = [
                     {"code": "thin_loop_input_missing", "field": field}
@@ -3263,6 +3265,56 @@ class WorkflowOrchestrator:
             warnings=warnings,
         )
 
+    def _thin_loop_draft_result(self, *, params: dict[str, Any], phase: str, warnings: list[str]) -> 'CoreResult':
+        generated_input_bundle = self._thin_loop_generated_input_bundle(params)
+        thin_loop = {
+            "thin_loop_status": "thin_governed_loop_input_draft_ready",
+            "thin_loop_path": [
+                "external_taskbook_import",
+                "execution_envelope",
+                "local_execution_receipt",
+                "reviewer_handoff_package",
+                "review_feedback_intake",
+            ],
+            "stage_results": {},
+            "blockers": [],
+            "authority_boundary": self._thin_loop_authority_boundary(),
+            "delivery_state_accepted": False,
+            "review_decision_created": False,
+            "gate_event_emitted": False,
+            "executor_dispatch_authorized": False,
+        }
+        return self._thin_loop_core_result(
+            phase=phase,
+            input_mode="draft",
+            thin_loop=thin_loop,
+            passed=True,
+            blocker_messages=[],
+            warnings=warnings,
+            extra_result={
+                "generated_input_bundle": generated_input_bundle,
+                "generated_input_bundle_summary": {
+                    "bundle_kind": "draft_input_bundle",
+                    "reusable_as": "thin_loop_inputs",
+                    "submit_with_input_mode": "provided",
+                    "current_head": generated_input_bundle.get("current_head"),
+                    "seed_fields_applied": generated_input_bundle.get("draft_seed_applied", []),
+                    "object_fields": list(self._thin_loop_object_fields()),
+                    "editable_before_submit": [
+                        "external_taskbook_claim",
+                        "execution_envelope",
+                        "local_execution_receipt",
+                        "review_feedback",
+                    ],
+                    "authority_note": (
+                        "Draft generation is read-only input preparation; it does not run the "
+                        "thin loop, authorize execution, create ReviewDecision, emit GateEvent, "
+                        "or change Delivery State."
+                    ),
+                },
+            },
+        )
+
     def _thin_loop_core_result(
         self,
         *,
@@ -3272,6 +3324,7 @@ class WorkflowOrchestrator:
         passed: bool,
         blocker_messages: list[str],
         warnings: list[str],
+        extra_result: dict[str, Any] | None = None,
     ) -> 'CoreResult':
         requested_action = str(thin_loop.get("requested_commander_action") or "")
         result = {
@@ -3296,6 +3349,8 @@ class WorkflowOrchestrator:
             },
             "input_contract": self._thin_loop_input_contract(),
         }
+        if extra_result:
+            result.update(extra_result)
         step = {
             "name": "thin_governed_loop_preview",
             "tool": "run_mcp_workflow",
@@ -3319,6 +3374,125 @@ class WorkflowOrchestrator:
             result=result,
             phase=phase,
         )
+
+    def _thin_loop_generated_input_bundle(self, params: dict[str, Any]) -> dict[str, Any]:
+        from runner.thin_governed_loop import example_stage_3_6_inputs
+
+        bundle_param = params.get("thin_loop_inputs")
+        if not isinstance(bundle_param, dict):
+            bundle_param = {}
+        draft_seed = self._thin_loop_draft_seed(params, bundle_param)
+        inputs = example_stage_3_6_inputs()
+        current_head = self._thin_loop_current_head(params, bundle_param)
+        inputs["project_root"] = self.project_root
+        inputs["current_head"] = current_head
+        applied_seed_fields = self._thin_loop_apply_draft_seed(inputs, draft_seed)
+        generated = {
+            "input_mode": "provided",
+            "current_head": current_head,
+            "draft_seed_applied": applied_seed_fields,
+        }
+        for field in self._thin_loop_object_fields():
+            generated[field] = inputs[field]
+        return generated
+
+    @staticmethod
+    def _thin_loop_draft_seed(params: dict[str, Any], bundle_param: dict[str, Any]) -> dict[str, Any]:
+        for candidate in (params.get("draft_seed"), bundle_param.get("draft_seed")):
+            if isinstance(candidate, dict):
+                return candidate
+        return {}
+
+    def _thin_loop_apply_draft_seed(self, inputs: dict[str, Any], draft_seed: dict[str, Any]) -> list[str]:
+        if not draft_seed:
+            return []
+        external_claim = inputs.get("external_taskbook_claim")
+        envelope = inputs.get("execution_envelope")
+        local_receipt = inputs.get("local_execution_receipt")
+        review_feedback = inputs.get("review_feedback")
+        if not all(isinstance(item, dict) for item in (external_claim, envelope, local_receipt, review_feedback)):
+            return []
+
+        applied: set[str] = set()
+        allowed_files = self._thin_loop_seed_string_list(draft_seed, "allowed_files")
+        if allowed_files:
+            applied.add("allowed_files")
+            external_claim["allowed_files"] = allowed_files
+            envelope["allowed_files"] = allowed_files
+            local_receipt["touched_files"] = allowed_files
+            local_receipt["observed_mutations"] = [
+                {"path": path, "mutation_type": "modified"}
+                for path in allowed_files
+            ]
+
+        forbidden_files = self._thin_loop_seed_string_list(draft_seed, "forbidden_files")
+        if forbidden_files:
+            applied.add("forbidden_files")
+            external_claim["forbidden_files"] = forbidden_files
+            envelope["forbidden_files"] = forbidden_files
+
+        validation_commands = self._thin_loop_seed_string_list(draft_seed, "validation_commands")
+        if validation_commands:
+            applied.add("validation_commands")
+            external_claim["acceptance_commands"] = validation_commands
+            envelope["validation_commands"] = validation_commands
+            local_receipt["validation_commands"] = validation_commands
+            local_receipt["validation_results"] = [
+                {"command": command, "result": "passed"}
+                for command in validation_commands
+            ]
+            local_receipt["command_attempts"] = [
+                {"command": command, "exit_code": 0, "result": "passed"}
+                for command in validation_commands
+            ]
+
+        allowed_commands = self._thin_loop_seed_string_list(draft_seed, "allowed_commands")
+        if allowed_commands:
+            applied.add("allowed_commands")
+            envelope["allowed_commands"] = allowed_commands
+        elif validation_commands:
+            envelope["allowed_commands"] = validation_commands
+
+        source_id = self._thin_loop_seed_string(draft_seed, "source_id")
+        if source_id:
+            applied.add("source_id")
+            external_claim.setdefault("source", {})["source_id"] = source_id
+        reviewer_notes = self._thin_loop_seed_string(draft_seed, "reviewer_notes")
+        if reviewer_notes:
+            applied.add("reviewer_notes")
+            review_feedback["reviewer_notes"] = reviewer_notes
+        pass_alias_policy_id = self._thin_loop_seed_string(draft_seed, "pass_alias_policy_id_when_used")
+        review_decision_value = self._thin_loop_seed_review_decision(draft_seed)
+        if review_decision_value == "PASS" and not pass_alias_policy_id:
+            review_decision_value = ""
+        if review_decision_value:
+            applied.add("review_decision_value")
+            review_feedback["review_decision_value"] = review_decision_value
+            if review_decision_value != "PASS":
+                review_feedback["pass_alias_policy_id_when_used"] = None
+        if review_feedback.get("review_decision_value") == "PASS" and pass_alias_policy_id:
+            applied.add("pass_alias_policy_id_when_used")
+            review_feedback["pass_alias_policy_id_when_used"] = pass_alias_policy_id
+        return sorted(applied)
+
+    @staticmethod
+    def _thin_loop_seed_string_list(seed: dict[str, Any], key: str) -> list[str]:
+        value = seed.get(key)
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    @staticmethod
+    def _thin_loop_seed_string(seed: dict[str, Any], key: str) -> str:
+        value = seed.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return ""
+
+    def _thin_loop_seed_review_decision(self, seed: dict[str, Any]) -> str:
+        value = self._thin_loop_seed_string(seed, "review_decision_value").upper()
+        allowed = {"ACCEPT", "NEEDS_FIX", "PLAN_ADJUST", "ABORT", "PASS"}
+        return value if value in allowed else ""
 
     def _thin_loop_inputs_from_params(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str, list[str]]:
         from runner.thin_governed_loop import example_stage_3_6_inputs
@@ -3376,7 +3550,7 @@ class WorkflowOrchestrator:
     def _thin_loop_input_contract(self) -> dict[str, Any]:
         return {
             "input_contract_version": "thin_governed_loop_inputs.v1",
-            "accepted_input_modes": ["example", "template", "provided"],
+            "accepted_input_modes": ["example", "template", "draft", "provided"],
             "provided_mode_required_objects": [
                 {
                     "field": "external_taskbook_claim",
@@ -3405,6 +3579,7 @@ class WorkflowOrchestrator:
                 "bundle_allowed_fields": [
                     "input_mode",
                     "current_head",
+                    "draft_seed",
                     *self._thin_loop_object_fields(),
                 ],
             },
@@ -3418,6 +3593,34 @@ class WorkflowOrchestrator:
                 "execution_envelope": "<object>",
                 "local_execution_receipt": "<object>",
                 "review_feedback": "<object>",
+            },
+            "draft_request_shape": {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "draft",
+                "project_name": "<managed project_name when using service mode>",
+                "draft_seed": {
+                    "allowed_files": ["<project-relative path>"],
+                    "validation_commands": ["<validation command>"],
+                    "review_decision_value": "NEEDS_FIX",
+                    "reviewer_notes": "<optional reviewer note>",
+                },
+            },
+            "draft_mode_output": {
+                "field": "generated_input_bundle",
+                "submit_as": "thin_loop_inputs",
+                "submit_with_input_mode": "provided",
+                "authority": "draft_input_only_not_execution_or_acceptance_authority",
+            },
+            "draft_seed_fields": {
+                "allowed_files": "同步写入 external_taskbook_claim、execution_envelope、local_execution_receipt。",
+                "forbidden_files": "同步写入 external_taskbook_claim、execution_envelope。",
+                "validation_commands": "同步写入 acceptance_commands、validation_commands、command_attempts、validation_results。",
+                "allowed_commands": "可选覆盖 execution_envelope.allowed_commands；不传时沿用 validation_commands。",
+                "source_id": "写入 external_taskbook_claim.source.source_id。",
+                "review_decision_value": "写入 review_feedback.review_decision_value；支持 ACCEPT、NEEDS_FIX、PLAN_ADJUST、ABORT；PASS 必须同时提供 pass_alias_policy_id_when_used。",
+                "pass_alias_policy_id_when_used": "仅在 review_decision_value 为 PASS 时写入；没有该字段时 PASS seed 会被忽略。",
+                "reviewer_notes": "写入 review_feedback.reviewer_notes。",
             },
             "read_only_boundary": {
                 "authorizes_executor_dispatch": False,
