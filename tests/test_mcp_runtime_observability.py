@@ -97,6 +97,16 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["service_profile"]["mode"] == "service"
         assert data["service_profile"]["project_name_required_for_project_tools"] is True
         assert "demo-project" in [item["project_name"] for item in data["registered_projects"]]
+        profiles = {item["profile_id"]: item for item in data["service_entry_profiles"]}
+        assert set(profiles) == {
+            "web_gpt_commander",
+            "local_codex_commander",
+            "reviewer_agent",
+            "planner_agent",
+            "source_observer",
+        }
+        assert profiles["web_gpt_commander"]["first_reads"][1]["tool"] == "get_agent_consumer_contract"
+        assert profiles["reviewer_agent"]["default_authority"] == "review_only"
         assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
         assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
         assert data["entry_sequence"][2]["tool"] == "get_stable_promotion_readiness"
@@ -139,6 +149,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["project_routing_contract"]["missing_project_name_error_code"] == "PROJECT_NAME_REQUIRED"
         assert data["project_routing_contract"]["project_root_override_error_code"] == "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED"
         assert data["authority_boundary"]["read_only_tools_do_not_write_delivery_state"] is True
+        assert data["service_entry_profiles_version"] == "service_entry_profiles.v1"
+        profiles = {item["profile_id"]: item for item in data["service_entry_profiles"]}
+        assert profiles["local_codex_commander"]["consumer_kind"] == "local_codex"
+        assert profiles["planner_agent"]["write_boundary"].endswith("review acceptance.")
+        assert profiles["source_observer"]["primary_workflow"] == "source_observation"
         assert data["thin_loop_consumer_rule"]["provided_mode"].startswith("Review result.generated_input_bundle")
 
     def test_thin_loop_draft_next_payload_preserves_routed_project_name(self) -> None:

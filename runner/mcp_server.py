@@ -4756,6 +4756,98 @@ class MCPPlanningBridgeServer:
     def _tool_list_registered_projects(self, _: dict[str, Any]) -> dict[str, Any]:
         return self._list_registered_projects_payload()
 
+    def _service_entry_profiles(self) -> list[dict[str, Any]]:
+        def project_args(**extra: Any) -> dict[str, Any]:
+            return {"project_name": "<registered project_name>", **extra}
+
+        return [
+            {
+                "profile_id": "web_gpt_commander",
+                "display_name": "Web GPT Commander",
+                "consumer_kind": "web_gpt",
+                "default_authority": "read_only_evidence_until_commander_authorization",
+                "first_reads": [
+                    {"tool": "list_registered_projects", "arguments": {}},
+                    {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
+                    {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args()},
+                ],
+                "primary_workflow": "thin_governed_loop_preview",
+                "next_payload_rule": "Use draft first, inspect generated_input_bundle, then send next_request_payload.",
+                "write_boundary": "Requires exact Commander authorization for write/run/push/stable promotion.",
+            },
+            {
+                "profile_id": "local_codex_commander",
+                "display_name": "Local Codex Commander",
+                "consumer_kind": "local_codex",
+                "default_authority": "local_repo_work_with_project_boundaries",
+                "first_reads": [
+                    {"tool": "list_registered_projects", "arguments": {}},
+                    {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=10)},
+                    {"tool": "list_executor_run_reports", "arguments": project_args(limit=10)},
+                ],
+                "primary_workflow": "thin_governed_loop_preview plus local code/test loop",
+                "next_payload_rule": "Use MCP for routing/evidence; keep code edits inside the local repo boundary.",
+                "write_boundary": "Local repo writes follow workspace rules; MCP read-only outputs do not authorize Delivery State changes.",
+            },
+            {
+                "profile_id": "reviewer_agent",
+                "display_name": "Reviewer Agent",
+                "consumer_kind": "reviewer",
+                "default_authority": "review_only",
+                "first_reads": [
+                    {"tool": "list_registered_projects", "arguments": {}},
+                    {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=20)},
+                    {"tool": "list_executor_run_reports", "arguments": project_args(limit=20)},
+                ],
+                "primary_workflow": "evidence_review",
+                "next_payload_rule": "Report findings as review evidence only.",
+                "write_boundary": "Does not create ReviewDecision, GateEvent, or accepted Delivery State.",
+            },
+            {
+                "profile_id": "planner_agent",
+                "display_name": "Planner Agent",
+                "consumer_kind": "planner",
+                "default_authority": "plan_preview_only",
+                "first_reads": [
+                    {"tool": "list_registered_projects", "arguments": {}},
+                    {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
+                    {
+                        "tool": "run_mcp_workflow",
+                        "arguments": project_args(
+                            workflow="thin_governed_loop_preview",
+                            phase="preview",
+                            input_mode="draft",
+                        ),
+                    },
+                ],
+                "primary_workflow": "thin_governed_loop_preview",
+                "next_payload_rule": "Produce draft/provided input payloads; do not dispatch execution.",
+                "write_boundary": "Planning preview is not executor authority or review acceptance.",
+            },
+            {
+                "profile_id": "source_observer",
+                "display_name": "Source Observer",
+                "consumer_kind": "source_observer",
+                "default_authority": "source_read_only",
+                "first_reads": [
+                    {"tool": "list_registered_projects", "arguments": {}},
+                    {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "get_runtime_version_status", "arguments": project_args()},
+                ],
+                "primary_workflow": "source_observation",
+                "next_payload_rule": "Use source facts for orientation; managed workflows may be unavailable for source-only projects.",
+                "write_boundary": "No managed workflow adoption, execution, or state transition.",
+            },
+        ]
+
     def _tool_get_agent_consumer_contract(self, _: dict[str, Any]) -> dict[str, Any]:
         visible_tools = self._visible_tool_names()
         return {
@@ -4827,6 +4919,8 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
             ],
+            "service_entry_profiles_version": "service_entry_profiles.v1",
+            "service_entry_profiles": self._service_entry_profiles(),
             "thin_loop_consumer_rule": {
                 "draft_mode": "Call run_mcp_workflow with input_mode=draft and draft_seed.",
                 "provided_mode": "Review result.generated_input_bundle, then send result.next_request_payload directly.",
@@ -4858,6 +4952,8 @@ class MCPPlanningBridgeServer:
             },
             "project_identity": project_identity,
             "registered_projects": registered_projects,
+            "service_entry_profiles_version": "service_entry_profiles.v1",
+            "service_entry_profiles": self._service_entry_profiles(),
             "entry_sequence": [
                 {
                     "step": "discover_projects",
