@@ -64,6 +64,37 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             assert forbidden_field not in result
             assert forbidden_field not in data
 
+    def test_web_gpt_service_entrypoint_is_read_only_and_guides_project_routing(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        tool_defs = {tool.name: tool for tool in server.tool_defs}
+
+        assert "get_web_gpt_service_entrypoint" in tool_defs
+        assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
+        assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
+
+        result = server.call_tool_for_agent("get_web_gpt_service_entrypoint", {})
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_web_gpt_service_entrypoint"
+        data = result["data"]
+        assert data["ok"] is True
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["service_profile"]["mode"] == "service"
+        assert data["service_profile"]["project_name_required_for_project_tools"] is True
+        assert "demo-project" in [item["project_name"] for item in data["registered_projects"]]
+        assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
+        assert data["entry_sequence"][1]["tool"] == "analyze_project_state"
+        thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
+        assert thin_flow["tool"] == "run_mcp_workflow"
+        assert thin_flow["draft_arguments"]["input_mode"] == "draft"
+        assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
+        assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
+        assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
     def test_thin_governed_loop_preview_workflow_is_read_only_and_callable(self) -> None:
         project = Path(__file__).resolve().parents[1]
         server = MCPPlanningBridgeServer(str(project))

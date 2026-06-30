@@ -64,6 +64,7 @@ MCP_HARD_TOOL_RESULT_CHARS = 75000
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
+    "get_web_gpt_service_entrypoint",
     "get_runtime_version_status",
     "analyze_project_state",
     "run_mcp_workflow",
@@ -264,6 +265,7 @@ class MCPPlanningBridgeServer:
         common_output_schema = self._build_common_output_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
+            "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_runner_status": self._tool_get_runner_status,
             "get_version_result": self._tool_get_version_result,
@@ -329,6 +331,25 @@ class MCPPlanningBridgeServer:
                 input_schema={
                     "type": "object",
                     "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_web_gpt_service_entrypoint",
+                description=(
+                    f"[{self.project_hint}] 网页端 GPT 使用 ColaMeta 服务的只读入口卡片。"
+                    "返回推荐首调用顺序、project_name 路由规则、薄治理闭环 draft/provided 用法、权限边界和稳定晋升注意事项。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。若已知目标项目，可返回该项目的只读 identity 摘要；服务模式下仍不执行项目动作。",
+                        }
+                    },
                     "required": [],
                     "additionalProperties": False,
                 },
@@ -3345,6 +3366,7 @@ class MCPPlanningBridgeServer:
 
     def _actions_readonly_tools(self) -> set[str]:
         return {
+            "get_web_gpt_service_entrypoint",
             "get_project_identity",
             "get_plan_standards_report",
             "get_runner_execution_standards",
@@ -4672,6 +4694,144 @@ class MCPPlanningBridgeServer:
 
     def _tool_list_registered_projects(self, _: dict[str, Any]) -> dict[str, Any]:
         return self._list_registered_projects_payload()
+
+    def _tool_get_web_gpt_service_entrypoint(self, params: dict[str, Any]) -> dict[str, Any]:
+        visible_names = self._visible_tool_names()
+        project_identity: dict[str, Any] | None = None
+        project_name = params.get("project_name")
+        if project_name is not None:
+            project_root, project_record = self._resolve_read_only_project_context(params)
+            project_identity = self._project_identity_for_root(project_root)
+            project_identity["project"] = project_record
+
+        registered_projects = self._web_gpt_registered_project_summary()
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "service_profile": {
+                "service_name": "ColaMeta MCP",
+                "mode": "service" if self.service_mode else "project",
+                "mcp_exposure_profile": self.mcp_exposure_profile,
+                "project_name_required_for_project_tools": bool(self.service_mode),
+                "project_hint": self.project_hint,
+                "visible_tool_count": len(visible_names),
+            },
+            "project_identity": project_identity,
+            "registered_projects": registered_projects,
+            "entry_sequence": [
+                {
+                    "step": "discover_projects",
+                    "tool": "list_registered_projects",
+                    "arguments": {},
+                    "why": "服务模式下先确认可用 project_name；不要猜项目目录。",
+                },
+                {
+                    "step": "inspect_project_state",
+                    "tool": "analyze_project_state",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "开工前确认 Git、Runner、Executor、报告和阻断。",
+                },
+                {
+                    "step": "inspect_recent_evidence",
+                    "tool": "manage_workflow_run",
+                    "arguments": {"action": "list", "project_name": "<registered project_name>", "limit": 10},
+                    "why": "查看最近受控操作记录；列表按 created_at 新到旧排序。",
+                },
+            ],
+            "recommended_flows": {
+                "thin_governed_loop_input_draft": {
+                    "tool": "run_mcp_workflow",
+                    "draft_arguments": {
+                        "workflow": "thin_governed_loop_preview",
+                        "phase": "preview",
+                        "project_name": "<registered project_name>",
+                        "input_mode": "draft",
+                        "draft_seed": {
+                            "allowed_files": ["<project-relative path>"],
+                            "validation_commands": ["<validation command>"],
+                            "review_decision_value": "NEEDS_FIX",
+                            "reviewer_notes": "<optional reviewer note>",
+                        },
+                    },
+                    "next_step": "Send result.generated_input_bundle back as thin_loop_inputs with input_mode=provided.",
+                    "provided_arguments": {
+                        "workflow": "thin_governed_loop_preview",
+                        "phase": "preview",
+                        "project_name": "<same registered project_name>",
+                        "thin_loop_inputs": "<generated_input_bundle>",
+                    },
+                    "authority": "read_only_evidence_not_execution_or_acceptance_authority",
+                },
+                "validation": {
+                    "tool": "manage_validation_run",
+                    "preview_arguments": {
+                        "action": "preview",
+                        "scope": "target_files",
+                        "project_name": "<registered project_name>",
+                        "target_files": ["<project-relative path>"],
+                    },
+                    "run_arguments": {
+                        "action": "run",
+                        "project_name": "<same registered project_name>",
+                        "preview_id": "<preview_id from preview>",
+                    },
+                    "status_arguments": {
+                        "action": "status",
+                        "project_name": "<same registered project_name>",
+                        "run_id": "<run_id from run>",
+                    },
+                },
+            },
+            "safety_boundary": {
+                "does_not_authorize_stable_promotion": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_or_push": True,
+                "does_not_create_review_decision": True,
+                "does_not_emit_gate_event": True,
+                "does_not_write_delivery_state": True,
+                "requires_explicit_commander_authorization_for": [
+                    "stable service replacement",
+                    "push",
+                    "executor run",
+                    "route transition",
+                    "release/deploy",
+                ],
+            },
+            "web_gpt_handoff_prompt": (
+                "Start by calling get_web_gpt_service_entrypoint, then list_registered_projects, "
+                "then analyze_project_state with the selected project_name. For thin governed loop work, "
+                "use run_mcp_workflow input_mode=draft to generate generated_input_bundle and feed it back "
+                "as thin_loop_inputs with input_mode=provided. Treat all outputs as evidence unless Commander "
+                "explicitly authorizes a write, run, push, or stable promotion."
+            ),
+            "visible_tool_names": visible_names,
+        }
+
+    def _web_gpt_registered_project_summary(self) -> list[dict[str, Any]]:
+        try:
+            projects = self.project_registry.list_projects().get("projects", [])
+        except Exception:
+            projects = []
+        summary: list[dict[str, Any]] = []
+        if not isinstance(projects, list):
+            return summary
+        for project in projects:
+            if not isinstance(project, dict):
+                continue
+            name = project.get("project_name")
+            root = project.get("project_root") or project.get("path")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            item = {
+                "project_name": name.strip(),
+                "project_root": root if isinstance(root, str) else "",
+                "project_mode": project.get("project_mode"),
+                "runner_managed": bool(project.get("runner_managed")),
+                "last_selected": bool(project.get("last_selected")),
+            }
+            summary.append(item)
+        return summary[:20]
 
     def _tool_get_project_identity(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
