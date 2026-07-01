@@ -467,6 +467,9 @@ After installation, you can use the `colameta` command directly.
 For Jenn's local stable service / Web GPT / Codex operator workflow, see
 [ColaMeta 使用说明书](docs/USAGE.zh-CN.md).
 
+For onboarding a new local project into ColaMeta, see
+[ColaMeta 通用 Onboarding](docs/ONBOARDING.zh-CN.md).
+
 ### Register a managed project
 
 managed mode creates a minimal `.colameta/` structure for the project and enables full version plans, project memory, executor reports, audit packages, and Git closure.

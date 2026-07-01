@@ -4,6 +4,8 @@
 
 它解释“日常怎么用”，不是 release 授权、稳定服务替换授权、Delivery State accepted、ReviewDecision 或 GateEvent。
 
+如果你要把一个新项目接入 ColaMeta，先看 [ColaMeta 通用 Onboarding](ONBOARDING.zh-CN.md)。
+
 ## 0. 最短路径
 
 如果只是想确认 ColaMeta 当前能不能用：
