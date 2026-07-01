@@ -77,6 +77,7 @@ def get_runtime_version_status(
     loaded_runtime_branch: str | None = None,
     process_start_time_iso: str | None = None,
     loaded_module_fingerprints: dict[str, dict[str, Any]] | None = None,
+    local_service: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     loaded_head = _clean_head(loaded_runtime_head if loaded_runtime_head is not None else LOADED_RUNTIME_HEAD)
     project = git_checkout_metadata(project_root)
@@ -128,7 +129,10 @@ def get_runtime_version_status(
         "loaded_module_verification": module_verification,
         "installed_package_verification": installed_package_verification,
     }
-    status["connector_runtime_health"] = get_connector_runtime_health_status(runtime_status=status)
+    status["connector_runtime_health"] = get_connector_runtime_health_status(
+        runtime_status=status,
+        local_service=local_service,
+    )
     return status
 
 
@@ -677,6 +681,7 @@ def _connector_operator_closeout(
         "decision": decision,
         "summary": summary,
         "evidence_gaps": list(evidence_gaps),
+        "evidence_gap_count": len(evidence_gaps),
         "safe_next_actions": _connector_safe_next_actions(status),
         "not_authorized_actions": [
             "read_tunnel_client_config",

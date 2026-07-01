@@ -5256,15 +5256,19 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_runtime_version_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
-        return get_runtime_version_status(project_root)
+        return get_runtime_version_status(
+            project_root,
+            local_service=self._connector_runtime_local_service_evidence(project_root),
+        )
 
     def _tool_get_connector_runtime_health_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
         control_plane = self._connector_external_evidence_param(params, "control_plane")
+        local_service = self._connector_runtime_local_service_evidence(project_root)
         return get_connector_runtime_health_status(
-            runtime_status=get_runtime_version_status(project_root),
-            local_service=self._connector_runtime_local_service_evidence(project_root),
+            runtime_status=get_runtime_version_status(project_root, local_service=local_service),
+            local_service=local_service,
             tunnel_client=tunnel_client,
             control_plane=control_plane,
         )

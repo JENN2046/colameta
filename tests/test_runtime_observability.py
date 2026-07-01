@@ -123,6 +123,37 @@ class RuntimeObservabilityTests(unittest.TestCase):
         }
         assert status["loaded_runtime"]["captured_at_process_start"] is True
 
+    def test_runtime_status_embeds_local_service_evidence_when_provided(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+
+        status = get_runtime_version_status(
+            str(project),
+            loaded_runtime_head=HEAD_A,
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "project_root": str(project),
+                "discovered_from_process_table": True,
+                "enable_web": True,
+                "web_state": "healthy",
+                "web_url": "http://127.0.0.1:8801",
+                "web_host": "127.0.0.1",
+                "web_port": 8801,
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+                "mcp_url": "http://127.0.0.1:8766/mcp",
+                "mcp_host": "127.0.0.1",
+                "mcp_port": 8766,
+            },
+        )
+
+        health = status["connector_runtime_health"]
+        assert health["local_service"]["status"] == "healthy"
+        assert health["local_service"]["pid"] == 12345
+        assert health["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
+        assert health["local_service"]["mcp"]["reason_code"] == "MCP_ENDPOINT_HEALTHY"
+
     def test_mcp_runtime_version_status_tool_is_read_only(self) -> None:
         from runner.mcp_server import MCPPlanningBridgeServer
 

@@ -1601,9 +1601,10 @@ class WebConsoleServer:
         data["remote_git"] = self._api_remote_git_status()
         data["execution_display"] = self._api_execution_display()
         data["project_registry"] = self._api_project_registry()
+        local_service = self._connector_runtime_local_service_evidence()
         data["connector_runtime_health"] = get_connector_runtime_health_status(
-            runtime_status=get_runtime_version_status(self.project_root),
-            local_service=self._connector_runtime_local_service_evidence(),
+            runtime_status=get_runtime_version_status(self.project_root, local_service=local_service),
+            local_service=local_service,
         )
         try:
             data["executor_session_status"] = self.executor_session_store.get_status()

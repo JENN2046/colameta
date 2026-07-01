@@ -129,6 +129,59 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             assert forbidden_field not in result
             assert forbidden_field not in data
 
+    def test_runtime_version_status_tool_uses_current_local_service_evidence(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        requested_urls: list[str] = []
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true, "service": "colameta-web-console"}'
+
+        def fake_urlopen(url: str, timeout: int = 0) -> FakeResponse:
+            requested_urls.append(url)
+            assert timeout == 2
+            return FakeResponse()
+
+        cmdline = [
+            "python",
+            "colameta",
+            "serve",
+            str(project),
+            "--web-host",
+            "127.0.0.1",
+            "--web-port",
+            "8801",
+            "--mcp-host",
+            "127.0.0.1",
+            "--mcp-port",
+            "8766",
+        ]
+
+        with (
+            patch("runner.mcp_server.os.getpid", return_value=24680),
+            patch("runner.mcp_server.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
+            patch("runner.mcp_server.urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            result = server.call_tool_for_agent("get_runtime_version_status", {"project_name": "demo-project"})
+
+        assert result["ok"] is True
+        health = result["data"]["connector_runtime_health"]
+        assert health["local_service"]["status"] == "healthy"
+        assert health["local_service"]["pid"] == 24680
+        assert health["local_service"]["health_source"] == "process_table"
+        assert health["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
+        assert health["local_service"]["mcp"]["reason_code"] == "MCP_ENDPOINT_HEALTHY"
+        assert requested_urls == ["http://127.0.0.1:8801/api/healthz"]
+
     def test_connector_runtime_health_separates_local_and_external_evidence(self) -> None:
         health = get_connector_runtime_health_status(
             runtime_status={
@@ -171,6 +224,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert health["external_connector"]["control_plane"]["reason_code"] == "TUNNEL_CONTROL_PLANE_UNVERIFIED"
         assert health["operator_closeout"]["status"] == "local_runtime_ready_external_connector_unverified"
         assert health["operator_closeout"]["decision"] == "blocked"
+        assert health["operator_closeout"]["evidence_gap_count"] == 2
         assert health["operator_closeout"]["evidence_gaps"] == [
             {
                 "component": "tunnel_client",
@@ -224,6 +278,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert health["external_connector"]["status"] == "healthy"
         assert health["operator_closeout"]["status"] == "connector_closeout_ready"
         assert health["operator_closeout"]["decision"] == "ready"
+        assert health["operator_closeout"]["evidence_gap_count"] == 0
         assert health["evidence_gaps"] == []
         serialized = json.dumps(health, ensure_ascii=False)
         assert "must-not-return" not in serialized
