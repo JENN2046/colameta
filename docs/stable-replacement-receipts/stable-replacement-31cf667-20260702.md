@@ -146,13 +146,53 @@ get_runtime_version_status:
 ## Local Codex MCP Follow-Up
 
 ```yaml
-current_colameta_local_mcp_config:
+colameta_local_mcp_config_at_replacement_time:
   name: colameta-local
   transport: stdio
   status: workaround_still_active
 http_target_for_closeout: http://127.0.0.1:8766/mcp
 next_validation: switch colameta-local back to streamable_http and start a new Codex session
 ```
+
+## Local Codex HTTP MCP Closeout
+
+This follow-up was completed after the stable replacement smoke and after the
+receipt evidence was first recorded.
+
+```yaml
+codex_mcp_config_after_closeout:
+  name: colameta-local
+  enabled: true
+  transport: streamable_http
+  url: http://127.0.0.1:8766/mcp
+  bearer_token_env_var: null
+  http_headers: null
+  env_http_headers: null
+http_mcp_handshake_smoke:
+  initialize:
+    status: 200
+    has_result: true
+  notifications_initialized_without_id:
+    status: 202
+    body_bytes: 0
+  tools_list:
+    status: 200
+    tools_count: 25
+    has_list_registered_projects: true
+codex_cli_session_startup_smoke:
+  command_shape: "timeout 12 codex --no-alt-screen -C /home/jenn/src/colameta-dev"
+  exit_reason: timeout_after_startup_observation
+  exit_code: 124
+  mcp_startup_failed_seen: false
+  transport_channel_closed_seen: false
+  colameta_local_error_seen: false
+  model_prompt_submitted: false
+  tool_call_from_model: not_performed
+```
+
+The Codex CLI startup smoke verifies that the previous startup failure signature
+was not observed after switching `colameta-local` back to HTTP. It does not
+claim a model-initiated tool call or Apps connector reauthentication.
 
 ## Not Performed
 
