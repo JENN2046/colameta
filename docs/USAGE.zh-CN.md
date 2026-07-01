@@ -4,6 +4,56 @@
 
 它解释“日常怎么用”，不是 release 授权、稳定服务替换授权、Delivery State accepted、ReviewDecision 或 GateEvent。
 
+## 0. 最短路径
+
+如果只是想确认 ColaMeta 当前能不能用：
+
+```text
+1. 跑 colameta status
+2. 看 Web healthy / MCP healthy
+3. 调 get_runtime_version_status
+4. 调 get_connector_runtime_health_status
+```
+
+如果网页 GPT 或本地 agent 刚连上稳定 MCP：
+
+```text
+1. list_registered_projects
+2. get_agent_consumer_contract
+3. get_service_entry_profile(profile_id="web_gpt_commander")
+4. get_web_gpt_service_entrypoint
+5. get_runtime_version_status(project_name="colameta-self-dev")
+6. get_connector_runtime_health_status(project_name="colameta-self-dev")
+```
+
+如果要开一轮受控优化：
+
+```text
+1. run_mcp_workflow workflow=thin_governed_loop_preview input_mode=draft
+2. 检查 result.generated_input_bundle
+3. 直接回灌 result.next_request_payload
+4. 让本地 Codex 按 allowed_files / validation_commands 做实现和验证
+5. 审 diff 后再决定 commit / push / stable replacement
+```
+
+如果只是想做验收或回归：
+
+```text
+1. manage_validation_run action=preview
+2. manage_validation_run action=run preview_id=<preview_id>
+3. manage_validation_run action=status run_id=<run_id>
+4. 把通过/失败结果写成 receipt 或反馈，不直接写 Delivery accepted
+```
+
+如果 connector/tunnel 还显示 unverified：
+
+```text
+1. 先确认 local_service=healthy
+2. 只从 approved status surface 摘 sanitized evidence
+3. 回灌 get_connector_runtime_health_status
+4. 看到 operator_closeout.decision=ready 后再写 closeout receipt
+```
+
 ## 1. 先判断你在用哪个入口
 
 ColaMeta 常见有三类入口：
@@ -108,6 +158,32 @@ result.structuredContent.data
 ```
 
 `result.content[0].text` 只是给 MCP 客户端显示的短文本，不是主要结构化结果。
+
+工具结果的通用读法：
+
+```text
+ok=true
+  读取 data；继续看 read_only、side_effects、recommended_next_reads。
+
+ok=false
+  先读 error_code、message、details；不要猜参数。
+
+packaged=true
+  当前结果被压成 manifest；按 recommended_next_reads 分段续读。
+```
+
+最常见的错误处理：
+
+```text
+PROJECT_NAME_REQUIRED
+  先 list_registered_projects，再带 project_name 重试。
+
+PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
+  服务模式不接受任意 project_root，只能使用 registry 中的 project_name。
+
+UNKNOWN_SERVICE_ENTRY_PROFILE
+  先 get_agent_consumer_contract，看 service_entry_profiles 里的 profile_id。
+```
 
 ## 3. 五种常用角色
 
@@ -348,6 +424,23 @@ receipt
 不要把 CI success、read-only evidence、preview 或 receipt 自动理解为 stable replacement 授权。
 
 ## 9. 常见故障
+
+### 说明书 smoke checklist
+
+每次改完说明书或稳定服务后，最小验收：
+
+```text
+colameta status 显示 running
+Web /api/healthz OK
+MCP /healthz OK
+tools/list 能看到关键入口工具
+list_registered_projects 能看到 colameta-self-dev
+get_runtime_version_status(project_name) 能返回 runtime_loaded_code_stale / reload_awareness_reason
+get_connector_runtime_health_status(project_name) 能返回 local_service / external_connector / operator_closeout
+run_mcp_workflow thin_governed_loop_preview input_mode=draft 能返回 generated_input_bundle / next_request_payload
+```
+
+如果这些都通过，说明日常指挥入口可用。connector/tunnel 仍可能是 `unverified`，那是外部证据未闭合，不等于本地 ColaMeta Web/MCP 不可用。
 
 ### `PROJECT_NAME_REQUIRED`
 
