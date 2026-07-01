@@ -92,3 +92,30 @@ tunnel-client config, proxy config, provider auth, tokens, cookies, private
 memory, or raw provider responses, and it does not authorize network/proxy
 mutation, stable service replacement, executor run, route transition, or
 Delivery State acceptance.
+
+## Receipt / Closeout Packet
+
+A connector/tunnel closeout receipt is a short evidence packet, not a state
+transition. It should record:
+
+- source refs: dev HEAD, origin/main, stable service commit when known, and the
+  exact read-only status surfaces used;
+- local evidence: Web health, MCP health, runtime freshness, and whether the
+  dedicated connector health tool is available on the service being checked;
+- external evidence: separate `tunnel_client` and `control_plane` summaries,
+  each with `status`, `reason_code`, `evidence_source`, and
+  `last_observed_at` when safely available;
+- closeout decision: `ready` only when local runtime, Web/MCP, tunnel-client,
+  and control-plane evidence are healthy; otherwise `blocked`;
+- residual gaps and forbidden actions.
+
+Allowed external statuses are `healthy`, `degraded`, `unavailable`, and
+`unverified`. A missing component is `unverified`, not healthy. A degraded or
+unavailable component blocks closeout even when the other component is healthy.
+
+Receipts must not include raw tokens, cookies, credentials, provider responses,
+tunnel-client config, proxy config, private memory, logs, runtime keys, or
+browser/login state. A receipt also does not authorize connector repair,
+tunnel-client restart, proxy/provider mutation, stable service replacement,
+executor run, route transition, ReviewDecision, GateEvent, commit, push, release,
+deploy, or Delivery State acceptance.

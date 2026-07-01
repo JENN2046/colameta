@@ -178,6 +178,60 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "must-not-return" not in serialized
         assert "Bearer" not in serialized
 
+    def test_connector_runtime_health_blocks_when_control_plane_evidence_is_missing(self) -> None:
+        health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "installed_package_matches_project_checkout",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+            tunnel_client={"status": "healthy", "reason_code": "TUNNEL_CLIENT_HEALTHY"},
+        )
+
+        assert health["external_connector"]["status"] == "unverified"
+        assert health["external_connector"]["tunnel_client"]["status"] == "healthy"
+        assert health["external_connector"]["control_plane"]["status"] == "unverified"
+        assert health["operator_closeout"]["status"] == "local_runtime_ready_external_connector_unverified"
+        assert health["operator_closeout"]["decision"] == "blocked"
+        assert [gap["component"] for gap in health["evidence_gaps"]] == ["tunnel_control_plane"]
+
+    def test_connector_runtime_health_distinguishes_degraded_external_evidence(self) -> None:
+        health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "installed_package_matches_project_checkout",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+            tunnel_client={"status": "degraded"},
+            control_plane={"status": "healthy"},
+        )
+
+        assert health["overall_status"] == "local_runtime_observed_external_connector_degraded"
+        assert health["external_connector"]["status"] == "degraded"
+        assert health["external_connector"]["tunnel_client"]["status"] == "degraded"
+        assert health["external_connector"]["tunnel_client"]["reason_code"] == "TUNNEL_CLIENT_DEGRADED"
+        assert health["external_connector"]["control_plane"]["status"] == "healthy"
+        assert health["operator_closeout"]["status"] == "external_connector_attention_needed"
+        assert health["operator_closeout"]["decision"] == "blocked"
+
     def test_connector_runtime_health_fails_closed_without_evidence(self) -> None:
         health = get_connector_runtime_health_status()
 
