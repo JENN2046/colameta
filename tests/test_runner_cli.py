@@ -5,6 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
@@ -34,8 +35,16 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "enable_mcp": True,
             "discovered_from_process_table": True,
         }
+        runtime_status = {
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+        }
 
-        with contextlib.redirect_stderr(stderr):
+        with (
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
+        ):
             runner_cli._print_connector_runtime_health_summary(
                 project_path=str(self.project),
                 metadata=metadata,
@@ -46,7 +55,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
 
         output = stderr.getvalue()
         assert "Connector/runtime: local_service=healthy source=process_table external_connector=unverified" in output
-        assert "closeout=local_service_ready_runtime_unverified" in output
+        assert "closeout=local_runtime_ready_external_connector_unverified" in output
         assert "LOCAL_SERVICE_HEALTHY" in output
         assert "WEB_ENDPOINT_HEALTHY" in output
         assert "MCP_ENDPOINT_HEALTHY" in output

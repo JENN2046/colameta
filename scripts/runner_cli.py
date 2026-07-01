@@ -29,7 +29,7 @@ from runner.runner_paths import (
     resolve_project_runner_rel_dir,
 )
 from runner.service_lifecycle_store import ServiceLifecycleStore
-from runner.runtime_observability import get_connector_runtime_health_status
+from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
 
 
 SERVICE_WAIT_TIMEOUT_SECONDS = 2.0
@@ -323,7 +323,10 @@ def _print_connector_runtime_health_summary(
             "health_source": "metadata_absent",
             "project_root": _resolve_path(project_path),
         }
-    health = get_connector_runtime_health_status(local_service=local_service)
+    health = get_connector_runtime_health_status(
+        runtime_status=get_runtime_version_status(project_path),
+        local_service=local_service,
+    )
     local = health["local_service"]
     external = health["external_connector"]
     closeout = health["operator_closeout"]

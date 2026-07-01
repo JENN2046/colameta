@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import hashlib
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from dataclasses import dataclass
@@ -39,8 +40,9 @@ from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
-from runner.runtime_observability import get_runtime_version_status
+from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
 from runner.stable_promotion_readiness import get_stable_promotion_readiness
+from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -70,6 +72,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_web_gpt_service_entrypoint",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
+    "get_connector_runtime_health_status",
     "analyze_project_state",
     "run_mcp_workflow",
     "manage_executor_config",
@@ -141,6 +144,7 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
+    "get_connector_runtime_health_status",
     "get_plan_standards_report",
     "get_review_context",
     "manage_project_memory",
@@ -275,6 +279,7 @@ class MCPPlanningBridgeServer:
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
+            "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
             "get_runner_status": self._tool_get_runner_status,
             "get_version_result": self._tool_get_version_result,
             "get_next_version_plan": self._tool_get_next_version_plan,
@@ -442,6 +447,49 @@ class MCPPlanningBridgeServer:
                             "type": "string",
                             "description": "可选。按已登记 project_name 路由读取目标项目 checkout HEAD；服务模式下必须显式提供。",
                         }
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_connector_runtime_health_status",
+                description=(
+                    f"[{self.project_hint}] Read-only connector/runtime closeout card. "
+                    "Combines runtime freshness, local Web/MCP service evidence, and optional sanitized tunnel_client/control_plane status. "
+                    "It does not read tunnel/proxy/provider config, secrets, tokens, cookies, logs, private memory, or raw provider responses, "
+                    "and it does not modify service/network state."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目；服务模式下必须显式提供。",
+                        },
+                        "tunnel_client": {
+                            "type": "object",
+                            "description": "可选。调用方提供的 sanitized tunnel-client 状态，只采信 status/reason_code/evidence_source/last_observed_at。",
+                            "properties": {
+                                "status": {"type": "string"},
+                                "reason_code": {"type": "string"},
+                                "evidence_source": {"type": "string"},
+                                "last_observed_at": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                        "control_plane": {
+                            "type": "object",
+                            "description": "可选。调用方提供的 sanitized tunnel control-plane 状态，只采信 status/reason_code/evidence_source/last_observed_at。",
+                            "properties": {
+                                "status": {"type": "string"},
+                                "reason_code": {"type": "string"},
+                                "evidence_source": {"type": "string"},
+                                "last_observed_at": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
                     },
                     "required": [],
                     "additionalProperties": False,
@@ -4805,6 +4853,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
                     {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
+                    {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                 ],
                 "primary_workflow": "thin_governed_loop_preview",
@@ -4820,6 +4869,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=10)},
                     {"tool": "list_executor_run_reports", "arguments": project_args(limit=10)},
                 ],
@@ -4986,6 +5036,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_service_entry_profile", "why": "Select a consumer-specific entry profile."},
                 {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
+                {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
             ],
             "service_entry_profiles_version": "service_entry_profiles.v1",
@@ -5047,6 +5098,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stable_promotion_readiness",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "确认当前服务是否只是 dev 试用、可进入稳定晋升审查，还是仍有本地阻断。",
+                },
+                {
+                    "step": "inspect_connector_runtime_health",
+                    "tool": "get_connector_runtime_health_status",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "确认 local Web/MCP、runtime freshness、external connector/tunnel evidence 是否闭合。",
                 },
                 {
                     "step": "inspect_project_state",
@@ -5200,6 +5257,111 @@ class MCPPlanningBridgeServer:
     def _tool_get_runtime_version_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
         return get_runtime_version_status(project_root)
+
+    def _tool_get_connector_runtime_health_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
+        control_plane = self._connector_external_evidence_param(params, "control_plane")
+        return get_connector_runtime_health_status(
+            runtime_status=get_runtime_version_status(project_root),
+            local_service=self._connector_runtime_local_service_evidence(project_root),
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
+        )
+
+    @staticmethod
+    def _connector_external_evidence_param(params: dict[str, Any], key: str) -> dict[str, Any] | None:
+        value = params.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise MCPToolInputError("INVALID_CONNECTOR_EVIDENCE", f"{key} 必须是对象。")
+        allowed = {"status", "reason_code", "evidence_source", "last_observed_at"}
+        extra = [item for item in value if item not in allowed]
+        if extra:
+            raise MCPToolInputError(
+                "UNSAFE_CONNECTOR_EVIDENCE",
+                f"{key} 只能包含 sanitized evidence 字段。",
+                {"field": key, "allowed_fields": sorted(allowed), "rejected_field_count": len(extra)},
+            )
+        return dict(value)
+
+    def _connector_runtime_local_service_evidence(self, project_root: str) -> dict[str, Any] | None:
+        parts = ServiceLifecycleStore.read_process_cmdline_parts(os.getpid()) or []
+        for index, token in enumerate(parts):
+            if token != "serve" or index + 1 >= len(parts):
+                continue
+            project_token = parts[index + 1]
+            if not self._project_token_matches(project_token, project_root):
+                continue
+            args = parts[index + 2:]
+            enable_web = "--no-web" not in args
+            enable_mcp = "--no-mcp" not in args
+            web_host = self._cmd_option_value(args, "--web-host", "127.0.0.1")
+            web_port = self._cmd_option_int(args, "--web-port", 8799)
+            mcp_host = self._cmd_option_value(args, "--mcp-host", "127.0.0.1")
+            mcp_port = self._cmd_option_int(args, "--mcp-port", 8765)
+            return {
+                "state": "running",
+                "health_source": "process_table",
+                "pid": os.getpid(),
+                "project_root": project_root,
+                "metadata_project_matches": True,
+                "discovered_from_process_table": True,
+                "enable_web": enable_web,
+                "web_state": (
+                    "healthy"
+                    if enable_web and self._local_http_healthz_ok(web_host, web_port, "colameta-web-console")
+                    else ("disabled" if not enable_web else "starting")
+                ),
+                "web_url": f"http://{web_host}:{web_port}" if enable_web else None,
+                "web_host": web_host,
+                "web_port": web_port,
+                "enable_mcp": enable_mcp,
+                "mcp_state": "healthy" if enable_mcp else None,
+                "mcp_url": f"http://{mcp_host}:{mcp_port}/mcp" if enable_mcp else None,
+                "mcp_host": mcp_host,
+                "mcp_port": mcp_port,
+            }
+        return None
+
+    @staticmethod
+    def _project_token_matches(value: str, project_root: str) -> bool:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(value))) == os.path.realpath(project_root)
+
+    @staticmethod
+    def _cmd_option_value(args: list[str], name: str, default: str) -> str:
+        for index, token in enumerate(args):
+            if token == name and index + 1 < len(args):
+                return args[index + 1]
+            if token.startswith(name + "="):
+                return token.split("=", 1)[1]
+        return default
+
+    @staticmethod
+    def _cmd_option_int(args: list[str], name: str, default: int) -> int:
+        try:
+            return int(MCPPlanningBridgeServer._cmd_option_value(args, name, str(default)))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _local_http_healthz_ok(host: Any, port: Any, expected_service: str) -> bool:
+        host_text = str(host or "").strip()
+        if host_text not in {"127.0.0.1", "localhost", "::1"}:
+            return False
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError):
+            return False
+        if port_int <= 0:
+            return False
+        try:
+            with urllib.request.urlopen(f"http://{host_text}:{port_int}/healthz", timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return False
+        return bool(isinstance(payload, dict) and payload.get("ok") is True and payload.get("service") == expected_service)
 
     def _tool_get_runner_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)

@@ -60,8 +60,9 @@
 3. `get_service_entry_profile`，传入 `profile_id=web_gpt_commander`
 4. `get_web_gpt_service_entrypoint`
 5. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
-6. `analyze_project_state`，必须传入已登记的 `project_name`
-7. `manage_workflow_run`，用 `action=list` 查看最近证据
+6. `get_connector_runtime_health_status`，必须传入已登记的 `project_name`
+7. `analyze_project_state`，必须传入已登记的 `project_name`
+8. `manage_workflow_run`，用 `action=list` 查看最近证据
 
 网页端 GPT 应选择 `service_entry_profiles` 里的 `web_gpt_commander` 画像。这个画像的意思是：网页 GPT 可以负责读服务入口、整理 payload、向 Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。
 
@@ -77,6 +78,21 @@
 ```
 
 这个工具只读，用来判断当前服务候选是否只是 dev 试用、是否可进入稳定晋升审查、以及还有哪些 local blockers / warnings。它不授权替换稳定服务。
+
+```json
+{
+  "name": "get_connector_runtime_health_status",
+  "arguments": {
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+这个工具只读，用来区分本地 runtime/Web/MCP 健康和外部 connector/tunnel 真实可用性。缺少
+`tunnel_client` 或 `control_plane` sanitized evidence 时，closeout 必须保持 blocked；
+只有本地 runtime、Web/MCP、tunnel-client、control-plane 证据都 healthy 时，才会进入
+`connector_closeout_ready`。它不读取 tunnel-client/proxy/provider 配置，不读取 token/cookie/
+credential，也不授权网络修复或稳定服务替换。
 
 ```json
 {

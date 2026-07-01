@@ -524,6 +524,71 @@ classification message，不只是 raw `head_mismatch`；v1.9 runtime loaded-cod
 启动 executor 或运行 bounded loop；Git commit/push/fetch/pull/tag/release/remote mutation；修改
 `/home/jenn/tools/colameta`；修改 dangerous action guards 或 Git remote mutation policy。
 
+### v1.16：Connector Runtime Health MCP Closeout Tool V1
+
+源 prompt：`.colameta/prompts/v1.16.md`
+
+目标：把 connector/runtime 真实可用性闭环暴露成只读 MCP 工具。它同时看 runtime freshness、
+本地 Web/MCP 服务证据，以及调用方提供的 sanitized tunnel-client / control-plane 证据；没有外部
+connector 证据时必须 fail closed，不能把本地健康误写成外部可用。
+
+允许修改文件：
+
+- `runner/runtime_observability.py`
+- `runner/mcp_server.py`
+- `scripts/runner_cli.py`
+- `tests/test_mcp_runtime_observability.py`
+- `tests/test_runner_cli.py`
+- `docs/connector-runtime-health-observability.md`
+- `docs/web-gpt-service-entrypoint.zh-CN.md`
+
+禁止修改边界：
+
+- `.env`、secrets、tokens、credentials、cookies、provider/auth/proxy config；
+- `/home/jenn/tools/tunnel-client/**`、`/home/jenn/tools/colameta/**`、`~/.codex/**`、
+  `~/.config/tunnel-client/**`；
+- `.colameta/state.json`、`.colameta/decisions.json`、`.colameta/memory.md`、
+  `.colameta/todolist.json`。
+
+验收命令：compileall runtime/MCP/CLI，focused MCP runtime observability 和 CLI tests，`git diff --check`。
+
+人工验收：`get_connector_runtime_health_status` 在 normal MCP profile 可见，仍是 `mcp:read`、
+`read_only=true`、`side_effects=false`；缺 tunnel-client/control-plane evidence 时 closeout blocked；
+有 sanitized healthy evidence 时可以进入 `connector_closeout_ready`；任何 token、Bearer、secret、
+credential、cookie、api key、provider raw response 字符串不得回显。
+
+非目标：读取 tunnel-client config/logs/runtime key、修网络/代理/provider、重启 tunnel-client、
+替换稳定服务、外部 paid provider probe、executor run、route transition、ReviewDecision、GateEvent、
+Delivery State accepted、push、release、deploy。
+
+### v1.17：Connector Tunnel Evidence Receipt And Closeout Packet V1
+
+源 prompt：`.colameta/prompts/v1.17.md`
+
+目标：补一份受控 connector/tunnel closeout receipt 格式，把真实可用性证据、缺口和 closeout decision
+写成可审查证据包。它只消费 approved status surface 的 sanitized evidence，不读取 secret-bearing
+原始材料，也不自动修复 connector/tunnel。
+
+允许修改文件：
+
+- `docs/connector-runtime-health-observability.md`
+- `docs/stable-replacement-receipts/*.md`
+- `docs/connector-tunnel-closeout-receipts/*.md`
+- `tests/test_mcp_runtime_observability.py`
+
+禁止修改边界：同 v1.16，额外强调不写 Delivery State accepted，不创建 ReviewDecision / GateEvent，
+不做 stable service replacement、executor run、route transition、push、release 或 deploy。
+
+验收命令：focused MCP runtime observability test，`git diff --check`。
+
+人工验收：receipt 能区分 local Web/MCP healthy、runtime fresh、tunnel-client healthy/unverified/degraded、
+control-plane healthy/unverified/degraded；receipt 不包含 raw token、cookie、credential、provider response、
+tunnel-client config、proxy config 或 private memory；任一外部证据缺失时 closeout 仍 blocked。
+
+非目标：自动 connector repair、tunnel-client restart、proxy/provider mutation、stable replacement、
+executor run、route transition、Delivery State accepted、ReviewDecision、GateEvent、commit、push、release、
+deploy。
+
 ---
 
 ## 4. 总体边界复述

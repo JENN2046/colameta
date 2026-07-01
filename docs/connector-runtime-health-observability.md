@@ -1,8 +1,9 @@
 # Connector / Runtime Health Observability
 
-`get_runtime_version_status` includes `connector_runtime_health`, a read-only
-health card that separates local ColaMeta runtime evidence from external MCP
-connector evidence.
+`get_runtime_version_status` includes `connector_runtime_health`, and MCP exposes
+`get_connector_runtime_health_status` as a dedicated read-only closeout card.
+Both separate local ColaMeta runtime evidence from external MCP connector
+evidence.
 
 The goal is to distinguish these cases without reading secrets or mutating
 service state:
@@ -58,6 +59,10 @@ Current safe surfaces:
 
 - MCP `get_runtime_version_status` returns the full
   `connector_runtime_health` card.
+- MCP `get_connector_runtime_health_status` returns the same closeout shape as a
+  first-class read-only tool. It accepts optional caller-provided sanitized
+  `tunnel_client` and `control_plane` summaries with only these fields:
+  `status`, `reason_code`, `evidence_source`, and `last_observed_at`.
 - Web `/api/status` includes a compact card based on the fact that the Web API
   itself is responding; MCP and external connector evidence remain unverified
   unless supplied by another safe status path.
@@ -69,6 +74,11 @@ Current safe surfaces:
 The status output is evidence only. It does not authorize stable replacement,
 restart, route transition, executor run, ReviewDecision, GateEvent, or Delivery
 State acceptance.
+
+The dedicated MCP tool rejects external evidence objects with extra fields. This
+keeps raw values such as runtime keys, tokens, cookies, credentials, proxy config,
+tunnel-client config, logs, or provider responses out of the tool result and out
+of normal closeout handling.
 
 ## Closeout Semantics
 

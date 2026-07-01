@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
@@ -140,6 +141,43 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "restart_or_replace_stable_service" in health["operator_closeout"]["not_authorized_actions"]
         assert health["safety_boundary"]["does_not_read_provider_auth"] is True
 
+    def test_connector_runtime_health_closes_out_with_sanitized_external_evidence(self) -> None:
+        health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "installed_package_matches_project_checkout",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+            tunnel_client={
+                "status": "healthy",
+                "reason_code": "TUNNEL_CLIENT_HEALTHY",
+                "evidence_source": "sanitized_status_surface",
+                "raw_token": "must-not-return",
+            },
+            control_plane={
+                "status": "healthy",
+                "reason_code": "TUNNEL_CONTROL_PLANE_HEALTHY",
+                "evidence_source": "Bearer must-not-return",
+            },
+        )
+
+        assert health["external_connector"]["status"] == "healthy"
+        assert health["operator_closeout"]["status"] == "connector_closeout_ready"
+        assert health["operator_closeout"]["decision"] == "ready"
+        assert health["evidence_gaps"] == []
+        serialized = json.dumps(health, ensure_ascii=False)
+        assert "must-not-return" not in serialized
+        assert "Bearer" not in serialized
+
     def test_connector_runtime_health_fails_closed_without_evidence(self) -> None:
         health = get_connector_runtime_health_status()
 
@@ -158,6 +196,72 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "LOCAL_SERVICE_HEALTH_UNVERIFIED" in health["reason_codes"]
         assert "CONNECTOR_HEALTH_UNVERIFIED" in health["reason_codes"]
 
+    def test_connector_runtime_health_tool_accepts_sanitized_external_evidence(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        runtime_status = {
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+        }
+        local_service = {
+            "state": "running",
+            "health_source": "process_table",
+            "pid": 12345,
+            "enable_web": True,
+            "web_state": "healthy",
+            "enable_mcp": True,
+            "mcp_state": "healthy",
+        }
+
+        with (
+            patch("runner.mcp_server.get_runtime_version_status", return_value=runtime_status),
+            patch.object(server, "_connector_runtime_local_service_evidence", return_value=local_service),
+        ):
+            result = server.call_tool_for_agent(
+                "get_connector_runtime_health_status",
+                {
+                    "project_name": "demo-project",
+                    "tunnel_client": {"status": "healthy", "reason_code": "TUNNEL_CLIENT_HEALTHY"},
+                    "control_plane": {"status": "healthy", "reason_code": "TUNNEL_CONTROL_PLANE_HEALTHY"},
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_connector_runtime_health_status"
+        data = result["data"]
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["external_connector"]["status"] == "healthy"
+        assert data["operator_closeout"]["status"] == "connector_closeout_ready"
+        assert data["operator_closeout"]["decision"] == "ready"
+
+    def test_connector_runtime_health_tool_rejects_unsanitized_external_fields(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent(
+            "get_connector_runtime_health_status",
+            {
+                "project_name": "demo-project",
+                "tunnel_client": {
+                    "status": "healthy",
+                    "reason_code": "TUNNEL_CLIENT_HEALTHY",
+                    "raw_token": "must-not-return",
+                },
+            },
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "UNSAFE_CONNECTOR_EVIDENCE"
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert "must-not-return" not in serialized
+        assert "raw_token" not in serialized
+
     def test_web_gpt_service_entrypoint_is_read_only_and_guides_project_routing(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
@@ -168,14 +272,20 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_agent_consumer_contract" in tool_defs
         assert "get_service_entry_profile" in tool_defs
         assert "get_web_gpt_service_entrypoint" in tool_defs
+        assert "get_connector_runtime_health_status" in tool_defs
+        connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
+        assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False
+        assert connector_schema["properties"]["control_plane"]["additionalProperties"] is False
         assert "get_stable_promotion_readiness" in tool_defs
         assert "get_agent_consumer_contract" in server._visible_tool_names()
         assert "get_service_entry_profile" in server._visible_tool_names()
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
+        assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_service_entry_profile", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
 
         result = server.call_tool_for_agent("get_web_gpt_service_entrypoint", {})
@@ -203,7 +313,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
         assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
         assert data["entry_sequence"][3]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][4]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][4]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][5]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"

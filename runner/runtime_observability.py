@@ -147,6 +147,8 @@ def get_connector_runtime_health_status(
     """
     runtime = _runtime_health_summary(runtime_status)
     service = _local_service_health_summary(local_service)
+    tunnel_client = _sanitize_external_component_input(tunnel_client)
+    control_plane = _sanitize_external_component_input(control_plane)
     tunnel = _external_component_summary(
         tunnel_client,
         component="tunnel_client",
@@ -525,24 +527,35 @@ def _external_component_summary(
     raw_status = _clean_status_text(component_status.get("status")) or "unverified"
     if raw_status in {"healthy", "ready", "running", "ok"}:
         status = "healthy"
-        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_HEALTHY"
+        reason_code = _clean_reason_code(component_status.get("reason_code")) or f"{component.upper()}_HEALTHY"
     elif raw_status in {"unavailable", "missing", "stopped"}:
         status = "unavailable"
-        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_UNAVAILABLE"
+        reason_code = _clean_reason_code(component_status.get("reason_code")) or f"{component.upper()}_UNAVAILABLE"
     elif raw_status in {"degraded", "failing", "failed"}:
         status = "degraded"
-        reason_code = _clean_status_text(component_status.get("reason_code")) or f"{component.upper()}_DEGRADED"
+        reason_code = _clean_reason_code(component_status.get("reason_code")) or f"{component.upper()}_DEGRADED"
     else:
         status = "unverified"
-        reason_code = _clean_status_text(component_status.get("reason_code")) or unknown_reason_code
+        reason_code = _clean_reason_code(component_status.get("reason_code")) or unknown_reason_code
 
     return {
         "component": component,
         "status": status,
         "reason_code": reason_code,
         "reason_codes": [reason_code],
-        "evidence_source": _clean_status_text(component_status.get("evidence_source")) or "provided_status",
-        "last_observed_at": _clean_status_text(component_status.get("last_observed_at")),
+        "evidence_source": _clean_safe_evidence_text(component_status.get("evidence_source")) or "provided_status",
+        "last_observed_at": _clean_safe_evidence_text(component_status.get("last_observed_at")),
+    }
+
+
+def _sanitize_external_component_input(component_status: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(component_status, dict):
+        return None
+    return {
+        "status": _clean_status_text(component_status.get("status")),
+        "reason_code": _clean_reason_code(component_status.get("reason_code")),
+        "evidence_source": _clean_safe_evidence_text(component_status.get("evidence_source")),
+        "last_observed_at": _clean_safe_evidence_text(component_status.get("last_observed_at")),
     }
 
 
@@ -725,6 +738,41 @@ def _clean_status_text(value: Any) -> str | None:
         return None
     candidate = value.strip()
     return candidate or None
+
+
+def _clean_reason_code(value: Any) -> str | None:
+    candidate = _clean_status_text(value)
+    if candidate is None:
+        return None
+    candidate = candidate.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_]{2,80}", candidate):
+        return None
+    return candidate
+
+
+def _clean_safe_evidence_text(value: Any) -> str | None:
+    candidate = _clean_status_text(value)
+    if candidate is None:
+        return None
+    if len(candidate) > 160:
+        return None
+    lowered = candidate.lower()
+    sensitive_markers = (
+        "bearer ",
+        "authorization",
+        "cookie",
+        "token",
+        "secret",
+        "credential",
+        "api_key",
+        "apikey",
+        "sk-",
+        "key=",
+        "auth=",
+    )
+    if any(marker in lowered for marker in sensitive_markers):
+        return None
+    return candidate
 
 
 def _clean_local_service_url(value: Any) -> str | None:

@@ -1588,6 +1588,138 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.16",
+      "name": "Connector Runtime Health MCP Closeout Tool V1",
+      "description": "Expose a read-only MCP connector/runtime health closeout tool that combines runtime freshness, local Web/MCP service evidence, and optional sanitized tunnel-client/control-plane evidence so external connector usability can be closed only when safe evidence is present.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.16.md",
+      "enabled": true,
+      "context_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "runner/web_console.py",
+        "scripts/runner_cli.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runner_cli.py",
+        "docs/connector-runtime-health-observability.md"
+      ],
+      "allowed_files": [
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py",
+        "scripts/runner_cli.py",
+        "tests/test_mcp_runtime_observability.py",
+        "tests/test_runner_cli.py",
+        "docs/connector-runtime-health-observability.md",
+        "docs/web-gpt-service-entrypoint.zh-CN.md"
+      ],
+      "forbidden_files": [
+        ".env",
+        ".env.*",
+        "**/.env",
+        "/home/jenn/tools/tunnel-client/**",
+        "/home/jenn/tools/colameta/**",
+        "~/.codex/**",
+        "~/.config/tunnel-client/**",
+        "**/*secret*",
+        "**/*token*",
+        "**/*credential*",
+        ".colameta/state.json",
+        ".colameta/decisions.json",
+        ".colameta/memory.md",
+        ".colameta/todolist.json"
+      ],
+      "acceptance_commands": [
+        {
+          "command": ".venv/bin/python -m compileall runner/runtime_observability.py runner/mcp_server.py scripts/runner_cli.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python -m pytest tests/test_mcp_runtime_observability.py tests/test_runner_cli.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "get_connector_runtime_health_status is visible in normal MCP profile and remains mcp:read/read_only/side_effects=false.",
+        "Without tunnel-client/control-plane evidence, closeout remains blocked and external_connector remains unverified.",
+        "With sanitized healthy tunnel-client and control-plane evidence, operator_closeout can become connector_closeout_ready.",
+        "Unsafe evidence strings containing token, Bearer, secret, credential, cookie, api key, or provider raw response text are not echoed."
+      ],
+      "out_of_scope": [
+        "Reading tunnel-client config, logs, runtime key, proxy config, provider auth, tokens, cookies, private memory, or provider raw responses.",
+        "Repairing network/proxy/provider configuration.",
+        "Starting, stopping, or restarting tunnel-client or ColaMeta stable service.",
+        "External paid provider probe or OpenAI API call.",
+        "executor run, route transition, ReviewDecision creation, GateEvent emission, Delivery State transition, git push, or stable service replacement."
+      ],
+      "execution": {
+        "provider": "codex"
+      }
+    },
+    {
+      "version": "v1.17",
+      "name": "Connector Tunnel Evidence Receipt And Closeout Packet V1",
+      "description": "Add a bounded evidence receipt/closeout packet for real connector/tunnel usability checks, recording sanitized external connector evidence and residual gaps without reading secrets or mutating tunnel, proxy, provider, service, Git, executor, or delivery state.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.17.md",
+      "enabled": true,
+      "context_files": [
+        "docs/connector-runtime-health-observability.md",
+        "docs/stable-replacement-receipts/stable-replacement-80d849b-20260701.md",
+        "runner/runtime_observability.py",
+        "runner/mcp_server.py"
+      ],
+      "allowed_files": [
+        "docs/connector-runtime-health-observability.md",
+        "docs/stable-replacement-receipts/*.md",
+        "docs/connector-tunnel-closeout-receipts/*.md",
+        "tests/test_mcp_runtime_observability.py"
+      ],
+      "forbidden_files": [
+        ".env",
+        ".env.*",
+        "**/.env",
+        "/home/jenn/tools/tunnel-client/**",
+        "/home/jenn/tools/colameta/**",
+        "~/.codex/**",
+        "~/.config/tunnel-client/**",
+        "**/*secret*",
+        "**/*token*",
+        "**/*credential*",
+        ".colameta/state.json",
+        ".colameta/decisions.json",
+        ".colameta/memory.md",
+        ".colameta/todolist.json"
+      ],
+      "acceptance_commands": [
+        {
+          "command": ".venv/bin/python -m pytest tests/test_mcp_runtime_observability.py -q",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "A receipt can distinguish local Web/MCP healthy, runtime fresh, tunnel-client evidence healthy/unverified/degraded, and control-plane evidence healthy/unverified/degraded.",
+        "The receipt does not contain raw tokens, cookies, credentials, provider responses, tunnel-client config, proxy config, or private memory.",
+        "A blocked closeout remains blocked when either tunnel-client or control-plane evidence is missing."
+      ],
+      "out_of_scope": [
+        "Automated connector repair, tunnel-client restart, proxy mutation, provider API call, stable service replacement, executor run, route transition, Delivery State accepted, ReviewDecision, GateEvent, commit, push, release, or deploy."
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
