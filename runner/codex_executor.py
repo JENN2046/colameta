@@ -8,7 +8,11 @@ from adapters.codex_cli_adapter import (
     CodexModelQuotaExhaustedError,
     CodexRunResult,
 )
-from runner.execution_profile import load_runner_settings_for_project, resolve_version_execution_model
+from runner.execution_profile import (
+    load_runner_settings_for_project,
+    resolve_execution_reasoning_effort,
+    resolve_version_execution_model,
+)
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
 from runner.workspace import ProjectWorkspace
@@ -41,10 +45,21 @@ class CodexExecutorResultSummary:
 
 
 class CodexExecutor:
-    def __init__(self, workspace: ProjectWorkspace, adapter: CodexCliAdapter | None = None, model_override: str | None = None):
+    def __init__(
+        self,
+        workspace: ProjectWorkspace,
+        adapter: CodexCliAdapter | None = None,
+        model_override: str | None = None,
+        reasoning_effort_override: str | None = None,
+    ):
         self.workspace = workspace
         self.adapter = adapter
         self.model_override = model_override.strip() if isinstance(model_override, str) and model_override.strip() else None
+        self.reasoning_effort_override = (
+            reasoning_effort_override.strip()
+            if isinstance(reasoning_effort_override, str) and reasoning_effort_override.strip()
+            else None
+        )
         self.prompt_builder = PromptBuilder()
         self._settings = load_runner_settings_for_project(workspace.workspace_root)
 
@@ -62,6 +77,10 @@ class CodexExecutor:
         current_version = plan.versions[state.current_version_index]
         self.model = self.model_override or resolve_version_execution_model(
             plan=plan, version=current_version, provider="codex",
+            settings=self._settings,
+        )
+        self.reasoning_effort = self.reasoning_effort_override or resolve_execution_reasoning_effort(
+            provider="codex",
             settings=self._settings,
         )
         prompt = self.prompt_builder.build_version_prompt(plan, current_version)
@@ -143,6 +162,10 @@ class CodexExecutor:
         current_version = plan.versions[state.current_version_index]
         self.model = self.model_override or resolve_version_execution_model(
             plan=plan, version=current_version, provider="codex",
+            settings=self._settings,
+        )
+        self.reasoning_effort = self.reasoning_effort_override or resolve_execution_reasoning_effort(
+            provider="codex",
             settings=self._settings,
         )
         fix_prompt_file = os.path.join(plan.runtime_dir, "current-fix-prompt.md")
@@ -230,7 +253,10 @@ class CodexExecutor:
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
     ) -> CodexRunResult:
-        adapter = self.adapter or CodexCliAdapter(model=getattr(self, "model", None))
+        adapter = self.adapter or CodexCliAdapter(
+            model=getattr(self, "model", None),
+            reasoning_effort=getattr(self, "reasoning_effort", None),
+        )
         conversation_id = None
         if executor_session_mode != "start_new":
             candidate = self._get_codex_auto_resume_candidate(plan.project_root)

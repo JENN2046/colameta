@@ -190,6 +190,8 @@ class MCPExecutorWorkflowManager:
         )
         artifact["model"] = selected_executor_profile.get("model")
         artifact["model_source"] = selected_executor_profile.get("model_source")
+        artifact["reasoning_effort"] = selected_executor_profile.get("reasoning_effort")
+        artifact["reasoning_effort_source"] = selected_executor_profile.get("reasoning_effort_source")
         self._write_preview_artifact(preview_key, artifact)
         pending_alignment = self._build_pending_alignment_summary(
             current_version=str(artifact.get("current_version") or "").strip()
@@ -655,6 +657,8 @@ class MCPExecutorWorkflowManager:
 
         artifact_model = _sanitize_optional_str(artifact.get("model"))
         artifact_model_source = _sanitize_optional_str(artifact.get("model_source"))
+        artifact_reasoning_effort = _sanitize_optional_str(artifact.get("reasoning_effort"))
+        artifact_reasoning_effort_source = _sanitize_optional_str(artifact.get("reasoning_effort_source"))
         if model is not None and model != artifact_model:
             return self._error(
                 "run_once",
@@ -663,6 +667,8 @@ class MCPExecutorWorkflowManager:
             )
         effective_model = artifact_model
         effective_model_source = artifact_model_source
+        effective_reasoning_effort = artifact_reasoning_effort
+        effective_reasoning_effort_source = artifact_reasoning_effort_source
 
         validation = self._validate_preview_artifact(preview_id, artifact, provider, execution_mode)
         if not validation.get("ok"):
@@ -764,6 +770,8 @@ class MCPExecutorWorkflowManager:
             executor_session_mode=executor_session_mode,
             model=effective_model,
             model_source=effective_model_source,
+            reasoning_effort=effective_reasoning_effort,
+            reasoning_effort_source=effective_reasoning_effort_source,
             run_id=run_id,
             preview_id=preview_id,
             preview_claimed_at=preview_claimed_at,
@@ -784,6 +792,8 @@ class MCPExecutorWorkflowManager:
         executor_session_mode: str = "auto",
         model: str | None = None,
         model_source: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
     ) -> None:
@@ -803,6 +813,7 @@ class MCPExecutorWorkflowManager:
                 include_diff_summary, include_report_markdown,
                 max_report_chars, reason,
                 executor_session_mode, model, model_source,
+                reasoning_effort, reasoning_effort_source,
                 run_id, preview_id,
                 preview_claimed_at, preview_claim_status,
                 run_once_callable,
@@ -818,6 +829,8 @@ class MCPExecutorWorkflowManager:
         executor_session_mode: str = "auto",
         model: str | None = None,
         model_source: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
         run_once_callable: Callable[..., dict[str, Any]] | None = None,
@@ -850,6 +863,8 @@ class MCPExecutorWorkflowManager:
                 executor_session_mode=executor_session_mode,
                 model=model,
                 model_source=model_source,
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_source=reasoning_effort_source,
                 run_id=run_id,
                 preview_id=preview_id,
                 preview_claimed_at=preview_claimed_at,

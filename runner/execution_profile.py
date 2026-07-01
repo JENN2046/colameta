@@ -85,6 +85,26 @@ def resolve_version_execution_model(
     return p_field("pi_model") or p_field("model") or p_field("model_name") or p_field("model_command")
 
 
+def resolve_execution_reasoning_effort(
+    *,
+    provider: str,
+    settings: RunnerSettings | None = None,
+) -> str | None:
+    provider_key = provider.strip().lower()
+    if provider_key not in ("pi", "codex", "opencode"):
+        return None
+    if settings is None or settings.executor_profile is None:
+        return None
+    profile = settings.executor_profile
+    if (
+        profile.reasoning_effort
+        and profile.provider
+        and profile.provider.strip().lower() == provider_key
+    ):
+        return profile.reasoning_effort.strip()
+    return None
+
+
 def _profile_model_for_provider(
     settings: RunnerSettings | None,
     provider: str,

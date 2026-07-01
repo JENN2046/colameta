@@ -106,11 +106,13 @@ class CodexCliAdapter:
         sandbox_mode: str = "workspace-write",
         approval_policy: str = "never",
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.executable = executable
         self.sandbox_mode = sandbox_mode
         self.approval_policy = approval_policy
         self.model = model.strip() if isinstance(model, str) and model.strip() else None
+        self.reasoning_effort = reasoning_effort.strip() if isinstance(reasoning_effort, str) and reasoning_effort.strip() else None
 
     def execute_prompt(
         self,
@@ -377,6 +379,8 @@ class CodexCliAdapter:
             command = [codex_path, "exec", "resume"]
             if self.model:
                 command.extend(["--model", self.model])
+            if self.reasoning_effort:
+                command.extend(["-c", f"model_reasoning_effort={json.dumps(self.reasoning_effort)}"])
             command.extend([
                 "--json",
                 "--output-last-message",
@@ -389,6 +393,8 @@ class CodexCliAdapter:
         command = [codex_path, "exec"]
         if self.model:
             command.extend(["--model", self.model])
+        if self.reasoning_effort:
+            command.extend(["-c", f"model_reasoning_effort={json.dumps(self.reasoning_effort)}"])
         command.extend([
             "--cd",
             project_root,

@@ -359,6 +359,8 @@ class ExecutorRunOnceService:
         executor_session_mode: str = "auto",
         model: str | None = None,
         model_source: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         run_id: str = "",
         preview_id: str = "",
         preview_claimed_at: str = "",
@@ -486,6 +488,7 @@ class ExecutorRunOnceService:
             head_before=head_before,
             executor_session_mode=executor_session_mode,
             model_override=model,
+            reasoning_effort_override=reasoning_effort,
             run_id=run_id,
             event_context=base_ctx,
         )
@@ -552,6 +555,8 @@ class ExecutorRunOnceService:
                         preview_claim_status=preview_claim_status,
                         model=model,
                         model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
+                        reasoning_effort=reasoning_effort,
+                        reasoning_effort_source=reasoning_effort_source,
                     ),
                     changed_files=changed_files_after,
                     preexisting_runner_files=preexisting_runner_files_set,
@@ -687,6 +692,8 @@ class ExecutorRunOnceService:
                 preview_claim_status=preview_claim_status,
                 model=model,
                 model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_source=reasoning_effort_source,
             ),
             completion_evidence=completion_evidence,
             preexisting_runner_files=preexisting_runner_files_set,
@@ -816,6 +823,7 @@ class ExecutorRunOnceService:
         head_before: str | None,
         executor_session_mode: str = "auto",
         model_override: str | None = None,
+        reasoning_effort_override: str | None = None,
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -833,7 +841,11 @@ class ExecutorRunOnceService:
                 )
                 from runner.codex_executor import CodexExecutor
 
-                executor = CodexExecutor(workspace, model_override=model_override)
+                executor = CodexExecutor(
+                    workspace,
+                    model_override=model_override,
+                    reasoning_effort_override=reasoning_effort_override,
+                )
                 not_found_error = CodexNotFoundError
                 unauthorized_error = CodexUnauthorizedError
                 unsupported_error = tuple()
@@ -1672,6 +1684,8 @@ class ExecutorRunOnceService:
                     "preview_claim_status",
                     "model",
                     "model_source",
+                    "reasoning_effort",
+                    "reasoning_effort_source",
                     "prompt_file",
                     "prompt_sha256",
                     "prompt_sha256_status",
@@ -1690,6 +1704,8 @@ class ExecutorRunOnceService:
         preview_claim_status: str,
         model: str | None = None,
         model_source: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
     ) -> dict[str, Any]:
         extra: dict[str, Any] = {}
         if isinstance(run_id, str) and run_id.strip():
@@ -1704,6 +1720,10 @@ class ExecutorRunOnceService:
             extra["model"] = model.strip()
         if isinstance(model_source, str) and model_source.strip():
             extra["model_source"] = model_source.strip()
+        if isinstance(reasoning_effort, str) and reasoning_effort.strip():
+            extra["reasoning_effort"] = reasoning_effort.strip()
+        if isinstance(reasoning_effort_source, str) and reasoning_effort_source.strip():
+            extra["reasoning_effort_source"] = reasoning_effort_source.strip()
         return extra
 
     def _build_prompt_lineage_extra(
