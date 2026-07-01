@@ -1,20 +1,20 @@
-# Connector Tunnel Closeout Preflight - d25a124
+# Connector Tunnel Closeout Pre-Alignment Evidence
 
 Date: 2026-07-01
 
 Status: `blocked_pending_stable_alignment`
 
-This receipt records connector/tunnel evidence collected before replacing the
-stable service to `d25a124ccc89aa9e137917d115bb839745824c18`. It is evidence
-only. It does not authorize stable replacement, executor run, route transition,
+This receipt records connector/tunnel evidence collected before aligning the
+stable service to the latest CI-success candidate. It is evidence only. It does
+not authorize stable replacement, executor run, route transition,
 ReviewDecision, GateEvent, or Delivery State accepted.
 
 ## Commit And CI
 
 ```yaml
-candidate_commit: d25a124ccc89aa9e137917d115bb839745824c18
-candidate_short: d25a124
-origin_main: d25a124ccc89aa9e137917d115bb839745824c18
+candidate_commit_at_collection: d25a124ccc89aa9e137917d115bb839745824c18
+candidate_short_at_collection: d25a124
+origin_main_at_collection: d25a124ccc89aa9e137917d115bb839745824c18
 ci:
   name: CI
   status: completed
@@ -36,7 +36,7 @@ stable_mcp_health: healthy
 ```
 
 The stable service is running and usable, but it is not yet aligned to
-`d25a124`.
+the latest dev repository state.
 
 ## Sanitized Tunnel Evidence
 
@@ -87,8 +87,8 @@ Interpretation:
 ```text
 External connector/tunnel evidence is healthy.
 Closeout is still blocked because the running stable runtime has not yet been
-aligned to d25a124 and cannot close runtime provenance with the latest dev
-checkout.
+aligned to the latest dev checkout and cannot close runtime provenance with the
+latest dev checkout.
 ```
 
 ## Required Next Step
@@ -96,7 +96,7 @@ checkout.
 Stable alignment requires Jenn's explicit exact authorization:
 
 ```text
-授权替换稳定服务到 d25a124ccc89aa9e137917d115bb839745824c18
+授权替换稳定服务到 <exact_current_CI_success_commit_sha>
 ```
 
 After replacement, rerun:
