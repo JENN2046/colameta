@@ -117,9 +117,15 @@ mcp:
 
 ## Runtime Provenance
 
+This block is a replacement-time snapshot captured immediately after the stable
+service restart and smoke checks. Later receipt-only commits may move the dev
+checkout HEAD ahead of the candidate without changing the installed stable
+runtime.
+
 ```yaml
 get_runtime_version_status:
   ok: true
+  observed_scope: replacement_time_snapshot
   process_start_time_iso: 2026-07-01T15:23:38.900244Z
   project_checkout_head: 7d45c3030125e75963c557a95120aebff6e55801
   runtime_loaded_code_stale: false
