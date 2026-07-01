@@ -3308,6 +3308,11 @@ class MCPPlanningBridgeServer:
                     )
                     return
                 response = server._handle_jsonrpc_request(request, auth_context=auth_context)
+                if response is None:
+                    self.send_response(202)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 self._send_json(200, response)
 
         httpd = ReusableThreadingHTTPServer((host, port), MCPHTTPRequestHandler)
@@ -3335,12 +3340,15 @@ class MCPPlanningBridgeServer:
         self,
         request: dict[str, Any],
         auth_context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         req_id = request.get("id")
         method = request.get("method")
         params = request.get("params", {})
         if method is None:
             return self._protocol_error(req_id, -32600, "invalid_request", "请求缺少 method。")
+        is_notification = "id" not in request
+        if is_notification and isinstance(method, str) and method.startswith("notifications/"):
+            return None
 
         try:
             if method == "initialize":
