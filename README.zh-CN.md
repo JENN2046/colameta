@@ -465,6 +465,9 @@ pip3 install colameta
 
 安装后可以直接使用 `colameta` 命令。
 
+如果你要按“稳定服务 + Web GPT / Codex 指挥入口”的方式使用，优先看主手册：
+[ColaMeta 使用说明书](docs/USAGE.zh-CN.md)。
+
 ### 登记一个 managed 项目
 
 managed 模式会为项目创建最小 `.colameta/` 结构，并启用完整的版本计划、项目记忆、执行器报告、审计包和 Git 闭环。
