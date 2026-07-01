@@ -46,6 +46,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
 
         output = stderr.getvalue()
         assert "Connector/runtime: local_service=healthy source=process_table external_connector=unverified" in output
+        assert "closeout=local_service_ready_runtime_unverified" in output
         assert "LOCAL_SERVICE_HEALTHY" in output
         assert "WEB_ENDPOINT_HEALTHY" in output
         assert "MCP_ENDPOINT_HEALTHY" in output

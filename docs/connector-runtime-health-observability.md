@@ -33,6 +33,10 @@ When connector evidence is missing, the external connector status is
   metadata or process-table discovery is available.
 - `external_connector`: tunnel-client and control-plane status when safe
   evidence exists; otherwise fail-closed `unverified` summaries.
+- `evidence_gaps`: compact list of missing safe evidence, such as sanitized
+  tunnel-client runtime status or tunnel control-plane status.
+- `operator_closeout`: read-only operator routing that says whether local
+  service, runtime freshness, or external connector evidence blocks closeout.
 - `reason_codes`: compact codes for operator routing.
 - `safety_boundary`: explicit non-actions and private-state boundaries.
 
@@ -59,8 +63,22 @@ Current safe surfaces:
   unless supplied by another safe status path.
 - CLI `colameta status` appends a one-line connector/runtime summary after the
   existing service status output. This line reports the local evidence source
-  (`metadata`, `process_table`, or `metadata_absent`) and compact reason codes.
+  (`metadata`, `process_table`, or `metadata_absent`), the operator closeout
+  state, and compact reason codes.
 
 The status output is evidence only. It does not authorize stable replacement,
 restart, route transition, executor run, ReviewDecision, GateEvent, or Delivery
 State acceptance.
+
+## Closeout Semantics
+
+`operator_closeout.decision` is `ready` only when local runtime, local Web/MCP,
+and supplied external connector evidence are all healthy. Missing external
+connector evidence remains blocked as `local_runtime_ready_external_connector_unverified`.
+
+When blocked, `operator_closeout.safe_next_actions` points to approved status
+surfaces and sanitized evidence collection. It does not authorize reading
+tunnel-client config, proxy config, provider auth, tokens, cookies, private
+memory, or raw provider responses, and it does not authorize network/proxy
+mutation, stable service replacement, executor run, route transition, or
+Delivery State acceptance.

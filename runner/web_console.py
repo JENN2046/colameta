@@ -68,7 +68,7 @@ from runner.web_console_presenter import (
     build_executor_session_display,
     extract_model_display_from_plan_data,
 )
-from runner.runtime_observability import get_connector_runtime_health_status
+from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
 WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
@@ -1602,7 +1602,8 @@ class WebConsoleServer:
         data["execution_display"] = self._api_execution_display()
         data["project_registry"] = self._api_project_registry()
         data["connector_runtime_health"] = get_connector_runtime_health_status(
-            local_service=self._connector_runtime_local_service_evidence()
+            runtime_status=get_runtime_version_status(self.project_root),
+            local_service=self._connector_runtime_local_service_evidence(),
         )
         try:
             data["executor_session_status"] = self.executor_session_store.get_status()

@@ -157,12 +157,14 @@ def get_connector_runtime_health_status(
         component="tunnel_control_plane",
         unknown_reason_code="TUNNEL_CONTROL_PLANE_UNVERIFIED",
     )
+    external_status = _external_connector_status(tunnel, plane)
     reason_codes = _unique_reason_codes(
         runtime.get("reason_codes"),
         service.get("reason_codes"),
         tunnel.get("reason_codes"),
         plane.get("reason_codes"),
     )
+    evidence_gaps = _connector_evidence_gaps(runtime, service, tunnel, plane)
 
     return {
         "ok": True,
@@ -175,10 +177,17 @@ def get_connector_runtime_health_status(
         "runtime": runtime,
         "local_service": service,
         "external_connector": {
-            "status": _external_connector_status(tunnel, plane),
+            "status": external_status,
             "tunnel_client": tunnel,
             "control_plane": plane,
         },
+        "evidence_gaps": evidence_gaps,
+        "operator_closeout": _connector_operator_closeout(
+            runtime,
+            service,
+            external_status=external_status,
+            evidence_gaps=evidence_gaps,
+        ),
         "safety_boundary": {
             "does_not_read_tunnel_client_config": True,
             "does_not_read_proxy_config": True,
@@ -564,6 +573,126 @@ def _external_connector_status(tunnel: dict[str, Any], control_plane: dict[str, 
     if statuses == {"healthy"}:
         return "healthy"
     return "unverified"
+
+
+def _connector_evidence_gaps(
+    runtime: dict[str, Any],
+    service: dict[str, Any],
+    tunnel: dict[str, Any],
+    control_plane: dict[str, Any],
+) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    if runtime.get("status") == "unverified":
+        gaps.append(
+            _evidence_gap(
+                "runtime",
+                runtime.get("reason_code"),
+                "runtime loaded-code freshness from get_runtime_version_status",
+            )
+        )
+    if service.get("status") == "unverified":
+        gaps.append(
+            _evidence_gap(
+                "local_service",
+                service.get("reason_code"),
+                "local ColaMeta service metadata or process-table evidence",
+            )
+        )
+    if tunnel.get("status") == "unverified":
+        gaps.append(
+            _evidence_gap(
+                "tunnel_client",
+                tunnel.get("reason_code"),
+                "sanitized tunnel-client runtime status from an approved status surface, not config, logs, or tokens",
+            )
+        )
+    if control_plane.get("status") == "unverified":
+        gaps.append(
+            _evidence_gap(
+                "tunnel_control_plane",
+                control_plane.get("reason_code"),
+                "sanitized tunnel control-plane status from an approved status surface, not provider raw responses",
+            )
+        )
+    return gaps
+
+
+def _evidence_gap(component: str, reason_code: Any, safe_evidence_needed: str) -> dict[str, Any]:
+    return {
+        "component": component,
+        "reason_code": _clean_status_text(reason_code) or "EVIDENCE_UNVERIFIED",
+        "safe_evidence_needed": safe_evidence_needed,
+    }
+
+
+def _connector_operator_closeout(
+    runtime: dict[str, Any],
+    service: dict[str, Any],
+    *,
+    external_status: str,
+    evidence_gaps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    local_status = service.get("status")
+    runtime_status = runtime.get("status")
+    if local_status != "healthy":
+        status = "local_service_attention_needed"
+        decision = "blocked"
+        summary = "Local ColaMeta Web/MCP evidence is not healthy enough for connector closeout."
+    elif runtime_status == "stale":
+        status = "runtime_attention_needed"
+        decision = "blocked"
+        summary = "Local service is healthy, but loaded runtime evidence is stale."
+    elif external_status == "degraded":
+        status = "external_connector_attention_needed"
+        decision = "blocked"
+        summary = "Local service is healthy, but external connector evidence is degraded or unavailable."
+    elif runtime_status != "healthy":
+        status = "local_service_ready_runtime_unverified"
+        decision = "blocked"
+        summary = "Local ColaMeta Web/MCP is healthy, but runtime freshness is not verified in this health card."
+    elif external_status == "healthy":
+        status = "connector_closeout_ready"
+        decision = "ready"
+        summary = "Local runtime, Web/MCP, and external connector evidence are healthy."
+    else:
+        status = "local_runtime_ready_external_connector_unverified"
+        decision = "blocked"
+        summary = "Local runtime and Web/MCP are healthy, but external connector/tunnel evidence is still unverified."
+
+    return {
+        "status": status,
+        "decision": decision,
+        "summary": summary,
+        "evidence_gaps": list(evidence_gaps),
+        "safe_next_actions": _connector_safe_next_actions(status),
+        "not_authorized_actions": [
+            "read_tunnel_client_config",
+            "read_proxy_config",
+            "read_provider_auth",
+            "read_tokens_or_cookies",
+            "probe_paid_provider_api",
+            "modify_network_or_proxy_state",
+            "restart_or_replace_stable_service",
+            "route_transition",
+            "executor_run",
+            "delivery_state_acceptance",
+        ],
+    }
+
+
+def _connector_safe_next_actions(closeout_status: str) -> list[str]:
+    if closeout_status == "connector_closeout_ready":
+        return ["Record connector closeout evidence if the Commander requests it."]
+    if closeout_status == "local_service_attention_needed":
+        return ["Inspect local ColaMeta Web/MCP status through existing read-only status surfaces."]
+    if closeout_status in {"runtime_attention_needed", "local_service_ready_runtime_unverified"}:
+        return ["Call get_runtime_version_status with project_name to collect loaded-code freshness evidence."]
+    if closeout_status == "external_connector_attention_needed":
+        return ["Use an approved external connector status surface and record sanitized degraded-state evidence."]
+    return [
+        "Use an approved external connector or tunnel status surface to provide sanitized health evidence.",
+        "Keep external_connector unverified until tunnel-client and control-plane evidence are both present.",
+    ]
 
 
 def _endpoint_ready(endpoint: dict[str, Any]) -> bool:

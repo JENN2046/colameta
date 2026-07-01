@@ -326,12 +326,14 @@ def _print_connector_runtime_health_summary(
     health = get_connector_runtime_health_status(local_service=local_service)
     local = health["local_service"]
     external = health["external_connector"]
+    closeout = health["operator_closeout"]
     reasons = ",".join(health["reason_codes"][:8])
     print(
         "Connector/runtime: "
         f"local_service={local.get('status')} "
         f"source={local.get('health_source')} "
         f"external_connector={external.get('status')} "
+        f"closeout={closeout.get('status')} "
         f"reasons={reasons}",
         file=sys.stderr,
     )

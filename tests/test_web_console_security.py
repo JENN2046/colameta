@@ -620,6 +620,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert payload["connector_runtime_health"]["read_only"] is True
         assert payload["connector_runtime_health"]["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
         assert payload["connector_runtime_health"]["external_connector"]["status"] == "unverified"
+        assert payload["connector_runtime_health"]["operator_closeout"]["decision"] == "blocked"
+        assert "read_tokens_or_cookies" in payload["connector_runtime_health"]["operator_closeout"]["not_authorized_actions"]
 
     def test_connector_runtime_health_uses_current_serve_process_metadata(self) -> None:
         from runner.web_console import WebConsoleServer
@@ -660,6 +662,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert summary["local_service"]["status"] == "healthy"
         assert summary["local_service"]["reason_code"] == "LOCAL_SERVICE_HEALTHY"
         assert summary["local_service"]["mcp"]["reason_code"] == "MCP_ENDPOINT_HEALTHY"
+        assert summary["operator_closeout"]["status"] == "local_service_ready_runtime_unverified"
 
     def test_high_sensitivity_read_routes_require_web_read_auth(self) -> None:
         self.start_web()

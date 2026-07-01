@@ -70,6 +70,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert health["read_only"] is True
         assert health["local_service"]["status"] == "unverified"
         assert health["external_connector"]["status"] == "unverified"
+        assert health["operator_closeout"]["status"] == "local_service_attention_needed"
+        assert health["operator_closeout"]["decision"] == "blocked"
         assert "CONNECTOR_HEALTH_UNVERIFIED" in health["reason_codes"]
         for forbidden_field in ("restart", "reload", "kill", "apply"):
             assert forbidden_field not in result
@@ -115,6 +117,27 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert health["external_connector"]["status"] == "unverified"
         assert health["external_connector"]["tunnel_client"]["reason_code"] == "CONNECTOR_HEALTH_UNVERIFIED"
         assert health["external_connector"]["control_plane"]["reason_code"] == "TUNNEL_CONTROL_PLANE_UNVERIFIED"
+        assert health["operator_closeout"]["status"] == "local_runtime_ready_external_connector_unverified"
+        assert health["operator_closeout"]["decision"] == "blocked"
+        assert health["operator_closeout"]["evidence_gaps"] == [
+            {
+                "component": "tunnel_client",
+                "reason_code": "CONNECTOR_HEALTH_UNVERIFIED",
+                "safe_evidence_needed": (
+                    "sanitized tunnel-client runtime status from an approved status surface, "
+                    "not config, logs, or tokens"
+                ),
+            },
+            {
+                "component": "tunnel_control_plane",
+                "reason_code": "TUNNEL_CONTROL_PLANE_UNVERIFIED",
+                "safe_evidence_needed": (
+                    "sanitized tunnel control-plane status from an approved status surface, "
+                    "not provider raw responses"
+                ),
+            },
+        ]
+        assert "restart_or_replace_stable_service" in health["operator_closeout"]["not_authorized_actions"]
         assert health["safety_boundary"]["does_not_read_provider_auth"] is True
 
     def test_connector_runtime_health_fails_closed_without_evidence(self) -> None:
@@ -124,6 +147,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert health["runtime"]["status"] == "unverified"
         assert health["local_service"]["status"] == "unverified"
         assert health["external_connector"]["status"] == "unverified"
+        assert health["operator_closeout"]["status"] == "local_service_attention_needed"
+        assert health["operator_closeout"]["decision"] == "blocked"
+        assert {gap["component"] for gap in health["evidence_gaps"]} == {
+            "runtime",
+            "local_service",
+            "tunnel_client",
+            "tunnel_control_plane",
+        }
         assert "LOCAL_SERVICE_HEALTH_UNVERIFIED" in health["reason_codes"]
         assert "CONNECTOR_HEALTH_UNVERIFIED" in health["reason_codes"]
 
