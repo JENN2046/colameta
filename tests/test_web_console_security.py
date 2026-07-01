@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 HOST = "127.0.0.1"
@@ -619,6 +620,46 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert payload["connector_runtime_health"]["read_only"] is True
         assert payload["connector_runtime_health"]["local_service"]["web"]["reason_code"] == "WEB_ENDPOINT_HEALTHY"
         assert payload["connector_runtime_health"]["external_connector"]["status"] == "unverified"
+
+    def test_connector_runtime_health_uses_current_serve_process_metadata(self) -> None:
+        from runner.web_console import WebConsoleServer
+        from runner.runtime_observability import get_connector_runtime_health_status
+
+        server = WebConsoleServer(str(self.project))
+        cmdline = [
+            "/tmp/python",
+            "/tmp/colameta",
+            "serve",
+            str(self.project),
+            "--web-host",
+            HOST,
+            "--web-port",
+            str(self.port),
+            "--mcp-host",
+            HOST,
+            "--mcp-port",
+            "8766",
+        ]
+
+        with (
+            patch("runner.web_console.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
+            patch.object(WebConsoleServer, "_local_http_healthz_ok", return_value=True),
+        ):
+            health = server._connector_runtime_local_service_evidence()
+
+        assert health["state"] == "running"
+        assert health["health_source"] == "process_table"
+        assert health["discovered_from_process_table"] is True
+        assert health["enable_web"] is True
+        assert health["web_state"] == "healthy"
+        assert health["enable_mcp"] is True
+        assert health["mcp_state"] == "healthy"
+        assert health["mcp_port"] == 8766
+
+        summary = get_connector_runtime_health_status(local_service=health)
+        assert summary["local_service"]["status"] == "healthy"
+        assert summary["local_service"]["reason_code"] == "LOCAL_SERVICE_HEALTHY"
+        assert summary["local_service"]["mcp"]["reason_code"] == "MCP_ENDPOINT_HEALTHY"
 
     def test_high_sensitivity_read_routes_require_web_read_auth(self) -> None:
         self.start_web()

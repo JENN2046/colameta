@@ -153,6 +153,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
         orchestrator = WorkflowOrchestrator(project_root)
         draft_seed = {
             "source_id": "seeded-thin-loop-taskbook",
+            "goal": "Make the command path feel natural for a Commander.",
             "allowed_files": ["runner/seeded_feature.py", "tests/test_seeded_feature.py"],
             "forbidden_files": ["PROJECT_MASTER_TASKBOOK.md", ".colameta/plan.json", "**/.env"],
             "validation_commands": ["python -m unittest tests.test_seeded_feature", "git diff --check"],
@@ -212,6 +213,12 @@ class ThinGovernedLoopTests(unittest.TestCase):
         ):
             assert isinstance(bundle[field], dict)
         assert bundle["external_taskbook_claim"]["source"]["source_id"] == "seeded-thin-loop-taskbook"
+        assert bundle["external_taskbook_claim"]["provenance"]["provenance_note"] == (
+            "Draft goal: Make the command path feel natural for a Commander."
+        )
+        assert "Draft goal: Make the command path feel natural for a Commander." in (
+            bundle["external_taskbook_claim"]["manual_acceptance"]["acceptance_note"]
+        )
         assert bundle["external_taskbook_claim"]["allowed_files"] == draft_seed["allowed_files"]
         assert bundle["execution_envelope"]["allowed_files"] == draft_seed["allowed_files"]
         assert bundle["execution_envelope"]["validation_commands"] == draft_seed["validation_commands"]
@@ -257,6 +264,28 @@ class ThinGovernedLoopTests(unittest.TestCase):
 
         assert provided_output.ok is True
         assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+
+    def test_thin_loop_workflow_draft_accepts_objective_alias(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        orchestrator = WorkflowOrchestrator(project_root)
+
+        draft_output = orchestrator.handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": {"objective": "Use ColaMeta to guide a small local optimization."},
+            },
+        )
+
+        assert draft_output.ok is True
+        bundle = draft_output.result["generated_input_bundle"]
+        assert bundle["draft_seed_applied"] == ["objective"]
+        assert bundle["draft_seed_ignored"] == []
+        assert bundle["draft_seed_unknown"] == []
+        assert bundle["review_feedback"]["reviewer_notes"] == (
+            "Draft goal: Use ColaMeta to guide a small local optimization."
+        )
 
     def test_thin_loop_workflow_fails_closed_when_provided_inputs_are_incomplete(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])

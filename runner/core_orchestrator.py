@@ -3471,6 +3471,8 @@ class WorkflowOrchestrator:
                 "forbidden_files",
                 "validation_commands",
                 "allowed_commands",
+                "goal",
+                "objective",
                 "source_id",
                 "review_decision_value",
                 "pass_alias_policy_id_when_used",
@@ -3497,6 +3499,16 @@ class WorkflowOrchestrator:
             return []
 
         applied: set[str] = set()
+        goal_field, goal = self._thin_loop_seed_goal(draft_seed)
+        if goal:
+            applied.add(goal_field)
+            external_claim.setdefault("provenance", {})["provenance_note"] = f"Draft goal: {goal}"
+            external_claim.setdefault("manual_acceptance", {})["acceptance_note"] = (
+                f"Manual review required before adoption. Draft goal: {goal}"
+            )
+            if not self._thin_loop_seed_string(draft_seed, "reviewer_notes"):
+                review_feedback["reviewer_notes"] = f"Draft goal: {goal}"
+
         allowed_files = self._thin_loop_seed_string_list(draft_seed, "allowed_files")
         if allowed_files:
             applied.add("allowed_files")
@@ -3557,6 +3569,13 @@ class WorkflowOrchestrator:
             applied.add("pass_alias_policy_id_when_used")
             review_feedback["pass_alias_policy_id_when_used"] = pass_alias_policy_id
         return sorted(applied)
+
+    def _thin_loop_seed_goal(self, seed: dict[str, Any]) -> tuple[str, str]:
+        for key in ("goal", "objective"):
+            value = self._thin_loop_seed_string(seed, key)
+            if value:
+                return key, value
+        return "", ""
 
     @staticmethod
     def _thin_loop_seed_string_list(seed: dict[str, Any], key: str) -> list[str]:
@@ -3684,6 +3703,7 @@ class WorkflowOrchestrator:
                 "project_name": "<managed project_name when using service mode>",
                 "draft_seed": {
                     "allowed_files": ["<project-relative path>"],
+                    "goal": "<optional natural-language objective>",
                     "validation_commands": ["<validation command>"],
                     "review_decision_value": "NEEDS_FIX",
                     "reviewer_notes": "<optional reviewer note>",
@@ -3702,6 +3722,8 @@ class WorkflowOrchestrator:
                 "forbidden_files": "同步写入 external_taskbook_claim、execution_envelope。",
                 "validation_commands": "同步写入 acceptance_commands、validation_commands、command_attempts、validation_results。",
                 "allowed_commands": "可选覆盖 execution_envelope.allowed_commands；不传时沿用 validation_commands。",
+                "goal": "写入 external_taskbook_claim provenance/manual_acceptance；无 reviewer_notes 时也写入 review_feedback.reviewer_notes。",
+                "objective": "goal 的同义字段；用于自然语言目标。",
                 "source_id": "写入 external_taskbook_claim.source.source_id。",
                 "review_decision_value": "写入 review_feedback.review_decision_value；支持 ACCEPT、NEEDS_FIX、PLAN_ADJUST、ABORT；PASS 必须同时提供 pass_alias_policy_id_when_used。",
                 "pass_alias_policy_id_when_used": "仅在 review_decision_value 为 PASS 时写入；没有该字段时 PASS seed 会被忽略。",

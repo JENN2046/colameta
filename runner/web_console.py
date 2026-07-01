@@ -8,6 +8,7 @@ import threading
 import uuid
 import ipaddress
 import hashlib
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -56,6 +57,7 @@ from runner.executor_session import (
     select_executor_identity_for_display,
 )
 from runner.runner_paths import resolve_project_runner_dir, resolve_project_runner_rel_dir
+from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.web_console_v2_assets import render_v2_index_page
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_output import CoreOutput
@@ -1448,6 +1450,136 @@ class WebConsoleServer:
             }
         return None
 
+    def _connector_runtime_local_service_evidence(self) -> dict[str, Any]:
+        metadata = self._current_process_service_metadata()
+        if metadata is None:
+            metadata = self._stored_service_metadata_if_current()
+        if metadata is None:
+            return {
+                "state": "unknown",
+                "health_source": "web_console_api_status",
+                "project_root": self.project_root,
+                "web": {"enabled": True, "state": "healthy"},
+                "mcp": {"enabled": None, "state": "unknown"},
+            }
+
+        web_state, mcp_state = self._probe_service_endpoint_health(metadata)
+        return {
+            "state": "running",
+            "health_source": "process_table" if metadata.get("discovered_from_process_table") else "metadata",
+            "pid": metadata.get("pid"),
+            "project_root": metadata.get("project_root") or self.project_root,
+            "metadata_project_matches": self._service_metadata_matches_project(metadata),
+            "discovered_from_process_table": metadata.get("discovered_from_process_table"),
+            "enable_web": metadata.get("enable_web"),
+            "web_state": web_state,
+            "web_url": metadata.get("web_url"),
+            "web_host": metadata.get("web_host"),
+            "web_port": metadata.get("web_port"),
+            "enable_mcp": metadata.get("enable_mcp"),
+            "mcp_state": mcp_state,
+            "mcp_url": metadata.get("mcp_url"),
+            "mcp_host": metadata.get("mcp_host"),
+            "mcp_port": metadata.get("mcp_port"),
+        }
+
+    def _current_process_service_metadata(self) -> dict[str, Any] | None:
+        parts = ServiceLifecycleStore.read_process_cmdline_parts(os.getpid()) or []
+        for index, token in enumerate(parts):
+            if token != "serve" or index + 1 >= len(parts):
+                continue
+            project_token = parts[index + 1]
+            if not self._project_token_matches(project_token):
+                continue
+            args = parts[index + 2:]
+            enable_web = "--no-web" not in args
+            enable_mcp = "--no-mcp" not in args
+            web_host = self._cmd_option_value(args, "--web-host", "127.0.0.1")
+            web_port = self._cmd_option_int(args, "--web-port", 8799)
+            mcp_host = self._cmd_option_value(args, "--mcp-host", "127.0.0.1")
+            mcp_port = self._cmd_option_int(args, "--mcp-port", 8765)
+            return {
+                "pid": os.getpid(),
+                "project_root": self.project_root,
+                "web_host": web_host,
+                "web_port": web_port,
+                "mcp_host": mcp_host,
+                "mcp_port": mcp_port,
+                "web_url": f"http://{web_host}:{web_port}" if enable_web else None,
+                "mcp_url": f"http://{mcp_host}:{mcp_port}/mcp" if enable_mcp else None,
+                "enable_web": enable_web,
+                "enable_mcp": enable_mcp,
+                "discovered_from_process_table": True,
+            }
+        return None
+
+    def _stored_service_metadata_if_current(self) -> dict[str, Any] | None:
+        metadata = ServiceLifecycleStore(self.project_root).read_metadata()
+        if not isinstance(metadata, dict) or not self._service_metadata_matches_project(metadata):
+            return None
+        pid = metadata.get("pid")
+        if not isinstance(pid, int) or not ServiceLifecycleStore.is_pid_running(pid):
+            return None
+        if ServiceLifecycleStore.pid_matches_metadata(pid, metadata) is False:
+            return None
+        payload = dict(metadata)
+        payload.setdefault("discovered_from_process_table", False)
+        return payload
+
+    def _probe_service_endpoint_health(self, metadata: dict[str, Any]) -> tuple[str | None, str | None]:
+        web_state = "healthy" if metadata.get("enable_web") else None
+        mcp_state: str | None = None
+        if metadata.get("enable_mcp"):
+            mcp_state = (
+                "healthy"
+                if self._local_http_healthz_ok(metadata.get("mcp_host"), metadata.get("mcp_port"), "colameta-mcp")
+                else "starting"
+            )
+        return web_state, mcp_state
+
+    @staticmethod
+    def _local_http_healthz_ok(host: Any, port: Any, expected_service: str) -> bool:
+        host_text = str(host or "").strip()
+        if not _is_loopback_host(host_text):
+            return False
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError):
+            return False
+        if port_int <= 0:
+            return False
+        try:
+            with urllib.request.urlopen(f"http://{host_text}:{port_int}/healthz", timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return False
+        return bool(isinstance(payload, dict) and payload.get("ok") is True and payload.get("service") == expected_service)
+
+    def _service_metadata_matches_project(self, metadata: dict[str, Any]) -> bool:
+        root = metadata.get("project_root")
+        if not isinstance(root, str) or not root.strip():
+            return False
+        return os.path.realpath(os.path.abspath(os.path.expanduser(root))) == self.project_root
+
+    def _project_token_matches(self, value: str) -> bool:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(value))) == self.project_root
+
+    @staticmethod
+    def _cmd_option_value(args: list[str], name: str, default: str) -> str:
+        for index, token in enumerate(args):
+            if token == name and index + 1 < len(args):
+                return args[index + 1]
+            if token.startswith(name + "="):
+                return token.split("=", 1)[1]
+        return default
+
+    @staticmethod
+    def _cmd_option_int(args: list[str], name: str, default: int) -> int:
+        try:
+            return int(WebConsoleServer._cmd_option_value(args, name, str(default)))
+        except ValueError:
+            return default
+
     def _api_status(self) -> dict[str, Any]:
         try:
             data = self.bridge.get_runner_status(self.project_root)
@@ -1470,13 +1602,7 @@ class WebConsoleServer:
         data["execution_display"] = self._api_execution_display()
         data["project_registry"] = self._api_project_registry()
         data["connector_runtime_health"] = get_connector_runtime_health_status(
-            local_service={
-                "state": "unknown",
-                "health_source": "web_console_api_status",
-                "project_root": self.project_root,
-                "web": {"enabled": True, "state": "healthy"},
-                "mcp": {"enabled": None, "state": "unknown"},
-            }
+            local_service=self._connector_runtime_local_service_evidence()
         )
         try:
             data["executor_session_status"] = self.executor_session_store.get_status()

@@ -100,6 +100,7 @@
     "project_name": "colameta-self-dev",
     "input_mode": "draft",
     "draft_seed": {
+      "goal": "Describe the bounded local optimization objective.",
       "allowed_files": ["runner/example.py", "tests/test_example.py"],
       "validation_commands": ["python -m unittest tests.test_example", "git diff --check"],
       "review_decision_value": "NEEDS_FIX",

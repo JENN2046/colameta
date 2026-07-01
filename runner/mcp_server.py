@@ -2498,7 +2498,7 @@ class MCPPlanningBridgeServer:
                         },
                         "draft_seed": {
                             "type": "object",
-                            "description": "thin_governed_loop_preview draft 模式可选。用少量上游字段生成四对象输入包，例如 allowed_files、forbidden_files、validation_commands、allowed_commands、review_decision_value、reviewer_notes。",
+                            "description": "thin_governed_loop_preview draft 模式可选。用少量上游字段生成四对象输入包，例如 goal/objective、allowed_files、forbidden_files、validation_commands、allowed_commands、review_decision_value、reviewer_notes。",
                             "additionalProperties": True,
                         },
                         "external_taskbook_claim": {
@@ -5070,6 +5070,7 @@ class MCPPlanningBridgeServer:
                         "project_name": "<registered project_name>",
                         "input_mode": "draft",
                         "draft_seed": {
+                            "goal": "<natural-language objective>",
                             "allowed_files": ["<project-relative path>"],
                             "validation_commands": ["<validation command>"],
                             "review_decision_value": "NEEDS_FIX",
