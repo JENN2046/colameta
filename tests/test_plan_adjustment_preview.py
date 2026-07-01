@@ -136,6 +136,42 @@ class PlanAdjustmentPreviewTests(unittest.TestCase):
         assert "proposed_diff_or_patch_preview" not in result
         assert result["apply_allowed"] is False
 
+    def test_json_patch_forbidden_target_path_fails_closed_without_echoing_patch(self) -> None:
+        context = self.plan_adjust_context()
+        context["proposed_diff_or_patch_preview"] = {
+            "json_patch": [
+                {
+                    "op": "replace",
+                    "path": "/delivery_state_accepted",
+                    "value": True,
+                }
+            ]
+        }
+
+        result = build_plan_adjustment_preview(context)
+
+        assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_FAILED_CLOSED
+        assert "FORBIDDEN_PLAN_ADJUSTMENT_AUTHORITY_CLAIM" in {item["code"] for item in result["validation_errors"]}
+        assert "proposed_diff_or_patch_preview" not in result
+        assert result["apply_allowed"] is False
+
+    def test_json_patch_segmented_forbidden_target_path_fails_closed(self) -> None:
+        context = self.plan_adjust_context()
+        context["proposed_diff_or_patch_preview"] = {
+            "json_patch": [
+                {
+                    "op": "replace",
+                    "path": "/review_decision/created",
+                    "value": True,
+                }
+            ]
+        }
+
+        result = build_plan_adjustment_preview(context)
+
+        assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_FAILED_CLOSED
+        assert "FORBIDDEN_PLAN_ADJUSTMENT_AUTHORITY_CLAIM" in {item["code"] for item in result["validation_errors"]}
+
     def test_project_master_taskbook_touch_requires_commander_hard_gate(self) -> None:
         context = self.plan_adjust_context()
         context["proposed_diff_or_patch_preview"] = {

@@ -25,6 +25,12 @@ FORBIDDEN_PLAN_ADJUSTMENT_CLAIM_KEYS = frozenset(
         "delivery_state_accepted",
     }
 )
+FORBIDDEN_PLAN_ADJUSTMENT_PATCH_PATH_MARKERS = frozenset(
+    {
+        marker.replace("-", "_")
+        for marker in FORBIDDEN_PLAN_ADJUSTMENT_CLAIM_KEYS
+    }
+)
 REQUIRED_PREVIEW_FIELDS = (
     "source_refs",
     "master_taskbook_ref",
@@ -434,11 +440,37 @@ def _forbidden_truthy_claims(value: Any, path: str) -> list[dict[str, str]]:
             child_path = f"{path}.{key}"
             if str(key) in FORBIDDEN_PLAN_ADJUSTMENT_CLAIM_KEYS and _truthy_claim(child):
                 claims.append({"path": child_path, "key": str(key)})
+            forbidden_patch_target = _forbidden_patch_path_marker(str(key), child, value)
+            if forbidden_patch_target:
+                claims.append({"path": child_path, "key": str(key), "target": forbidden_patch_target})
             claims.extend(_forbidden_truthy_claims(child, child_path))
     elif isinstance(value, list):
         for index, child in enumerate(value):
             claims.extend(_forbidden_truthy_claims(child, f"{path}[{index}]"))
     return claims
+
+
+def _forbidden_patch_path_marker(key: str, value: Any, parent: dict[str, Any]) -> str | None:
+    if key not in {"path", "target_path", "json_path", "pointer"} or not isinstance(value, str):
+        return None
+    if key == "path" and not _looks_like_patch_operation(parent):
+        return None
+    normalized = _normalized_patch_path(value)
+    for marker in sorted(FORBIDDEN_PLAN_ADJUSTMENT_PATCH_PATH_MARKERS):
+        if marker in normalized:
+            return marker
+    return None
+
+
+def _normalized_patch_path(value: str) -> str:
+    normalized = value.strip().lower().replace("~1", "/").replace("~0", "~")
+    for separator in ("/", ".", "-", " "):
+        normalized = normalized.replace(separator, "_")
+    return normalized
+
+
+def _looks_like_patch_operation(value: dict[str, Any]) -> bool:
+    return isinstance(value.get("op"), str) or isinstance(value.get("operation"), str)
 
 
 def _truthy_claim(value: Any) -> bool:

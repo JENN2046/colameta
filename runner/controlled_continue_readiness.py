@@ -264,8 +264,10 @@ def controlled_continue_readiness_inventory() -> dict[str, Any]:
         "eligible_review_decision_values": sorted(ELIGIBLE_REVIEW_DECISION_VALUES),
         "runtime_state_values_rejected_as_review_decisions": sorted(RUNTIME_STATE_VALUES),
         "required_continue_inputs": [
+            "git facts with matching HEAD and clean worktree",
             "eligible ReviewDecision.ACCEPT or eligible CommanderDecisionRequest",
             "separate continue gate",
+            "explicit continue gate target matching the next enabled version",
             "master taskbook hash ref",
             "stage taskbook hash ref",
             "version taskbook hash ref or next-version preview ref",
@@ -287,7 +289,8 @@ def _report_from_parts(
 ) -> dict[str, Any]:
     plan_versions = _dict_list(plan.get("versions"))
     state_versions = _dict_list(state.get("versions"))
-    current_index = _current_index(state, plan_versions)
+    current_index_status = _current_index_status(state, plan_versions)
+    current_index = current_index_status["resolved_index"]
     current_version = _clean_str(state.get("current_version"))
     if not current_version and current_index is not None:
         current_version = _version_value(_version_at(plan_versions, current_index))
@@ -327,6 +330,8 @@ def _report_from_parts(
             )
         )
     else:
+        _add_current_index_blockers(blockers, current_index_status)
+        _add_git_blockers(blockers, git_facts)
         _add_current_runtime_blockers(blockers, runner_summary, current_summary)
         _add_review_decision_blockers(blockers, review_refs)
         _add_continue_gate_blockers(blockers, continue_gate_refs, next_summary)
@@ -360,6 +365,7 @@ def _report_from_parts(
         "current_version_summary": current_summary,
         "next_version_summary": next_summary,
         "plan_summary": plan_summary,
+        "current_version_index_status": current_index_status,
         "git_facts": git_facts,
         "review_decision_refs": review_refs,
         "continue_gate_refs": continue_gate_refs,
@@ -373,6 +379,61 @@ def _report_from_parts(
         "proposed_state": None,
         "files_would_be_written": [],
     }
+
+
+def _add_current_index_blockers(blockers: list[dict[str, Any]], current_index_status: dict[str, Any]) -> None:
+    issue_code = current_index_status.get("issue_code")
+    if not issue_code:
+        return
+    blockers.append(
+        _blocker(
+            issue_code,
+            "Current version index must be valid and match current_version before continue readiness can pass.",
+            {"current_version_index_status": current_index_status},
+        )
+    )
+
+
+def _add_git_blockers(blockers: list[dict[str, Any]], git_facts: dict[str, Any]) -> None:
+    if not git_facts.get("provided"):
+        blockers.append(
+            _blocker(
+                "GIT_FACTS_REQUIRED",
+                "Continue readiness requires git facts for the current checkout.",
+                {},
+            )
+        )
+        return
+    if not git_facts.get("current_head") or not git_facts.get("expected_head"):
+        blockers.append(
+            _blocker(
+                "GIT_HEAD_REF_REQUIRED",
+                "Continue readiness requires both current_head and expected_head.",
+                {
+                    "current_head": git_facts.get("current_head"),
+                    "expected_head": git_facts.get("expected_head"),
+                },
+            )
+        )
+    if git_facts.get("head_matches_expected") is False:
+        blockers.append(
+            _blocker(
+                "GIT_HEAD_MISMATCH",
+                "Current HEAD does not match the expected continue baseline.",
+                {
+                    "current_head": git_facts.get("current_head"),
+                    "expected_head": git_facts.get("expected_head"),
+                },
+            )
+        )
+    if git_facts.get("dirty") is True:
+        blockers.append(
+            _blocker(
+                "GIT_WORKTREE_DIRTY",
+                "Continue readiness requires a clean worktree.",
+                {"status_short_lines": git_facts.get("status_short_lines", [])},
+            )
+        )
 
 
 def _add_current_runtime_blockers(
@@ -456,6 +517,14 @@ def _add_continue_gate_blockers(
             )
         )
     target = continue_gate_refs.get("target_next_version")
+    if not target:
+        blockers.append(
+            _blocker(
+                "CONTINUE_GATE_TARGET_REQUIRED",
+                "Continue gate ref must explicitly target the next enabled version.",
+                {"next_version": next_summary.get("next_version")},
+            )
+        )
     if target and next_summary.get("next_version") and target != next_summary.get("next_version"):
         blockers.append(
             _blocker(
@@ -687,7 +756,7 @@ def _continue_gate_refs(data: dict[str, Any], next_version: Any) -> dict[str, An
     separate = ref.get("separate_from_review_decision")
     if separate is None:
         separate = ref.get("is_separate_continue_gate")
-    target = _clean_str(_first_non_empty(ref.get("target_next_version"), ref.get("next_version"), next_version))
+    target = _clean_str(_first_non_empty(ref.get("target_next_version"), ref.get("next_version")))
     present = bool(gate_id or ref)
     return {
         "present": present,
@@ -699,6 +768,7 @@ def _continue_gate_refs(data: dict[str, Any], next_version: Any) -> dict[str, An
         "gate_type_is_continue_gate": not gate_type or gate_type in CONTINUE_GATE_TYPES,
         "has_separate_gate": separate is True,
         "target_next_version": target or None,
+        "target_is_explicit": bool(target),
     }
 
 
@@ -833,17 +903,47 @@ def _hash_ref_summary(raw_ref: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _current_index(state: dict[str, Any], plan_versions: list[dict[str, Any]]) -> int | None:
+def _current_index_status(state: dict[str, Any], plan_versions: list[dict[str, Any]]) -> dict[str, Any]:
     raw_index = state.get("current_version_index")
-    if isinstance(raw_index, int) and not isinstance(raw_index, bool) and raw_index >= 0:
-        return raw_index
     current_version = _clean_str(state.get("current_version"))
-    if not current_version:
-        return None
-    for index, version in enumerate(plan_versions):
-        if _version_value(version) == current_version:
-            return index
-    return None
+    raw_index_is_int = isinstance(raw_index, int) and not isinstance(raw_index, bool)
+    raw_index_in_range = raw_index_is_int and 0 <= raw_index < len(plan_versions)
+    raw_index_version = _version_value(_version_at(plan_versions, raw_index)) if raw_index_in_range else ""
+    resolved_index = None
+    resolved_basis = None
+    issue_code = None
+
+    if raw_index_is_int and raw_index < 0:
+        issue_code = "CURRENT_VERSION_INDEX_INVALID"
+    elif raw_index_is_int and raw_index >= len(plan_versions):
+        issue_code = "CURRENT_VERSION_INDEX_OUT_OF_RANGE"
+    elif raw_index is not None and not raw_index_is_int:
+        issue_code = "CURRENT_VERSION_INDEX_INVALID"
+
+    if raw_index_in_range:
+        if current_version and raw_index_version != current_version:
+            issue_code = "CURRENT_VERSION_INDEX_VERSION_MISMATCH"
+        else:
+            resolved_index = raw_index
+            resolved_basis = "current_version_index"
+
+    if resolved_index is None and current_version:
+        for index, version in enumerate(plan_versions):
+            if _version_value(version) == current_version:
+                resolved_index = index
+                resolved_basis = "current_version"
+                break
+
+    return {
+        "raw_current_version_index": raw_index,
+        "current_version": current_version or None,
+        "raw_index_is_valid_integer": raw_index_is_int and raw_index >= 0,
+        "raw_index_in_range": raw_index_in_range,
+        "raw_index_version": raw_index_version or None,
+        "resolved_index": resolved_index,
+        "resolved_basis": resolved_basis,
+        "issue_code": issue_code,
+    }
 
 
 def _next_enabled_plan_version(

@@ -195,6 +195,54 @@ class ControlledContinueReadinessTests(unittest.TestCase):
         assert result["can_continue"] is False
         assert "CONTINUE_GATE_REF_REQUIRED" in self.blocker_codes(result)
 
+    def test_continue_gate_requires_explicit_next_version_target(self) -> None:
+        context = self.ready_context()
+        context["continue_gate_ref"].pop("target_next_version")
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert result["continue_gate_refs"]["target_next_version"] is None
+        assert "CONTINUE_GATE_TARGET_REQUIRED" in self.blocker_codes(result)
+
+    def test_git_head_mismatch_and_dirty_worktree_block_continue(self) -> None:
+        context = self.ready_context()
+        context["git_facts"] = {
+            "current_head": "b" * 40,
+            "expected_head": "a" * 40,
+            "current_branch": "main",
+            "git_status_short": " M runner/controlled_continue_readiness.py",
+        }
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert result["git_facts"]["head_matches_expected"] is False
+        assert result["git_facts"]["dirty"] is True
+        assert "GIT_HEAD_MISMATCH" in self.blocker_codes(result)
+        assert "GIT_WORKTREE_DIRTY" in self.blocker_codes(result)
+
+    def test_missing_git_facts_blocks_continue(self) -> None:
+        context = self.ready_context()
+        context.pop("git_facts")
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert "GIT_FACTS_REQUIRED" in self.blocker_codes(result)
+
+    def test_stale_current_version_index_resolves_by_version_and_blocks(self) -> None:
+        context = self.ready_context()
+        context["state"]["current_version_index"] = 99
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert result["next_version_summary"]["has_next_enabled_version"] is True
+        assert result["next_version_summary"]["next_version"] == "v1.2"
+        assert "CURRENT_VERSION_INDEX_OUT_OF_RANGE" in self.blocker_codes(result)
+        assert "NO_NEXT_ENABLED_VERSION" not in self.blocker_codes(result)
+
     def test_taskbook_hash_mismatch_blocks(self) -> None:
         context = self.ready_context()
         context["taskbook_hash_refs"]["master_taskbook_ref"]["actual_sha256"] = "0" * 64
