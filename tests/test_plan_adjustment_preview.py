@@ -172,6 +172,40 @@ class PlanAdjustmentPreviewTests(unittest.TestCase):
         assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_FAILED_CLOSED
         assert "FORBIDDEN_PLAN_ADJUSTMENT_AUTHORITY_CLAIM" in {item["code"] for item in result["validation_errors"]}
 
+    def test_json_patch_pointer_forbidden_target_path_fails_closed(self) -> None:
+        context = self.plan_adjust_context()
+        context["proposed_diff_or_patch_preview"] = {
+            "json_patch": [
+                {
+                    "pointer": "/gate_event/emitted",
+                    "value": True,
+                }
+            ]
+        }
+
+        result = build_plan_adjustment_preview(context)
+
+        assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_FAILED_CLOSED
+        assert "FORBIDDEN_PLAN_ADJUSTMENT_AUTHORITY_CLAIM" in {item["code"] for item in result["validation_errors"]}
+
+    def test_file_diff_path_with_forbidden_words_does_not_fail_closed(self) -> None:
+        context = self.plan_adjust_context()
+        context["proposed_diff_or_patch_preview"] = {
+            "files": [
+                {
+                    "op": "modify",
+                    "path": "docs/delivery_state_accepted_notes.md",
+                    "action": "preview_modify",
+                }
+            ]
+        }
+
+        result = build_plan_adjustment_preview(context)
+
+        assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_AVAILABLE
+        assert result["validation_errors"] == []
+        assert result["apply_allowed"] is False
+
     def test_project_master_taskbook_touch_requires_commander_hard_gate(self) -> None:
         context = self.plan_adjust_context()
         context["proposed_diff_or_patch_preview"] = {

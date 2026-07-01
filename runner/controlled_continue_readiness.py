@@ -312,7 +312,9 @@ def _report_from_parts(
     review_comments = _review_comment_summary(data, review_refs)
     plan_adjustment_status = _plan_adjustment_status(data, review_refs)
 
-    if current_index is None and has_next:
+    _add_current_index_blockers(blockers, current_index_status)
+
+    if current_index is None and has_next and not current_index_status.get("issue_code"):
         blockers.append(
             _blocker(
                 "CURRENT_VERSION_INDEX_UNKNOWN",
@@ -322,15 +324,15 @@ def _report_from_parts(
         )
 
     if not has_next:
-        blockers.append(
-            _blocker(
-                "NO_NEXT_ENABLED_VERSION",
-                "There is no next enabled version to continue into.",
-                {"current_version": current_version, "plan_version_count": len(plan_versions)},
+        if not current_index_status.get("issue_code"):
+            blockers.append(
+                _blocker(
+                    "NO_NEXT_ENABLED_VERSION",
+                    "There is no next enabled version to continue into.",
+                    {"current_version": current_version, "plan_version_count": len(plan_versions)},
+                )
             )
-        )
     else:
-        _add_current_index_blockers(blockers, current_index_status)
         _add_git_blockers(blockers, git_facts)
         _add_current_runtime_blockers(blockers, runner_summary, current_summary)
         _add_review_decision_blockers(blockers, review_refs)
@@ -676,7 +678,8 @@ def _git_facts(data: dict[str, Any]) -> dict[str, Any]:
     status_short = _first_non_empty(raw.get("git_status_short"), raw.get("status_short"), data.get("git_status_short"))
     status_lines = _status_lines(status_short)
     dirty_value = raw.get("dirty")
-    dirty = dirty_value if isinstance(dirty_value, bool) else bool(status_lines)
+    dirty_from_flag = dirty_value if isinstance(dirty_value, bool) else None
+    dirty = bool(status_lines) or dirty_from_flag is True
     provided = bool(raw) or any([current_head, expected_head, branch, status_short])
     return {
         "provided": provided,
@@ -685,6 +688,8 @@ def _git_facts(data: dict[str, Any]) -> dict[str, Any]:
         "head_matches_expected": None if not (current_head and expected_head) else current_head == expected_head,
         "current_branch": branch or None,
         "dirty": dirty if provided else None,
+        "dirty_from_flag": dirty_from_flag,
+        "dirty_flag_conflicts_with_status_short": dirty_from_flag is False and bool(status_lines),
         "status_short_lines": status_lines,
         "dirty_is_reported_as_fact_only": True,
     }
@@ -756,7 +761,7 @@ def _continue_gate_refs(data: dict[str, Any], next_version: Any) -> dict[str, An
     separate = ref.get("separate_from_review_decision")
     if separate is None:
         separate = ref.get("is_separate_continue_gate")
-    target = _clean_str(_first_non_empty(ref.get("target_next_version"), ref.get("next_version")))
+    target = _clean_str(ref.get("target_next_version"))
     present = bool(gate_id or ref)
     return {
         "present": present,
@@ -769,6 +774,7 @@ def _continue_gate_refs(data: dict[str, Any], next_version: Any) -> dict[str, An
         "has_separate_gate": separate is True,
         "target_next_version": target or None,
         "target_is_explicit": bool(target),
+        "target_source": "target_next_version" if target else None,
     }
 
 

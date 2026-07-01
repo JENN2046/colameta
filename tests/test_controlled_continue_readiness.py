@@ -205,6 +205,18 @@ class ControlledContinueReadinessTests(unittest.TestCase):
         assert result["continue_gate_refs"]["target_next_version"] is None
         assert "CONTINUE_GATE_TARGET_REQUIRED" in self.blocker_codes(result)
 
+    def test_continue_gate_next_version_alias_does_not_satisfy_explicit_target(self) -> None:
+        context = self.ready_context()
+        context["continue_gate_ref"].pop("target_next_version")
+        context["continue_gate_ref"]["next_version"] = "v1.2"
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert result["continue_gate_refs"]["target_next_version"] is None
+        assert result["continue_gate_refs"]["target_source"] is None
+        assert "CONTINUE_GATE_TARGET_REQUIRED" in self.blocker_codes(result)
+
     def test_git_head_mismatch_and_dirty_worktree_block_continue(self) -> None:
         context = self.ready_context()
         context["git_facts"] = {
@@ -220,6 +232,24 @@ class ControlledContinueReadinessTests(unittest.TestCase):
         assert result["git_facts"]["head_matches_expected"] is False
         assert result["git_facts"]["dirty"] is True
         assert "GIT_HEAD_MISMATCH" in self.blocker_codes(result)
+        assert "GIT_WORKTREE_DIRTY" in self.blocker_codes(result)
+
+    def test_dirty_status_short_overrides_clean_dirty_flag(self) -> None:
+        context = self.ready_context()
+        context["git_facts"] = {
+            "current_head": "a" * 40,
+            "expected_head": "a" * 40,
+            "current_branch": "main",
+            "git_status_short": " M runner/controlled_continue_readiness.py",
+            "dirty": False,
+        }
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["can_continue"] is False
+        assert result["git_facts"]["dirty"] is True
+        assert result["git_facts"]["dirty_from_flag"] is False
+        assert result["git_facts"]["dirty_flag_conflicts_with_status_short"] is True
         assert "GIT_WORKTREE_DIRTY" in self.blocker_codes(result)
 
     def test_missing_git_facts_blocks_continue(self) -> None:
@@ -240,6 +270,18 @@ class ControlledContinueReadinessTests(unittest.TestCase):
         assert result["can_continue"] is False
         assert result["next_version_summary"]["has_next_enabled_version"] is True
         assert result["next_version_summary"]["next_version"] == "v1.2"
+        assert "CURRENT_VERSION_INDEX_OUT_OF_RANGE" in self.blocker_codes(result)
+        assert "NO_NEXT_ENABLED_VERSION" not in self.blocker_codes(result)
+
+    def test_bad_current_version_index_without_version_blocks_instead_of_noop(self) -> None:
+        context = self.ready_context()
+        context["state"].pop("current_version")
+        context["state"]["current_version_index"] = 99
+
+        result = build_controlled_continue_readiness_report(context)
+
+        assert result["readiness_result"] == READINESS_BLOCKED
+        assert result["can_continue"] is False
         assert "CURRENT_VERSION_INDEX_OUT_OF_RANGE" in self.blocker_codes(result)
         assert "NO_NEXT_ENABLED_VERSION" not in self.blocker_codes(result)
 

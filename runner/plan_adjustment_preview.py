@@ -440,7 +440,7 @@ def _forbidden_truthy_claims(value: Any, path: str) -> list[dict[str, str]]:
             child_path = f"{path}.{key}"
             if str(key) in FORBIDDEN_PLAN_ADJUSTMENT_CLAIM_KEYS and _truthy_claim(child):
                 claims.append({"path": child_path, "key": str(key)})
-            forbidden_patch_target = _forbidden_patch_path_marker(str(key), child, value)
+            forbidden_patch_target = _forbidden_patch_path_marker(str(key), child, value, child_path)
             if forbidden_patch_target:
                 claims.append({"path": child_path, "key": str(key), "target": forbidden_patch_target})
             claims.extend(_forbidden_truthy_claims(child, child_path))
@@ -450,10 +450,12 @@ def _forbidden_truthy_claims(value: Any, path: str) -> list[dict[str, str]]:
     return claims
 
 
-def _forbidden_patch_path_marker(key: str, value: Any, parent: dict[str, Any]) -> str | None:
+def _forbidden_patch_path_marker(key: str, value: Any, parent: dict[str, Any], traversal_path: str) -> str | None:
     if key not in {"path", "target_path", "json_path", "pointer"} or not isinstance(value, str):
         return None
-    if key == "path" and not _looks_like_patch_operation(parent):
+    if not _looks_like_patch_operation(parent) and not _is_patch_container_path(traversal_path):
+        return None
+    if not _looks_like_structured_state_path(key, value):
         return None
     normalized = _normalized_patch_path(value)
     for marker in sorted(FORBIDDEN_PLAN_ADJUSTMENT_PATCH_PATH_MARKERS):
@@ -469,8 +471,20 @@ def _normalized_patch_path(value: str) -> str:
     return normalized
 
 
+def _is_patch_container_path(path: str) -> bool:
+    return any(marker in path for marker in (".json_patch[", ".json_patch.", ".patch[", ".patch.", ".ops[", ".ops."))
+
+
+def _looks_like_structured_state_path(key: str, value: str) -> bool:
+    stripped = value.strip()
+    if key == "json_path":
+        return stripped.startswith(("/", "$"))
+    return stripped.startswith("/")
+
+
 def _looks_like_patch_operation(value: dict[str, Any]) -> bool:
-    return isinstance(value.get("op"), str) or isinstance(value.get("operation"), str)
+    operation = str(_first_non_empty(value.get("op"), value.get("operation")) or "").strip().lower()
+    return operation in {"add", "remove", "replace", "move", "copy", "test"}
 
 
 def _truthy_claim(value: Any) -> bool:
