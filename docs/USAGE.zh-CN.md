@@ -54,6 +54,15 @@
 4. 看到 operator_closeout.decision=ready 后再写 closeout receipt
 ```
 
+如果你看到说明书和稳定服务返回字段不完全一致：
+
+```text
+1. 先看当前 repo 是否 ahead origin/main
+2. 再看稳定服务是否已经替换到包含该说明书的 commit
+3. 如果 dev repo 比稳定服务新，按稳定服务实际返回为准
+4. 不要因为说明书字段较新就直接替换稳定服务；替换必须另有 Jenn 精确授权
+```
+
 ## 1. 先判断你在用哪个入口
 
 ColaMeta 常见有三类入口：
@@ -76,6 +85,21 @@ dev repo: /home/jenn/src/colameta-dev
 
 网页 GPT 或外部 agent 默认优先连稳定 MCP。只有在明确验证 dev repo 新能力时，才连 dev 测试 MCP。
 
+先分清这两个版本状态：
+
+```text
+dev repo HEAD
+  你正在修改、提交、push 的代码和说明书。
+
+stable service HEAD
+  /home/jenn/tools/colameta 当前实际运行的代码。
+
+origin/main
+  GitHub 上 CI 会验证的远端 main。
+```
+
+日常使用看 stable service。开发、修复、说明书更新看 dev repo。只有完成 push、CI success，并且 Jenn 明确授权“替换稳定服务到 <exact_commit_sha>”后，stable service 才会切到新的 dev commit。
+
 确认服务：
 
 ```bash
@@ -88,6 +112,26 @@ dev repo: /home/jenn/src/colameta-dev
 Web healthy + MCP healthy = 本地 ColaMeta 服务可用
 runtime_loaded_code_stale=false = 运行时代码和 checkout/package 对齐
 external_connector=healthy = 外部 tunnel/control-plane 证据闭合
+```
+
+小白读状态时先用这张表：
+
+```text
+Web healthy + MCP healthy
+  本地 ColaMeta 可以用。
+
+runtime_loaded_code_stale=false
+  当前运行代码已被证明和 checkout/package 对齐。
+
+reload_needed_for_verification=true
+  不是一定坏了，通常表示运行中稳定服务还不能证明自己等于当前 dev checkout；
+  如果 dev repo ahead，而稳定服务未替换，这是正常的“版本未对齐”信号。
+
+external_connector=unverified
+  本地 Web/MCP 可用，但还没有 tunnel-client / control-plane 的安全摘要证据。
+
+operator_closeout.decision=blocked
+  closeout 不能收口；不等于本地服务不可用。
 ```
 
 ## 2. Agent 连接后先读什么
@@ -158,6 +202,43 @@ result.structuredContent.data
 ```
 
 `result.content[0].text` 只是给 MCP 客户端显示的短文本，不是主要结构化结果。
+
+最小 Python 调用示例：
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+
+payload = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "list_registered_projects",
+        "arguments": {},
+    },
+}
+request = urllib.request.Request(
+    "http://127.0.0.1:8766/mcp",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    body = json.load(response)
+
+print(json.dumps(body["result"]["structuredContent"], ensure_ascii=False, indent=2))
+PY
+```
+
+最小 `curl` 调用示例：
+
+```bash
+curl -sS http://127.0.0.1:8766/mcp \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_registered_projects","arguments":{}}}'
+```
+
+`curl` 会返回完整 JSON-RPC envelope。人工阅读时优先找 `result.structuredContent`。
 
 工具结果的通用读法：
 
@@ -441,6 +522,8 @@ run_mcp_workflow thin_governed_loop_preview input_mode=draft 能返回 generated
 ```
 
 如果这些都通过，说明日常指挥入口可用。connector/tunnel 仍可能是 `unverified`，那是外部证据未闭合，不等于本地 ColaMeta Web/MCP 不可用。
+
+如果 smoke 结果里缺少说明书提到的新字段，先检查 dev repo 是否有未部署到 stable service 的 commit。稳定服务没有替换前，新字段不会自动出现。
 
 ### `PROJECT_NAME_REQUIRED`
 
