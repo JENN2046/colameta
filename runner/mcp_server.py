@@ -5311,7 +5311,7 @@ class MCPPlanningBridgeServer:
                 "enable_web": enable_web,
                 "web_state": (
                     "healthy"
-                    if enable_web and self._local_http_healthz_ok(web_host, web_port, "colameta-web-console")
+                    if enable_web and self._local_http_healthz_ok(web_host, web_port, "colameta-web-console", "/api/healthz")
                     else ("disabled" if not enable_web else "starting")
                 ),
                 "web_url": f"http://{web_host}:{web_port}" if enable_web else None,
@@ -5346,9 +5346,12 @@ class MCPPlanningBridgeServer:
             return default
 
     @staticmethod
-    def _local_http_healthz_ok(host: Any, port: Any, expected_service: str) -> bool:
+    def _local_http_healthz_ok(host: Any, port: Any, expected_service: str, path: str = "/healthz") -> bool:
         host_text = str(host or "").strip()
         if host_text not in {"127.0.0.1", "localhost", "::1"}:
+            return False
+        path_text = str(path or "").strip() or "/healthz"
+        if not path_text.startswith("/") or "?" in path_text or "#" in path_text:
             return False
         try:
             port_int = int(port)
@@ -5357,7 +5360,7 @@ class MCPPlanningBridgeServer:
         if port_int <= 0:
             return False
         try:
-            with urllib.request.urlopen(f"http://{host_text}:{port_int}/healthz", timeout=2) as response:
+            with urllib.request.urlopen(f"http://{host_text}:{port_int}{path_text}", timeout=2) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception:
             return False

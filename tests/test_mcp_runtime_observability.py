@@ -52,6 +52,57 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         )
         assert registered["ok"] is True
 
+    def test_connector_runtime_local_service_evidence_uses_web_api_healthz(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        requested_urls: list[str] = []
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true, "service": "colameta-web-console"}'
+
+        def fake_urlopen(url: str, timeout: int = 0) -> FakeResponse:
+            requested_urls.append(url)
+            assert timeout == 2
+            return FakeResponse()
+
+        cmdline = [
+            "python",
+            "colameta",
+            "serve",
+            str(project),
+            "--web-host",
+            "127.0.0.1",
+            "--web-port",
+            "8801",
+            "--mcp-host",
+            "127.0.0.1",
+            "--mcp-port",
+            "8766",
+        ]
+
+        with (
+            patch("runner.mcp_server.os.getpid", return_value=24680),
+            patch("runner.mcp_server.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
+            patch("runner.mcp_server.urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            evidence = server._connector_runtime_local_service_evidence(str(project))
+
+        assert evidence is not None
+        assert evidence["pid"] == 24680
+        assert evidence["health_source"] == "process_table"
+        assert evidence["web_state"] == "healthy"
+        assert evidence["web_url"] == "http://127.0.0.1:8801"
+        assert evidence["mcp_state"] == "healthy"
+        assert evidence["mcp_url"] == "http://127.0.0.1:8766/mcp"
+        assert requested_urls == ["http://127.0.0.1:8801/api/healthz"]
+
     def test_runtime_version_status_tool_is_registered_read_only_and_scoped(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project))
