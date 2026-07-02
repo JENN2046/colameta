@@ -465,10 +465,10 @@ After installation, you can use the `colameta` command directly.
 After installation, you can use the `colameta` command directly.
 
 For Jenn's local stable service / Web GPT / Codex operator workflow, see
-[ColaMeta 使用说明书](docs/USAGE.zh-CN.md).
+[ColaMeta Operator Manual](docs/USAGE.md).
 
 For onboarding a new local project into ColaMeta, see
-[ColaMeta 通用 Onboarding](docs/ONBOARDING.zh-CN.md).
+[ColaMeta Onboarding](docs/ONBOARDING.md).
 
 ### Register a managed project
 
