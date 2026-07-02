@@ -68,6 +68,7 @@ from runner.web_console_presenter import (
     build_executor_session_display,
     extract_model_display_from_plan_data,
 )
+from runner.executor_status import polling_guidance_for_profile
 from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
@@ -1698,6 +1699,128 @@ class WebConsoleServer:
             data["version_execution_display"] = None
         return data
 
+    def _web_commander_runtime_summary(
+        self,
+        *,
+        runtime_status: dict[str, Any],
+        connector_health: dict[str, Any],
+        local_service: dict[str, Any],
+    ) -> dict[str, Any]:
+        loaded_module_verification = runtime_status.get("loaded_module_verification")
+        if not isinstance(loaded_module_verification, dict):
+            loaded_module_verification = {}
+        connector_closeout = connector_health.get("operator_closeout")
+        if not isinstance(connector_closeout, dict):
+            connector_closeout = {}
+        local_health = connector_health.get("local_service")
+        if not isinstance(local_health, dict):
+            local_health = {}
+        external_health = connector_health.get("external_connector")
+        if not isinstance(external_health, dict):
+            external_health = {}
+
+        profile_ids = (
+            "web_gpt_commander",
+            "local_codex_commander",
+            "planner_agent",
+            "reviewer_agent",
+            "source_observer",
+        )
+        profile_labels = {
+            "web_gpt_commander": "Web GPT",
+            "local_codex_commander": "Local Codex",
+            "planner_agent": "Planner",
+            "reviewer_agent": "Reviewer",
+            "source_observer": "Source Observer",
+        }
+        profiles = [
+            {
+                "profile_id": profile_id,
+                "display_name": profile_labels[profile_id],
+                "polling_guidance": polling_guidance_for_profile(profile_id),
+            }
+            for profile_id in profile_ids
+        ]
+
+        project_identity = build_project_identity(self.project_root)
+        project_name = str(project_identity.get("project_name") or "colameta-self-dev")
+        copyable_mcp_calls = [
+            {
+                "label": "读取项目列表",
+                "tool": "list_registered_projects",
+                "arguments": {},
+            },
+            {
+                "label": "读取 Web GPT 入口",
+                "tool": "get_web_gpt_service_entrypoint",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "读取 runtime 版本",
+                "tool": "get_runtime_version_status",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "读取 connector health",
+                "tool": "get_connector_runtime_health_status",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "Local Codex 执行器轮询",
+                "tool": "manage_executor_workflow",
+                "arguments": {
+                    "action": "status",
+                    "project_name": project_name,
+                    "run_id": "<run_id>",
+                    "profile_id": "local_codex_commander",
+                    "poll_attempt": 1,
+                },
+            },
+        ]
+
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "project_name": project_name,
+            "project_root": self.project_root,
+            "service": {
+                "pid": local_service.get("pid"),
+                "health_source": local_service.get("health_source"),
+                "web_url": local_service.get("web_url"),
+                "web_state": local_service.get("web_state"),
+                "mcp_url": local_service.get("mcp_url"),
+                "mcp_state": local_service.get("mcp_state"),
+            },
+            "runtime": {
+                "project_checkout_head": runtime_status.get("project_checkout_head"),
+                "loaded_runtime_head": runtime_status.get("loaded_runtime_head"),
+                "reload_needed_for_verification": runtime_status.get("reload_needed_for_verification"),
+                "runtime_loaded_code_stale": runtime_status.get("runtime_loaded_code_stale"),
+                "restart_needed_state": runtime_status.get("restart_needed_state"),
+                "restart_needed_reason": runtime_status.get("restart_needed_reason"),
+                "loaded_module_source_changed": runtime_status.get("loaded_module_source_changed"),
+                "changed_module_count": loaded_module_verification.get("changed_module_count", 0),
+                "unverified_module_count": loaded_module_verification.get("unverified_module_count", 0),
+            },
+            "connector": {
+                "local_service_status": local_health.get("status"),
+                "local_service_reason_code": local_health.get("reason_code"),
+                "external_connector_status": external_health.get("status"),
+                "external_connector_reason_code": external_health.get("reason_code"),
+                "operator_closeout_status": connector_closeout.get("status"),
+                "operator_closeout_decision": connector_closeout.get("decision"),
+            },
+            "profiles": profiles,
+            "copyable_mcp_calls": copyable_mcp_calls,
+            "authority_boundary": {
+                "web_status_is_read_only": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_push_or_stable_replacement": True,
+                "stable_replacement_requires_exact_commander_authorization": True,
+            },
+        }
+
     def _apply_executor_session_head_mismatch_classification(
         self,
         data: dict[str, Any],
@@ -3083,6 +3206,20 @@ class WebConsoleServer:
                 },
             }
         result["thin_governed_loop_preview"] = self._json_safe(thin_loop_preview)
+        local_service = self._connector_runtime_local_service_evidence()
+        runtime_status = get_runtime_version_status(self.project_root, local_service=local_service)
+        connector_runtime_health = get_connector_runtime_health_status(
+            runtime_status=runtime_status,
+            local_service=local_service,
+        )
+        result["connector_runtime_health"] = self._json_safe(connector_runtime_health)
+        web_commander_service = self._web_commander_runtime_summary(
+            runtime_status=runtime_status,
+            connector_health=connector_runtime_health,
+            local_service=local_service,
+        )
+        result["runtime_version_summary"] = self._json_safe(web_commander_service["runtime"])
+        result["web_commander_service"] = self._json_safe(web_commander_service)
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)

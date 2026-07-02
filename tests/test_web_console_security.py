@@ -683,6 +683,53 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert status == 200
         assert payload.get("ok") is True
 
+    def test_v2_status_exposes_web_commander_service_capabilities(self) -> None:
+        self.start_web()
+        read_token = self.read_token_from_page()
+        cmdline = [
+            "/tmp/python",
+            "/tmp/colameta",
+            "serve",
+            str(self.project),
+            "--web-host",
+            HOST,
+            "--web-port",
+            str(self.port),
+            "--mcp-host",
+            HOST,
+            "--mcp-port",
+            "8766",
+        ]
+
+        with (
+            patch("runner.web_console.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
+            patch("runner.web_console.WebConsoleServer._local_http_healthz_ok", return_value=True),
+        ):
+            status, payload = json_request(
+                f"http://{HOST}:{self.port}/api/v2/status",
+                web_read_token=read_token,
+            )
+
+        assert status == 200
+        service = payload["web_commander_service"]
+        assert service["ok"] is True
+        assert service["read_only"] is True
+        assert service["side_effects"] is False
+        assert service["authority_boundary"]["does_not_authorize_executor_run"] is True
+        assert service["connector"]["local_service_status"] == "healthy"
+        assert service["connector"]["external_connector_status"] == "unverified"
+        assert "project_checkout_head" in payload["runtime_version_summary"]
+        assert "reload_needed_for_verification" in payload["runtime_version_summary"]
+        assert payload["connector_runtime_health"]["read_only"] is True
+
+        profiles = {item["profile_id"]: item for item in service["profiles"]}
+        assert profiles["web_gpt_commander"]["polling_guidance"]["max_poll_attempts"] == 3
+        assert profiles["local_codex_commander"]["polling_guidance"]["max_poll_attempts"] == 24
+
+        calls = {item["tool"]: item for item in service["copyable_mcp_calls"]}
+        assert calls["get_connector_runtime_health_status"]["arguments"]["project_name"]
+        assert calls["manage_executor_workflow"]["arguments"]["profile_id"] == "local_codex_commander"
+
     def test_missing_csrf_on_write_route_is_rejected(self) -> None:
         self.start_web()
 

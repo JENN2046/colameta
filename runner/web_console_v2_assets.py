@@ -64,6 +64,15 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .layout-center .thin-loop-preview-card.blocked { border-left-color: #f85149; }
 .layout-center .thin-loop-path { color: #c9d1d9; font-size: 12px; word-break: break-word; padding: 4px 0; }
 .layout-center .thin-loop-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
+.layout-center .service-capability-card { flex: 0 0 auto; margin-bottom: 0; border-left: 4px solid #58a6ff; }
+.layout-center .service-capability-card.blocked { border-left-color: #f85149; }
+.layout-center .service-capability-card.warn { border-left-color: #d29922; }
+.layout-center .service-profile-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.layout-center .service-profile-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid #30363d; border-radius: 999px; color: #c9d1d9; font-size: 11px; background: #0d1117; }
+.layout-center .service-copy-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.layout-center .service-copy-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 9px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.layout-center .service-copy-btn:hover { background: #30363d; }
+.layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
 .layout-right .action-btn:hover { background: #30363d; }
@@ -517,6 +526,39 @@ async function copySessionId(sessionId, button) {{
     if (button) {{
       const old = button.textContent;
       button.textContent = "[复制失败]";
+      setTimeout(function() {{ button.textContent = old; }}, 1200);
+    }}
+  }}
+}}
+
+async function copyTextToClipboard(text, button) {{
+  try {{
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      await navigator.clipboard.writeText(text);
+    }} else {{
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }}
+    if (button) {{
+      const old = button.textContent;
+      button.textContent = "已复制";
+      button.disabled = true;
+      setTimeout(function() {{
+        button.textContent = old;
+        button.disabled = false;
+      }}, 1200);
+    }}
+  }} catch (e) {{
+    if (button) {{
+      const old = button.textContent;
+      button.textContent = "复制失败";
       setTimeout(function() {{ button.textContent = old; }}, 1200);
     }}
   }}
@@ -1177,6 +1219,73 @@ function renderThinGovernedLoopPreview(data) {{
   return h;
 }}
 
+function renderServiceCapabilityCard(data) {{
+  data = data || {{}};
+  const svc = data.web_commander_service || {{}};
+  if (!svc.ok) return "";
+  const service = svc.service || {{}};
+  const runtime = svc.runtime || {{}};
+  const connector = svc.connector || {{}};
+  const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
+  const calls = Array.isArray(svc.copyable_mcp_calls) ? svc.copyable_mcp_calls : [];
+  const localStatus = connector.local_service_status || "-";
+  const externalStatus = connector.external_connector_status || "-";
+  const closeoutStatus = connector.operator_closeout_status || "-";
+  const closeoutDecision = connector.operator_closeout_decision || "-";
+  const webState = service.web_state || "-";
+  const mcpState = service.mcp_state || "-";
+  const localHealthy = localStatus === "healthy" || (webState === "healthy" && mcpState === "healthy");
+  const externalHealthy = externalStatus === "healthy";
+  const cardClass = !localHealthy ? "blocked" : (!externalHealthy ? "warn" : "");
+  const title = localHealthy ? "Web/MCP 本地服务可用" : "Web/MCP 本地服务异常";
+  const head = runtime.project_checkout_head || "";
+  const headShort = head ? String(head).slice(0, 12) : "-";
+  const reloadText = runtime.reload_needed_for_verification === true ? "需要验证重载" : runtime.reload_needed_for_verification === false ? "无需重载" : "-";
+  const staleText = runtime.runtime_loaded_code_stale === true ? "stale" : runtime.runtime_loaded_code_stale === false ? "fresh" : "unknown";
+  const localBadge = localHealthy ? "badge-ok" : "badge-err";
+  const externalBadge = externalHealthy ? "badge-ok" : (externalStatus === "unverified" ? "badge-warn" : "badge-err");
+
+  let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
+  h += `<div class="card-title">Web Commander 服务能力入口</div>`;
+  h += `<div class="summary-title">${{esc(title)}}</div>`;
+  h += `<div class="badge-row">`;
+  h += `<span class="badge ${{localBadge}}">local ${{esc(localStatus)}}</span>`;
+  h += `<span class="badge ${{webState === "healthy" ? "badge-ok" : "badge-warn"}}">Web ${{esc(webState)}}</span>`;
+  h += `<span class="badge ${{mcpState === "healthy" ? "badge-ok" : "badge-warn"}}">MCP ${{esc(mcpState)}}</span>`;
+  h += `<span class="badge ${{externalBadge}}">external ${{esc(externalStatus)}}</span>`;
+  h += `<span class="badge badge-info">read-only</span>`;
+  h += `</div>`;
+  h += r("PID", service.pid || "-");
+  h += r("Web", service.web_url || "-");
+  h += r("MCP", service.mcp_url || "-");
+  h += r("Checkout", headShort);
+  h += r("Runtime", staleText + " ｜ " + reloadText);
+  h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
+
+  if (profiles.length) {{
+    h += `<div class="service-profile-row">`;
+    for (const profile of profiles) {{
+      const g = profile.polling_guidance || {{}};
+      const label = profile.display_name || profile.profile_id || "-";
+      const timing = (g.next_poll_after_seconds || "-") + "s x " + (g.max_poll_attempts || "-");
+      h += `<span class="service-profile-pill" title="${{escAttr(g.policy || "")}}">${{esc(label)}} · ${{esc(timing)}}</span>`;
+    }}
+    h += `</div>`;
+  }}
+
+  if (calls.length) {{
+    h += `<div class="service-copy-row">`;
+    for (const call of calls.slice(0, 5)) {{
+      const payload = JSON.stringify({{ name: call.tool || "", arguments: call.arguments || {{}} }}, null, 2);
+      h += `<button type="button" class="service-copy-btn" data-copy-mcp-call="${{escAttr(payload)}}">${{esc(call.label || call.tool || "复制调用")}}</button>`;
+    }}
+    h += `</div>`;
+  }}
+  h += `<div class="service-boundary">网页只展示服务事实和复制 MCP 调用，不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
+  h += `</div>`;
+  return h;
+}}
+
 function collapseConsecutiveEvents(events) {{
   if (!events || !events.length) return [];
   const result = [];
@@ -1232,9 +1341,15 @@ function renderCenterColumn(data) {{
   const liveRun = data.live_run || {{}};
   let h = `<div id="center-observation-stack">`;
   h += `<div id="live-run-panel-slot">${{renderLiveRunPanel(liveRun, data)}}</div>`;
+  h += renderServiceCapabilityCard(data);
   h += renderThinGovernedLoopPreview(data);
   h += `</div>`;
   $("layout-center").innerHTML = h;
+  $("layout-center").querySelectorAll("[data-copy-mcp-call]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      copyTextToClipboard(this.getAttribute("data-copy-mcp-call") || "", this);
+    }});
+  }});
 }}
 
 function registryAction(actionName, params) {{
