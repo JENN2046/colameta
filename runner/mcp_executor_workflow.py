@@ -622,6 +622,7 @@ class MCPExecutorWorkflowManager:
 
     def _run_once(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id", params.get("preview_key", "")), default="")
+        profile_id = self._str_param(params.get("profile_id"), default="")
         provider = self._str_param(params.get("provider"), default="codex", lower=True)
         model = _sanitize_optional_str(params.get("model"))
         execution_mode = self._str_param(params.get("execution_mode"), default="run", lower=True)
@@ -643,7 +644,7 @@ class MCPExecutorWorkflowManager:
 
         existing_claim = self._read_preview_claim_record(preview_id)
         if isinstance(existing_claim, dict):
-            return self._already_claimed_error("run_once", preview_id, existing_claim)
+            return self._already_claimed_error("run_once", preview_id, existing_claim, profile_id=profile_id)
 
         artifact = self._read_preview_artifact(preview_id)
         if artifact is None:
@@ -753,6 +754,7 @@ class MCPExecutorWorkflowManager:
             artifact=artifact,
             provider=provider,
             execution_mode=execution_mode,
+            profile_id=profile_id,
         )
         if not claim_result.get("ok"):
             return claim_result
@@ -782,6 +784,7 @@ class MCPExecutorWorkflowManager:
             run_id=run_id,
             preview_id=preview_id,
             preview_claimed_at=preview_claimed_at,
+            profile_id=profile_id,
         )
 
     def _start_run_once_background_worker(
@@ -1071,6 +1074,7 @@ class MCPExecutorWorkflowManager:
 
     def _run_bounded(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id", params.get("preview_key", "")), default="")
+        profile_id = self._str_param(params.get("profile_id"), default="")
         provider = self._str_param(params.get("provider"), default="codex", lower=True)
         include_diff_summary = self._bool_param(params.get("include_diff_summary"), default=True)
         include_report_markdown = self._bool_param(params.get("include_report_markdown"), default=False)
@@ -1082,7 +1086,7 @@ class MCPExecutorWorkflowManager:
 
         existing_claim = self._read_preview_claim_record(preview_id)
         if isinstance(existing_claim, dict):
-            return self._already_claimed_error("run_bounded", preview_id, existing_claim)
+            return self._already_claimed_error("run_bounded", preview_id, existing_claim, profile_id=profile_id)
 
         artifact = self._read_preview_artifact(preview_id)
         if artifact is None:
@@ -1203,6 +1207,7 @@ class MCPExecutorWorkflowManager:
             artifact=artifact,
             provider=provider,
             execution_mode="run",
+            profile_id=profile_id,
         )
         if not claim_result.get("ok"):
             return claim_result
@@ -1508,9 +1513,10 @@ class MCPExecutorWorkflowManager:
     def _status(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id"), default="")
         run_id = self._str_param(params.get("run_id"), default="")
+        profile_id = self._str_param(params.get("profile_id"), default="")
         poll_attempt_raw = params.get("poll_attempt", 1)
         poll_attempt = bounded_int(poll_attempt_raw, default=1, minimum=1, maximum=9_223_372_036_854_775_807)
-        result = status_base_result(poll_attempt)
+        result = status_base_result(poll_attempt, profile_id=profile_id)
 
         store = ExecutorSessionStore(self.project_root)
         session_status = store.get_status()
@@ -4456,6 +4462,7 @@ class MCPExecutorWorkflowManager:
         artifact: dict[str, Any],
         provider: str,
         execution_mode: str,
+        profile_id: str | None = None,
     ) -> dict[str, Any]:
         claim_result = self._claims.acquire_claim(
             preview_id=preview_id,
@@ -4471,7 +4478,7 @@ class MCPExecutorWorkflowManager:
                 "preview_claim_status": "RUNNING",
             }
         if claim_result.get("error_code") == "CLAIM_EXISTS":
-            return self._already_claimed_error(action, preview_id, claim_result.get("claim") or {})
+            return self._already_claimed_error(action, preview_id, claim_result.get("claim") or {}, profile_id=profile_id)
         return self._error(action, "PREVIEW_CLAIM_FAILED", "preview claim 失败。")
 
     def _finalize_preview_claim(
@@ -4562,7 +4569,7 @@ class MCPExecutorWorkflowManager:
     def _read_preview_claim_record(self, preview_id: str) -> dict[str, Any] | None:
         return self._claims.read_claim(preview_id)
 
-    def _already_claimed_error(self, action: str, preview_id: str, claim: dict[str, Any]) -> dict[str, Any]:
+    def _already_claimed_error(self, action: str, preview_id: str, claim: dict[str, Any], *, profile_id: str | None = None) -> dict[str, Any]:
         orphan_info = self._evaluate_orphaned_claim(claim)
         possible_report_id = self._resolve_possible_report_id(claim) if orphan_info.get("orphaned") else ""
         return already_claimed_error(
@@ -4571,6 +4578,7 @@ class MCPExecutorWorkflowManager:
             claim=claim,
             orphan_info=orphan_info,
             possible_report_id=possible_report_id,
+            profile_id=profile_id,
         )
 
     def _write_preview_artifact(self, preview_key: str, artifact: dict[str, Any]) -> None:

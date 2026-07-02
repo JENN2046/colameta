@@ -368,6 +368,39 @@ result.next_request_payload
 }
 ```
 
+执行器状态轮询使用 `manage_executor_workflow action=status`。轮询口径按 profile 分级：
+
+```text
+web_gpt_commander
+  next_poll_after_seconds=3
+  max_poll_attempts=3
+  总观察窗口约 9 秒
+
+local_codex_commander
+  next_poll_after_seconds=5
+  max_poll_attempts=24
+  总观察窗口约 120 秒
+```
+
+本地 Codex 跟进执行器时显式传 profile：
+
+```json
+{
+  "name": "manage_executor_workflow",
+  "arguments": {
+    "action": "status",
+    "project_name": "colameta-self-dev",
+    "run_id": "<run_id>",
+    "profile_id": "local_codex_commander",
+    "poll_attempt": 1
+  }
+}
+```
+
+看到 `terminal=true`、`polling_exhausted=true`，或 provider/auth/quota/network
+明确失败时停止轮询。如果 heartbeat 还在但 `last_meaningful_progress.stale=true`，
+按疑似 stalled 处理，不要无限轮询。
+
 ## 6. Connector / tunnel closeout 怎么看
 
 先读基础健康：

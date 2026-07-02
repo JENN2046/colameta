@@ -1,6 +1,18 @@
 from typing import Any
 
-from runner.executor_status import classify_claim_status
+from runner.executor_status import classify_claim_status, polling_guidance_for_profile
+
+
+def _status_next_action_params(*, run_id: str = "", preview_id: str = "", profile_id: str | None = None) -> dict[str, str]:
+    params = {"action": "status"}
+    if run_id:
+        params["run_id"] = run_id
+    if preview_id:
+        params["preview_id"] = preview_id
+    selected_profile_id = polling_guidance_for_profile(profile_id)["profile_id"]
+    if selected_profile_id:
+        params["profile_id"] = selected_profile_id
+    return params
 
 
 def preflight_result(preflight: dict[str, Any], *, provider: str, execution_mode: str) -> dict[str, Any]:
@@ -34,7 +46,7 @@ def preflight_result(preflight: dict[str, Any], *, provider: str, execution_mode
     }
 
 
-def run_once_started_result(*, run_id: str, preview_id: str, preview_claimed_at: str) -> dict[str, Any]:
+def run_once_started_result(*, run_id: str, preview_id: str, preview_claimed_at: str, profile_id: str | None = None) -> dict[str, Any]:
     return {
         "ok": True,
         "action": "run_once",
@@ -44,12 +56,13 @@ def run_once_started_result(*, run_id: str, preview_id: str, preview_claimed_at:
         "preview_id": preview_id,
         "preview_claimed_at": preview_claimed_at,
         "preview_claim_status": "RUNNING",
+        "polling_guidance": polling_guidance_for_profile(profile_id),
         "message": f"执行器已启动（run_id={run_id}）。使用 manage_executor_workflow action=status run_id={run_id} 或 preview_id={preview_id} 查询执行进度。",
         "next_actions": [
             {
                 "tool": "manage_executor_workflow",
                 "action": "status",
-                "params": {"action": "status", "run_id": run_id, "preview_id": preview_id},
+                "params": _status_next_action_params(run_id=run_id, preview_id=preview_id, profile_id=profile_id),
                 "reason": "使用 status 轮询执行进度。",
                 "requires_confirmation": False,
             },
@@ -64,6 +77,7 @@ def already_claimed_error(
     claim: dict[str, Any],
     orphan_info: dict[str, Any],
     possible_report_id: str = "",
+    profile_id: str | None = None,
 ) -> dict[str, Any]:
     run_id = str(claim.get("run_id") or "")
     claimed_at = str(claim.get("claimed_at") or "")
@@ -72,6 +86,7 @@ def already_claimed_error(
     message = "preview_id 已被消费。"
     if orphan_info.get("orphaned"):
         message = str(orphan_info.get("message") or message)
+    polling_guidance = polling_guidance_for_profile(profile_id)
     payload: dict[str, Any] = {
         "ok": False,
         "action": action,
@@ -85,19 +100,16 @@ def already_claimed_error(
         "preview_claim_status": preview_claim_status,
         "terminal": classification["terminal"],
         "executor_run_status": classification["executor_run_status"],
-        "next_poll_after_seconds": 3,
-        "max_poll_attempts": 3,
-        "polling_guidance": {
-            "policy": "non_blocking_polling",
-            "next_poll_after_seconds": 3,
-            "max_poll_attempts": 3,
-            "on_exhausted": "stop_and_ask_user_to_check_later",
-        },
+        "polling_profile_id": polling_guidance["profile_id"],
+        "next_poll_after_seconds": polling_guidance["next_poll_after_seconds"],
+        "max_poll_attempts": polling_guidance["max_poll_attempts"],
+        "max_total_poll_seconds": polling_guidance["max_total_poll_seconds"],
+        "polling_guidance": polling_guidance,
         "next_actions": [
             {
                 "tool": "manage_executor_workflow",
                 "action": "status",
-                "params": {"action": "status", "preview_id": preview_id, "run_id": run_id},
+                "params": _status_next_action_params(run_id=run_id, preview_id=preview_id, profile_id=profile_id),
                 "reason": "使用 status 轮询执行进度，不使用 start/run。",
                 "requires_confirmation": False,
             },

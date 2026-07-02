@@ -145,6 +145,24 @@ action=status
 
 `run` 之前必须有 `preview_id`。验收通过后也不要直接写 Delivery accepted；先记录 receipt 或 review handoff。
 
+执行器状态轮询按 profile 分级：
+
+```text
+web_gpt_commander
+  3 秒一次，最多 3 次。
+
+local_codex_commander
+  5 秒一次，最多 24 次。
+```
+
+本地 Codex 跟进执行器时，在 `manage_executor_workflow action=status` 中传：
+
+```text
+profile_id="local_codex_commander"
+```
+
+看到 `terminal=true` 或 `polling_exhausted=true` 就停止轮询。
+
 ## 7. Connector / tunnel 证据
 
 本地 Web/MCP healthy 只说明 ColaMeta 本地服务可用。

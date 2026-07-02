@@ -516,6 +516,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["service_entry_profiles_version"] == "service_entry_profiles.v1"
         profiles = {item["profile_id"]: item for item in data["service_entry_profiles"]}
         assert profiles["local_codex_commander"]["consumer_kind"] == "local_codex"
+        assert profiles["web_gpt_commander"]["executor_status_polling_guidance"]["max_poll_attempts"] == 3
+        assert profiles["local_codex_commander"]["executor_status_polling_guidance"]["max_poll_attempts"] == 24
         assert profiles["planner_agent"]["write_boundary"].endswith("review acceptance.")
         assert profiles["source_observer"]["primary_workflow"] == "source_observation"
         assert data["thin_loop_consumer_rule"]["provided_mode"].startswith("Review result.generated_input_bundle")
@@ -534,6 +536,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert default_data["side_effects"] is False
         assert default_data["profile_id"] == "web_gpt_commander"
         assert default_data["selected_profile"]["consumer_kind"] == "web_gpt"
+        assert default_data["selected_profile"]["executor_status_polling_guidance"]["next_poll_after_seconds"] == 3
         assert default_data["recommended_next_reads"][0]["tool"] == "list_registered_projects"
 
         reviewer_result = server.call_tool_for_agent("get_service_entry_profile", {"profile_id": "reviewer_agent"})

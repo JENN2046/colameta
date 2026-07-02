@@ -7,6 +7,70 @@ from runner.executor_events import ExecutorEventStore
 
 HEARTBEAT_ONLY_STALE_SECONDS = 120
 _HEARTBEAT_ONLY_IGNORED_EVENTS = {"heartbeat"}
+DEFAULT_POLLING_PROFILE_ID = "web_gpt_commander"
+_POLLING_PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
+    "web_gpt_commander": {
+        "next_poll_after_seconds": 3,
+        "max_poll_attempts": 3,
+        "policy": "non_blocking_polling",
+        "on_exhausted": "stop_and_ask_user_to_check_later",
+        "reason": "External Web GPT connectors should not stay in long tool loops.",
+    },
+    "planner_agent": {
+        "next_poll_after_seconds": 3,
+        "max_poll_attempts": 3,
+        "policy": "non_blocking_polling",
+        "on_exhausted": "stop_and_ask_user_to_check_later",
+        "reason": "Planner agents should hand off long-running executor observation.",
+    },
+    "reviewer_agent": {
+        "next_poll_after_seconds": 3,
+        "max_poll_attempts": 3,
+        "policy": "non_blocking_polling",
+        "on_exhausted": "stop_and_ask_user_to_check_later",
+        "reason": "Reviewer agents should avoid long executor polling loops.",
+    },
+    "source_observer": {
+        "next_poll_after_seconds": 3,
+        "max_poll_attempts": 3,
+        "policy": "non_blocking_polling",
+        "on_exhausted": "stop_and_ask_user_to_check_later",
+        "reason": "Source observers are read-only and should not follow long executor runs.",
+    },
+    "local_codex_commander": {
+        "next_poll_after_seconds": 5,
+        "max_poll_attempts": 24,
+        "policy": "bounded_local_polling",
+        "on_exhausted": "stop_and_report_background_run_still_active",
+        "reason": "Local Codex can safely follow a bounded long-running executor task.",
+    },
+}
+
+
+def polling_guidance_for_profile(profile_id: str | None = None) -> dict[str, Any]:
+    requested_profile_id = str(profile_id or "").strip() or DEFAULT_POLLING_PROFILE_ID
+    selected_profile_id = requested_profile_id
+    fallback_profile_id = ""
+    if requested_profile_id not in _POLLING_PROFILE_CONFIGS:
+        selected_profile_id = DEFAULT_POLLING_PROFILE_ID
+        fallback_profile_id = DEFAULT_POLLING_PROFILE_ID
+    config = _POLLING_PROFILE_CONFIGS[selected_profile_id]
+    interval = int(config["next_poll_after_seconds"])
+    attempts = int(config["max_poll_attempts"])
+    guidance = {
+        "profile_id": selected_profile_id,
+        "requested_profile_id": requested_profile_id,
+        "policy": str(config["policy"]),
+        "next_poll_after_seconds": interval,
+        "max_poll_attempts": attempts,
+        "max_total_poll_seconds": interval * attempts,
+        "on_exhausted": str(config["on_exhausted"]),
+        "reason": str(config["reason"]),
+    }
+    if fallback_profile_id:
+        guidance["fallback_profile_id"] = fallback_profile_id
+        guidance["warning"] = "UNKNOWN_POLLING_PROFILE_USED_DEFAULT"
+    return guidance
 
 
 def _event_timestamp(event: dict[str, Any]) -> datetime | None:
@@ -69,27 +133,25 @@ def read_executor_events_for_status(project_root: str, run_id: str, limit: int =
     return store.read(run_id, limit=limit) if store.has_events(run_id) else []
 
 
-def status_base_result(poll_attempt: int) -> dict[str, Any]:
-    max_poll_attempts = 3
+def status_base_result(poll_attempt: int, *, profile_id: str | None = None) -> dict[str, Any]:
+    polling_guidance = polling_guidance_for_profile(profile_id)
+    max_poll_attempts = int(polling_guidance["max_poll_attempts"])
     polling_exhausted = poll_attempt > max_poll_attempts
     result: dict[str, Any] = {
         "ok": True,
         "action": "status",
         "status": "succeeded",
         "risk_level": "info",
-        "next_poll_after_seconds": 3,
+        "polling_profile_id": polling_guidance["profile_id"],
+        "next_poll_after_seconds": int(polling_guidance["next_poll_after_seconds"]),
         "max_poll_attempts": max_poll_attempts,
+        "max_total_poll_seconds": int(polling_guidance["max_total_poll_seconds"]),
         "poll_attempt": poll_attempt,
         "remaining_poll_attempts": max(0, max_poll_attempts - poll_attempt),
         "polling_exhausted": polling_exhausted,
         "terminal": False,
         "executor_run_status": "unknown",
-        "polling_guidance": {
-            "policy": "non_blocking_polling",
-            "next_poll_after_seconds": 3,
-            "max_poll_attempts": max_poll_attempts,
-            "on_exhausted": "stop_and_ask_user_to_check_later",
-        },
+        "polling_guidance": polling_guidance,
     }
     if polling_exhausted:
         result["message"] = (

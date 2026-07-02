@@ -19,6 +19,7 @@ from runner.source_review_bridge import SourceReviewBridge, SourceReviewError
 from runner.executor_inventory import load_executor_inventory
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_session import ExecutorSessionStore
+from runner.executor_status import polling_guidance_for_profile
 from runner.project_identity import build_project_identity
 from runner.project_registry import ProjectRegistry
 from runner.execution_standards import get_execution_standards
@@ -2666,7 +2667,7 @@ class MCPPlanningBridgeServer:
                     "不支持无限循环。allow_fix=false 时不执行 fix；allow_fix=true 只允许已有 FIX_PROMPT_READY。"
                     "allow_commit 不会执行 commit，只能停在 commit preview/next_action 边界。"
                     "run_once/run_bounded 不执行任意 git reset/clean/stash/merge/rebase/push，不创建或切换分支。"
-                    "status 使用非阻塞轮询契约：next_poll_after_seconds=3，max_poll_attempts=3，最多轮询 3 次。支持 preview_id/run_id 查询。"
+                    "status 使用按 profile 分级的有界轮询契约：web_gpt_commander 默认短轮询，local_codex_commander 可更长时间跟进。支持 preview_id/run_id/profile_id 查询。"
                     "project_name 支持已登记 managed 项目的所有 action。"
                     "scope：preflight/status/get_audit_package=mcp:read，run_once_preview/run_bounded_preview/recheck_report_preview/manual_fix_prompt_preview/manual_validation_preview/scope_mismatch_preview/state_lineage_reconciliation_preview/final_version_closeout_preview/reconcile_orphaned_claims_preview=mcp:preview，run_once/run_bounded/refresh_audit_package/recheck_report_apply/manual_fix_prompt_apply/manual_validation_apply/scope_mismatch_apply/state_lineage_reconciliation_apply/final_version_closeout_apply/reconcile_orphaned_claims_apply=mcp:commit。"
                 ),
@@ -2711,7 +2712,8 @@ class MCPPlanningBridgeServer:
                             },
                         },
                         "run_id": {"type": "string", "description": "status 可选。执行器运行 ID。"},
-                        "poll_attempt": {"type": "integer", "description": "status 可选。轮询次数。默认 1，最大 3。"},
+                        "profile_id": {"type": "string", "enum": ["web_gpt_commander", "local_codex_commander", "planner_agent", "reviewer_agent", "source_observer"], "description": "status/run_once 可选。用于选择 polling guidance。默认 web_gpt_commander；local_codex_commander 使用更长的本地有界轮询窗口。"},
+                        "poll_attempt": {"type": "integer", "description": "status 可选。轮询次数。默认 1；最大建议由 polling_guidance.max_poll_attempts 按 profile 返回。"},
                         "max_diff_chars": {"type": "integer", "default": 40000, "minimum": 1, "maximum": 80000, "description": "run_once 可选。diff 输出字符限制。默认 40000，最大 80000。"},
                         "include_diff_summary": {"type": "boolean", "default": True, "description": "run_once 可选。是否返回 diff_summary。默认 true。"},
                         "include_report_markdown": {"type": "boolean", "default": False, "description": "run_once 可选。是否返回报告 markdown。默认 false。"},
@@ -4850,7 +4852,7 @@ class MCPPlanningBridgeServer:
         def project_args(**extra: Any) -> dict[str, Any]:
             return {"project_name": "<registered project_name>", **extra}
 
-        return [
+        profiles = [
             {
                 "profile_id": "web_gpt_commander",
                 "display_name": "Web GPT Commander",
@@ -4939,6 +4941,10 @@ class MCPPlanningBridgeServer:
                 "write_boundary": "No managed workflow adoption, execution, or state transition.",
             },
         ]
+        for profile in profiles:
+            profile_id = str(profile.get("profile_id") or "")
+            profile["executor_status_polling_guidance"] = polling_guidance_for_profile(profile_id)
+        return profiles
 
     def _tool_get_service_entry_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         profiles = self._service_entry_profiles()
@@ -7821,6 +7827,8 @@ class MCPPlanningBridgeServer:
         target_version = params.get("target_version", "")
         accepted_commit = params.get("accepted_commit", "")
         accepted_commit_subject = params.get("accepted_commit_subject", "")
+        profile_id_raw = params.get("profile_id")
+        profile_id = profile_id_raw.strip() if isinstance(profile_id_raw, str) else ""
         commit_files = params.get("commit_files") if isinstance(params.get("commit_files"), list) else []
         evidence_refs = params.get("evidence_refs") if isinstance(params.get("evidence_refs"), list) else []
         evidence_summary = params.get("evidence_summary", "")
@@ -7867,6 +7875,7 @@ class MCPPlanningBridgeServer:
             "target_version": target_version,
             "accepted_commit": accepted_commit,
             "accepted_commit_subject": accepted_commit_subject,
+            "profile_id": profile_id,
             "commit_files": commit_files,
             "evidence_refs": evidence_refs,
             "evidence_summary": evidence_summary,
