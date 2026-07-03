@@ -72,9 +72,12 @@ from runner.executor_status import polling_guidance_for_profile
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
+    build_stable_replacement_cadence,
     get_connector_runtime_health_status,
     get_runtime_version_status,
+    git_checkout_metadata,
 )
+from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
 WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
@@ -1758,6 +1761,15 @@ class WebConsoleServer:
             project_name=project_name,
             connector_health=connector_health,
         )
+        stable_metadata = git_checkout_metadata(DEFAULT_STABLE_RUNTIME_DIR)
+        stable_replacement_cadence = build_stable_replacement_cadence(
+            project_root=self.project_root,
+            candidate_head=runtime_status.get("project_checkout_head")
+            if isinstance(runtime_status.get("project_checkout_head"), str)
+            else None,
+            stable_runtime_dir=DEFAULT_STABLE_RUNTIME_DIR,
+            stable_runtime_head=stable_metadata.get("head") if isinstance(stable_metadata.get("head"), str) else None,
+        )
         apps_smoke_call = apps_connector_closeout.get("preferred_smoke_tool")
         if not isinstance(apps_smoke_call, dict):
             apps_smoke_call = {
@@ -1827,6 +1839,7 @@ class WebConsoleServer:
             "readiness": readiness,
             "apps_connector_closeout": apps_connector_closeout,
             "apps_connector_tool_refresh": apps_connector_closeout.get("metadata_refresh_guidance"),
+            "stable_replacement_cadence": stable_replacement_cadence,
             "service": {
                 "pid": local_service.get("pid"),
                 "health_source": local_service.get("health_source"),
@@ -3266,6 +3279,7 @@ class WebConsoleServer:
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
+        result["stable_replacement_cadence"] = self._json_safe(web_commander_service["stable_replacement_cadence"])
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)

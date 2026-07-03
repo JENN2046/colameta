@@ -1228,6 +1228,7 @@ function renderServiceCapabilityCard(data) {{
   const connector = svc.connector || {{}};
   const apps = svc.apps_connector_closeout || data.apps_connector_closeout || {{}};
   const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
+  const cadence = svc.stable_replacement_cadence || data.stable_replacement_cadence || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
   const calls = Array.isArray(svc.copyable_mcp_calls) ? svc.copyable_mcp_calls : [];
   const localStatus = connector.local_service_status || "-";
@@ -1249,6 +1250,7 @@ function renderServiceCapabilityCard(data) {{
   const preferredTool = apps.preferred_smoke_tool && apps.preferred_smoke_tool.tool ? apps.preferred_smoke_tool.tool : "-";
   const metadataStatus = toolRefresh.status || "-";
   const expectedTool = toolRefresh.expected_tool || preferredTool;
+  const cadenceText = (cadence.status || "-") + " ｜ " + (cadence.recommended_cadence || "-");
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1268,6 +1270,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
+  h += r("Stable cadence", cadenceText);
 
   if (profiles.length) {{
     h += `<div class="service-profile-row">`;

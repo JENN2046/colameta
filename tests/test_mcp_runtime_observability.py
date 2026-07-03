@@ -14,6 +14,7 @@ from runner.project_registry import ProjectRegistry
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
+    build_stable_replacement_cadence,
     get_connector_runtime_health_status,
 )
 
@@ -476,6 +477,26 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert packet["token_expired_recovery"]["not_local_service_fix"] is True
         assert "read_tokens_or_cookies" in packet["token_expired_recovery"]["not_authorized_actions"]
 
+    def test_stable_replacement_cadence_does_not_push_small_dev_drift_to_stable(self) -> None:
+        cadence = build_stable_replacement_cadence(
+            project_root="/tmp/demo",
+            candidate_head=HEAD_A,
+            stable_runtime_dir="/tmp/stable",
+            stable_runtime_head="b" * 40,
+        )
+
+        assert cadence["status"] == "dev_ahead_stable"
+        assert cadence["candidate_differs_from_stable"] is True
+        assert cadence["replacement_possible"] is True
+        assert cadence["replacement_available"] is False
+        assert cadence["stable_replacement_not_required"] is True
+        assert cadence["replacement_urgency"] == "optional_batch"
+        assert cadence["recommended_cadence"] == "batch_when_ready"
+        assert cadence["exact_authorization_required"] is False
+        assert cadence["exact_authorization_phrase"] is None
+        assert cadence["authorization_policy"]["do_not_request_authorization_for_small_productization_commits"] is True
+        assert "operator_explicitly_requests_stable_batch_promotion" in cadence["promotion_triggers"]
+
     def test_service_readiness_summary_explains_attention_and_blocked_states(self) -> None:
         attention_health = get_connector_runtime_health_status(
             runtime_status={
@@ -587,11 +608,13 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["metadata_refresh_guidance"]["expected_tool"] == "get_apps_connector_smoke_packet"
         assert data["operator_sequence"][1]["tool"] == "get_apps_connector_smoke_packet"
         assert data["connector_runtime_health"]["overall_status"] == "healthy"
-        assert data["stable_replacement_hint"]["status"] == "stable_replacement_available"
+        assert data["stable_replacement_hint"]["status"] == "dev_ahead_stable"
         assert data["stable_replacement_hint"]["candidate_head"] == HEAD_A
         assert data["stable_replacement_hint"]["stable_runtime_head"] == "b" * 40
-        assert data["stable_replacement_hint"]["exact_authorization_required"] is True
-        assert HEAD_A in data["stable_replacement_hint"]["exact_authorization_phrase"]
+        assert data["stable_replacement_hint"]["stable_replacement_not_required"] is True
+        assert data["stable_replacement_hint"]["recommended_cadence"] == "batch_when_ready"
+        assert data["stable_replacement_hint"]["exact_authorization_required"] is False
+        assert data["stable_replacement_hint"]["exact_authorization_phrase"] is None
         assert data["authority_boundary"]["does_not_authorize_stable_replacement"] is True
 
     def test_web_gpt_service_entrypoint_is_read_only_and_guides_project_routing(self) -> None:

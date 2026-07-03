@@ -642,6 +642,26 @@ raw secrets / provider raw responses
 授权替换稳定服务到 <exact_commit_sha>
 ```
 
+stable replacement cadence：
+
+```text
+小产品化 commit -> 只 push + CI
+dev ahead of stable -> 正常开发状态
+stable_replacement_not_required -> 继续攒 dev 批次
+batch_when_ready -> 阶段批次完成后再替换 stable
+```
+
+不要因为 `dev HEAD != stable HEAD` 就向 Jenn 要 stable replacement 授权。这个
+drift 应报告成 `dev_ahead_stable`，不是紧急替换请求。只有以下情况才请求精确
+stable 授权：
+
+```text
+stable 服务故障，修复已经在 dev
+Jenn 明确要现在在 stable 使用新能力
+安全或正确性修复必须进入 stable
+一组产品化批次已经完成，Jenn 决定晋升
+```
+
 替换流程必须包含：
 
 ```text

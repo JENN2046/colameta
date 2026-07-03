@@ -291,6 +291,85 @@ def build_service_readiness_summary(
     }
 
 
+def build_stable_replacement_cadence(
+    *,
+    project_root: str | None = None,
+    candidate_head: str | None = None,
+    stable_runtime_dir: str | None = None,
+    stable_runtime_head: str | None = None,
+) -> dict[str, Any]:
+    """Return conservative stable-replacement cadence guidance.
+
+    A dev/stable HEAD difference is usually normal development drift, not an
+    instruction to replace the stable service. Exact replacement authorization
+    should be requested only when the operator intentionally promotes a batch or
+    needs a specific fix in stable.
+    """
+    candidate = _clean_status_text(candidate_head)
+    stable_head = _clean_status_text(stable_runtime_head)
+    heads_known = bool(candidate and stable_head)
+    heads_differ = bool(heads_known and candidate != stable_head)
+    if heads_differ:
+        status = "dev_ahead_stable"
+        recommended_cadence = "batch_when_ready"
+        replacement_urgency = "optional_batch"
+        summary = "Development is ahead of stable; continue batching changes until a stable promotion is intentionally requested."
+    elif heads_known:
+        status = "stable_aligned"
+        recommended_cadence = "already_aligned"
+        replacement_urgency = "none"
+        summary = "Stable is aligned with the current candidate."
+    else:
+        status = "stable_replacement_unknown"
+        recommended_cadence = "preflight_before_replacement"
+        replacement_urgency = "unknown"
+        summary = "Stable replacement state is unknown; run preflight before considering stable promotion."
+
+    return {
+        "ok": True,
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "summary": summary,
+        "project_root": project_root,
+        "candidate_head": candidate,
+        "stable_runtime_dir": stable_runtime_dir,
+        "stable_runtime_head": stable_head,
+        "candidate_differs_from_stable": heads_differ,
+        "replacement_possible": heads_differ,
+        "replacement_available": False,
+        "stable_replacement_not_required": True,
+        "replacement_urgency": replacement_urgency,
+        "recommended_cadence": recommended_cadence,
+        "exact_authorization_required": False,
+        "exact_authorization_phrase": None,
+        "authorization_policy": {
+            "exact_authorization_still_required_for_replacement": True,
+            "do_not_request_authorization_for_small_productization_commits": True,
+            "batch_until_operator_requests_stable_use": True,
+        },
+        "promotion_triggers": [
+            "stable_service_broken",
+            "stable_missing_user_requested_feature",
+            "security_or_correctness_fix_needs_stable",
+            "operator_explicitly_requests_stable_batch_promotion",
+        ],
+        "safe_next_actions": [
+            {
+                "action_id": "continue_dev_batch" if heads_differ else "continue_normal_operation",
+                "label": "Continue productization in dev; batch stable replacement when ready.",
+            }
+        ],
+        "safety_boundary": {
+            "does_not_authorize_stable_replacement": True,
+            "does_not_request_stable_replacement": True,
+            "does_not_restart_service": True,
+            "does_not_checkout_or_install": True,
+            "does_not_push": True,
+        },
+    }
+
+
 def build_apps_connector_closeout_packet(
     *,
     project_name: str | None = None,
@@ -346,7 +425,7 @@ def build_apps_connector_closeout_packet(
         "fallback_arguments": closeout_arguments,
         "success_evidence": (
             "ok=true, apps_connector_closeout.status=ready, "
-            "stable_replacement_hint.status=stable_aligned or stable_replacement_available."
+            "stable_replacement_hint.status=stable_aligned or dev_ahead_stable."
         ),
     }
     metadata_refresh_guidance = {

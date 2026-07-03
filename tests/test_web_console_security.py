@@ -725,6 +725,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
+        assert payload["stable_replacement_cadence"]["read_only"] is True
+        assert payload["stable_replacement_cadence"]["stable_replacement_not_required"] is True
+        assert payload["stable_replacement_cadence"]["exact_authorization_required"] is False
+        assert payload["stable_replacement_cadence"]["safety_boundary"]["does_not_request_stable_replacement"] is True
+        assert service["stable_replacement_cadence"]["status"] == payload["stable_replacement_cadence"]["status"]
         assert payload["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert payload["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
         assert service["connector"]["local_service_status"] == "healthy"

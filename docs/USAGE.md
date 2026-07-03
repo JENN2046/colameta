@@ -677,6 +677,27 @@ authorization:
 授权替换稳定服务到 <exact_commit_sha>
 ```
 
+Stable replacement cadence:
+
+```text
+small productization commit -> push + CI only
+dev ahead of stable -> normal development state
+stable_replacement_not_required -> continue the dev batch
+batch_when_ready -> replace stable only after a coherent batch is ready
+```
+
+Do not ask Jenn for stable replacement just because `dev HEAD != stable HEAD`.
+That drift should be reported as `dev_ahead_stable`, not as an urgent
+replacement request. Ask for exact stable authorization only when one of these
+is true:
+
+```text
+stable service is broken and the fix is in dev
+Jenn explicitly wants the new feature in stable now
+a security or correctness fix must reach stable
+a productization batch is complete and Jenn chooses to promote it
+```
+
 Stable replacement must include:
 
 ```text

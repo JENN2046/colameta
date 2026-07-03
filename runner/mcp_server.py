@@ -44,6 +44,7 @@ from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
+    build_stable_replacement_cadence,
     get_connector_runtime_health_status,
     get_runtime_version_status,
     git_checkout_metadata,
@@ -6174,35 +6175,12 @@ class MCPPlanningBridgeServer:
         candidate_head = runtime_status.get("project_checkout_head")
         stable_metadata = git_checkout_metadata(DEFAULT_STABLE_RUNTIME_DIR)
         stable_head = stable_metadata.get("head")
-        if isinstance(candidate_head, str) and candidate_head.strip() and isinstance(stable_head, str) and stable_head.strip():
-            replacement_available = candidate_head != stable_head
-            status = "stable_replacement_available" if replacement_available else "stable_aligned"
-        else:
-            replacement_available = False
-            status = "stable_replacement_unknown"
-        return {
-            "ok": True,
-            "read_only": True,
-            "side_effects": False,
-            "status": status,
-            "replacement_available": replacement_available,
-            "project_root": project_root,
-            "candidate_head": candidate_head,
-            "stable_runtime_dir": DEFAULT_STABLE_RUNTIME_DIR,
-            "stable_runtime_head": stable_head,
-            "exact_authorization_required": bool(replacement_available),
-            "exact_authorization_phrase": (
-                f"授权替换稳定服务到 {candidate_head}"
-                if replacement_available and isinstance(candidate_head, str) and candidate_head.strip()
-                else None
-            ),
-            "safety_boundary": {
-                "does_not_authorize_stable_replacement": True,
-                "does_not_restart_service": True,
-                "does_not_checkout_or_install": True,
-                "does_not_push": True,
-            },
-        }
+        return build_stable_replacement_cadence(
+            project_root=project_root,
+            candidate_head=candidate_head if isinstance(candidate_head, str) else None,
+            stable_runtime_dir=DEFAULT_STABLE_RUNTIME_DIR,
+            stable_runtime_head=stable_head if isinstance(stable_head, str) else None,
+        )
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
