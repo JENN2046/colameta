@@ -1788,6 +1788,11 @@ class WebConsoleServer:
                 "arguments": apps_smoke_call.get("arguments") if isinstance(apps_smoke_call.get("arguments"), dict) else {"project_name": project_name},
             },
             {
+                "label": "Stable cadence",
+                "tool": "get_stable_replacement_cadence",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "读取 Web GPT 入口",
                 "tool": "get_web_gpt_service_entrypoint",
                 "arguments": {"project_name": project_name},

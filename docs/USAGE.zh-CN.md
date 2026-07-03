@@ -25,8 +25,9 @@
 3. get_service_entry_profile(profile_id="web_gpt_commander")
 4. get_web_gpt_service_entrypoint
 5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-7. get_connector_runtime_health_status(project_name="colameta-self-dev")
+6. get_stable_replacement_cadence(project_name="colameta-self-dev")
+7. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+8. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 如果要开一轮受控优化：
@@ -661,6 +662,10 @@ Jenn 明确要现在在 stable 使用新能力
 安全或正确性修复必须进入 stable
 一组产品化批次已经完成，Jenn 决定晋升
 ```
+
+这个判断优先读 `get_stable_replacement_cadence(project_name=...)`，或 Web
+`/api/v2/status.stable_replacement_cadence`。`colameta status --json` 也会返回
+同一份 cadence packet。
 
 替换流程必须包含：
 

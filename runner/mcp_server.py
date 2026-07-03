@@ -92,6 +92,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
+    "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -167,6 +168,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
+    "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -309,6 +311,7 @@ class MCPPlanningBridgeServer:
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
+            "get_stable_replacement_cadence": self._tool_get_stable_replacement_cadence,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
@@ -485,6 +488,34 @@ class MCPPlanningBridgeServer:
                     "只接受 sanitized tunnel/control-plane evidence；不读取 token、cookie、browser login state、配置或 raw logs。scope=mcp:read。"
                 ),
                 input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stable_replacement_cadence",
+                title="Get Stable Replacement Cadence",
+                description=(
+                    f"[{self.project_hint}] 稳定服务替换节奏只读卡片。"
+                    "当 dev HEAD 与 stable HEAD 不一致时，默认返回 dev_ahead_stable、"
+                    "stable_replacement_not_required 和 batch_when_ready；"
+                    "不把普通产品化 drift 升级成替换授权请求。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目的 stable replacement cadence；服务模式下必须显式提供。",
+                        }
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -3715,6 +3746,7 @@ class MCPPlanningBridgeServer:
       <div class="actions">
         <button data-tool="get_commander_app_manifest">Manifest</button>
         <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
+        <button class="secondary" data-tool="get_stable_replacement_cadence">Cadence</button>
         <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
         <button class="secondary" data-tool="get_connector_runtime_health_status">Connector</button>
         <button class="secondary" data-tool="analyze_project_state">State</button>
@@ -5484,6 +5516,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
                     {"tool": "render_commander_app", "arguments": project_args()},
+                    {"tool": "get_stable_replacement_cadence", "arguments": project_args()},
                     {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
@@ -5689,6 +5722,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "render_commander_app", "why": "Open the ChatGPT Apps Commander panel with project_name."},
                 {"tool": "get_commander_app_manifest", "why": "Read the same Commander App contract without rendering UI."},
                 {"tool": "get_apps_connector_smoke_packet", "why": "Run the Apps connector project-list and connector-closeout smoke checklist."},
+                {"tool": "get_stable_replacement_cadence", "why": "Read whether dev/stable drift should be batched instead of promoted immediately."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
@@ -5753,6 +5787,12 @@ class MCPPlanningBridgeServer:
                     "tool": "render_commander_app",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "打开 ChatGPT Apps Commander 面板，统一展示服务事实、connector health、profiles 和授权闸门。",
+                },
+                {
+                    "step": "inspect_stable_replacement_cadence",
+                    "tool": "get_stable_replacement_cadence",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "确认 dev ahead stable 是正常批次状态，不把普通 drift 当成稳定替换请求。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -5943,6 +5983,12 @@ class MCPPlanningBridgeServer:
             },
         }
 
+    def _tool_get_stable_replacement_cadence(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        local_service = self._connector_runtime_local_service_evidence(project_root)
+        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        return self._stable_replacement_hint(project_root, runtime_status)
+
     def _commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
@@ -6034,6 +6080,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_agent_consumer_contract", "arguments": {}},
                 {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
                 {"tool": "render_commander_app", "arguments": project_args},
+                {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
@@ -6052,6 +6099,7 @@ class MCPPlanningBridgeServer:
                 "read_actions": [
                     {"tool": "get_commander_app_manifest", "arguments": project_args},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
+                    {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                     apps_connector_closeout["connector_closeout_check"],

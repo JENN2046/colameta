@@ -84,6 +84,7 @@ get_agent_consumer_contract
 get_service_entry_profile
 get_web_gpt_service_entrypoint
 get_runtime_version_status
+get_stable_replacement_cadence
 get_apps_connector_smoke_packet
 get_connector_runtime_health_status
 ```
@@ -116,6 +117,7 @@ After onboarding, the minimum smoke checklist is:
 project appears in list_registered_projects
 selected profile is readable
 get_runtime_version_status returns read_only=true
+get_stable_replacement_cadence returns stable_replacement_not_required for ordinary dev/stable drift
 get_apps_connector_smoke_packet returns read_only=true
 get_connector_runtime_health_status returns read_only=true
 service_readiness_summary/readiness returns ready, needs_attention, or blocked
@@ -297,8 +299,9 @@ Do read-only calibration first:
 2. get_agent_consumer_contract
 3. get_service_entry_profile
 4. get_runtime_version_status(project_name="<project_name>")
-5. get_apps_connector_smoke_packet(project_name="<project_name>")
-6. get_connector_runtime_health_status(project_name="<project_name>")
+5. get_stable_replacement_cadence(project_name="<project_name>")
+6. get_apps_connector_smoke_packet(project_name="<project_name>")
+7. get_connector_runtime_health_status(project_name="<project_name>")
 
 Do not run executors, write Delivery accepted, create ReviewDecision, emit
 GateEvent, replace stable service, or mutate provider/proxy/tunnel/auth config

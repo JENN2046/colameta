@@ -32,8 +32,9 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 3. get_service_entry_profile(profile_id="web_gpt_commander")
 4. get_web_gpt_service_entrypoint
 5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-7. get_connector_runtime_health_status(project_name="colameta-self-dev")
+6. get_stable_replacement_cadence(project_name="colameta-self-dev")
+7. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+8. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 If you want to start a controlled optimization round:
@@ -697,6 +698,10 @@ Jenn explicitly wants the new feature in stable now
 a security or correctness fix must reach stable
 a productization batch is complete and Jenn chooses to promote it
 ```
+
+Use `get_stable_replacement_cadence(project_name=...)` or Web
+`/api/v2/status.stable_replacement_cadence` for this read-only judgment.
+`colameta status --json` also returns the same cadence packet.
 
 Stable replacement must include:
 

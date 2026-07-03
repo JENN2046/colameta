@@ -327,6 +327,8 @@ def build_stable_replacement_cadence(
 
     return {
         "ok": True,
+        "source": "stable_replacement_cadence",
+        "scope": "mcp:read",
         "read_only": True,
         "side_effects": False,
         "status": status,

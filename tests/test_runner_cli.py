@@ -37,6 +37,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "discovered_from_process_table": True,
         }
         runtime_status = {
+            "project_checkout_head": "a" * 40,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
             "reload_awareness_reason": "installed_package_matches_project_checkout",
@@ -45,6 +46,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         with (
             contextlib.redirect_stderr(stderr),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
+            patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
         ):
             runner_cli._print_connector_runtime_health_summary(
                 project_path=str(self.project),
@@ -67,6 +69,9 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "fallback=get_connector_runtime_health_status" in output
         assert "metadata=refresh_if_tool_missing" in output
         assert "apps_reauth=reconnect_apps_connector" in output
+        assert "Stable cadence: status=dev_ahead_stable" in output
+        assert "replacement_required=False" in output
+        assert "cadence=batch_when_ready" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -98,6 +103,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "discovered_from_process_table": False,
         }
         runtime_status = {
+            "project_checkout_head": "a" * 40,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
             "reload_awareness_reason": "installed_package_matches_project_checkout",
@@ -113,6 +119,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             patch.object(runner_cli, "_is_pid_running", return_value=True),
             patch.object(runner_cli, "_probe_service_health", return_value=("healthy", "healthy")),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
+            patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
             patch.object(runner_cli.urllib.request, "urlopen", side_effect=fake_urlopen),
         ):
             result = runner_cli._run_service_status(
@@ -139,6 +146,8 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "decision=ready" in output
         assert "preferred=get_apps_connector_smoke_packet" in output
         assert "apps_reauth=reconnect_apps_connector" in output
+        assert "Stable cadence: status=dev_ahead_stable" in output
+        assert "replacement_required=False" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -170,6 +179,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "discovered_from_process_table": False,
         }
         runtime_status = {
+            "project_checkout_head": "a" * 40,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
             "reload_awareness_reason": "installed_package_matches_project_checkout",
@@ -182,6 +192,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             patch.object(runner_cli, "_is_pid_running", return_value=True),
             patch.object(runner_cli, "_probe_service_health", return_value=("healthy", "healthy")),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
+            patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
             patch.object(runner_cli.urllib.request, "urlopen", return_value=FakeResponse()),
         ):
             result = runner_cli._run_service_status(
@@ -205,6 +216,9 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert payload["connector_runtime_health"]["overall_status"] == "healthy"
         assert payload["apps_connector_closeout"]["status"] == "ready"
         assert payload["apps_connector_smoke_packet"]["preferred"]["tool"] == "get_apps_connector_smoke_packet"
+        assert payload["stable_replacement_cadence"]["status"] == "dev_ahead_stable"
+        assert payload["stable_replacement_cadence"]["stable_replacement_not_required"] is True
+        assert payload["stable_replacement_cadence"]["recommended_cadence"] == "batch_when_ready"
         assert (
             payload["apps_connector_smoke_packet"]["metadata_refresh_guidance"]["expected_tool"]
             == "get_apps_connector_smoke_packet"

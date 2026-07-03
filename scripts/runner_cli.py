@@ -32,9 +32,12 @@ from runner.runner_paths import (
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
+    build_stable_replacement_cadence,
     get_connector_runtime_health_status,
     get_runtime_version_status,
+    git_checkout_metadata,
 )
+from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 
 
 SERVICE_WAIT_TIMEOUT_SECONDS = 2.0
@@ -350,11 +353,21 @@ def _connector_runtime_health_packet(
         "fallback": apps_closeout.get("connector_closeout_check"),
         "metadata_refresh_guidance": apps_closeout.get("metadata_refresh_guidance"),
     }
+    stable_metadata = git_checkout_metadata(DEFAULT_STABLE_RUNTIME_DIR)
+    stable_cadence = build_stable_replacement_cadence(
+        project_root=_resolve_path(project_path),
+        candidate_head=runtime_status.get("project_checkout_head")
+        if isinstance(runtime_status.get("project_checkout_head"), str)
+        else None,
+        stable_runtime_dir=DEFAULT_STABLE_RUNTIME_DIR,
+        stable_runtime_head=stable_metadata.get("head") if isinstance(stable_metadata.get("head"), str) else None,
+    )
     return {
         "runtime_status": runtime_status,
         "connector_runtime_health": health,
         "apps_connector_closeout": apps_closeout,
         "apps_connector_smoke_packet": apps_smoke,
+        "stable_replacement_cadence": stable_cadence,
     }
 
 
@@ -418,6 +431,17 @@ def _print_connector_runtime_health_summary(
         f"decision={closeout_check.get('current_decision')} "
         f"metadata={refresh.get('status') or 'refresh_if_tool_missing'} "
         f"apps_reauth=reconnect_apps_connector",
+        file=sys.stderr,
+    )
+    cadence = packet["stable_replacement_cadence"]
+    if not isinstance(cadence, dict):
+        cadence = {}
+    print(
+        "Stable cadence: "
+        f"status={cadence.get('status')} "
+        f"replacement_required={not bool(cadence.get('stable_replacement_not_required', True))} "
+        f"cadence={cadence.get('recommended_cadence')} "
+        f"urgency={cadence.get('replacement_urgency')}",
         file=sys.stderr,
     )
 
@@ -503,6 +527,7 @@ def _service_status_payload(
         "connector_runtime_health": packet["connector_runtime_health"],
         "apps_connector_closeout": packet["apps_connector_closeout"],
         "apps_connector_smoke_packet": packet["apps_connector_smoke_packet"],
+        "stable_replacement_cadence": packet["stable_replacement_cadence"],
         "tunnel_evidence": {
             "provided": bool(tunnel_client or control_plane),
             "source": "tunnel_admin_probe" if tunnel_client or control_plane else None,

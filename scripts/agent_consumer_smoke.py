@@ -66,6 +66,7 @@ def run_agent_consumer_smoke(project_root: str | Path, *, project_name: str = "c
             "get_agent_consumer_contract",
             "get_service_entry_profile",
             "get_web_gpt_service_entrypoint",
+            "get_stable_replacement_cadence",
             "get_stable_promotion_readiness",
             "analyze_project_state",
         }
