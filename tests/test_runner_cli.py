@@ -63,6 +63,9 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "CONNECTOR_HEALTH_UNVERIFIED" in output
         assert "Apps connector: status=needs_attention" in output
         assert "project_list=list_registered_projects" in output
+        assert "preferred=get_apps_connector_smoke_packet" in output
+        assert "fallback=get_connector_runtime_health_status" in output
+        assert "metadata=refresh_if_tool_missing" in output
         assert "apps_reauth=reconnect_apps_connector" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
@@ -134,6 +137,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "Apps connector: status=ready" in output
         assert "closeout=connector_closeout_ready" in output
         assert "decision=ready" in output
+        assert "preferred=get_apps_connector_smoke_packet" in output
         assert "apps_reauth=reconnect_apps_connector" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
@@ -200,6 +204,11 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert payload["service"]["state"] == "running"
         assert payload["connector_runtime_health"]["overall_status"] == "healthy"
         assert payload["apps_connector_closeout"]["status"] == "ready"
+        assert payload["apps_connector_smoke_packet"]["preferred"]["tool"] == "get_apps_connector_smoke_packet"
+        assert (
+            payload["apps_connector_smoke_packet"]["metadata_refresh_guidance"]["expected_tool"]
+            == "get_apps_connector_smoke_packet"
+        )
         assert (
             payload["apps_connector_closeout"]["connector_closeout_check"]["current_operator_closeout"]
             == "connector_closeout_ready"

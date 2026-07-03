@@ -339,6 +339,32 @@ def build_apps_connector_closeout_packet(
         "project_name": project_arg,
         **sanitized_evidence_template,
     }
+    preferred_smoke_tool = {
+        "tool": "get_apps_connector_smoke_packet",
+        "arguments": closeout_arguments,
+        "fallback_tool": "get_connector_runtime_health_status",
+        "fallback_arguments": closeout_arguments,
+        "success_evidence": (
+            "ok=true, apps_connector_closeout.status=ready, "
+            "stable_replacement_hint.status=stable_aligned or stable_replacement_available."
+        ),
+    }
+    metadata_refresh_guidance = {
+        "status": "refresh_if_tool_missing",
+        "expected_tool": "get_apps_connector_smoke_packet",
+        "symptom": "Current ChatGPT Apps tool metadata does not list get_apps_connector_smoke_packet.",
+        "safe_next_actions": [
+            "Open a new ChatGPT/Codex window or reconnect the ColaMeta Apps connector.",
+            "Call list_registered_projects to prove the connector session is live.",
+            "Use get_connector_runtime_health_status as the fallback until metadata refresh exposes the smoke tool.",
+        ],
+        "not_authorized_actions": [
+            "read_tokens_or_cookies",
+            "read_browser_login_state",
+            "modify_proxy_or_auth_config",
+            "restart_tunnel_client",
+        ],
+    }
 
     return {
         "ok": True,
@@ -353,6 +379,8 @@ def build_apps_connector_closeout_packet(
             else "Apps connector smoke needs sanitized connector evidence before closeout."
         ),
         "project_name": project_arg,
+        "preferred_smoke_tool": preferred_smoke_tool,
+        "metadata_refresh_guidance": metadata_refresh_guidance,
         "apps_connector_reachability": {
             "status": "proved_by_successful_apps_tool_call",
             "local_service_can_verify_chatgpt_session": False,

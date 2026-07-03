@@ -463,6 +463,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert packet["read_only"] is True
         assert packet["side_effects"] is False
         assert packet["status"] == "ready"
+        assert packet["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
+        assert packet["preferred_smoke_tool"]["arguments"]["project_name"] == "demo-project"
+        assert packet["preferred_smoke_tool"]["fallback_tool"] == "get_connector_runtime_health_status"
+        assert packet["metadata_refresh_guidance"]["expected_tool"] == "get_apps_connector_smoke_packet"
+        assert packet["metadata_refresh_guidance"]["status"] == "refresh_if_tool_missing"
         assert packet["project_list_check"]["tool"] == "list_registered_projects"
         assert packet["project_list_check"]["expected_project_name"] == "demo-project"
         assert packet["connector_closeout_check"]["current_operator_closeout"] == "connector_closeout_ready"
@@ -579,6 +584,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["side_effects"] is False
         assert data["apps_connector_closeout"]["status"] == "ready"
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
+        assert data["metadata_refresh_guidance"]["expected_tool"] == "get_apps_connector_smoke_packet"
+        assert data["operator_sequence"][1]["tool"] == "get_apps_connector_smoke_packet"
         assert data["connector_runtime_health"]["overall_status"] == "healthy"
         assert data["stable_replacement_hint"]["status"] == "stable_replacement_available"
         assert data["stable_replacement_hint"]["candidate_head"] == HEAD_A

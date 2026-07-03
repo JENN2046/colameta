@@ -5923,9 +5923,11 @@ class MCPPlanningBridgeServer:
             "stable_replacement_hint": self._stable_replacement_hint(project_root, runtime_status),
             "operator_sequence": [
                 apps_connector_closeout["project_list_check"],
+                apps_connector_closeout["preferred_smoke_tool"],
                 apps_connector_closeout["connector_closeout_check"],
             ],
             "token_expired_recovery": apps_connector_closeout["token_expired_recovery"],
+            "metadata_refresh_guidance": apps_connector_closeout["metadata_refresh_guidance"],
             "authority_boundary": {
                 "read_only": True,
                 "does_not_read_tokens_or_cookies": True,

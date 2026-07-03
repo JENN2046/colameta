@@ -1758,11 +1758,22 @@ class WebConsoleServer:
             project_name=project_name,
             connector_health=connector_health,
         )
+        apps_smoke_call = apps_connector_closeout.get("preferred_smoke_tool")
+        if not isinstance(apps_smoke_call, dict):
+            apps_smoke_call = {
+                "tool": "get_apps_connector_smoke_packet",
+                "arguments": {"project_name": project_name},
+            }
         copyable_mcp_calls = [
             {
                 "label": "读取项目列表",
                 "tool": "list_registered_projects",
                 "arguments": {},
+            },
+            {
+                "label": "Apps smoke packet",
+                "tool": str(apps_smoke_call.get("tool") or "get_apps_connector_smoke_packet"),
+                "arguments": apps_smoke_call.get("arguments") if isinstance(apps_smoke_call.get("arguments"), dict) else {"project_name": project_name},
             },
             {
                 "label": "读取 Web GPT 入口",
@@ -1790,7 +1801,7 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
-                "label": "Apps connector closeout",
+                "label": "Apps connector fallback",
                 "tool": "get_connector_runtime_health_status",
                 "arguments": apps_connector_closeout["connector_closeout_check"]["arguments"],
             },
@@ -1815,6 +1826,7 @@ class WebConsoleServer:
             "project_root": self.project_root,
             "readiness": readiness,
             "apps_connector_closeout": apps_connector_closeout,
+            "apps_connector_tool_refresh": apps_connector_closeout.get("metadata_refresh_guidance"),
             "service": {
                 "pid": local_service.get("pid"),
                 "health_source": local_service.get("health_source"),
@@ -3253,6 +3265,7 @@ class WebConsoleServer:
         result["web_commander_service"] = self._json_safe(web_commander_service)
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
+        result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)

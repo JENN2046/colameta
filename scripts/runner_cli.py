@@ -343,10 +343,18 @@ def _connector_runtime_health_packet(
         project_name=project_name,
         connector_health=health,
     )
+    apps_smoke = {
+        "read_only": True,
+        "side_effects": False,
+        "preferred": apps_closeout.get("preferred_smoke_tool"),
+        "fallback": apps_closeout.get("connector_closeout_check"),
+        "metadata_refresh_guidance": apps_closeout.get("metadata_refresh_guidance"),
+    }
     return {
         "runtime_status": runtime_status,
         "connector_runtime_health": health,
         "apps_connector_closeout": apps_closeout,
+        "apps_connector_smoke_packet": apps_smoke,
     }
 
 
@@ -393,13 +401,22 @@ def _print_connector_runtime_health_summary(
     closeout_check = apps_closeout.get("connector_closeout_check")
     if not isinstance(closeout_check, dict):
         closeout_check = {}
+    preferred = apps_closeout.get("preferred_smoke_tool")
+    if not isinstance(preferred, dict):
+        preferred = {}
+    refresh = apps_closeout.get("metadata_refresh_guidance")
+    if not isinstance(refresh, dict):
+        refresh = {}
     print(
         "Apps connector: "
         f"status={apps_closeout.get('status')} "
         f"project_name={apps_closeout.get('project_name')} "
         f"project_list=list_registered_projects "
+        f"preferred={preferred.get('tool') or 'get_apps_connector_smoke_packet'} "
+        f"fallback=get_connector_runtime_health_status "
         f"closeout={closeout_check.get('current_operator_closeout')} "
         f"decision={closeout_check.get('current_decision')} "
+        f"metadata={refresh.get('status') or 'refresh_if_tool_missing'} "
         f"apps_reauth=reconnect_apps_connector",
         file=sys.stderr,
     )
@@ -485,6 +502,7 @@ def _service_status_payload(
         "runtime_status": packet["runtime_status"],
         "connector_runtime_health": packet["connector_runtime_health"],
         "apps_connector_closeout": packet["apps_connector_closeout"],
+        "apps_connector_smoke_packet": packet["apps_connector_smoke_packet"],
         "tunnel_evidence": {
             "provided": bool(tunnel_client or control_plane),
             "source": "tunnel_admin_probe" if tunnel_client or control_plane else None,

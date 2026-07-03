@@ -131,6 +131,14 @@ guidance, connector runtime health, and a stable replacement drift hint. The
 stable hint may say that replacement is available, but it still requires Jenn's
 exact `授权替换稳定服务到 <exact_commit_sha>` authorization.
 
+If HTTP MCP `tools/list` shows `get_apps_connector_smoke_packet` but the current
+ChatGPT Apps connector tool picker does not, treat it as Apps metadata cache
+staleness. Open a new ChatGPT/Codex window or reconnect the ColaMeta Apps
+connector, then call `list_registered_projects` again. Until the metadata
+refresh exposes the new tool, use `get_connector_runtime_health_status` with the
+same sanitized tunnel evidence as the read-only fallback. Do not read tokens,
+cookies, browser login state, connector config, or raw logs.
+
 Keep these three versions separate:
 
 ```text
@@ -590,6 +598,8 @@ with sanitized tunnel evidence, and treat `token_expired` as an Apps session
 reconnect task rather than a local ColaMeta service failure.
 When available, `get_apps_connector_smoke_packet(project_name=...)` packages the
 same handoff into one read-only call and adds a stable replacement drift hint.
+Web Commander also surfaces an `Apps smoke packet` copy action. Prefer that
+call; use the connector health call only as the metadata-refresh fallback.
 
 Never put these into evidence:
 

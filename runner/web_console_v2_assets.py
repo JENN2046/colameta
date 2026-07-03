@@ -1226,6 +1226,8 @@ function renderServiceCapabilityCard(data) {{
   const service = svc.service || {{}};
   const runtime = svc.runtime || {{}};
   const connector = svc.connector || {{}};
+  const apps = svc.apps_connector_closeout || data.apps_connector_closeout || {{}};
+  const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
   const calls = Array.isArray(svc.copyable_mcp_calls) ? svc.copyable_mcp_calls : [];
   const localStatus = connector.local_service_status || "-";
@@ -1244,6 +1246,9 @@ function renderServiceCapabilityCard(data) {{
   const staleText = runtime.runtime_loaded_code_stale === true ? "stale" : runtime.runtime_loaded_code_stale === false ? "fresh" : "unknown";
   const localBadge = localHealthy ? "badge-ok" : "badge-err";
   const externalBadge = externalHealthy ? "badge-ok" : (externalStatus === "unverified" ? "badge-warn" : "badge-err");
+  const preferredTool = apps.preferred_smoke_tool && apps.preferred_smoke_tool.tool ? apps.preferred_smoke_tool.tool : "-";
+  const metadataStatus = toolRefresh.status || "-";
+  const expectedTool = toolRefresh.expected_tool || preferredTool;
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1261,6 +1266,8 @@ function renderServiceCapabilityCard(data) {{
   h += r("Checkout", headShort);
   h += r("Runtime", staleText + " ｜ " + reloadText);
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
+  h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
+  h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
 
   if (profiles.length) {{
     h += `<div class="service-profile-row">`;
@@ -1275,7 +1282,7 @@ function renderServiceCapabilityCard(data) {{
 
   if (calls.length) {{
     h += `<div class="service-copy-row">`;
-    for (const call of calls.slice(0, 5)) {{
+    for (const call of calls.slice(0, 8)) {{
       const payload = JSON.stringify({{ name: call.tool || "", arguments: call.arguments || {{}} }}, null, 2);
       h += `<button type="button" class="service-copy-btn" data-copy-mcp-call="${{escAttr(payload)}}">${{esc(call.label || call.tool || "复制调用")}}</button>`;
     }}
