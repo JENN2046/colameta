@@ -688,7 +688,18 @@ receipt
 
 不要把 CI success、read-only evidence、preview 或 receipt 自动理解为 stable replacement 授权。
 
-## 9. 常见故障
+## 9. Stage parallel plan preview
+
+使用 `get_stage_parallel_plan_preview(project_name=...)` 预览未来的阶段级并行自动化。
+这个 packet 会把候选任务拆成 task shards，列出 allowed file 边界、涉及 surface、
+文件 overlap 风险，以及 `ready_for_parallel_run_preview` 或
+`refine_task_boundaries` 这类下一步建议。
+
+这只是 read-only planning evidence。它不创建 executor preview、不启动 executor、
+不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。下一步产品化仍应是
+preview-first 的 `stage_parallel_run_preview` 一类入口。
+
+## 10. 常见故障
 
 ### 说明书 smoke checklist
 

@@ -51,6 +51,7 @@ from runner.runtime_observability import (
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
+from runner.stage_parallel_plan import build_stage_parallel_plan_preview
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -94,6 +95,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "get_stage_parallel_plan_preview",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
@@ -170,6 +172,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "get_stage_parallel_plan_preview",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "get_plan_standards_report",
@@ -313,6 +316,7 @@ class MCPPlanningBridgeServer:
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
             "get_stable_replacement_cadence": self._tool_get_stable_replacement_cadence,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
+            "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
             "get_runner_status": self._tool_get_runner_status,
@@ -543,6 +547,63 @@ class MCPPlanningBridgeServer:
                     "additionalProperties": False,
                 },
                 output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_plan_preview",
+                title="Get Stage Parallel Plan Preview",
+                description=(
+                    f"[{self.project_hint}] 阶段并行自动化只读规划卡片。"
+                    "把 stage 或 task_intents 拆成候选 task_shards，标出 allowed_files overlap、surface、风险和下一步。"
+                    "它不创建 executor preview、不启动 executor、不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目；服务模式下必须显式提供。",
+                        },
+                        "stage_id": {
+                            "type": "string",
+                            "description": "可选。要规划的阶段 ID；不传时使用 stage_parallel_automation。",
+                        },
+                        "max_parallel_tasks": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8,
+                            "description": "可选。最多纳入多少个候选 task shard。默认 3，最大 8。",
+                        },
+                        "task_intents": {
+                            "type": "array",
+                            "description": "可选。候选任务意图；只用于只读拆分预览。",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "task_id": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "allowed_files": {"type": "array", "items": {"type": "string"}},
+                                    "surfaces": {"type": "array", "items": {"type": "string"}},
+                                    "risk_level": {
+                                        "type": "string",
+                                        "enum": ["none", "low", "moderate", "high", "blocked"],
+                                    },
+                                },
+                                "required": ["title"],
+                            },
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
             ),
             MCPToolDef(
                 name="get_project_identity",
@@ -5724,6 +5785,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_apps_connector_smoke_packet", "why": "Run the Apps connector project-list and connector-closeout smoke checklist."},
                 {"tool": "get_stable_replacement_cadence", "why": "Read whether dev/stable drift should be batched instead of promoted immediately."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
+                {"tool": "get_stage_parallel_plan_preview", "why": "Preview stage-level parallel task sharding without starting executors."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
             ],
@@ -5793,6 +5855,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stable_replacement_cadence",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "确认 dev ahead stable 是正常批次状态，不把普通 drift 当成稳定替换请求。",
+                },
+                {
+                    "step": "inspect_stage_parallel_plan_preview",
+                    "tool": "get_stage_parallel_plan_preview",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "预览阶段级并行任务拆分和文件边界，不启动 executor。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -6081,6 +6149,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
                 {"tool": "render_commander_app", "arguments": project_args},
                 {"tool": "get_stable_replacement_cadence", "arguments": project_args},
+                {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
@@ -6100,6 +6169,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_commander_app_manifest", "arguments": project_args},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
+                    {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                     apps_connector_closeout["connector_closeout_check"],
@@ -6239,6 +6309,17 @@ class MCPPlanningBridgeServer:
             service_mode=self.service_mode,
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
+        )
+
+    def _tool_get_stage_parallel_plan_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        return build_stage_parallel_plan_preview(
+            project_root=project_root,
+            project_name=project_name,
+            stage_id=params.get("stage_id") if isinstance(params.get("stage_id"), str) else None,
+            task_intents=params.get("task_intents") if isinstance(params.get("task_intents"), list) else None,
+            max_parallel_tasks=params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
         )
 
     def _tool_get_project_identity(self, params: dict[str, Any]) -> dict[str, Any]:

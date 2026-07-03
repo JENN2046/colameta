@@ -727,7 +727,19 @@ receipt
 Do not treat CI success, read-only evidence, preview, or receipt as automatic
 stable replacement authorization.
 
-## 9. Local Codex HTTP MCP
+## 9. Stage Parallel Plan Preview
+
+Use `get_stage_parallel_plan_preview(project_name=...)` to preview future
+stage-level parallel automation. The packet groups candidate task shards,
+allowed file boundaries, affected surfaces, overlap risks, and a suggested next
+action such as `ready_for_parallel_run_preview` or `refine_task_boundaries`.
+
+This is read-only planning evidence. It does not create executor previews,
+start executors, create branches or worktrees, merge results, commit, push, or
+replace stable. The next productized step should still be a preview-first
+surface such as `stage_parallel_run_preview`.
+
+## 10. Local Codex HTTP MCP
 
 For local Codex, the stable HTTP MCP endpoint can be registered as:
 
@@ -761,7 +773,7 @@ If a new Codex session reports `MCP startup failed`, `Transport channel closed`,
 or `handshaking with MCP server failed`, test the HTTP MCP endpoint directly
 before changing provider/auth config.
 
-## 10. Executor Status Polling
+## 11. Executor Status Polling
 
 Executor status polling is profile-aware. Read the selected service entry
 profile first:
@@ -813,7 +825,7 @@ status reports provider/auth/quota/network failure. If only heartbeat is still
 up but `last_meaningful_progress.stale=true`, treat it as a possible stalled
 executor run instead of continuing indefinitely.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Manual smoke checklist
 
