@@ -42,6 +42,7 @@ from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
+    build_apps_connector_closeout_packet,
     build_service_readiness_summary,
     get_connector_runtime_health_status,
     get_runtime_version_status,
@@ -3667,6 +3668,7 @@ class MCPPlanningBridgeServer:
       <div class="tile"><div class="label">Runtime</div><div class="value" id="runtime">-</div></div>
       <div class="tile"><div class="label">Local</div><div class="value" id="local">-</div></div>
       <div class="tile"><div class="label">External</div><div class="value" id="external">-</div></div>
+      <div class="tile"><div class="label">Apps</div><div class="value" id="apps">-</div></div>
     </section>
     <section class="section">
       <h2>Next Step</h2>
@@ -3678,6 +3680,13 @@ class MCPPlanningBridgeServer:
     <section class="section">
       <h2>Profiles</h2>
       <div class="profiles" id="profiles"></div>
+    </section>
+    <section class="section">
+      <h2>Apps Connector</h2>
+      <div class="readiness">
+        <div class="note"><strong>Project list</strong><span id="apps-project-list">-</span></div>
+        <div class="note"><strong>Closeout</strong><span id="apps-closeout">-</span></div>
+      </div>
     </section>
     <section class="section">
       <h2>Reads</h2>
@@ -3749,6 +3758,7 @@ class MCPPlanningBridgeServer:
         var current = manifest || data;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
         var readiness = current.readiness || current.service_readiness_summary || {};
+        var apps = current.apps_connector_closeout || {};
         text("subtitle", statusValue(current, ["app", "status_line"]) || "Service facts and authorization gates");
         text("readiness", statusValue(readiness, ["status"]));
         text("primary-blocker", blockerText(readiness));
@@ -3757,6 +3767,15 @@ class MCPPlanningBridgeServer:
         text("runtime", statusValue(current, ["runtime", "reload_needed_for_verification"]) === "false" ? "current" : statusValue(current, ["runtime", "reload_awareness_reason"]));
         text("local", statusValue(current, ["connector", "local_service_status"]));
         text("external", statusValue(current, ["connector", "external_connector_status"]));
+        text("apps", statusValue(apps, ["status"]));
+        text("apps-project-list", [
+          statusValue(apps, ["project_list_check", "tool"]),
+          statusValue(apps, ["project_list_check", "expected_project_name"])
+        ].filter(function (item) { return item && item !== "-"; }).join(" | "));
+        text("apps-closeout", [
+          statusValue(apps, ["connector_closeout_check", "current_operator_closeout"]),
+          statusValue(apps, ["connector_closeout_check", "current_decision"])
+        ].filter(function (item) { return item && item !== "-"; }).join(" | "));
         var profiles = byId("profiles");
         profiles.innerHTML = "";
         (current.profiles || current.service_entry_profiles || []).slice(0, 5).forEach(function (item) {
@@ -5881,6 +5900,10 @@ class MCPPlanningBridgeServer:
             connector_health=connector_health,
             project_name=project_name,
         )
+        apps_connector_closeout = build_apps_connector_closeout_packet(
+            project_name=project_name,
+            connector_health=connector_health,
+        )
         app_status = str(connector_summary.get("overall_status") or "unknown")
         readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
@@ -5922,6 +5945,7 @@ class MCPPlanningBridgeServer:
             },
             "project_identity": project_identity,
             "readiness": readiness,
+            "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
             "connector": connector_summary,
             "registered_projects": self._web_gpt_registered_project_summary(),
@@ -5937,6 +5961,7 @@ class MCPPlanningBridgeServer:
             "commander_panel": {
                 "primary_sections": [
                     "service_readiness",
+                    "apps_connector_closeout",
                     "service_facts",
                     "runtime_freshness",
                     "connector_health",
@@ -5948,6 +5973,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_commander_app_manifest", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
+                    apps_connector_closeout["connector_closeout_check"],
                     {"tool": "analyze_project_state", "arguments": project_args},
                 ],
                 "preview_first_actions": [
@@ -6012,6 +6038,7 @@ class MCPPlanningBridgeServer:
                     "provide sanitized tunnel_client/control_plane evidence when available",
                     "if Apps connector returns token_expired, reconnect the Apps connector session",
                 ],
+                "apps_connector_closeout": apps_connector_closeout,
                 "accepted_external_evidence_fields": ["status", "reason_code", "evidence_source", "last_observed_at"],
                 "forbidden_evidence": ["token", "cookie", "credential", "raw_log", "provider_raw_response", "browser_login_state"],
             },

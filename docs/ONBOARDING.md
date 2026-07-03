@@ -98,6 +98,11 @@ authorize executor runs, commits, pushes, stable replacement, ReviewDecision, or
 GateEvent.
 The ChatGPT Apps panel renders the same signal in the `Readiness` and
 `Next Step` sections.
+For ChatGPT Apps connector handoff, also read `apps_connector_closeout`. It
+packages the read-only smoke sequence: `list_registered_projects`, then
+`get_connector_runtime_health_status` with sanitized tunnel evidence. A
+`token_expired` response is an Apps session reconnect task, not evidence that
+the local Web/MCP service is broken.
 
 ## 4. Minimal New-Project Smoke
 

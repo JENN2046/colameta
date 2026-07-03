@@ -70,6 +70,7 @@ from runner.web_console_presenter import (
 )
 from runner.executor_status import polling_guidance_for_profile
 from runner.runtime_observability import (
+    build_apps_connector_closeout_packet,
     build_service_readiness_summary,
     get_connector_runtime_health_status,
     get_runtime_version_status,
@@ -1753,6 +1754,10 @@ class WebConsoleServer:
             connector_health=connector_health,
             project_name=project_name,
         )
+        apps_connector_closeout = build_apps_connector_closeout_packet(
+            project_name=project_name,
+            connector_health=connector_health,
+        )
         copyable_mcp_calls = [
             {
                 "label": "读取项目列表",
@@ -1785,6 +1790,11 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Apps connector closeout",
+                "tool": "get_connector_runtime_health_status",
+                "arguments": apps_connector_closeout["connector_closeout_check"]["arguments"],
+            },
+            {
                 "label": "Local Codex 执行器轮询",
                 "tool": "manage_executor_workflow",
                 "arguments": {
@@ -1804,6 +1814,7 @@ class WebConsoleServer:
             "project_name": project_name,
             "project_root": self.project_root,
             "readiness": readiness,
+            "apps_connector_closeout": apps_connector_closeout,
             "service": {
                 "pid": local_service.get("pid"),
                 "health_source": local_service.get("health_source"),
@@ -3241,6 +3252,7 @@ class WebConsoleServer:
         result["runtime_version_summary"] = self._json_safe(web_commander_service["runtime"])
         result["web_commander_service"] = self._json_safe(web_commander_service)
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
+        result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)

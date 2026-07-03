@@ -722,6 +722,9 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "executor_run" in service["readiness"]["not_authorized_actions"]
         assert payload["service_readiness_summary"]["status"] == service["readiness"]["status"]
         assert payload["service_readiness_summary"]["side_effects"] is False
+        assert payload["apps_connector_closeout"]["read_only"] is True
+        assert payload["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
+        assert payload["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
         assert service["connector"]["local_service_status"] == "healthy"
         assert service["connector"]["external_connector_status"] == "unverified"
         assert "project_checkout_head" in payload["runtime_version_summary"]
@@ -733,9 +736,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert profiles["local_codex_commander"]["polling_guidance"]["max_poll_attempts"] == 24
 
         calls = {item["tool"]: item for item in service["copyable_mcp_calls"]}
+        calls_by_label = {item["label"]: item for item in service["copyable_mcp_calls"]}
         assert calls["render_commander_app"]["arguments"]["project_name"]
         assert calls["get_commander_app_manifest"]["arguments"]["project_name"]
         assert calls["get_connector_runtime_health_status"]["arguments"]["project_name"]
+        assert calls_by_label["Apps connector closeout"]["arguments"]["tunnel_client"]["reason_code"] == "TUNNEL_CLIENT_HEALTHZ_READY"
+        assert (
+            calls_by_label["Apps connector closeout"]["arguments"]["control_plane"]["reason_code"]
+            == "TUNNEL_CONTROL_PLANE_READYZ_READY"
+        )
         assert calls["manage_executor_workflow"]["arguments"]["profile_id"] == "local_codex_commander"
 
     def test_missing_csrf_on_write_route_is_rejected(self) -> None:

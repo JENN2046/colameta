@@ -92,6 +92,18 @@ dev repo: /home/jenn/src/colameta-dev
 或 `blocked`，并给 safe next actions。这只是 read-only 状态解释，不授权 executor run、
 commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 
+ChatGPT Apps connector 收口看同一输出里的 `apps_connector_closeout`。它是只读 smoke
+包，顺序是：
+
+```text
+Apps connector reachable -> project list includes project_name -> connector closeout ready
+```
+
+它会给出 `list_registered_projects` 和 `get_connector_runtime_health_status` 调用形状，
+以及 sanitized tunnel evidence 模板。如果 Apps connector 返回 `HTTP 401 token_expired`，
+这是 Apps session reconnect 问题，不是本地 ColaMeta 服务故障；不要读取 token、cookie、
+browser login state、tunnel-client config、raw logs 或 provider response。
+
 先分清这两个版本状态：
 
 ```text
@@ -536,6 +548,11 @@ decision=ready
 evidence_gap_count=0
 operator_closeout.evidence_gaps=[]
 ```
+
+Web Commander 和 `get_commander_app_manifest` 也会暴露 `apps_connector_closeout`。
+当下一位操作者是 ChatGPT Apps 时，用它先调 `list_registered_projects`，再用
+sanitized tunnel evidence 调 `get_connector_runtime_health_status`。如果返回
+`token_expired`，按 Apps session 重新连接处理，不要误判成本地 ColaMeta 服务故障。
 
 禁止把 raw token、cookie、credential、provider response、tunnel-client config、proxy config 或 logs 放进 evidence。
 

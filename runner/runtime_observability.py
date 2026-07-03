@@ -291,6 +291,144 @@ def build_service_readiness_summary(
     }
 
 
+def build_apps_connector_closeout_packet(
+    *,
+    project_name: str | None = None,
+    connector_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a read-only ChatGPT Apps connector closeout checklist.
+
+    Local ColaMeta cannot prove ChatGPT's Apps session token by itself. The
+    packet therefore describes the exact read-only Apps-side smoke sequence and
+    collapses the local connector closeout that the sequence should verify.
+    """
+    connector = connector_health if isinstance(connector_health, dict) else {}
+    operator_closeout = connector.get("operator_closeout")
+    if not isinstance(operator_closeout, dict):
+        operator_closeout = {}
+    local_service = connector.get("local_service")
+    if not isinstance(local_service, dict):
+        local_service = {}
+    external_connector = connector.get("external_connector")
+    if not isinstance(external_connector, dict):
+        external_connector = {}
+
+    project_arg = _clean_status_text(project_name) or "<registered project_name>"
+    closeout_status = _clean_status_text(operator_closeout.get("status")) or "unverified"
+    closeout_decision = _clean_status_text(operator_closeout.get("decision")) or "blocked"
+    evidence_gap_count_raw = operator_closeout.get("evidence_gap_count")
+    evidence_gap_count = evidence_gap_count_raw if isinstance(evidence_gap_count_raw, int) else None
+    connector_ready = closeout_status == "connector_closeout_ready" and closeout_decision == "ready"
+    packet_status = "ready" if connector_ready else "needs_attention"
+
+    sanitized_evidence_template = {
+        "tunnel_client": {
+            "status": "healthy",
+            "reason_code": "TUNNEL_CLIENT_HEALTHZ_READY",
+            "evidence_source": "tunnel-client health --port <admin_port> --pid <pid> --json healthz_ok",
+            "last_observed_at": "<observed_at_iso8601>",
+        },
+        "control_plane": {
+            "status": "healthy",
+            "reason_code": "TUNNEL_CONTROL_PLANE_READYZ_READY",
+            "evidence_source": "tunnel-client health --port <admin_port> --pid <pid> --json readyz_ok",
+            "last_observed_at": "<observed_at_iso8601>",
+        },
+    }
+    closeout_arguments: dict[str, Any] = {
+        "project_name": project_arg,
+        **sanitized_evidence_template,
+    }
+
+    return {
+        "ok": True,
+        "source": "apps_connector_closeout_packet",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": packet_status,
+        "summary": (
+            "Apps connector smoke is ready to run; local connector closeout is ready."
+            if connector_ready
+            else "Apps connector smoke needs sanitized connector evidence before closeout."
+        ),
+        "project_name": project_arg,
+        "apps_connector_reachability": {
+            "status": "proved_by_successful_apps_tool_call",
+            "local_service_can_verify_chatgpt_session": False,
+            "success_evidence": "The Apps connector tool call returns ok=true instead of token_expired.",
+            "token_expired_code": "token_expired",
+        },
+        "project_list_check": {
+            "tool": "list_registered_projects",
+            "arguments": {},
+            "expected_project_name": project_arg,
+            "success_evidence": "ok=true and the returned projects include the expected project_name.",
+        },
+        "connector_closeout_check": {
+            "tool": "get_connector_runtime_health_status",
+            "arguments": closeout_arguments,
+            "expected_overall_status": "healthy",
+            "expected_operator_closeout": "connector_closeout_ready",
+            "expected_decision": "ready",
+            "current_operator_closeout": closeout_status,
+            "current_decision": closeout_decision,
+            "current_evidence_gap_count": evidence_gap_count,
+            "local_service_status": local_service.get("status"),
+            "external_connector_status": external_connector.get("status"),
+        },
+        "smoke_sequence": [
+            {
+                "step_id": "apps_connector_reachable",
+                "tool": "list_registered_projects",
+                "arguments": {},
+                "success_evidence": "Tool returns ok=true through the ChatGPT Apps connector.",
+            },
+            {
+                "step_id": "project_list_ok",
+                "tool": "list_registered_projects",
+                "arguments": {},
+                "success_evidence": f"Returned project list includes {project_arg}.",
+            },
+            {
+                "step_id": "connector_closeout_ready",
+                "tool": "get_connector_runtime_health_status",
+                "arguments": closeout_arguments,
+                "success_evidence": "overall_status=healthy, operator_closeout=connector_closeout_ready, evidence_gap_count=0.",
+            },
+        ],
+        "next_action": {
+            "action_id": "continue_with_requested_work" if connector_ready else "rerun_connector_closeout_with_sanitized_evidence",
+            "label": (
+                "Continue with the requested workflow."
+                if connector_ready
+                else "Run Apps connector closeout with sanitized tunnel/control-plane evidence."
+            ),
+            "authority": "read_only_or_preview_first",
+        },
+        "token_expired_recovery": {
+            "status": "operator_handoff",
+            "summary": "If Apps connector returns HTTP 401 token_expired, reconnect the ChatGPT Apps connector session.",
+            "not_local_service_fix": True,
+            "not_authorized_actions": [
+                "read_tokens_or_cookies",
+                "read_browser_login_state",
+                "restart_tunnel_client",
+                "modify_proxy_or_auth_config",
+            ],
+        },
+        "sanitized_evidence_template": sanitized_evidence_template,
+        "forbidden_evidence": [
+            "token",
+            "cookie",
+            "credential",
+            "raw_log",
+            "provider_raw_response",
+            "browser_login_state",
+        ],
+    }
+
+
 def loaded_runner_module_fingerprints() -> dict[str, dict[str, Any]]:
     return {module_name: dict(evidence) for module_name, evidence in _LOADED_RUNNER_MODULE_FINGERPRINTS.items()}
 

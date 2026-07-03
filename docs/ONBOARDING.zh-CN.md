@@ -75,6 +75,10 @@ get_connector_runtime_health_status
 closeout 收敛成 `ready`、`needs_attention` 或 `blocked`；这是 read-only 状态解释，不授权
 executor run、commit、push、stable replacement、ReviewDecision 或 GateEvent。
 ChatGPT Apps 面板会把同一信息显示在 `Readiness` 和 `Next Step` 区块。
+ChatGPT Apps connector 交接时，也读 `apps_connector_closeout`。它打包只读 smoke 顺序：
+先 `list_registered_projects`，再带 sanitized tunnel evidence 调
+`get_connector_runtime_health_status`。`token_expired` 是 Apps session 重新连接问题，
+不是本地 Web/MCP 服务坏了的证据。
 
 ## 4. 新项目最小 smoke
 

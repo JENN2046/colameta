@@ -11,7 +11,11 @@ from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
 from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
-from runner.runtime_observability import build_service_readiness_summary, get_connector_runtime_health_status
+from runner.runtime_observability import (
+    build_apps_connector_closeout_packet,
+    build_service_readiness_summary,
+    get_connector_runtime_health_status,
+)
 
 
 HEAD_A = "a" * 40
@@ -431,6 +435,42 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert summary["safe_next_actions"][0]["authority"] == "preview_or_task_packet_only"
         assert "executor_run" in summary["not_authorized_actions"]
 
+    def test_apps_connector_closeout_packet_keeps_apps_smoke_explicit(self) -> None:
+        connector_health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "project_checkout_matches_loaded_runtime",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+            tunnel_client={"status": "healthy", "reason_code": "TUNNEL_CLIENT_HEALTHZ_READY"},
+            control_plane={"status": "healthy", "reason_code": "TUNNEL_CONTROL_PLANE_READYZ_READY"},
+        )
+
+        packet = build_apps_connector_closeout_packet(
+            project_name="demo-project",
+            connector_health=connector_health,
+        )
+
+        assert packet["read_only"] is True
+        assert packet["side_effects"] is False
+        assert packet["status"] == "ready"
+        assert packet["project_list_check"]["tool"] == "list_registered_projects"
+        assert packet["project_list_check"]["expected_project_name"] == "demo-project"
+        assert packet["connector_closeout_check"]["current_operator_closeout"] == "connector_closeout_ready"
+        assert packet["connector_closeout_check"]["arguments"]["tunnel_client"]["reason_code"] == "TUNNEL_CLIENT_HEALTHZ_READY"
+        assert packet["apps_connector_reachability"]["local_service_can_verify_chatgpt_session"] is False
+        assert packet["token_expired_recovery"]["not_local_service_fix"] is True
+        assert "read_tokens_or_cookies" in packet["token_expired_recovery"]["not_authorized_actions"]
+
     def test_service_readiness_summary_explains_attention_and_blocked_states(self) -> None:
         attention_health = get_connector_runtime_health_status(
             runtime_status={
@@ -612,6 +652,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["readiness"]["read_only"] is True
         assert data["readiness"]["components"]["operator_closeout"]["status"]
         assert data["readiness"]["safe_next_actions"][0]["authority"] in {"read_only", "preview_or_task_packet_only"}
+        assert data["apps_connector_closeout"]["status"] in {"ready", "needs_attention"}
+        assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
+        assert data["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
+        assert "apps_connector_closeout" in data["commander_panel"]["primary_sections"]
+        assert any(
+            item["tool"] == "get_connector_runtime_health_status"
+            and "tunnel_client" in item.get("arguments", {})
+            for item in data["commander_panel"]["read_actions"]
+        )
         assert "service_readiness" in data["commander_panel"]["primary_sections"]
         assert data["authority_boundary"]["does_not_authorize_executor_run"] is True
         assert "Delivery accepted" in data["authority_boundary"]["requires_explicit_commander_authorization_for"]

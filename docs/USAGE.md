@@ -110,6 +110,19 @@ with safe next actions. It is read-only and does not authorize executor runs,
 commits, pushes, stable replacement, ReviewDecision, GateEvent, or Delivery
 accepted.
 
+For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
+same surfaces. It is a read-only smoke packet for:
+
+```text
+Apps connector reachable -> project list includes project_name -> connector closeout ready
+```
+
+It includes the exact `list_registered_projects` and
+`get_connector_runtime_health_status` calls, plus a sanitized tunnel evidence
+template. If the Apps connector returns `HTTP 401 token_expired`, reconnect the
+Apps connector session. Do not read tokens, cookies, browser login state,
+tunnel-client config, raw logs, or provider responses.
+
 Keep these three versions separate:
 
 ```text
@@ -549,6 +562,12 @@ decision=ready
 evidence_gap_count=0
 operator_closeout.evidence_gaps=[]
 ```
+
+Web Commander and `get_commander_app_manifest` also expose
+`apps_connector_closeout`. Use it when the next operator is ChatGPT Apps: first
+call `list_registered_projects`, then call `get_connector_runtime_health_status`
+with sanitized tunnel evidence, and treat `token_expired` as an Apps session
+reconnect task rather than a local ColaMeta service failure.
 
 Never put these into evidence:
 
