@@ -702,6 +702,10 @@ a productization batch is complete and Jenn chooses to promote it
 Use `get_stable_replacement_cadence(project_name=...)` or Web
 `/api/v2/status.stable_replacement_cadence` for this read-only judgment.
 `colameta status --json` also returns the same cadence packet.
+When dev is ahead of stable, the cadence packet includes `dev_batch_summary`
+with the commit count since stable, recent commit subjects, `batch_size`, and
+`promotion_posture`. This is evidence for later batch review, not a replacement
+request.
 
 Stable replacement must include:
 

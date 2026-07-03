@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 import json
@@ -497,6 +498,55 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert cadence["authorization_policy"]["do_not_request_authorization_for_small_productization_commits"] is True
         assert "operator_explicitly_requests_stable_batch_promotion" in cadence["promotion_triggers"]
 
+    def test_stable_replacement_cadence_summarizes_dev_batch_commits(self) -> None:
+        repo = self.tmp_path / "batch-repo"
+        repo.mkdir()
+
+        def git(*args: str) -> str:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            assert completed.returncode == 0, completed.stderr
+            return completed.stdout.strip()
+
+        git("init")
+        git("config", "user.email", "colameta@example.test")
+        git("config", "user.name", "ColaMeta Test")
+        stable_head = ""
+        for index in range(6):
+            (repo / "file.txt").write_text(f"{index}\n", encoding="utf-8")
+            git("add", "file.txt")
+            git("commit", "-m", f"Batch change {index}")
+            if index == 0:
+                stable_head = git("rev-parse", "HEAD")
+        candidate_head = git("rev-parse", "HEAD")
+
+        cadence = build_stable_replacement_cadence(
+            project_root=str(repo),
+            candidate_head=candidate_head,
+            stable_runtime_dir="/tmp/stable",
+            stable_runtime_head=stable_head,
+        )
+
+        batch = cadence["dev_batch_summary"]
+        assert cadence["status"] == "dev_ahead_stable"
+        assert cadence["stable_replacement_not_required"] is True
+        assert cadence["exact_authorization_required"] is False
+        assert batch["status"] == "available"
+        assert batch["commit_count_since_stable"] == 5
+        assert batch["from_stable_head"] == stable_head
+        assert batch["to_candidate_head"] == candidate_head
+        assert batch["batch_size"] == "medium"
+        assert batch["promotion_posture"] == "review_batch_when_ready"
+        assert batch["recent_commit_subjects"][0] == "Batch change 5"
+        assert "Batch change 1" in batch["recent_commit_subjects"]
+        assert cadence["safety_boundary"]["does_not_request_stable_replacement"] is True
+
     def test_service_readiness_summary_explains_attention_and_blocked_states(self) -> None:
         attention_health = get_connector_runtime_health_status(
             runtime_status={
@@ -661,6 +711,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["replacement_available"] is False
         assert data["stable_replacement_not_required"] is True
         assert data["recommended_cadence"] == "batch_when_ready"
+        assert data["dev_batch_summary"]["status"] in {"available", "unavailable"}
         assert data["exact_authorization_required"] is False
         assert data["safety_boundary"]["does_not_request_stable_replacement"] is True
 

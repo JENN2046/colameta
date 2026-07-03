@@ -666,6 +666,9 @@ Jenn 明确要现在在 stable 使用新能力
 这个判断优先读 `get_stable_replacement_cadence(project_name=...)`，或 Web
 `/api/v2/status.stable_replacement_cadence`。`colameta status --json` 也会返回
 同一份 cadence packet。
+当 dev ahead stable 时，cadence packet 会包含 `dev_batch_summary`，列出从 stable
+以来的 commit 数、最近 commit subject、`batch_size` 和 `promotion_posture`。这只是
+后续批次审查证据，不是替换请求。
 
 替换流程必须包含：
 

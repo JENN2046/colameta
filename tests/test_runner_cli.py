@@ -72,6 +72,8 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "Stable cadence: status=dev_ahead_stable" in output
         assert "replacement_required=False" in output
         assert "cadence=batch_when_ready" in output
+        assert "batch=None" in output
+        assert "posture=continue_batching" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -148,6 +150,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "apps_reauth=reconnect_apps_connector" in output
         assert "Stable cadence: status=dev_ahead_stable" in output
         assert "replacement_required=False" in output
+        assert "batch=None" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -219,6 +222,8 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert payload["stable_replacement_cadence"]["status"] == "dev_ahead_stable"
         assert payload["stable_replacement_cadence"]["stable_replacement_not_required"] is True
         assert payload["stable_replacement_cadence"]["recommended_cadence"] == "batch_when_ready"
+        assert payload["stable_replacement_cadence"]["dev_batch_summary"]["status"] == "unavailable"
+        assert payload["stable_replacement_cadence"]["dev_batch_summary"]["commit_count_since_stable"] is None
         assert (
             payload["apps_connector_smoke_packet"]["metadata_refresh_guidance"]["expected_tool"]
             == "get_apps_connector_smoke_packet"

@@ -1251,6 +1251,10 @@ function renderServiceCapabilityCard(data) {{
   const metadataStatus = toolRefresh.status || "-";
   const expectedTool = toolRefresh.expected_tool || preferredTool;
   const cadenceText = (cadence.status || "-") + " ｜ " + (cadence.recommended_cadence || "-");
+  const batch = cadence.dev_batch_summary || {{}};
+  const batchCount = batch.commit_count_since_stable;
+  const batchCountText = (batchCount === 0 || batchCount) ? String(batchCount) + " commits" : "-";
+  const batchText = batchCountText + " ｜ " + (batch.promotion_posture || "-");
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1271,6 +1275,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
+  h += r("Dev batch", batchText);
 
   if (profiles.length) {{
     h += `<div class="service-profile-row">`;

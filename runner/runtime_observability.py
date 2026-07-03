@@ -8,6 +8,8 @@ import importlib.metadata
 from datetime import datetime, timezone
 from typing import Any
 
+from runner._internal_utils import run_git as _run_git_base
+
 
 PROCESS_START_TIME_ISO = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 LOADED_SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -297,6 +299,7 @@ def build_stable_replacement_cadence(
     candidate_head: str | None = None,
     stable_runtime_dir: str | None = None,
     stable_runtime_head: str | None = None,
+    dev_batch_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return conservative stable-replacement cadence guidance.
 
@@ -324,6 +327,16 @@ def build_stable_replacement_cadence(
         recommended_cadence = "preflight_before_replacement"
         replacement_urgency = "unknown"
         summary = "Stable replacement state is unknown; run preflight before considering stable promotion."
+    batch_summary = (
+        dev_batch_summary
+        if isinstance(dev_batch_summary, dict)
+        else _build_dev_batch_summary(
+            project_root=project_root,
+            candidate_head=candidate,
+            stable_runtime_head=stable_head,
+            heads_differ=heads_differ,
+        )
+    )
 
     return {
         "ok": True,
@@ -343,6 +356,7 @@ def build_stable_replacement_cadence(
         "stable_replacement_not_required": True,
         "replacement_urgency": replacement_urgency,
         "recommended_cadence": recommended_cadence,
+        "dev_batch_summary": batch_summary,
         "exact_authorization_required": False,
         "exact_authorization_phrase": None,
         "authorization_policy": {
@@ -370,6 +384,121 @@ def build_stable_replacement_cadence(
             "does_not_push": True,
         },
     }
+
+
+def _build_dev_batch_summary(
+    *,
+    project_root: str | None,
+    candidate_head: str | None,
+    stable_runtime_head: str | None,
+    heads_differ: bool,
+) -> dict[str, Any]:
+    base = {
+        "read_only": True,
+        "side_effects": False,
+        "from_stable_head": stable_runtime_head,
+        "to_candidate_head": candidate_head,
+        "commit_count_since_stable": 0 if not heads_differ else None,
+        "recent_commit_subjects": [],
+        "recent_commits": [],
+        "batch_size": "empty",
+        "promotion_posture": "continue_batching",
+    }
+    candidate = _clean_head(candidate_head)
+    stable = _clean_head(stable_runtime_head)
+    if not candidate or not stable:
+        return {
+            **base,
+            "status": "unavailable",
+            "summary_available": False,
+            "reason_code": "BATCH_HEADS_UNAVAILABLE",
+        }
+    if not heads_differ:
+        return {
+            **base,
+            "status": "empty",
+            "summary_available": True,
+            "reason_code": "STABLE_ALREADY_ALIGNED",
+        }
+    root = os.path.abspath(os.path.expanduser(project_root or ""))
+    if not root or not os.path.isdir(root):
+        return {
+            **base,
+            "status": "unavailable",
+            "summary_available": False,
+            "reason_code": "BATCH_GIT_CONTEXT_UNAVAILABLE",
+        }
+
+    rev_range = f"{stable}..{candidate}"
+    count_result = _run_git_readonly(root, ["rev-list", "--count", rev_range])
+    if count_result["code"] != 0:
+        return {
+            **base,
+            "status": "unavailable",
+            "summary_available": False,
+            "reason_code": "BATCH_REV_LIST_FAILED",
+            "git_error": _truncate_git_error(count_result.get("stderr")),
+        }
+    try:
+        commit_count = int(str(count_result.get("stdout") or "").strip())
+    except ValueError:
+        return {
+            **base,
+            "status": "unavailable",
+            "summary_available": False,
+            "reason_code": "BATCH_REV_LIST_UNPARSEABLE",
+        }
+
+    log_result = _run_git_readonly(root, ["log", "--format=%H%x1f%h%x1f%s", "-n", "8", rev_range])
+    recent_commits: list[dict[str, Any]] = []
+    if log_result["code"] == 0:
+        for line in str(log_result.get("stdout") or "").splitlines():
+            parts = line.split("\x1f", 2)
+            if len(parts) != 3:
+                continue
+            full_sha, short_sha, subject = parts
+            recent_commits.append(
+                {
+                    "sha": _clean_head(full_sha),
+                    "short_sha": _clean_status_text(short_sha),
+                    "subject": (_clean_status_text(subject) or "")[:200],
+                }
+            )
+
+    batch_size = _dev_batch_size(commit_count)
+    return {
+        **base,
+        "status": "available",
+        "summary_available": True,
+        "reason_code": "BATCH_SUMMARY_READY",
+        "commit_count_since_stable": commit_count,
+        "recent_commit_subjects": [item["subject"] for item in recent_commits if item.get("subject")],
+        "recent_commits": recent_commits,
+        "batch_size": batch_size,
+        "promotion_posture": "review_batch_when_ready" if batch_size in {"medium", "large"} else "continue_batching",
+    }
+
+
+def _dev_batch_size(commit_count: int) -> str:
+    if commit_count <= 0:
+        return "empty"
+    if commit_count <= 3:
+        return "small"
+    if commit_count <= 8:
+        return "medium"
+    return "large"
+
+
+def _run_git_readonly(project_root: str, args: list[str]) -> dict[str, Any]:
+    code, stdout, stderr = _run_git_base(args, project_root, timeout=5)
+    return {"code": code, "stdout": stdout, "stderr": stderr}
+
+
+def _truncate_git_error(value: Any) -> str | None:
+    text = _clean_status_text(value)
+    if not text:
+        return None
+    return text[:300]
 
 
 def build_apps_connector_closeout_packet(
