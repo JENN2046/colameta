@@ -125,13 +125,21 @@ managed 项目使用 thin governed loop preview：
 检查：
 
 ```text
-result.generated_input_bundle
-result.next_request_payload
+result.codex_execution_packet
+result.codex_execution_packet.packet_status
+result.codex_execution_packet.copy_paste_codex_prompt
 ```
 
-然后把 `result.next_request_payload` 原样回灌到 `run_mcp_workflow`，进入 provided preview。
+M0-M2 低风险本地任务，只有在 `packet_status` 为 `ready` 时，才直接把
+`result.codex_execution_packet.copy_paste_codex_prompt` 交给本地 Codex。ready packet 会包含目标、
+allowed files、context files、validation commands、closeout summary 和 stale HEAD 恢复建议。
+blocked packet 说明缺少必要执行边界或 tier 无效，不要执行。
 
-preview 仍然只是 evidence，不是 executor 授权。
+只有需要正式 evidence preview 时，才检查 `result.generated_input_bundle`，然后把
+`result.next_request_payload` 原样回灌到 `run_mcp_workflow`，进入 provided preview。
+
+preview 和本地 Codex packet 仍然只是有边界的 evidence/task guidance，不是 executor 授权、
+review acceptance、commit、push 或 delivery state accepted。
 
 ## 6. 验证运行
 

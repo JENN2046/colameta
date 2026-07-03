@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.thin_governed_loop import (
@@ -154,8 +155,10 @@ class ThinGovernedLoopTests(unittest.TestCase):
         draft_seed = {
             "source_id": "seeded-thin-loop-taskbook",
             "goal": "Make the command path feel natural for a Commander.",
+            "task_tier": "M1",
             "allowed_files": ["runner/seeded_feature.py", "tests/test_seeded_feature.py"],
             "forbidden_files": ["PROJECT_MASTER_TASKBOOK.md", ".colameta/plan.json", "**/.env"],
+            "context_files": ["README.md"],
             "validation_commands": ["python -m unittest tests.test_seeded_feature", "git diff --check"],
             "review_decision_value": "PLAN_ADJUST",
             "reviewer_notes": "Seeded review says the plan needs adjustment.",
@@ -181,6 +184,8 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert draft_output.result["generated_input_bundle_summary"]["seed_fields_ignored"] == ["unknown_seed_field"]
         assert draft_output.result["generated_input_bundle_summary"]["seed_fields_unknown"] == ["unknown_seed_field"]
         assert draft_output.result["generated_input_bundle_summary"]["copy_paste_field"] == "next_request_payload"
+        assert draft_output.result["generated_input_bundle_summary"]["direct_execution_packet_field"] == "codex_execution_packet"
+        assert draft_output.result["generated_input_bundle_summary"]["provided_preview_is_optional_for_m0_m2"] is True
         assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert draft_output.result["generated_input_bundle_summary"]["next_request_shape"]["input_mode"] == "provided"
         assert (
@@ -191,6 +196,22 @@ class ThinGovernedLoopTests(unittest.TestCase):
             "<same managed project_name or route used for this draft call>"
         )
         assert draft_output.result["forbidden_authority_outputs"]["executor_dispatch_authorized"] is False
+        packet = draft_output.result["codex_execution_packet"]
+        assert packet["packet_kind"] == "thin_governed_loop_codex_execution_packet"
+        assert packet["packet_status"] == "ready"
+        assert packet["direct_execution_ready"] is True
+        assert packet["blockers"] == []
+        assert packet["task_tier"] == "M1"
+        assert packet["objective"] == "Make the command path feel natural for a Commander."
+        assert packet["scope"]["allowed_files"] == draft_seed["allowed_files"]
+        assert packet["scope"]["context_files"] == ["README.md"]
+        assert packet["validation"]["commands"] == draft_seed["validation_commands"]
+        assert packet["execution_boundary"]["local_codex_direct_execution_ready"] is True
+        assert packet["execution_boundary"]["colameta_executor_dispatch_authorized"] is False
+        assert packet["execution_boundary"]["commit_or_push_authorized"] is False
+        assert packet["closeout_summary_template"]["forbidden_claims"]["delivery_accepted"] is False
+        assert "Make the command path feel natural for a Commander." in packet["copy_paste_codex_prompt"]
+        assert "python -m unittest tests.test_seeded_feature" in draft_output.result["copy_paste_codex_prompt"]
         bundle = draft_output.result["generated_input_bundle"]
         next_request_payload = draft_output.result["next_request_payload"]
         assert draft_output.result["copy_paste_next_request"] == next_request_payload
@@ -241,6 +262,127 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert provided_output.result["thin_loop"]["requested_commander_action"] == "ask_whether_to_prepare_plan_adjustment_draft"
         assert provided_output.result["thin_loop"]["delivery_state_accepted"] is False
 
+    def test_thin_loop_draft_packet_recommends_start_new_on_head_mismatch(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+
+        class StubSessionStore:
+            def __init__(self, project_root: str):
+                self.project_root = project_root
+
+            def get_status(self) -> dict:
+                return {
+                    "ok": True,
+                    "matches_current_head": False,
+                    "current_head": "b" * 40,
+                    "record": {"current_head": "a" * 40},
+                    "head_mismatch_classification": {
+                        "status": "unknown_head_mismatch",
+                        "evidence": {"head_mismatch": True},
+                    },
+                }
+
+            def get_continuation_decision(self, *, requested_provider: str) -> dict:
+                return {
+                    "ok": True,
+                    "decision": "start_new_blocked",
+                    "decision_reason": "head_mismatch",
+                    "hard_blockers": [],
+                    "risk_warnings": ["head_mismatch"],
+                    "context_facts": {"head_mismatch": True},
+                }
+
+            def get_resume_invocation_preview(self, *, requested_provider: str) -> dict:
+                return {"ok": True, "head_mismatch_classification": {"evidence": {"head_mismatch": True}}}
+
+        with patch("runner.core_orchestrator.ExecutorSessionStore", StubSessionStore):
+            draft_output = WorkflowOrchestrator(project_root).handle(
+                "thin_governed_loop_preview",
+                {
+                    "phase": "preview",
+                    "input_mode": "draft",
+                    "draft_seed": {
+                        "goal": "Update a small docs sentence.",
+                        "allowed_files": ["docs/example.md"],
+                        "validation_commands": ["git diff --check"],
+                    },
+                },
+            )
+
+        assert draft_output.ok is True
+        packet = draft_output.result["codex_execution_packet"]
+        guidance = packet["executor_session_recovery"]
+        assert guidance["status"] == "start_new_recommended_due_to_head_mismatch"
+        assert guidance["recommended_session_mode"] == "start_new"
+        assert guidance["resume_existing_allowed_by_packet"] is False
+        assert guidance["managed_executor_mode_hint"] == "executor_session_mode=start_new"
+        assert "Do not resume the stale executor session" in guidance["safe_recovery_steps"][0]
+        assert "start a fresh local codex session" in packet["copy_paste_codex_prompt"].lower()
+
+    def test_thin_loop_draft_packet_blocks_missing_validation_without_example_evidence(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        draft_output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "goal": "Update a small docs sentence.",
+                    "allowed_files": ["docs/example.md"],
+                },
+            },
+        )
+
+        assert draft_output.ok is True
+        packet = draft_output.result["codex_execution_packet"]
+        assert packet["packet_status"] == "blocked"
+        assert packet["direct_execution_ready"] is False
+        assert packet["validation"]["commands"] == []
+        assert packet["validation"]["run_validation_after_changes"] is False
+        assert packet["execution_boundary"]["local_codex_direct_execution_ready"] is False
+        assert [item["code"] for item in packet["blockers"]] == ["validation_commands_required"]
+        assert "tests.test_example" not in packet["copy_paste_codex_prompt"]
+        assert "<missing: provide validation_commands>" in packet["copy_paste_codex_prompt"]
+
+        bundle = draft_output.result["generated_input_bundle"]
+        assert bundle["execution_envelope"]["validation_commands"] == []
+        assert bundle["execution_envelope"]["allowed_commands"] == []
+        assert bundle["external_taskbook_claim"]["acceptance_commands"] == []
+        assert bundle["local_execution_receipt"]["execution_result"] == "blocked_before_execution"
+        assert bundle["local_execution_receipt"]["validation_commands"] == []
+        assert bundle["local_execution_receipt"]["validation_results"] == []
+        assert bundle["local_execution_receipt"]["command_attempts"] == []
+
+    def test_thin_loop_draft_packet_blocks_invalid_task_tier(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        draft_output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "goal": "Update a small docs sentence.",
+                    "task_tier": "M3",
+                    "allowed_files": ["docs/example.md"],
+                    "validation_commands": ["git diff --check"],
+                },
+            },
+        )
+
+        assert draft_output.ok is True
+        bundle = draft_output.result["generated_input_bundle"]
+        assert "task_tier" not in bundle["draft_seed_applied"]
+        assert bundle["draft_seed_ignored"] == ["task_tier"]
+        assert bundle["draft_seed_unknown"] == []
+
+        packet = draft_output.result["codex_execution_packet"]
+        assert packet["packet_status"] == "blocked"
+        assert packet["direct_execution_ready"] is False
+        assert packet["task_tier"] == "M3"
+        assert packet["task_tier_status"]["valid"] is False
+        assert [item["code"] for item in packet["blockers"]] == ["invalid_task_tier"]
+        assert packet["execution_boundary"]["local_codex_direct_execution_ready"] is False
+        assert "Task tier: M3" in packet["copy_paste_codex_prompt"]
+
     def test_thin_loop_workflow_draft_ignores_pass_alias_without_policy(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
         orchestrator = WorkflowOrchestrator(project_root)
@@ -256,14 +398,20 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert bundle["draft_seed_ignored"] == ["review_decision_value"]
         assert bundle["draft_seed_unknown"] == []
         assert bundle["review_feedback"]["review_decision_value"] == "NEEDS_FIX"
+        assert draft_output.result["codex_execution_packet"]["packet_status"] == "blocked"
+        assert [item["code"] for item in draft_output.result["codex_execution_packet"]["blockers"]] == [
+            "allowed_files_required",
+            "validation_commands_required",
+        ]
 
         provided_output = orchestrator.handle(
             "thin_governed_loop_preview",
             {"phase": "preview", "thin_loop_inputs": bundle},
         )
 
-        assert provided_output.ok is True
-        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert provided_output.ok is False
+        assert provided_output.status == "blocked"
+        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
 
     def test_thin_loop_workflow_draft_accepts_objective_alias(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])

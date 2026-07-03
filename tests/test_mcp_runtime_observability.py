@@ -496,6 +496,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
+        assert thin_flow["draft_arguments"]["draft_seed"]["task_tier"] == "M0-M2"
+        assert thin_flow["direct_codex_packet_field"] == "result.codex_execution_packet"
+        assert "result.codex_execution_packet.packet_status=ready" in thin_flow["next_step"]
+        assert "result.codex_execution_packet.copy_paste_codex_prompt" in thin_flow["next_step"]
         assert "result.next_request_payload" in thin_flow["next_step"]
         assert thin_flow["provided_arguments"]["input_mode"] == "provided"
         assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
@@ -593,7 +597,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert profiles["local_codex_commander"]["executor_status_polling_guidance"]["max_poll_attempts"] == 24
         assert profiles["planner_agent"]["write_boundary"].endswith("review acceptance.")
         assert profiles["source_observer"]["primary_workflow"] == "source_observation"
-        assert data["thin_loop_consumer_rule"]["provided_mode"].startswith("Review result.generated_input_bundle")
+        thin_rule = data["thin_loop_consumer_rule"]
+        assert "result.codex_execution_packet.packet_status is ready" in thin_rule["m0_m2_direct_mode"]
+        assert "result.codex_execution_packet.copy_paste_codex_prompt" in thin_rule["m0_m2_direct_mode"]
+        assert "formal thin-loop evidence preview" in thin_rule["provided_mode"]
+        assert "executor dispatch" in thin_rule["authority"]
 
     def test_service_entry_profile_selector_defaults_and_fails_closed(self) -> None:
         project = self.make_git_checkout()
@@ -652,6 +660,12 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert next_payload["project_name"] == "demo-project"
         assert data["result"]["copy_paste_next_request"]["project_name"] == "demo-project"
         assert data["result"]["generated_input_bundle_summary"]["next_request_shape"]["project_name"] == "demo-project"
+        packet = data["result"]["codex_execution_packet"]
+        assert packet["packet_status"] == "ready"
+        assert packet["direct_execution_ready"] is True
+        assert packet["execution_boundary"]["colameta_executor_dispatch_authorized"] is False
+        assert packet["execution_boundary"]["commit_or_push_authorized"] is False
+        assert packet["copy_paste_codex_prompt"]
 
     def test_list_executor_run_reports_has_standard_success_shape(self) -> None:
         project = self.make_git_checkout(managed=True)

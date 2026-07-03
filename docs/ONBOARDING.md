@@ -145,14 +145,25 @@ For managed projects, start with `thin_governed_loop_preview`:
 Inspect:
 
 ```text
-result.generated_input_bundle
-result.next_request_payload
+result.codex_execution_packet
+result.codex_execution_packet.packet_status
+result.codex_execution_packet.copy_paste_codex_prompt
 ```
 
-Then feed `result.next_request_payload` back into `run_mcp_workflow` as the
-provided preview input.
+For M0-M2 low-risk local work, give
+`result.codex_execution_packet.copy_paste_codex_prompt` to local Codex only when
+`packet_status` is `ready`. A ready packet contains the objective, allowed files,
+context files, validation commands, closeout summary, and stale HEAD recovery
+guidance. A blocked packet is missing required execution boundaries or has an
+invalid tier; do not execute it.
 
-Preview is still evidence. It is not executor authorization.
+Only when formal evidence preview is needed, inspect `result.generated_input_bundle`
+and feed `result.next_request_payload` back into `run_mcp_workflow` as the provided
+preview input.
+
+Preview and the local Codex packet are still bounded evidence/task guidance. They
+are not executor authorization, review acceptance, commit, push, or delivery state
+accepted.
 
 ## 6. Run Validation
 

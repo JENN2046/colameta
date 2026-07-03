@@ -32,9 +32,9 @@
 
 ```text
 1. run_mcp_workflow workflow=thin_governed_loop_preview input_mode=draft
-2. 检查 result.generated_input_bundle
-3. 直接回灌 result.next_request_payload
-4. 让本地 Codex 按 allowed_files / validation_commands 做实现和验证
+2. M0-M2 低风险任务：如果 result.codex_execution_packet.packet_status 是 ready，直接把 result.codex_execution_packet.copy_paste_codex_prompt 交给本地 Codex
+3. 需要正式 evidence preview 时，才检查 result.generated_input_bundle 并回灌 result.next_request_payload
+4. 本地 Codex 按 allowed_files / validation_commands 做实现和验证
 5. 审 diff 后再决定 commit / push / stable replacement
 ```
 
@@ -335,7 +335,9 @@ source_observer
     "input_mode": "draft",
     "draft_seed": {
       "goal": "Describe the bounded optimization objective.",
+      "task_tier": "M0-M2",
       "allowed_files": ["runner/example.py", "tests/test_example.py"],
+      "context_files": ["README.md"],
       "validation_commands": [
         ".venv/bin/python -m pytest tests/test_example.py -q",
         "git diff --check"
@@ -350,13 +352,35 @@ source_observer
 检查返回：
 
 ```text
-result.generated_input_bundle
-result.next_request_payload
+result.codex_execution_packet
+result.codex_execution_packet.packet_status
+result.codex_execution_packet.copy_paste_codex_prompt
 ```
 
-确认内容没问题后，直接发送 `result.next_request_payload`，进入 provided 预览。
+M0-M2 低风险任务只有在 `result.codex_execution_packet.packet_status` 为 `ready` 时，才直接把
+`copy_paste_codex_prompt` 交给本地 Codex 执行。ready packet 已经包含：
+
+```text
+task packet
+allowed_files / forbidden_files
+context_files
+validation_commands
+closeout summary template
+executor_session_recovery
+```
+
+ready direct packet 必须有 `allowed_files` 和 `validation_commands`。如果缺少任一项，或
+`task_tier` 不是 M0-M2 低风险 tier，packet 会返回 `blocked`；它不会继承 example 文件、命令或
+validation evidence。
+
+如果只是 repo/docs/小修复，不需要再走 `insert_preview -> apply -> continue -> validation preview -> run -> closeout preview -> apply`。
+
+如果需要正式 evidence preview，再检查 `result.generated_input_bundle`，然后发送
+`result.next_request_payload` 进入 provided 预览。
 
 注意：thin governed loop preview 是 evidence，不是 executor run 授权。
+`codex_execution_packet` 也只授权本地 Codex 在 Jenn/AGENTS 边界内直接工作；不授权
+Delivery accepted、ReviewDecision、GateEvent、commit、push 或 stable replacement。
 
 ## 5. 验证运行怎么做
 
@@ -596,7 +620,7 @@ tools/list 能看到关键入口工具
 list_registered_projects 能看到 colameta-self-dev
 get_runtime_version_status(project_name) 能返回 runtime_loaded_code_stale / reload_awareness_reason
 get_connector_runtime_health_status(project_name) 能返回 local_service / external_connector / operator_closeout
-run_mcp_workflow thin_governed_loop_preview input_mode=draft 能返回 generated_input_bundle / next_request_payload
+run_mcp_workflow thin_governed_loop_preview input_mode=draft 能返回 codex_execution_packet / generated_input_bundle / next_request_payload
 ```
 
 如果这些都通过，说明日常指挥入口可用。connector/tunnel 仍可能是 `unverified`，那是外部证据未闭合，不等于本地 ColaMeta Web/MCP 不可用。

@@ -117,7 +117,9 @@ credential，也不授权网络修复或稳定服务替换。
     "input_mode": "draft",
     "draft_seed": {
       "goal": "Describe the bounded local optimization objective.",
+      "task_tier": "M0-M2",
       "allowed_files": ["runner/example.py", "tests/test_example.py"],
+      "context_files": ["README.md"],
       "validation_commands": ["python -m unittest tests.test_example", "git diff --check"],
       "review_decision_value": "NEEDS_FIX",
       "reviewer_notes": "Review note here."
@@ -126,10 +128,16 @@ credential，也不授权网络修复或稳定服务替换。
 }
 ```
 
-然后检查返回的 `result.generated_input_bundle`。如果内容无误，下一步优先直接使用
+M0-M2 低风险任务优先检查返回的 `result.codex_execution_packet.packet_status`。只有状态为
+`ready` 时，才使用 `result.codex_execution_packet.copy_paste_codex_prompt` 交给本地 Codex 执行。
+ready packet 包含目标、allowed files、context files、validation commands、closeout summary 和
+stale HEAD 恢复建议。blocked packet 说明缺少必要执行边界或 tier 无效，不要执行。
+
+只有需要正式 evidence preview 时，才检查 `result.generated_input_bundle`，然后使用
 `result.next_request_payload` 作为新的 `run_mcp_workflow` 参数，不需要手工重拼四个对象。
 
-返回里也会保留等价的 `result.copy_paste_next_request`，用于需要复制整段 payload 的界面。
+返回里也会保留等价的 `result.copy_paste_next_request`，用于需要复制整段 formal preview payload
+的界面。
 
 等价展开形状如下：
 
@@ -146,7 +154,8 @@ credential，也不授权网络修复或稳定服务替换。
 }
 ```
 
-注意：这些输出是 evidence，不是执行授权，也不是 review acceptance 或 delivery state accepted。
+注意：这些输出是 evidence 或本地 Codex 任务包，不是 ColaMeta executor run 授权，也不是 review
+acceptance 或 delivery state accepted。
 
 ## 验证运行
 

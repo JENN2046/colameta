@@ -39,8 +39,8 @@ If you want to start a controlled optimization round:
 
 ```text
 1. run_mcp_workflow workflow=thin_governed_loop_preview input_mode=draft
-2. Inspect result.generated_input_bundle.
-3. Feed back result.next_request_payload as-is.
+2. For M0-M2 low-risk work, if result.codex_execution_packet.packet_status is ready, give result.codex_execution_packet.copy_paste_codex_prompt to local Codex.
+3. Only when formal evidence preview is needed, inspect result.generated_input_bundle and feed back result.next_request_payload.
 4. Let local Codex implement only within allowed_files and validation_commands.
 5. Review the diff before deciding commit, push, or stable replacement.
 ```
@@ -365,7 +365,9 @@ Ask ColaMeta to draft the input. Do not hand-build full `thin_loop_inputs` first
     "input_mode": "draft",
     "draft_seed": {
       "goal": "Describe the bounded optimization objective.",
+      "task_tier": "M0-M2",
       "allowed_files": ["runner/example.py", "tests/test_example.py"],
+      "context_files": ["README.md"],
       "validation_commands": [
         ".venv/bin/python -m pytest tests/test_example.py -q",
         "git diff --check"
@@ -380,14 +382,40 @@ Ask ColaMeta to draft the input. Do not hand-build full `thin_loop_inputs` first
 Inspect:
 
 ```text
-result.generated_input_bundle
-result.next_request_payload
+result.codex_execution_packet
+result.codex_execution_packet.packet_status
+result.codex_execution_packet.copy_paste_codex_prompt
 ```
 
-If the generated input is correct, send `result.next_request_payload` back into
-`run_mcp_workflow` to enter provided preview.
+For M0-M2 low-risk tasks, pass `copy_paste_codex_prompt` directly to local Codex
+only when `result.codex_execution_packet.packet_status` is `ready`. The ready
+packet already contains:
+
+```text
+task packet
+allowed_files / forbidden_files
+context_files
+validation_commands
+closeout summary template
+executor_session_recovery
+```
+
+`allowed_files` and `validation_commands` are required for a ready direct packet.
+If either is missing, or if `task_tier` is not one of the M0-M2 low-risk tiers,
+the packet is returned as `blocked`; it does not inherit example files, commands,
+or validation evidence.
+
+For repo/docs/small fixes, this avoids the full
+`insert_preview -> apply -> continue -> validation preview -> run -> closeout preview -> apply`
+chain.
+
+Only when formal evidence preview is needed, inspect `result.generated_input_bundle`
+and feed `result.next_request_payload` back into `run_mcp_workflow`.
 
 A thin governed loop preview is evidence. It is not executor-run authorization.
+`codex_execution_packet` only gives local Codex a bounded task packet inside
+Jenn/AGENTS rules; it does not authorize Delivery accepted, ReviewDecision,
+GateEvent, commit, push, or stable replacement.
 
 ## 5. Run Validation
 
@@ -709,7 +737,7 @@ get_runtime_version_status(project_name) returns runtime provenance fields
 get_connector_runtime_health_status(project_name) returns local_service,
   external_connector, and operator_closeout
 run_mcp_workflow thin_governed_loop_preview input_mode=draft returns
-  generated_input_bundle and next_request_payload
+  codex_execution_packet, generated_input_bundle, and next_request_payload
 ```
 
 If these pass, the daily command entry is usable. The connector/tunnel may still

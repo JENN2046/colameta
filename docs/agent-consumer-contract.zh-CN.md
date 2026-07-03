@@ -139,8 +139,9 @@ Agent 应按 `recommended_next_reads` 分步续读，不要把 packaged manifest
 推荐流程：
 
 1. `run_mcp_workflow` with `workflow=thin_governed_loop_preview`, `input_mode=draft`
-2. 检查 `result.generated_input_bundle`
-3. 直接发送 `result.next_request_payload`
+2. M0-M2 低风险任务：只有 `result.codex_execution_packet.packet_status=ready` 时，才直接使用
+   `result.codex_execution_packet.copy_paste_codex_prompt`
+3. 需要正式 evidence preview 时，再检查 `result.generated_input_bundle` 并发送 `result.next_request_payload`
 
 `thin_governed_loop_preview` 始终是 evidence preview：
 
@@ -149,6 +150,12 @@ Agent 应按 `recommended_next_reads` 分步续读，不要把 packaged manifest
 - 不发出 GateEvent
 - 不写 Delivery State accepted
 - 不 commit / push
+
+`codex_execution_packet` 是本地 Codex 任务包，不是 ColaMeta executor run 授权。ready packet
+的用途是把 repo/docs/小修复的目标、allowed_files、validation_commands、closeout summary 和
+executor session stale HEAD 恢复建议一次交给本地 Codex，避免低风险任务被完整治理链拖慢。
+如果缺少 `allowed_files` / `validation_commands`，或 `task_tier` 不是 M0-M2 低风险 tier，
+packet 必须保持 blocked，不继承 example evidence，也不能执行。
 
 ## 权威边界
 

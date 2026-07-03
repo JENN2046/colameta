@@ -3298,6 +3298,7 @@ class WorkflowOrchestrator:
 
     def _thin_loop_draft_result(self, *, params: dict[str, Any], phase: str, warnings: list[str]) -> 'CoreResult':
         generated_input_bundle = self._thin_loop_generated_input_bundle(params)
+        codex_execution_packet = self._thin_loop_codex_execution_packet(generated_input_bundle, params)
         next_request_payload = {
             "workflow": "thin_governed_loop_preview",
             "phase": "preview",
@@ -3333,11 +3334,16 @@ class WorkflowOrchestrator:
                 "generated_input_bundle": generated_input_bundle,
                 "next_request_payload": next_request_payload,
                 "copy_paste_next_request": next_request_payload,
+                "codex_execution_packet": codex_execution_packet,
+                "copy_paste_codex_prompt": codex_execution_packet.get("copy_paste_codex_prompt"),
                 "generated_input_bundle_summary": {
                     "bundle_kind": "draft_input_bundle",
                     "reusable_as": "thin_loop_inputs",
                     "submit_with_input_mode": "provided",
                     "copy_paste_field": "next_request_payload",
+                    "direct_execution_packet_field": "codex_execution_packet",
+                    "copy_paste_codex_prompt_field": "copy_paste_codex_prompt",
+                    "provided_preview_is_optional_for_m0_m2": True,
                     "current_head": generated_input_bundle.get("current_head"),
                     "seed_fields_applied": generated_input_bundle.get("draft_seed_applied", []),
                     "seed_fields_ignored": generated_input_bundle.get("draft_seed_ignored", []),
@@ -3360,7 +3366,9 @@ class WorkflowOrchestrator:
                         "field": "next_request_payload",
                         "description": (
                             "Use result.next_request_payload directly as the next run_mcp_workflow "
-                            "arguments after reviewing and editing generated_input_bundle."
+                            "arguments after reviewing and editing generated_input_bundle when formal evidence "
+                            "preview is needed. For M0-M2 low-risk tasks, use result.codex_execution_packet "
+                            "as the direct local Codex task packet."
                         ),
                     },
                     "authority_note": (
@@ -3370,6 +3378,348 @@ class WorkflowOrchestrator:
                     ),
                 },
             },
+        )
+
+    def _thin_loop_codex_execution_packet(self, generated_input_bundle: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        external_claim = generated_input_bundle.get("external_taskbook_claim")
+        if not isinstance(external_claim, dict):
+            external_claim = {}
+        envelope = generated_input_bundle.get("execution_envelope")
+        if not isinstance(envelope, dict):
+            envelope = {}
+        draft_seed = self._thin_loop_draft_seed(params, generated_input_bundle)
+
+        objective = self._thin_loop_packet_objective(draft_seed, external_claim)
+        allowed_files = self._thin_loop_packet_string_list(envelope.get("allowed_files")) or self._thin_loop_packet_string_list(
+            external_claim.get("allowed_files")
+        )
+        forbidden_files = self._thin_loop_packet_string_list(envelope.get("forbidden_files")) or self._thin_loop_packet_string_list(
+            external_claim.get("forbidden_files")
+        )
+        validation_commands = self._thin_loop_packet_string_list(envelope.get("validation_commands")) or self._thin_loop_packet_string_list(
+            external_claim.get("acceptance_commands")
+        )
+        allowed_commands = self._thin_loop_packet_string_list(envelope.get("allowed_commands")) or list(validation_commands)
+        context_files = self._thin_loop_seed_string_list(draft_seed, "context_files")
+        task_tier_info = self._thin_loop_task_tier_info(draft_seed)
+        task_tier = task_tier_info["task_tier"]
+        packet_blockers = self._thin_loop_codex_packet_blockers(
+            task_tier_info=task_tier_info,
+            allowed_files=allowed_files,
+            validation_commands=validation_commands,
+        )
+        direct_execution_ready = not packet_blockers
+        session_guidance = self._thin_loop_executor_session_guidance(provider="codex")
+        closeout_template = self._thin_loop_closeout_summary_template(validation_commands)
+        prompt = self._thin_loop_codex_prompt(
+            objective=objective,
+            task_tier=task_tier,
+            allowed_files=allowed_files,
+            forbidden_files=forbidden_files,
+            context_files=context_files,
+            validation_commands=validation_commands,
+            session_guidance=session_guidance,
+            direct_execution_ready=direct_execution_ready,
+            blockers=packet_blockers,
+        )
+
+        return {
+            "packet_kind": "thin_governed_loop_codex_execution_packet",
+            "packet_version": "v1",
+            "packet_status": "ready" if direct_execution_ready else "blocked",
+            "direct_execution_ready": direct_execution_ready,
+            "blockers": packet_blockers,
+            "task_tier": task_tier,
+            "task_tier_status": task_tier_info,
+            "project_root": self.project_root,
+            "current_head": generated_input_bundle.get("current_head"),
+            "objective": objective,
+            "scope": {
+                "allowed_files": allowed_files,
+                "forbidden_files": forbidden_files,
+                "context_files": context_files,
+            },
+            "validation": {
+                "commands": validation_commands,
+                "allowed_commands": allowed_commands,
+                "run_validation_after_changes": direct_execution_ready,
+            },
+            "execution_boundary": {
+                "local_codex_direct_execution_packet": True,
+                "local_codex_direct_execution_ready": direct_execution_ready,
+                "colameta_executor_dispatch_authorized": False,
+                "delivery_state_accepted_authorized": False,
+                "review_decision_authorized": False,
+                "gate_event_authorized": False,
+                "commit_or_push_authorized": False,
+                "may_edit_only_allowed_files": bool(allowed_files) and direct_execution_ready,
+                "must_not_read_secrets_or_private_state": True,
+            },
+            "executor_session_recovery": session_guidance,
+            "closeout_summary_template": closeout_template,
+            "copy_paste_codex_prompt": prompt,
+            "next_optional_evidence_step": {
+                "needed_for_m0_m2_direct_work": False,
+                "direct_work_ready": direct_execution_ready,
+                "tool": "run_mcp_workflow",
+                "payload_field": "next_request_payload",
+                "when_to_use": "Use only when a formal thin_loop evidence preview is needed after reviewing generated_input_bundle.",
+            },
+        }
+
+    def _thin_loop_packet_objective(self, draft_seed: dict[str, Any], external_claim: dict[str, Any]) -> str:
+        _, seeded_goal = self._thin_loop_seed_goal(draft_seed)
+        if seeded_goal:
+            return seeded_goal
+        provenance = external_claim.get("provenance") if isinstance(external_claim.get("provenance"), dict) else {}
+        note = provenance.get("provenance_note")
+        if isinstance(note, str) and note.strip():
+            return note.strip().removeprefix("Draft goal: ").strip()
+        return "Complete the bounded low-risk task described by this thin governed loop packet."
+
+    @staticmethod
+    def _thin_loop_packet_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                result.append(item.strip())
+            elif isinstance(item, dict):
+                command = item.get("command")
+                if isinstance(command, str) and command.strip():
+                    result.append(command.strip())
+        return result
+
+    def _thin_loop_task_tier(self, draft_seed: dict[str, Any]) -> str:
+        return self._thin_loop_task_tier_info(draft_seed)["task_tier"]
+
+    def _thin_loop_task_tier_info(self, draft_seed: dict[str, Any]) -> dict[str, Any]:
+        raw_value = self._thin_loop_seed_string(draft_seed, "task_tier")
+        normalized = raw_value.upper().replace("_", "-") if raw_value else "M0-M2"
+        valid_tiers = {"M0", "M1", "M2", "M0-M1", "M1-M2", "M0-M2"}
+        if normalized in valid_tiers:
+            return {
+                "task_tier": normalized,
+                "raw_task_tier": raw_value,
+                "valid": True,
+                "defaulted": not bool(raw_value),
+                "valid_tiers": sorted(valid_tiers),
+            }
+        return {
+            "task_tier": normalized,
+            "raw_task_tier": raw_value,
+            "valid": False,
+            "defaulted": False,
+            "valid_tiers": sorted(valid_tiers),
+        }
+
+    @staticmethod
+    def _thin_loop_codex_packet_blockers(
+        *,
+        task_tier_info: dict[str, Any],
+        allowed_files: list[str],
+        validation_commands: list[str],
+    ) -> list[dict[str, Any]]:
+        blockers: list[dict[str, Any]] = []
+        if task_tier_info.get("valid") is not True:
+            blockers.append(
+                {
+                    "code": "invalid_task_tier",
+                    "message": "task_tier must be one of the M0-M2 low-risk tiers before direct local Codex execution.",
+                    "actual": task_tier_info.get("raw_task_tier") or task_tier_info.get("task_tier"),
+                    "valid_tiers": task_tier_info.get("valid_tiers", []),
+                }
+            )
+        if not allowed_files:
+            blockers.append(
+                {
+                    "code": "allowed_files_required",
+                    "message": "allowed_files must be supplied before direct local Codex execution.",
+                }
+            )
+        if not validation_commands:
+            blockers.append(
+                {
+                    "code": "validation_commands_required",
+                    "message": "validation_commands must be supplied before direct local Codex execution.",
+                }
+            )
+        return blockers
+
+    def _thin_loop_executor_session_guidance(self, *, provider: str) -> dict[str, Any]:
+        fallback = {
+            "status": "session_guidance_unavailable",
+            "provider": provider,
+            "recommended_session_mode": "start_new",
+            "resume_existing_allowed_by_packet": False,
+            "local_codex_direct_session": "start_new",
+            "managed_executor_mode_hint": "executor_session_mode=start_new",
+            "reason": "executor_session_status_unavailable",
+            "head_mismatch": None,
+            "hard_blockers": [],
+            "warnings": [],
+            "does_not_reset_or_modify_session_metadata": True,
+        }
+        try:
+            store = ExecutorSessionStore(self.project_root)
+            status = store.get_status()
+            decision = store.get_continuation_decision(requested_provider=provider)
+            invocation = store.get_resume_invocation_preview(requested_provider=provider)
+        except Exception as exc:
+            out = dict(fallback)
+            out["error"] = str(exc)
+            return out
+
+        if not isinstance(status, dict):
+            status = {}
+        if not isinstance(decision, dict):
+            decision = {}
+        if not isinstance(invocation, dict):
+            invocation = {}
+
+        context_facts = decision.get("context_facts")
+        if not isinstance(context_facts, dict):
+            context_facts = {}
+        hard_blockers = [str(item) for item in decision.get("hard_blockers", []) if isinstance(item, str)]
+        warnings = [str(item) for item in decision.get("risk_warnings", []) if isinstance(item, str)]
+        status_classification = status.get("head_mismatch_classification")
+        if not isinstance(status_classification, dict):
+            status_classification = {}
+        invocation_classification = invocation.get("head_mismatch_classification")
+        if not isinstance(invocation_classification, dict):
+            invocation_classification = {}
+        status_classification_evidence = status_classification.get("evidence")
+        if not isinstance(status_classification_evidence, dict):
+            status_classification_evidence = {}
+        invocation_classification_evidence = invocation_classification.get("evidence")
+        if not isinstance(invocation_classification_evidence, dict):
+            invocation_classification_evidence = {}
+
+        head_mismatch = bool(
+            context_facts.get("head_mismatch") is True
+            or status.get("matches_current_head") is False
+            or status_classification_evidence.get("head_mismatch") is True
+            or invocation_classification_evidence.get("head_mismatch") is True
+        )
+        if head_mismatch:
+            return {
+                "status": "start_new_recommended_due_to_head_mismatch",
+                "provider": provider,
+                "recommended_session_mode": "start_new",
+                "resume_existing_allowed_by_packet": False,
+                "local_codex_direct_session": "start_new",
+                "managed_executor_mode_hint": "executor_session_mode=start_new",
+                "reason": "avoid_resuming_stale_head_session",
+                "head_mismatch": True,
+                "session_head": status.get("record", {}).get("current_head") if isinstance(status.get("record"), dict) else None,
+                "current_head": status.get("current_head"),
+                "hard_blockers": hard_blockers,
+                "warnings": warnings,
+                "safe_recovery_steps": [
+                    "Do not resume the stale executor session for this M0-M2 packet.",
+                    "Start a fresh local Codex conversation with copy_paste_codex_prompt.",
+                    "If using managed executor later, pass executor_session_mode=start_new after a fresh run_once_preview.",
+                    "Do not reset session metadata unless Jenn explicitly asks for reset.",
+                ],
+                "does_not_reset_or_modify_session_metadata": True,
+            }
+
+        should_resume = bool(decision.get("should_resume") is True)
+        recommended = "auto" if should_resume else "start_new"
+        return {
+            "status": "resume_available" if should_resume else "start_new_recommended",
+            "provider": provider,
+            "recommended_session_mode": recommended,
+            "resume_existing_allowed_by_packet": should_resume,
+            "local_codex_direct_session": "fresh_or_resume_at_codex_discretion" if should_resume else "start_new",
+            "managed_executor_mode_hint": "executor_session_mode=auto" if should_resume else "executor_session_mode=start_new",
+            "reason": str(decision.get("decision_reason") or decision.get("decision") or "no_resume_candidate"),
+            "head_mismatch": False,
+            "hard_blockers": hard_blockers,
+            "warnings": warnings,
+            "does_not_reset_or_modify_session_metadata": True,
+        }
+
+    def _thin_loop_closeout_summary_template(self, validation_commands: list[str]) -> dict[str, Any]:
+        return {
+            "progress": "<what changed, with file paths>",
+            "validation": [
+                {"command": command, "result": "<passed|failed|not_run>", "notes": ""}
+                for command in validation_commands
+            ],
+            "risk": "<remaining risk or none>",
+            "continuation": "COMPLETED | CONTINUING_AUTOMATICALLY | BLOCKED_NEEDS_USER",
+            "forbidden_claims": {
+                "delivery_accepted": False,
+                "review_decision_written": False,
+                "gate_event_written": False,
+                "commit_or_push_done": False,
+            },
+        }
+
+    def _thin_loop_codex_prompt(
+        self,
+        *,
+        objective: str,
+        task_tier: str,
+        allowed_files: list[str],
+        forbidden_files: list[str],
+        context_files: list[str],
+        validation_commands: list[str],
+        session_guidance: dict[str, Any],
+        direct_execution_ready: bool,
+        blockers: list[dict[str, Any]],
+    ) -> str:
+        def lines(items: list[str]) -> str:
+            return "\n".join(f"- {item}" for item in items) if items else "- <none specified>"
+
+        def blocker_lines(items: list[dict[str, Any]]) -> str:
+            if not items:
+                return "- <none>"
+            return "\n".join(
+                f"- {item.get('code')}: {item.get('message')}"
+                for item in items
+            )
+
+        validation_lines = lines(validation_commands) if validation_commands else "- <missing: provide validation_commands>"
+
+        return "\n".join(
+            [
+                f"Goal: {objective}",
+                "",
+                f"Task tier: {task_tier} low-risk thin governed loop.",
+                f"Packet status: {'ready' if direct_execution_ready else 'blocked'}",
+                "Direct local Codex execution ready: " + ("yes" if direct_execution_ready else "no"),
+                "Blockers:",
+                blocker_lines(blockers),
+                "",
+                "Scope:",
+                "Allowed files:",
+                lines(allowed_files),
+                "Forbidden files:",
+                lines(forbidden_files),
+                "Context files to read first:",
+                lines(context_files),
+                "",
+                "Execution rules:",
+                "- Work directly in the local repo; do not use ColaMeta insert/apply/continue/closeout tools for this low-risk task.",
+                "- If this packet status is blocked, do not edit files from this packet until blockers are resolved.",
+                "- Edit only allowed files unless the user explicitly expands scope.",
+                "- Do not read token/cookie/credential/browser login state, tunnel config, proxy config, raw logs, or private memory.",
+                "- Do not write Delivery accepted, ReviewDecision, GateEvent, commit, push, or stable replacement.",
+                "- If executor session metadata has a stale HEAD, start a fresh local Codex session; do not resume the stale session.",
+                f"- Session guidance: {session_guidance.get('status')} / {session_guidance.get('managed_executor_mode_hint')}.",
+                "",
+                "Validation commands:",
+                validation_lines,
+                "",
+                "Closeout summary format:",
+                "[Progress] changed files and behavior",
+                "[Validation] commands run and results",
+                "[Risk] remaining risk",
+                "[Continuation] COMPLETED, CONTINUING_AUTOMATICALLY, or BLOCKED_NEEDS_USER",
+            ]
         )
 
     def _thin_loop_core_result(
@@ -3440,6 +3790,7 @@ class WorkflowOrchestrator:
             bundle_param = {}
         draft_seed = self._thin_loop_draft_seed(params, bundle_param)
         inputs = example_stage_3_6_inputs()
+        self._thin_loop_reset_draft_task_evidence(inputs)
         current_head = self._thin_loop_current_head(params, bundle_param)
         inputs["project_root"] = self.project_root
         inputs["current_head"] = current_head
@@ -3464,6 +3815,49 @@ class WorkflowOrchestrator:
         return {}
 
     @staticmethod
+    def _thin_loop_reset_draft_task_evidence(inputs: dict[str, Any]) -> None:
+        external_claim = inputs.get("external_taskbook_claim")
+        if isinstance(external_claim, dict):
+            source = external_claim.get("source")
+            if isinstance(source, dict):
+                source["source_id"] = "thin-governed-loop-draft"
+            provenance = external_claim.get("provenance")
+            if isinstance(provenance, dict):
+                provenance["provenance_note"] = "Thin loop draft input placeholder; provide goal/objective before use."
+            manual_acceptance = external_claim.get("manual_acceptance")
+            if isinstance(manual_acceptance, dict):
+                manual_acceptance["acceptance_note"] = "Manual review required before adoption. Draft input has not been executed."
+            external_claim["allowed_files"] = []
+            external_claim["forbidden_files"] = []
+            external_claim["acceptance_commands"] = []
+
+        envelope = inputs.get("execution_envelope")
+        if isinstance(envelope, dict):
+            envelope["allowed_files"] = []
+            envelope["forbidden_files"] = []
+            envelope["allowed_commands"] = []
+            envelope["validation_commands"] = []
+
+        local_receipt = inputs.get("local_execution_receipt")
+        if isinstance(local_receipt, dict):
+            local_receipt["execution_result"] = "blocked_before_execution"
+            local_receipt["command_attempts"] = []
+            local_receipt["touched_files"] = []
+            local_receipt["observed_mutations"] = []
+            local_receipt["validation_commands"] = []
+            local_receipt["validation_results"] = []
+            local_receipt["validation_summary"] = "not_run"
+            local_receipt["scope_check_result"] = "not_run"
+            local_receipt["blocked_or_failed_reasons"] = ["draft_input_not_executed"]
+            local_receipt["known_gaps"] = [
+                {"gap_id": "draft_input_not_executed", "description": "Draft input bundle has not been executed."},
+                {"gap_id": "touched_files_unknown", "description": "Touched files are unknown until a real local run."},
+            ]
+            local_receipt["remaining_risks"] = [
+                {"risk_id": "draft_not_executed", "risk": "Draft input bundle is not proof of execution."}
+            ]
+
+    @staticmethod
     def _thin_loop_known_draft_seed_fields() -> frozenset[str]:
         return frozenset(
             {
@@ -3477,6 +3871,8 @@ class WorkflowOrchestrator:
                 "review_decision_value",
                 "pass_alias_policy_id_when_used",
                 "reviewer_notes",
+                "task_tier",
+                "context_files",
             }
         )
 
@@ -3552,6 +3948,11 @@ class WorkflowOrchestrator:
         if source_id:
             applied.add("source_id")
             external_claim.setdefault("source", {})["source_id"] = source_id
+        task_tier_info = self._thin_loop_task_tier_info(draft_seed)
+        if self._thin_loop_seed_string(draft_seed, "task_tier") and task_tier_info.get("valid") is True:
+            applied.add("task_tier")
+        if self._thin_loop_seed_string_list(draft_seed, "context_files"):
+            applied.add("context_files")
         reviewer_notes = self._thin_loop_seed_string(draft_seed, "reviewer_notes")
         if reviewer_notes:
             applied.add("reviewer_notes")
@@ -3568,6 +3969,15 @@ class WorkflowOrchestrator:
         if review_feedback.get("review_decision_value") == "PASS" and pass_alias_policy_id:
             applied.add("pass_alias_policy_id_when_used")
             review_feedback["pass_alias_policy_id_when_used"] = pass_alias_policy_id
+        if local_receipt.get("touched_files") and local_receipt.get("validation_commands"):
+            local_receipt["execution_result"] = "executed"
+            local_receipt["validation_summary"] = "passed"
+            local_receipt["scope_check_result"] = "passed"
+            local_receipt["blocked_or_failed_reasons"] = []
+            local_receipt["known_gaps"] = []
+            local_receipt["remaining_risks"] = [
+                {"risk_id": "review_required", "risk": "Reviewer has not accepted delivery."}
+            ]
         return sorted(applied)
 
     def _thin_loop_seed_goal(self, seed: dict[str, Any]) -> tuple[str, str]:

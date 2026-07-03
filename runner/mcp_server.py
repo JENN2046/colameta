@@ -2350,6 +2350,7 @@ class MCPPlanningBridgeServer:
                     "停在 executor preflight/run_once_preview 边界。"
                     "thin_governed_loop_preview：Stage 3-6 薄治理闭环只读预览，"
                     "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
+                    "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
                     "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview。"
@@ -2611,7 +2612,7 @@ class MCPPlanningBridgeServer:
                         },
                         "draft_seed": {
                             "type": "object",
-                            "description": "thin_governed_loop_preview draft 模式可选。用少量上游字段生成四对象输入包，例如 goal/objective、allowed_files、forbidden_files、validation_commands、allowed_commands、review_decision_value、reviewer_notes。",
+                            "description": "thin_governed_loop_preview draft 模式可选。用少量上游字段生成四对象输入包和 Codex 可执行包，例如 goal/objective、task_tier、allowed_files、forbidden_files、context_files、validation_commands、allowed_commands、review_decision_value、reviewer_notes。",
                             "additionalProperties": True,
                         },
                         "external_taskbook_claim": {
@@ -5395,7 +5396,11 @@ class MCPPlanningBridgeServer:
                     {"tool": "analyze_project_state", "arguments": project_args()},
                 ],
                 "primary_workflow": "thin_governed_loop_preview",
-                "next_payload_rule": "Use draft first, inspect generated_input_bundle, then send next_request_payload.",
+                "next_payload_rule": (
+                    "Use draft first. For M0-M2 local work, require codex_execution_packet.packet_status=ready, then copy "
+                    "codex_execution_packet.copy_paste_codex_prompt to local Codex; "
+                    "send next_request_payload only when formal evidence preview is needed."
+                ),
                 "write_boundary": "Requires exact Commander authorization for write/run/push/stable promotion.",
             },
             {
@@ -5597,8 +5602,9 @@ class MCPPlanningBridgeServer:
             "service_entry_profiles": self._service_entry_profiles(),
             "thin_loop_consumer_rule": {
                 "draft_mode": "Call run_mcp_workflow with input_mode=draft and draft_seed.",
-                "provided_mode": "Review result.generated_input_bundle, then send result.next_request_payload directly.",
-                "authority": "thin_governed_loop_preview remains read-only evidence and does not authorize acceptance or execution.",
+                "m0_m2_direct_mode": "When result.codex_execution_packet.packet_status is ready, use result.codex_execution_packet.copy_paste_codex_prompt as the local Codex task packet; provided preview is optional.",
+                "provided_mode": "Use result.next_request_payload only when formal thin-loop evidence preview is needed.",
+                "authority": "thin_governed_loop_preview remains read-only preparation/evidence and does not authorize acceptance, executor dispatch, commit, or push.",
             },
         }
 
@@ -5688,16 +5694,20 @@ class MCPPlanningBridgeServer:
                         "input_mode": "draft",
                         "draft_seed": {
                             "goal": "<natural-language objective>",
+                            "task_tier": "M0-M2",
                             "allowed_files": ["<project-relative path>"],
+                            "context_files": ["<optional context path>"],
                             "validation_commands": ["<validation command>"],
                             "review_decision_value": "NEEDS_FIX",
                             "reviewer_notes": "<optional reviewer note>",
                         },
                     },
                     "next_step": (
-                        "Review result.generated_input_bundle, then send result.next_request_payload "
-                        "directly as the next run_mcp_workflow arguments."
+                        "For M0-M2 low-risk tasks, require result.codex_execution_packet.packet_status=ready, "
+                        "then copy result.codex_execution_packet.copy_paste_codex_prompt to local Codex. "
+                        "Use result.next_request_payload only when formal evidence preview is needed."
                     ),
+                    "direct_codex_packet_field": "result.codex_execution_packet",
                     "provided_arguments": {
                         "workflow": "thin_governed_loop_preview",
                         "phase": "preview",
@@ -5748,9 +5758,12 @@ class MCPPlanningBridgeServer:
                 "get_web_gpt_service_entrypoint, render_commander_app, get_stable_promotion_readiness, and "
                 "analyze_project_state with the selected project_name. "
                 "For thin governed loop work, "
-                "use run_mcp_workflow input_mode=draft, review result.generated_input_bundle, "
-                "then send result.next_request_payload directly. Treat all outputs as evidence unless Commander "
-                "explicitly authorizes a write, run, push, or stable promotion."
+                "use run_mcp_workflow input_mode=draft, then for M0-M2 local work require "
+                "result.codex_execution_packet.packet_status=ready before copying "
+                "result.codex_execution_packet.copy_paste_codex_prompt to local Codex. "
+                "Use result.next_request_payload only when formal evidence preview is needed. "
+                "Treat all outputs as evidence unless Commander explicitly authorizes a write, run, "
+                "push, or stable promotion."
             ),
             "visible_tool_names": visible_names,
         }
@@ -5908,7 +5921,10 @@ class MCPPlanningBridgeServer:
                 ],
             },
             "preview_first_workflows": {
-                "thin_governed_loop": "draft -> inspect generated_input_bundle -> provided next_request_payload",
+                "thin_governed_loop": (
+                    "draft -> local Codex codex_execution_packet for M0-M2; "
+                    "provided next_request_payload only for formal evidence preview"
+                ),
                 "validation": "preview -> explicit authorization -> run -> status",
                 "executor": "run_once_preview -> explicit authorization -> run_once -> status -> get_executor_run_report",
             },
