@@ -734,6 +734,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
             "continue_batching",
             "review_batch_when_ready",
         }
+        assert "batch_review_summary" in payload["stable_replacement_cadence"]
+        assert payload["stable_replacement_cadence"]["batch_review_summary"]["suggested_review_action"] in {
+            "keep_batching",
+            "ready_for_human_review",
+        }
         assert service["stable_replacement_cadence"]["status"] == payload["stable_replacement_cadence"]["status"]
         assert payload["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert payload["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"

@@ -495,6 +495,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert cadence["recommended_cadence"] == "batch_when_ready"
         assert cadence["exact_authorization_required"] is False
         assert cadence["exact_authorization_phrase"] is None
+        assert cadence["batch_review_summary"]["suggested_review_action"] == "keep_batching"
         assert cadence["authorization_policy"]["do_not_request_authorization_for_small_productization_commits"] is True
         assert "operator_explicitly_requests_stable_batch_promotion" in cadence["promotion_triggers"]
 
@@ -518,10 +519,20 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         git("config", "user.email", "colameta@example.test")
         git("config", "user.name", "ColaMeta Test")
         stable_head = ""
-        for index in range(6):
-            (repo / "file.txt").write_text(f"{index}\n", encoding="utf-8")
-            git("add", "file.txt")
-            git("commit", "-m", f"Batch change {index}")
+        changes = [
+            ("README.md", "Seed baseline"),
+            ("runner/mcp_server.py", "Smooth Apps connector smoke entry"),
+            ("runner/web_console_v2_assets.py", "Clarify Web Commander cadence"),
+            ("scripts/runner_cli.py", "Expose colameta status review packet"),
+            ("docs/USAGE.md", "Document stable batch review packet"),
+            ("tests/test_batch_review.py", "Test stable batch review packet"),
+        ]
+        for index, (path, subject) in enumerate(changes):
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{subject}\n", encoding="utf-8")
+            git("add", path)
+            git("commit", "-m", subject)
             if index == 0:
                 stable_head = git("rev-parse", "HEAD")
         candidate_head = git("rev-parse", "HEAD")
@@ -534,6 +545,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         )
 
         batch = cadence["dev_batch_summary"]
+        review = cadence["batch_review_summary"]
         assert cadence["status"] == "dev_ahead_stable"
         assert cadence["stable_replacement_not_required"] is True
         assert cadence["exact_authorization_required"] is False
@@ -543,8 +555,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert batch["to_candidate_head"] == candidate_head
         assert batch["batch_size"] == "medium"
         assert batch["promotion_posture"] == "review_batch_when_ready"
-        assert batch["recent_commit_subjects"][0] == "Batch change 5"
-        assert "Batch change 1" in batch["recent_commit_subjects"]
+        assert batch["recent_commit_subjects"][0] == "Test stable batch review packet"
+        assert "Smooth Apps connector smoke entry" in batch["recent_commit_subjects"]
+        assert review["status"] == "available"
+        assert review["surfaces"] == ["MCP", "Web", "CLI", "docs", "tests"]
+        assert review["risk_level"] == "moderate"
+        assert review["suggested_review_action"] == "ready_for_human_review"
+        assert "5 commits since stable covering MCP/Web/CLI/docs/tests" in review["theme_summary"]
+        assert review["changed_file_count"] == 5
         assert cadence["safety_boundary"]["does_not_request_stable_replacement"] is True
 
     def test_service_readiness_summary_explains_attention_and_blocked_states(self) -> None:
@@ -712,6 +730,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["stable_replacement_not_required"] is True
         assert data["recommended_cadence"] == "batch_when_ready"
         assert data["dev_batch_summary"]["status"] in {"available", "unavailable"}
+        assert data["batch_review_summary"]["suggested_review_action"] in {
+            "keep_batching",
+            "ready_for_human_review",
+        }
         assert data["exact_authorization_required"] is False
         assert data["safety_boundary"]["does_not_request_stable_replacement"] is True
 

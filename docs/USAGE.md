@@ -706,6 +706,10 @@ When dev is ahead of stable, the cadence packet includes `dev_batch_summary`
 with the commit count since stable, recent commit subjects, `batch_size`, and
 `promotion_posture`. This is evidence for later batch review, not a replacement
 request.
+It also includes `batch_review_summary`, which summarizes the batch theme,
+affected surfaces (`MCP`, `Web`, `CLI`, `docs`, `tests`), risk level, and
+`suggested_review_action`. `ready_for_human_review` means review the batch; it
+does not authorize or request stable replacement.
 
 Stable replacement must include:
 

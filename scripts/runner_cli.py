@@ -439,6 +439,9 @@ def _print_connector_runtime_health_summary(
     batch = cadence.get("dev_batch_summary")
     if not isinstance(batch, dict):
         batch = {}
+    review = cadence.get("batch_review_summary")
+    if not isinstance(review, dict):
+        review = {}
     print(
         "Stable cadence: "
         f"status={cadence.get('status')} "
@@ -446,7 +449,10 @@ def _print_connector_runtime_health_summary(
         f"cadence={cadence.get('recommended_cadence')} "
         f"urgency={cadence.get('replacement_urgency')} "
         f"batch={batch.get('commit_count_since_stable')} "
-        f"posture={batch.get('promotion_posture')}",
+        f"size={batch.get('batch_size')} "
+        f"posture={batch.get('promotion_posture')} "
+        f"risk={review.get('risk_level')} "
+        f"review={review.get('suggested_review_action')}",
         file=sys.stderr,
     )
 

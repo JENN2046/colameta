@@ -1254,7 +1254,7 @@ function renderServiceCapabilityCard(data) {{
   const batch = cadence.dev_batch_summary || {{}};
   const batchCount = batch.commit_count_since_stable;
   const batchCountText = (batchCount === 0 || batchCount) ? String(batchCount) + " commits" : "-";
-  const batchText = batchCountText + " ｜ " + (batch.promotion_posture || "-");
+  const batchText = batchCountText + " ｜ " + (batch.batch_size || "-") + " ｜ " + (batch.promotion_posture || "-");
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;

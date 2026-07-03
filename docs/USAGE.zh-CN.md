@@ -669,6 +669,9 @@ Jenn 明确要现在在 stable 使用新能力
 当 dev ahead stable 时，cadence packet 会包含 `dev_batch_summary`，列出从 stable
 以来的 commit 数、最近 commit subject、`batch_size` 和 `promotion_posture`。这只是
 后续批次审查证据，不是替换请求。
+它还会包含 `batch_review_summary`，汇总本批主题、涉及 surface（`MCP`、`Web`、
+`CLI`、`docs`、`tests`）、风险级别和 `suggested_review_action`。
+`ready_for_human_review` 表示可以审查这批 dev，不表示授权或请求 stable replacement。
 
 替换流程必须包含：
 

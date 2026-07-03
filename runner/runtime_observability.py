@@ -300,6 +300,7 @@ def build_stable_replacement_cadence(
     stable_runtime_dir: str | None = None,
     stable_runtime_head: str | None = None,
     dev_batch_summary: dict[str, Any] | None = None,
+    batch_review_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return conservative stable-replacement cadence guidance.
 
@@ -337,6 +338,17 @@ def build_stable_replacement_cadence(
             heads_differ=heads_differ,
         )
     )
+    review_summary = (
+        batch_review_summary
+        if isinstance(batch_review_summary, dict)
+        else _build_batch_review_summary(
+            project_root=project_root,
+            candidate_head=candidate,
+            stable_runtime_head=stable_head,
+            heads_differ=heads_differ,
+            dev_batch_summary=batch_summary,
+        )
+    )
 
     return {
         "ok": True,
@@ -357,6 +369,7 @@ def build_stable_replacement_cadence(
         "replacement_urgency": replacement_urgency,
         "recommended_cadence": recommended_cadence,
         "dev_batch_summary": batch_summary,
+        "batch_review_summary": review_summary,
         "exact_authorization_required": False,
         "exact_authorization_phrase": None,
         "authorization_policy": {
@@ -477,6 +490,181 @@ def _build_dev_batch_summary(
         "batch_size": batch_size,
         "promotion_posture": "review_batch_when_ready" if batch_size in {"medium", "large"} else "continue_batching",
     }
+
+
+def _build_batch_review_summary(
+    *,
+    project_root: str | None,
+    candidate_head: str | None,
+    stable_runtime_head: str | None,
+    heads_differ: bool,
+    dev_batch_summary: dict[str, Any],
+) -> dict[str, Any]:
+    subjects = _batch_recent_subjects(dev_batch_summary)
+    commit_count = dev_batch_summary.get("commit_count_since_stable")
+    commit_count_value = commit_count if isinstance(commit_count, int) else None
+    batch_size = _clean_status_text(dev_batch_summary.get("batch_size")) or "empty"
+    base = {
+        "read_only": True,
+        "side_effects": False,
+        "theme_summary": _batch_theme_summary(commit_count_value or 0, subjects, []),
+        "surfaces": [],
+        "risk_level": "unknown",
+        "suggested_review_action": "keep_batching",
+        "stable_replacement_not_required": True,
+        "changed_file_count": None,
+        "changed_files_sample": [],
+    }
+    if not heads_differ:
+        return {
+            **base,
+            "status": "empty",
+            "summary_available": True,
+            "reason_code": "BATCH_REVIEW_EMPTY",
+            "theme_summary": "No commits since stable.",
+            "risk_level": "none",
+        }
+    if not dev_batch_summary.get("summary_available"):
+        return {
+            **base,
+            "status": "unavailable",
+            "summary_available": False,
+            "reason_code": "BATCH_REVIEW_BATCH_SUMMARY_UNAVAILABLE",
+        }
+
+    changed_files = _changed_files_between_heads(
+        project_root=project_root,
+        stable_runtime_head=stable_runtime_head,
+        candidate_head=candidate_head,
+    )
+    surfaces = _batch_surfaces(changed_files.get("files"), subjects)
+    risk_level = _batch_risk_level(batch_size, surfaces)
+    return {
+        **base,
+        "status": "available",
+        "summary_available": True,
+        "reason_code": "BATCH_REVIEW_READY",
+        "theme_summary": _batch_theme_summary(commit_count_value or 0, subjects, surfaces),
+        "surfaces": surfaces,
+        "risk_level": risk_level,
+        "suggested_review_action": _batch_review_action(batch_size, risk_level),
+        "changed_file_count": changed_files.get("count"),
+        "changed_files_sample": changed_files.get("sample", []),
+        "file_summary_available": changed_files.get("available"),
+    }
+
+
+def _batch_recent_subjects(dev_batch_summary: dict[str, Any]) -> list[str]:
+    subjects = dev_batch_summary.get("recent_commit_subjects")
+    if not isinstance(subjects, list):
+        return []
+    result: list[str] = []
+    for subject in subjects:
+        cleaned = _clean_status_text(subject)
+        if cleaned:
+            result.append(cleaned[:200])
+    return result
+
+
+def _changed_files_between_heads(
+    *,
+    project_root: str | None,
+    stable_runtime_head: str | None,
+    candidate_head: str | None,
+) -> dict[str, Any]:
+    candidate = _clean_head(candidate_head)
+    stable = _clean_head(stable_runtime_head)
+    root = os.path.abspath(os.path.expanduser(project_root or ""))
+    if not candidate or not stable or not root or not os.path.isdir(root):
+        return {"available": False, "count": None, "sample": [], "files": []}
+
+    diff_result = _run_git_readonly(root, ["diff", "--name-only", f"{stable}..{candidate}"])
+    if diff_result["code"] != 0:
+        return {"available": False, "count": None, "sample": [], "files": []}
+    files = [
+        item.strip().replace("\\", "/")
+        for item in str(diff_result.get("stdout") or "").splitlines()
+        if item.strip()
+    ]
+    return {
+        "available": True,
+        "count": len(files),
+        "sample": files[:12],
+        "files": files,
+    }
+
+
+def _batch_surfaces(files: Any, subjects: list[str]) -> list[str]:
+    observed: list[str] = []
+    for path in (files if isinstance(files, list) else []):
+        cleaned = _clean_status_text(path)
+        if not cleaned:
+            continue
+        lowered = cleaned.replace("\\", "/").lower()
+        if lowered.startswith("runner/mcp_") or "/mcp_" in lowered or "mcp_server" in lowered:
+            _append_surface(observed, "MCP")
+        if lowered.startswith("runner/web_console") or lowered.startswith("runner/web_"):
+            _append_surface(observed, "Web")
+        if lowered == "runner/runtime_observability.py":
+            _append_surface(observed, "MCP")
+            _append_surface(observed, "Web")
+            _append_surface(observed, "CLI")
+        if lowered.startswith("scripts/") or lowered.startswith("bin/") or "runner_cli" in lowered:
+            _append_surface(observed, "CLI")
+        if lowered.startswith("docs/"):
+            _append_surface(observed, "docs")
+        if lowered.startswith("tests/"):
+            _append_surface(observed, "tests")
+
+    if observed:
+        return [surface for surface in ("MCP", "Web", "CLI", "docs", "tests") if surface in observed]
+
+    for subject in subjects:
+        lowered = subject.lower()
+        if "mcp" in lowered or "apps connector" in lowered or "connector" in lowered:
+            _append_surface(observed, "MCP")
+        if "web" in lowered or "commander" in lowered:
+            _append_surface(observed, "Web")
+        if "cli" in lowered or "status --json" in lowered or "colameta status" in lowered:
+            _append_surface(observed, "CLI")
+        if "doc" in lowered or "onboarding" in lowered or "usage" in lowered:
+            _append_surface(observed, "docs")
+        if "test" in lowered or "ci" in lowered:
+            _append_surface(observed, "tests")
+    return [surface for surface in ("MCP", "Web", "CLI", "docs", "tests") if surface in observed]
+
+
+def _append_surface(surfaces: list[str], surface: str) -> None:
+    if surface not in surfaces:
+        surfaces.append(surface)
+
+
+def _batch_theme_summary(commit_count: int, subjects: list[str], surfaces: list[str]) -> str:
+    if commit_count <= 0:
+        return "No commits since stable."
+    surface_text = "/".join(surfaces) if surfaces else "unclassified surfaces"
+    subject_text = "; ".join(subjects[:3]) if subjects else "recent dev changes"
+    if len(subjects) > 3:
+        subject_text = f"{subject_text}; and {len(subjects) - 3} more"
+    return f"{commit_count} commits since stable covering {surface_text}: {subject_text}"
+
+
+def _batch_risk_level(batch_size: str, surfaces: list[str]) -> str:
+    if batch_size == "empty":
+        return "none"
+    if batch_size == "large":
+        return "moderate"
+    if batch_size == "medium" and any(surface in surfaces for surface in ("MCP", "Web", "CLI")):
+        return "moderate"
+    if len(surfaces) >= 4:
+        return "moderate"
+    return "low"
+
+
+def _batch_review_action(batch_size: str, risk_level: str) -> str:
+    if batch_size in {"medium", "large"} or risk_level == "moderate":
+        return "ready_for_human_review"
+    return "keep_batching"
 
 
 def _dev_batch_size(commit_count: int) -> str:
