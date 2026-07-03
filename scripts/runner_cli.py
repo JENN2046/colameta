@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from datetime import datetime, timezone
 
 # 允许直接执行 scripts/runner_cli.py 时导入仓库内模块。
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -38,6 +39,7 @@ SERVICE_STOP_PROCESS_EXIT_TIMEOUT_SECONDS = 1.0
 SERVICE_START_HEALTH_TIMEOUT_SECONDS = 15.0
 SERVICE_WAIT_INTERVAL_SECONDS = 0.1
 SERVICE_START_HEALTH_INITIAL_DELAY_SECONDS = 0.3
+TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS = 2.0
 SERVICE_METADATA_FILENAME = "service.json"
 SERVICE_PID_FILENAME = "service.pid"
 SERVICE_LOG_FILENAME = "service.log"
@@ -296,6 +298,8 @@ def _print_connector_runtime_health_summary(
     state: str,
     web_state: str | None,
     mcp_state: str | None,
+    tunnel_client: dict[str, object] | None = None,
+    control_plane: dict[str, object] | None = None,
 ) -> None:
     local_service: dict[str, object] | None
     if isinstance(metadata, dict):
@@ -326,18 +330,22 @@ def _print_connector_runtime_health_summary(
     health = get_connector_runtime_health_status(
         runtime_status=get_runtime_version_status(project_path),
         local_service=local_service,
+        tunnel_client=tunnel_client,
+        control_plane=control_plane,
     )
     local = health["local_service"]
     external = health["external_connector"]
     closeout = health["operator_closeout"]
     reasons = ",".join(health["reason_codes"][:8])
+    evidence = " evidence=tunnel_admin_probe" if tunnel_client or control_plane else ""
     print(
         "Connector/runtime: "
         f"local_service={local.get('status')} "
         f"source={local.get('health_source')} "
         f"external_connector={external.get('status')} "
         f"closeout={closeout.get('status')} "
-        f"reasons={reasons}",
+        f"reasons={reasons}"
+        f"{evidence}",
         file=sys.stderr,
     )
 
@@ -662,6 +670,17 @@ def _is_loopback_bind_host(host: str) -> bool:
         return ipaddress.ip_address(value).is_loopback
     except ValueError:
         return False
+
+
+def _url_host(host: str) -> str:
+    value = (host or "").strip()
+    if ":" in value and not value.startswith("["):
+        return f"[{value}]"
+    return value
+
+
+def _utc_observed_at() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _validate_external_web_bind(command_name: str, web_host: str, allow_external_web: bool) -> bool:
@@ -1363,11 +1382,182 @@ def _run_service_logs(args: list[str]) -> int:
     return 0
 
 
+def _parse_service_status_options(args: list[str]) -> tuple[str, dict[str, object] | None] | None:
+    project_path: str | None = None
+    tunnel_admin_host = "127.0.0.1"
+    tunnel_admin_port: int | None = None
+    tunnel_pid: int | None = None
+    with_tunnel_evidence = False
+    explicit_tunnel_host = False
+
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--with-tunnel-evidence":
+            with_tunnel_evidence = True
+        elif token == "--tunnel-admin-host":
+            if idx + 1 >= len(args):
+                print("status 参数错误：--tunnel-admin-host 缺少值。", file=sys.stderr)
+                return None
+            tunnel_admin_host = args[idx + 1]
+            explicit_tunnel_host = True
+            idx += 1
+        elif token == "--tunnel-admin-port":
+            if idx + 1 >= len(args):
+                print("status 参数错误：--tunnel-admin-port 缺少值。", file=sys.stderr)
+                return None
+            try:
+                tunnel_admin_port = int(args[idx + 1])
+            except ValueError:
+                print("status 参数错误：--tunnel-admin-port 必须是整数。", file=sys.stderr)
+                return None
+            if tunnel_admin_port < 1 or tunnel_admin_port > 65535:
+                print("status 参数错误：--tunnel-admin-port 必须在 1..65535 范围内。", file=sys.stderr)
+                return None
+            idx += 1
+        elif token == "--tunnel-pid":
+            if idx + 1 >= len(args):
+                print("status 参数错误：--tunnel-pid 缺少值。", file=sys.stderr)
+                return None
+            try:
+                tunnel_pid = int(args[idx + 1])
+            except ValueError:
+                print("status 参数错误：--tunnel-pid 必须是整数。", file=sys.stderr)
+                return None
+            if tunnel_pid <= 0:
+                print("status 参数错误：--tunnel-pid 必须是正整数。", file=sys.stderr)
+                return None
+            idx += 1
+        elif token.startswith("-"):
+            print(f"status 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"status 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+
+    include_tunnel = with_tunnel_evidence or tunnel_admin_port is not None or tunnel_pid is not None or explicit_tunnel_host
+    if not include_tunnel:
+        return project_path or _default_service_project_root(), None
+    if tunnel_admin_port is None or tunnel_pid is None:
+        print(
+            "status 参数错误：tunnel evidence 需要同时提供 --tunnel-admin-port 和 --tunnel-pid。",
+            file=sys.stderr,
+        )
+        return None
+    if not _is_loopback_bind_host(tunnel_admin_host):
+        print(
+            f"status 参数错误：--tunnel-admin-host 只能是 loopback 主机，收到 {tunnel_admin_host}。",
+            file=sys.stderr,
+        )
+        return None
+    return project_path or _default_service_project_root(), {
+        "host": tunnel_admin_host,
+        "port": tunnel_admin_port,
+        "pid": tunnel_pid,
+    }
+
+
+def _tunnel_admin_evidence_source(host: str, port: int, pid: int, path: str) -> str:
+    return f"colameta status tunnel_admin_probe {host}:{port}{path} pid={pid}"
+
+
+def _tunnel_admin_component(
+    *,
+    status: str,
+    reason_code: str,
+    host: str,
+    port: int,
+    pid: int,
+    path: str,
+    observed_at: str,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "evidence_source": _tunnel_admin_evidence_source(host, port, pid, path),
+        "last_observed_at": observed_at,
+    }
+
+
+def _probe_tunnel_admin_path(host: str, port: int, path: str) -> bool:
+    try:
+        url = f"http://{_url_host(host)}:{port}{path}"
+        with urllib.request.urlopen(url, timeout=TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS) as response:
+            return int(response.status) == 200
+    except Exception:
+        return False
+
+
+def _collect_status_tunnel_evidence(
+    options: dict[str, object] | None,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    if not isinstance(options, dict):
+        return None, None
+    host = str(options["host"])
+    port = int(options["port"])
+    pid = int(options["pid"])
+    observed_at = _utc_observed_at()
+
+    if not _is_pid_running(pid):
+        return (
+            _tunnel_admin_component(
+                status="unavailable",
+                reason_code="TUNNEL_CLIENT_PID_NOT_RUNNING",
+                host=host,
+                port=port,
+                pid=pid,
+                path="/healthz",
+                observed_at=observed_at,
+            ),
+            _tunnel_admin_component(
+                status="unavailable",
+                reason_code="TUNNEL_CONTROL_PLANE_PID_NOT_RUNNING",
+                host=host,
+                port=port,
+                pid=pid,
+                path="/readyz",
+                observed_at=observed_at,
+            ),
+        )
+
+    tunnel_ok = _probe_tunnel_admin_path(host, port, "/healthz")
+    control_plane_ok = _probe_tunnel_admin_path(host, port, "/readyz")
+    return (
+        _tunnel_admin_component(
+            status="healthy" if tunnel_ok else "unavailable",
+            reason_code="TUNNEL_CLIENT_HEALTHZ_READY" if tunnel_ok else "TUNNEL_CLIENT_HEALTHZ_UNAVAILABLE",
+            host=host,
+            port=port,
+            pid=pid,
+            path="/healthz",
+            observed_at=observed_at,
+        ),
+        _tunnel_admin_component(
+            status="healthy" if control_plane_ok else "unavailable",
+            reason_code=(
+                "TUNNEL_CONTROL_PLANE_READYZ_READY"
+                if control_plane_ok
+                else "TUNNEL_CONTROL_PLANE_READYZ_UNAVAILABLE"
+            ),
+            host=host,
+            port=port,
+            pid=pid,
+            path="/readyz",
+            observed_at=observed_at,
+        ),
+    )
+
+
 def _run_service_status(args: list[str]) -> int:
-    if len(args) >= 2 and not args[1].startswith("-"):
-        project_path = _resolve_path(args[1])
-    else:
-        project_path = _default_service_project_root()
+    parsed = _parse_service_status_options(args)
+    if parsed is None:
+        return 1
+    project_path, tunnel_options = parsed
+    tunnel_client, control_plane = _collect_status_tunnel_evidence(tunnel_options)
     metadata = _read_service_metadata(project_path)
     if metadata is None:
         discovered = _discover_running_service_metadata(project_path)
@@ -1390,6 +1580,8 @@ def _run_service_status(args: list[str]) -> int:
                 state="running",
                 web_state=web_state,
                 mcp_state=mcp_state,
+                tunnel_client=tunnel_client,
+                control_plane=control_plane,
             )
             return 0
         cli_output.print_service_status_summary(
@@ -1409,6 +1601,8 @@ def _run_service_status(args: list[str]) -> int:
             state="stopped",
             web_state=None,
             mcp_state=None,
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
         )
         return 1
     pid = int(metadata.get("pid", 0) or 0)
@@ -1434,6 +1628,8 @@ def _run_service_status(args: list[str]) -> int:
                 state="running",
                 web_state=web_state,
                 mcp_state=mcp_state,
+                tunnel_client=tunnel_client,
+                control_plane=control_plane,
             )
             return 0
         web_state, mcp_state = _probe_service_health(metadata)
@@ -1454,6 +1650,8 @@ def _run_service_status(args: list[str]) -> int:
             state="stale",
             web_state=web_state,
             mcp_state=mcp_state,
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
         )
         return 1
     web_state, mcp_state = _probe_service_health(metadata)
@@ -1474,6 +1672,8 @@ def _run_service_status(args: list[str]) -> int:
         state="running",
         web_state=web_state,
         mcp_state=mcp_state,
+        tunnel_client=tunnel_client,
+        control_plane=control_plane,
     )
     return 0
 

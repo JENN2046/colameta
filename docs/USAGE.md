@@ -130,6 +130,16 @@ Check the service from a local shell:
 /home/jenn/tools/colameta/.venv/bin/colameta status /home/jenn/src/colameta-dev
 ```
 
+If you have the tunnel-client admin port and PID, `status` can explicitly include
+sanitized tunnel evidence:
+
+```bash
+/home/jenn/tools/colameta/.venv/bin/colameta status /home/jenn/src/colameta-dev --tunnel-admin-port 8080 --tunnel-pid 4034
+```
+
+This only probes loopback admin `/healthz` and `/readyz`. It does not read tokens,
+cookies, tunnel-client config, proxy config, or raw logs.
+
 Read health like this:
 
 ```text
@@ -449,6 +459,18 @@ decision=blocked
 
 This means local ColaMeta is usable, but tunnel-client/control-plane evidence is
 not closed.
+
+The smooth local closeout path is to let `colameta status` explicitly collect the
+safe summary:
+
+```bash
+colameta status /home/jenn/src/colameta-dev --tunnel-admin-port <admin_port> --tunnel-pid <tunnel_client_pid>
+```
+
+The command only accepts a loopback admin host, probes `/healthz` and `/readyz`
+read-only, and feeds `status/reason_code/evidence_source/last_observed_at` into
+`get_connector_runtime_health_status`. Bare `colameta status` still fails closed
+with `external_connector=unverified`.
 
 Only feed approved, sanitized evidence back into ColaMeta. If the environment
 has a tunnel-client admin port and PID, a local operator may run:

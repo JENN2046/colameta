@@ -108,6 +108,16 @@ origin/main
 /home/jenn/tools/colameta/.venv/bin/colameta status /home/jenn/src/colameta-dev
 ```
 
+如果已有 tunnel-client admin port 和 PID，可以让 `status` 显式带入 sanitized
+tunnel evidence：
+
+```bash
+/home/jenn/tools/colameta/.venv/bin/colameta status /home/jenn/src/colameta-dev --tunnel-admin-port 8080 --tunnel-pid 4034
+```
+
+这只探测 loopback admin `/healthz` 和 `/readyz`，不读取 token、cookie、
+tunnel-client config、proxy config 或 raw logs。
+
 健康判断：
 
 ```text
@@ -444,6 +454,17 @@ decision=blocked
 ```
 
 这表示本地 ColaMeta 可用，但还没有 tunnel-client / control-plane 证据。
+
+最顺手的本地闭环是让 `colameta status` 显式采集安全摘要：
+
+```bash
+colameta status /home/jenn/src/colameta-dev --tunnel-admin-port <admin_port> --tunnel-pid <tunnel_client_pid>
+```
+
+该命令只接受 loopback admin host，只读探测 `/healthz` 和 `/readyz`，并把
+`status/reason_code/evidence_source/last_observed_at` 安全摘要传入
+`get_connector_runtime_health_status`。裸 `colameta status` 仍然保持
+`external_connector=unverified` 的 fail-closed 行为。
 
 只有使用 approved status surface 得到 sanitized evidence 后，才可以回灌。
 例如当前环境若有 tunnel-client admin port 和 PID，可以先由本地操作员运行：
