@@ -506,6 +506,8 @@ colameta status /home/jenn/src/colameta-dev --tunnel-admin-port <admin_port> --t
 `status/reason_code/evidence_source/last_observed_at` 安全摘要传入
 `get_connector_runtime_health_status`。裸 `colameta status` 仍然保持
 `external_connector=unverified` 的 fail-closed 行为。
+同一个 status 输出也会打印 `Apps connector:` 交接行，包含项目列表检查、connector
+closeout 状态和安全的 Apps reconnect 下一步。它不会打印 token、cookie、raw log 或 config。
 
 只有使用 approved status surface 得到 sanitized evidence 后，才可以回灌。
 例如当前环境若有 tunnel-client admin port 和 PID，可以先由本地操作员运行：

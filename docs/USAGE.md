@@ -519,6 +519,9 @@ The command only accepts a loopback admin host, probes `/healthz` and `/readyz`
 read-only, and feeds `status/reason_code/evidence_source/last_observed_at` into
 `get_connector_runtime_health_status`. Bare `colameta status` still fails closed
 with `external_connector=unverified`.
+The same status output also prints an `Apps connector:` handoff line with the
+project list check, connector closeout state, and the safe Apps reconnect next
+step. It does not print tokens, cookies, raw logs, or config.
 
 Only feed approved, sanitized evidence back into ColaMeta. If the environment
 has a tunnel-client admin port and PID, a local operator may run:

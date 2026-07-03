@@ -60,6 +60,9 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "WEB_ENDPOINT_HEALTHY" in output
         assert "MCP_ENDPOINT_HEALTHY" in output
         assert "CONNECTOR_HEALTH_UNVERIFIED" in output
+        assert "Apps connector: status=needs_attention" in output
+        assert "project_list=list_registered_projects" in output
+        assert "apps_reauth=reconnect_apps_connector" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -127,6 +130,10 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "TUNNEL_CLIENT_HEALTHZ_READY" in output
         assert "TUNNEL_CONTROL_PLANE_READYZ_READY" in output
         assert "evidence=tunnel_admin_probe" in output
+        assert "Apps connector: status=ready" in output
+        assert "closeout=connector_closeout_ready" in output
+        assert "decision=ready" in output
+        assert "apps_reauth=reconnect_apps_connector" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 

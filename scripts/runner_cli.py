@@ -30,7 +30,11 @@ from runner.runner_paths import (
     resolve_project_runner_rel_dir,
 )
 from runner.service_lifecycle_store import ServiceLifecycleStore
-from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
+from runner.runtime_observability import (
+    build_apps_connector_closeout_packet,
+    get_connector_runtime_health_status,
+    get_runtime_version_status,
+)
 
 
 SERVICE_WAIT_TIMEOUT_SECONDS = 2.0
@@ -348,6 +352,24 @@ def _print_connector_runtime_health_summary(
         f"{evidence}",
         file=sys.stderr,
     )
+    project_name = _registered_project_name_for_path(project_path)
+    apps_closeout = build_apps_connector_closeout_packet(
+        project_name=project_name,
+        connector_health=health,
+    )
+    closeout_check = apps_closeout.get("connector_closeout_check")
+    if not isinstance(closeout_check, dict):
+        closeout_check = {}
+    print(
+        "Apps connector: "
+        f"status={apps_closeout.get('status')} "
+        f"project_name={apps_closeout.get('project_name')} "
+        f"project_list=list_registered_projects "
+        f"closeout={closeout_check.get('current_operator_closeout')} "
+        f"decision={closeout_check.get('current_decision')} "
+        f"apps_reauth=reconnect_apps_connector",
+        file=sys.stderr,
+    )
 
 
 def _metadata_matches_project_path(metadata: dict[str, object], project_path: str) -> bool:
@@ -358,6 +380,28 @@ def _metadata_matches_project_path(metadata: dict[str, object], project_path: st
         return os.path.realpath(_resolve_path(root)) == os.path.realpath(_resolve_path(project_path))
     except Exception:
         return False
+
+
+def _registered_project_name_for_path(project_path: str) -> str:
+    resolved = os.path.realpath(_resolve_path(project_path))
+    try:
+        projects = ProjectRegistry().list_projects().get("projects", [])
+    except Exception:
+        projects = []
+    if isinstance(projects, list):
+        for project in projects:
+            if not isinstance(project, dict):
+                continue
+            root = project.get("project_root") or project.get("path")
+            name = project.get("project_name")
+            if not isinstance(root, str) or not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                if os.path.realpath(_resolve_path(root)) == resolved:
+                    return name.strip()
+            except Exception:
+                continue
+    return os.path.basename(resolved.rstrip(os.sep)) or "colameta-project"
 
 
 def _option_value(tokens: list[str], flag: str, default: str) -> str:
