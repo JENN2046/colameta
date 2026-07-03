@@ -432,7 +432,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_agent_consumer_contract" in tool_defs
         assert "get_service_entry_profile" in tool_defs
         assert "get_web_gpt_service_entrypoint" in tool_defs
+        assert "get_commander_app_manifest" in tool_defs
+        assert "render_commander_app" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
+        commander_schema = tool_defs["get_commander_app_manifest"].input_schema
+        assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
+        assert commander_schema["properties"]["control_plane"]["additionalProperties"] is False
+        assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
+        assert tool_defs["render_commander_app"].annotations["readOnlyHint"] is True
         connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
         assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert connector_schema["properties"]["control_plane"]["additionalProperties"] is False
@@ -440,11 +447,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_agent_consumer_contract" in server._visible_tool_names()
         assert "get_service_entry_profile" in server._visible_tool_names()
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
+        assert "get_commander_app_manifest" in server._visible_tool_names()
+        assert "render_commander_app" in server._visible_tool_names()
         assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_service_entry_profile", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
 
@@ -468,13 +479,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "source_observer",
         }
         assert profiles["web_gpt_commander"]["first_reads"][1]["tool"] == "get_agent_consumer_contract"
+        assert profiles["web_gpt_commander"]["first_reads"][3]["tool"] == "render_commander_app"
         assert profiles["reviewer_agent"]["default_authority"] == "review_only"
         assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
         assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
         assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
-        assert data["entry_sequence"][3]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][4]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][5]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][3]["tool"] == "render_commander_app"
+        assert data["entry_sequence"][4]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][5]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][6]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
@@ -483,6 +496,61 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
+    def test_commander_app_manifest_is_read_only_and_rejects_unsanitized_evidence(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        result = server.call_tool_for_agent(
+            "get_commander_app_manifest",
+            {
+                "project_name": "demo-project",
+                "tunnel_client": {
+                    "status": "healthy",
+                    "reason_code": "TUNNEL_CLIENT_HEALTHY",
+                    "evidence_source": "sanitized_test",
+                    "last_observed_at": "2026-07-03T00:00:00Z",
+                },
+                "control_plane": {
+                    "status": "healthy",
+                    "reason_code": "CONTROL_PLANE_HEALTHY",
+                    "evidence_source": "sanitized_test",
+                    "last_observed_at": "2026-07-03T00:00:00Z",
+                },
+            },
+        )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_commander_app_manifest"
+        data = result["data"]
+        assert data["ok"] is True
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["app"]["archetype"] == "interactive-decoupled"
+        assert data["app"]["render_tool"] == "render_commander_app"
+        assert data["project_name"] == "demo-project"
+        assert data["connector"]["external_connector_status"] == "healthy"
+        assert data["authority_boundary"]["does_not_authorize_executor_run"] is True
+        assert "Delivery accepted" in data["authority_boundary"]["requires_explicit_commander_authorization_for"]
+
+        rejected = server.call_tool_for_agent(
+            "get_commander_app_manifest",
+            {
+                "project_name": "demo-project",
+                "tunnel_client": {
+                    "status": "healthy",
+                    "raw_token": "must-not-return",
+                },
+            },
+        )
+
+        assert rejected["ok"] is False
+        assert rejected["error_code"] == "UNSAFE_CONNECTOR_EVIDENCE"
+        serialized = json.dumps(rejected, ensure_ascii=False)
+        assert "must-not-return" not in serialized
+        assert "raw_token" not in serialized
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()

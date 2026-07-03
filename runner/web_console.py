@@ -1756,6 +1756,16 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "打开 Commander App",
+                "tool": "render_commander_app",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "读取 Commander manifest",
+                "tool": "get_commander_app_manifest",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "读取 runtime 版本",
                 "tool": "get_runtime_version_status",
                 "arguments": {"project_name": project_name},

@@ -186,6 +186,30 @@ Project-level tools require `project_name`:
 
 ```json
 {
+  "name": "render_commander_app",
+  "arguments": {"project_name": "colameta-self-dev"}
+}
+```
+
+`render_commander_app` is the ChatGPT Apps entry for the ColaMeta Commander
+panel. It returns a read-only manifest plus widget metadata. For clients that
+only need data, use:
+
+```json
+{
+  "name": "get_commander_app_manifest",
+  "arguments": {"project_name": "colameta-self-dev"}
+}
+```
+
+Apps clients can discover and read the widget resource through
+`resources/list` and `resources/read`. The widget only displays service facts,
+profile-aware entries, connector health, preview-first routes, and explicit
+authorization gates. It does not authorize executor runs, commits, pushes,
+stable service replacement, ReviewDecision, GateEvent, or Delivery accepted.
+
+```json
+{
   "name": "get_runtime_version_status",
   "arguments": {"project_name": "colameta-self-dev"}
 }

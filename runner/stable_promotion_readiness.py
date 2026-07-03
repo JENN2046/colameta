@@ -12,6 +12,8 @@ from runner.runtime_observability import get_runtime_version_status, git_checkou
 DEFAULT_STABLE_RUNTIME_DIR = "/home/jenn/tools/colameta"
 REQUIRED_VISIBLE_TOOLS = (
     "get_web_gpt_service_entrypoint",
+    "get_commander_app_manifest",
+    "render_commander_app",
     "get_agent_consumer_contract",
     "get_service_entry_profile",
     "get_stable_promotion_readiness",

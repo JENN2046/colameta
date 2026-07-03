@@ -727,6 +727,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert profiles["local_codex_commander"]["polling_guidance"]["max_poll_attempts"] == 24
 
         calls = {item["tool"]: item for item in service["copyable_mcp_calls"]}
+        assert calls["render_commander_app"]["arguments"]["project_name"]
+        assert calls["get_commander_app_manifest"]["arguments"]["project_name"]
         assert calls["get_connector_runtime_health_status"]["arguments"]["project_name"]
         assert calls["manage_executor_workflow"]["arguments"]["profile_id"] == "local_codex_commander"
 

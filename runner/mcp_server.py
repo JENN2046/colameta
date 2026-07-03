@@ -65,12 +65,18 @@ ACTIONS_HARD_RESPONSE_CHARS = 75000
 ACTIONS_HARD_REQUEST_CHARS = 90000
 MCP_TARGET_TOOL_RESULT_CHARS = 60000
 MCP_HARD_TOOL_RESULT_CHARS = 75000
+COMMANDER_APP_WIDGET_URI = "ui://colameta/commander/v1.html"
+COMMANDER_APP_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
+COMMANDER_APP_MANIFEST_VERSION = "colameta_commander_app.v1"
+COMMANDER_APP_TITLE = "ColaMeta Commander"
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_agent_consumer_contract",
     "get_service_entry_profile",
     "get_web_gpt_service_entrypoint",
+    "get_commander_app_manifest",
+    "render_commander_app",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -143,6 +149,8 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
 
 
 PROJECT_NAME_REQUIRED_TOOLS = {
+    "get_commander_app_manifest",
+    "render_commander_app",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -249,6 +257,8 @@ class MCPToolDef:
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    annotations: dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
 
 
 @dataclass
@@ -273,11 +283,14 @@ class MCPPlanningBridgeServer:
             self.project_identity = build_project_identity(self.project_root)
             self.project_hint = self.project_identity.get("mcp_display_hint", f"Project:{os.path.basename(self.project_root)}")
         common_output_schema = self._build_common_output_schema()
+        commander_app_input_schema = self._commander_app_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
             "get_service_entry_profile": self._tool_get_service_entry_profile,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
+            "get_commander_app_manifest": self._tool_get_commander_app_manifest,
+            "render_commander_app": self._tool_render_commander_app,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
@@ -401,6 +414,42 @@ class MCPPlanningBridgeServer:
                     "additionalProperties": False,
                 },
                 output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_commander_app_manifest",
+                description=(
+                    f"[{self.project_hint}] ChatGPT Apps 侧 ColaMeta Commander App 的只读 manifest。"
+                    "汇总项目身份、runtime、connector health、profile-aware 入口、preview-first 工作流和授权闸门。"
+                    "只接受 sanitized tunnel/control-plane evidence；不读取 token、cookie、配置或 raw logs。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                },
+            ),
+            MCPToolDef(
+                name="render_commander_app",
+                description=(
+                    f"[{self.project_hint}] 渲染 ChatGPT Apps iframe 版 ColaMeta Commander 面板。"
+                    "返回 Commander manifest，并通过 MCP Apps resource URI 绑定 widget。"
+                    "面板只展示事实、只读调用和 preview-first 入口；不授权 executor run、commit、push 或 stable replacement。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                },
+                meta={
+                    "ui": {"resourceUri": COMMANDER_APP_WIDGET_URI},
+                    "openai/outputTemplate": COMMANDER_APP_WIDGET_URI,
+                    "openai/toolInvocation/invoking": "Opening ColaMeta Commander",
+                    "openai/toolInvocation/invoked": "ColaMeta Commander ready",
+                },
             ),
             MCPToolDef(
                 name="get_stable_promotion_readiness",
@@ -3338,6 +3387,367 @@ class MCPPlanningBridgeServer:
             return self._protocol_error(None, -32600, "invalid_request", "请求必须是 JSON 对象。")
         return self._handle_jsonrpc_request(request)
 
+    def _commander_widget_resource_meta(self) -> dict[str, Any]:
+        return {
+            "ui": {
+                "prefersBorder": True,
+                "csp": {
+                    "connectDomains": [],
+                    "resourceDomains": [],
+                    "frameDomains": [],
+                },
+            },
+            "openai/widgetDescription": (
+                "ColaMeta Commander shows local service facts, connector health, "
+                "profile-aware entries, preview-first workflow routes, and explicit authorization gates."
+            ),
+            "openai/widgetPrefersBorder": True,
+            "openai/widgetCSP": {
+                "connect_domains": [],
+                "resource_domains": [],
+            },
+        }
+
+    def _mcp_resources_list_result(self) -> dict[str, Any]:
+        return {
+            "resources": [
+                {
+                    "uri": COMMANDER_APP_WIDGET_URI,
+                    "name": "colameta_commander",
+                    "title": COMMANDER_APP_TITLE,
+                    "description": "Read-only ColaMeta Commander panel for ChatGPT Apps.",
+                    "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
+                    "_meta": self._commander_widget_resource_meta(),
+                }
+            ]
+        }
+
+    def _mcp_resource_read_result(self, uri: str) -> dict[str, Any]:
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
+                    "text": self._commander_widget_html(),
+                    "_meta": self._commander_widget_resource_meta(),
+                }
+            ]
+        }
+
+    def _commander_widget_html(self) -> str:
+        return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7f9;
+      color: #1b1f23;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: #f5f7f9;
+    }
+    .shell {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+    .top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .sub {
+      margin-top: 4px;
+      color: #5d6670;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px 9px;
+      border: 1px solid #cfd8df;
+      border-radius: 6px;
+      background: #ffffff;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .tile {
+      min-height: 74px;
+      padding: 10px;
+      border: 1px solid #d8e0e6;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .label {
+      color: #68727a;
+      font-size: 11px;
+      line-height: 1.2;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .value {
+      margin-top: 7px;
+      font-size: 15px;
+      line-height: 1.25;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+    .section {
+      display: grid;
+      gap: 8px;
+    }
+    .section h2 {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.2;
+      font-weight: 700;
+      color: #333a40;
+    }
+    .profiles {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .profile {
+      min-height: 86px;
+      padding: 9px;
+      border: 1px solid #d8e0e6;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .profile strong {
+      display: block;
+      font-size: 12px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .profile span {
+      display: block;
+      margin-top: 6px;
+      color: #68727a;
+      font-size: 12px;
+      line-height: 1.3;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      min-height: 34px;
+      border: 1px solid #2f6f73;
+      border-radius: 6px;
+      padding: 7px 11px;
+      background: #2f6f73;
+      color: #ffffff;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #ffffff;
+      color: #2f474a;
+      border-color: #b9c7c4;
+    }
+    button:disabled {
+      opacity: .55;
+      cursor: default;
+    }
+    .boundary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .gate {
+      min-height: 38px;
+      border: 1px solid #dbc7a2;
+      border-radius: 8px;
+      background: #fff8e8;
+      padding: 9px;
+      font-size: 12px;
+      line-height: 1.3;
+      color: #4d3d1f;
+    }
+    .log {
+      min-height: 34px;
+      border-top: 1px solid #d8e0e6;
+      padding-top: 9px;
+      color: #5d6670;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 760px) {
+      .top { grid-template-columns: minmax(0, 1fr); }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .boundary { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <h1>ColaMeta Commander</h1>
+        <div class="sub" id="subtitle">Awaiting service evidence</div>
+      </div>
+      <div class="badge" id="mode">read-only</div>
+    </header>
+    <section class="grid" aria-label="status">
+      <div class="tile"><div class="label">Project</div><div class="value" id="project">-</div></div>
+      <div class="tile"><div class="label">Runtime</div><div class="value" id="runtime">-</div></div>
+      <div class="tile"><div class="label">Local</div><div class="value" id="local">-</div></div>
+      <div class="tile"><div class="label">External</div><div class="value" id="external">-</div></div>
+    </section>
+    <section class="section">
+      <h2>Profiles</h2>
+      <div class="profiles" id="profiles"></div>
+    </section>
+    <section class="section">
+      <h2>Reads</h2>
+      <div class="actions">
+        <button data-tool="get_commander_app_manifest">Manifest</button>
+        <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
+        <button class="secondary" data-tool="get_connector_runtime_health_status">Connector</button>
+        <button class="secondary" data-tool="analyze_project_state">State</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Gates</h2>
+      <div class="boundary" id="boundary"></div>
+    </section>
+    <div class="log" id="log">No tool result received yet.</div>
+  </main>
+  <script>
+    (function () {
+      var manifest = null;
+      var seq = 1;
+      function byId(id) { return document.getElementById(id); }
+      function text(id, value) { byId(id).textContent = value || "-"; }
+      function normalize(payload) {
+        if (!payload || typeof payload !== "object") return null;
+        if (payload.data && payload.data.app_manifest_version) return payload.data;
+        if (payload.structuredContent) return normalize(payload.structuredContent);
+        if (payload.app_manifest_version) return payload;
+        return payload.data && typeof payload.data === "object" ? payload.data : payload;
+      }
+      function statusValue(obj, keys) {
+        var cur = obj || {};
+        for (var i = 0; i < keys.length; i += 1) {
+          if (!cur || typeof cur !== "object") return "-";
+          cur = cur[keys[i]];
+        }
+        return cur === undefined || cur === null || cur === "" ? "-" : String(cur);
+      }
+      function profileCard(profile) {
+        var node = document.createElement("div");
+        node.className = "profile";
+        var title = document.createElement("strong");
+        title.textContent = profile.display_name || profile.profile_id || "Profile";
+        var body = document.createElement("span");
+        var guidance = profile.executor_status_polling_guidance || {};
+        body.textContent = [
+          profile.default_authority || "read_only",
+          guidance.poll_interval_seconds ? guidance.poll_interval_seconds + "s" : "",
+          guidance.max_poll_attempts ? "x " + guidance.max_poll_attempts : ""
+        ].filter(Boolean).join(" | ");
+        node.appendChild(title);
+        node.appendChild(body);
+        return node;
+      }
+      function render(payload) {
+        var data = normalize(payload);
+        if (!data || typeof data !== "object") return;
+        if (data.app_manifest_version) manifest = data;
+        var current = manifest || data;
+        var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
+        text("subtitle", statusValue(current, ["app", "status_line"]) || "Service facts and authorization gates");
+        text("project", projectName);
+        text("runtime", statusValue(current, ["runtime", "reload_needed_for_verification"]) === "false" ? "current" : statusValue(current, ["runtime", "reload_awareness_reason"]));
+        text("local", statusValue(current, ["connector", "local_service_status"]));
+        text("external", statusValue(current, ["connector", "external_connector_status"]));
+        var profiles = byId("profiles");
+        profiles.innerHTML = "";
+        (current.profiles || current.service_entry_profiles || []).slice(0, 5).forEach(function (item) {
+          profiles.appendChild(profileCard(item));
+        });
+        var boundary = byId("boundary");
+        boundary.innerHTML = "";
+        var list = Array.isArray(current.authority_boundary && current.authority_boundary.requires_explicit_commander_authorization_for)
+          ? current.authority_boundary.requires_explicit_commander_authorization_for
+          : ["executor run", "commit or push", "stable replacement"];
+        list.slice(0, 6).forEach(function (item) {
+          var node = document.createElement("div");
+          node.className = "gate";
+          node.textContent = String(item);
+          boundary.appendChild(node);
+        });
+        text("log", "Last update: " + (current.updated_at || new Date().toISOString()));
+        Array.prototype.forEach.call(document.querySelectorAll("button[data-tool]"), function (button) {
+          button.disabled = !projectName;
+        });
+      }
+      function callTool(name) {
+        var projectName = manifest && manifest.project_name;
+        if (!projectName) {
+          text("log", "Project name unavailable.");
+          return;
+        }
+        var args = { project_name: projectName };
+        window.parent.postMessage({
+          jsonrpc: "2.0",
+          id: "colameta-commander-" + (seq++),
+          method: "tools/call",
+          params: { name: name, arguments: args }
+        }, "*");
+        text("log", "Requested " + name + ".");
+      }
+      window.addEventListener("message", function (event) {
+        var message = event.data || {};
+        if (message.method === "ui/notifications/tool-result") {
+          render(message.params && (message.params.structuredContent || message.params.result));
+          return;
+        }
+        if (message.result && message.result.structuredContent) {
+          render(message.result.structuredContent);
+        }
+      });
+      Array.prototype.forEach.call(document.querySelectorAll("button[data-tool]"), function (button) {
+        button.addEventListener("click", function () { callTool(button.getAttribute("data-tool")); });
+      });
+      if (window.openai && window.openai.toolOutput) {
+        render(window.openai.toolOutput);
+      }
+    }());
+  </script>
+</body>
+</html>"""
+
     def _handle_jsonrpc_request(
         self,
         request: dict[str, Any],
@@ -3359,7 +3769,10 @@ class MCPPlanningBridgeServer:
                     {
                         "protocolVersion": "2025-06-18",
                         "serverInfo": {"name": "colameta-mcp", "version": "1.0.0"},
-                        "capabilities": {"tools": {"listChanged": False}},
+                        "capabilities": {
+                            "tools": {"listChanged": False},
+                            "resources": {"subscribe": False, "listChanged": False},
+                        },
                     },
                 )
             if method == "notifications/initialized":
@@ -3368,6 +3781,23 @@ class MCPPlanningBridgeServer:
                 return self._result(req_id, {"ok": True, "tool": method, "data": {"status": "ok"}})
             if method in ("list_tools", "tools/list"):
                 return self._result(req_id, {"tools": self._tool_defs_payload()})
+            if method in ("list_resources", "resources/list"):
+                return self._result(req_id, self._mcp_resources_list_result())
+            if method in ("read_resource", "resources/read"):
+                if not isinstance(params, dict):
+                    return self._protocol_error(req_id, -32602, "invalid_params", "params 必须是对象。")
+                uri = params.get("uri")
+                if not isinstance(uri, str) or not uri.strip():
+                    return self._protocol_error(req_id, -32602, "invalid_resource_uri", "resources/read 需要 uri。")
+                normalized_uri = uri.strip()
+                if normalized_uri != COMMANDER_APP_WIDGET_URI:
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        "resource_not_found",
+                        f"未知 resource uri：{normalized_uri}",
+                    )
+                return self._result(req_id, self._mcp_resource_read_result(normalized_uri))
             if method in ("call_tool", "tools/call"):
                 if not isinstance(params, dict):
                     return self._result(req_id, self._tool_error("call_tool", "INVALID_PARAMS", "params 必须是对象。"))
@@ -3399,15 +3829,18 @@ class MCPPlanningBridgeServer:
         exposed_tool_defs = self._filter_tools_by_exposure_profile(self.tool_defs)
         payload: list[dict[str, Any]] = []
         for tool in exposed_tool_defs:
-            payload.append(
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputSchema": tool.input_schema,
-                    "input_schema": tool.input_schema,
-                    "outputSchema": tool.output_schema,
-                }
-            )
+            item = {
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": tool.input_schema,
+                "input_schema": tool.input_schema,
+                "outputSchema": tool.output_schema,
+            }
+            if isinstance(tool.annotations, dict):
+                item["annotations"] = copy.deepcopy(tool.annotations)
+            if isinstance(tool.meta, dict):
+                item["_meta"] = copy.deepcopy(tool.meta)
+            payload.append(item)
         return payload
 
     def _snake_to_camel(self, name: str) -> str:
@@ -3496,6 +3929,8 @@ class MCPPlanningBridgeServer:
             "get_agent_consumer_contract",
             "get_service_entry_profile",
             "get_web_gpt_service_entrypoint",
+            "get_commander_app_manifest",
+            "render_commander_app",
             "get_stable_promotion_readiness",
             "get_runtime_version_status",
             "get_project_identity",
@@ -3796,50 +4231,69 @@ class MCPPlanningBridgeServer:
     ) -> list[dict[str, Any]]:
         return self._actions_recommended_next_reads(tool_name, params, tool_result)
 
+    def _split_mcp_tool_result_meta(self, tool_result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if not isinstance(tool_result, dict):
+            return {"ok": False, "tool": "unknown_tool"}, None
+        meta = tool_result.get("_meta")
+        if not isinstance(meta, dict):
+            return tool_result, None
+        structured = dict(tool_result)
+        structured.pop("_meta", None)
+        return structured, copy.deepcopy(meta)
+
+    def _attach_mcp_result_meta(self, result: dict[str, Any], meta: dict[str, Any] | None) -> dict[str, Any]:
+        if isinstance(meta, dict):
+            result["_meta"] = meta
+        return result
+
     def _shape_mcp_call_result(
         self,
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        structured_tool_result, mcp_meta = self._split_mcp_tool_result_meta(tool_result)
         safe_params = params if isinstance(params, dict) else {}
-        is_error = not bool(tool_result.get("ok"))
-        tool_name = str(tool_result.get("tool") or "unknown_tool")
-        if self._json_char_count(tool_result) <= MCP_TARGET_TOOL_RESULT_CHARS:
+        is_error = not bool(structured_tool_result.get("ok"))
+        tool_name = str(structured_tool_result.get("tool") or "unknown_tool")
+        if self._json_char_count(structured_tool_result) <= MCP_TARGET_TOOL_RESULT_CHARS:
             if is_error:
-                err_msg = str(tool_result.get("message") or "unknown error")
+                err_msg = str(structured_tool_result.get("message") or "unknown error")
                 text_payload = f"{tool_name} failed: {err_msg}"
             else:
                 text_payload = f"{tool_name} completed."
-            return {
-                "content": [{"type": "text", "text": text_payload}],
-                "structuredContent": tool_result,
-                "isError": is_error,
-            }
+            return self._attach_mcp_result_meta(
+                {
+                    "content": [{"type": "text", "text": text_payload}],
+                    "structuredContent": structured_tool_result,
+                    "isError": is_error,
+                },
+                mcp_meta,
+            )
         try:
-            data = tool_result.get("data")
+            data = structured_tool_result.get("data")
             data_keys: list[str] = []
             if isinstance(data, dict):
                 data_keys = [str(k) for k in list(data.keys())[:40]]
             omitted_fields = [f"data.{k}" for k in data_keys] if data_keys else ["data"]
             manifest_sc: dict[str, Any] = {
-                "ok": bool(tool_result.get("ok")),
+                "ok": bool(structured_tool_result.get("ok")),
                 "tool": tool_name,
                 "packaged": True,
                 "package_mode": "manifest",
                 "message": "结果内容较大，已返回摘要与续读建议。",
                 "summary": {
-                    "result_char_estimate": self._json_char_count(tool_result),
+                    "result_char_estimate": self._json_char_count(structured_tool_result),
                     "target_tool_result_chars": MCP_TARGET_TOOL_RESULT_CHARS,
                     "hard_tool_result_chars": MCP_HARD_TOOL_RESULT_CHARS,
                     "data_key_count": len(data.keys()) if isinstance(data, dict) else 0,
                     "data_keys": data_keys,
-                    "original_error_code": tool_result.get("error_code"),
+                    "original_error_code": structured_tool_result.get("error_code"),
                 },
                 "omitted_fields": omitted_fields,
-                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, tool_result),
+                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, structured_tool_result),
             }
-            if not manifest_sc["ok"] and isinstance(tool_result.get("error_code"), str):
-                manifest_sc["error_code"] = tool_result.get("error_code")
+            if not manifest_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
+                manifest_sc["error_code"] = structured_tool_result.get("error_code")
             manifest_text = json.dumps(manifest_sc, ensure_ascii=False)
             packaged_result = {
                 "content": [{"type": "text", "text": manifest_text}],
@@ -3847,24 +4301,24 @@ class MCPPlanningBridgeServer:
                 "isError": is_error,
             }
             if self._json_char_count(packaged_result) <= MCP_HARD_TOOL_RESULT_CHARS:
-                return packaged_result
+                return self._attach_mcp_result_meta(packaged_result, mcp_meta)
 
             reduced_sc = {
-                "ok": bool(tool_result.get("ok")),
+                "ok": bool(structured_tool_result.get("ok")),
                 "tool": tool_name,
                 "packaged": True,
                 "package_mode": "manifest",
                 "message": "结果内容较大，已返回最小续读提示。",
                 "summary": {
-                    "result_char_estimate": self._json_char_count(tool_result),
+                    "result_char_estimate": self._json_char_count(structured_tool_result),
                     "target_tool_result_chars": MCP_TARGET_TOOL_RESULT_CHARS,
                     "hard_tool_result_chars": MCP_HARD_TOOL_RESULT_CHARS,
                 },
                 "omitted_fields": ["data"],
-                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, tool_result)[:2],
+                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, structured_tool_result)[:2],
             }
-            if not reduced_sc["ok"] and isinstance(tool_result.get("error_code"), str):
-                reduced_sc["error_code"] = tool_result.get("error_code")
+            if not reduced_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
+                reduced_sc["error_code"] = structured_tool_result.get("error_code")
             reduced_text = json.dumps(reduced_sc, ensure_ascii=False)
             reduced_result = {
                 "content": [{"type": "text", "text": reduced_text}],
@@ -3872,7 +4326,7 @@ class MCPPlanningBridgeServer:
                 "isError": is_error,
             }
             if self._json_char_count(reduced_result) <= MCP_HARD_TOOL_RESULT_CHARS:
-                return reduced_result
+                return self._attach_mcp_result_meta(reduced_result, mcp_meta)
         except Exception:
             pass
 
@@ -3897,6 +4351,39 @@ class MCPPlanningBridgeServer:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self._shape_mcp_call_result(tool_result, params)
+
+    @staticmethod
+    def _sanitized_connector_evidence_schema(description: str) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": description,
+            "properties": {
+                "status": {"type": "string"},
+                "reason_code": {"type": "string"},
+                "evidence_source": {"type": "string"},
+                "last_observed_at": {"type": "string"},
+            },
+            "additionalProperties": False,
+        }
+
+    def _commander_app_input_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "tunnel_client": self._sanitized_connector_evidence_schema(
+                    "可选。调用方提供的 sanitized tunnel-client 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
+                ),
+                "control_plane": self._sanitized_connector_evidence_schema(
+                    "可选。调用方提供的 sanitized tunnel control-plane 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
+                ),
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
 
     def _build_common_output_schema(self) -> dict[str, Any]:
         return {
@@ -4371,7 +4858,12 @@ class MCPPlanningBridgeServer:
             return relay_scope_error
         try:
             data = tool(params)
-            return {"ok": True, "tool": name, "data": data}
+            result = {"ok": True, "tool": name, "data": data}
+            if isinstance(data, dict) and isinstance(data.get("_meta"), dict):
+                clean_data = dict(data)
+                result["_meta"] = copy.deepcopy(clean_data.pop("_meta"))
+                result["data"] = clean_data
+            return result
         except MCPToolInputError as e:
             return self._tool_error(name, e.error_code, e.message, e.details)
         except PlanningBridgeError as e:
@@ -4862,6 +5354,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
+                    {"tool": "render_commander_app", "arguments": project_args()},
                     {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "analyze_project_state", "arguments": project_args()},
@@ -5037,6 +5530,16 @@ class MCPPlanningBridgeServer:
                 "project_root_override_error_code": "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED",
                 "source_only_managed_workflow_error_code": "PROJECT_MODE_UNSUPPORTED",
             },
+            "chatgpt_apps_contract": {
+                "app_name": COMMANDER_APP_TITLE,
+                "archetype": "interactive-decoupled",
+                "data_tool": "get_commander_app_manifest",
+                "render_tool": "render_commander_app",
+                "widget_resource_uri": COMMANDER_APP_WIDGET_URI,
+                "resource_methods": ["resources/list", "resources/read"],
+                "render_tool_meta": ["ui.resourceUri", "openai/outputTemplate"],
+                "widget_only_meta_is_not_part_of_structured_content": True,
+            },
             "authority_boundary": {
                 "read_only_tools_do_not_authorize_executor_dispatch": True,
                 "read_only_tools_do_not_create_review_decision": True,
@@ -5049,6 +5552,8 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_agent_consumer_contract", "why": "Load this consumer contract."},
                 {"tool": "get_service_entry_profile", "why": "Select a consumer-specific entry profile."},
                 {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
+                {"tool": "render_commander_app", "why": "Open the ChatGPT Apps Commander panel with project_name."},
+                {"tool": "get_commander_app_manifest", "why": "Read the same Commander App contract without rendering UI."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
@@ -5106,6 +5611,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_service_entry_profile",
                     "arguments": {"profile_id": "web_gpt_commander"},
                     "why": "按当前消费者角色读取最小进入路径，不把其他 agent 的路径混进来。",
+                },
+                {
+                    "step": "render_commander_app",
+                    "tool": "render_commander_app",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "打开 ChatGPT Apps Commander 面板，统一展示服务事实、connector health、profiles 和授权闸门。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -5199,13 +5710,203 @@ class MCPPlanningBridgeServer:
             "web_gpt_handoff_prompt": (
                 "Start by calling list_registered_projects, get_agent_consumer_contract, "
                 "get_service_entry_profile with profile_id=web_gpt_commander, then "
-                "get_web_gpt_service_entrypoint, get_stable_promotion_readiness, and "
+                "get_web_gpt_service_entrypoint, render_commander_app, get_stable_promotion_readiness, and "
                 "analyze_project_state with the selected project_name. "
                 "For thin governed loop work, "
                 "use run_mcp_workflow input_mode=draft, review result.generated_input_bundle, "
                 "then send result.next_request_payload directly. Treat all outputs as evidence unless Commander "
                 "explicitly authorizes a write, run, push, or stable promotion."
             ),
+            "visible_tool_names": visible_names,
+        }
+
+    def _tool_get_commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commander_app_manifest(params)
+
+    def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
+        manifest = self._commander_app_manifest(params)
+        manifest["_meta"] = {
+            "ui": {"resourceUri": COMMANDER_APP_WIDGET_URI},
+            "openai/outputTemplate": COMMANDER_APP_WIDGET_URI,
+            "commander_app": {
+                "manifest_version": COMMANDER_APP_MANIFEST_VERSION,
+                "widget_resource_uri": COMMANDER_APP_WIDGET_URI,
+                "project_name": manifest.get("project_name"),
+            },
+        }
+        return manifest
+
+    def _commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
+        control_plane = self._connector_external_evidence_param(params, "control_plane")
+        local_service = self._connector_runtime_local_service_evidence(project_root)
+        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        connector_health = get_connector_runtime_health_status(
+            runtime_status=runtime_status,
+            local_service=local_service,
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
+        )
+        connector_summary = copy.deepcopy(connector_health)
+        local_service_summary = connector_summary.get("local_service")
+        external_connector_summary = connector_summary.get("external_connector")
+        operator_closeout = connector_summary.get("operator_closeout")
+        if isinstance(local_service_summary, dict):
+            connector_summary["local_service_status"] = local_service_summary.get("status")
+        if isinstance(external_connector_summary, dict):
+            connector_summary["external_connector_status"] = external_connector_summary.get("status")
+        if isinstance(operator_closeout, dict):
+            connector_summary["operator_closeout_status"] = operator_closeout.get("status")
+
+        project_identity = self._project_identity_for_root(project_root)
+        if isinstance(project_record, dict):
+            project_identity["project"] = project_record
+        raw_project_name = params.get("project_name")
+        project_name = ""
+        if isinstance(project_record, dict) and isinstance(project_record.get("project_name"), str):
+            project_name = str(project_record.get("project_name") or "").strip()
+        if not project_name and isinstance(raw_project_name, str):
+            project_name = raw_project_name.strip()
+        if not project_name:
+            project_name = os.path.basename(project_root.rstrip(os.sep)) or self.project_hint
+
+        project_args = {"project_name": project_name}
+        profiles = self._service_entry_profiles()
+        visible_names = self._visible_tool_names()
+        app_status = str(connector_summary.get("overall_status") or "unknown")
+        runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
+        runtime_summary = {
+            "project_checkout_head": runtime_status.get("project_checkout_head"),
+            "loaded_runtime_head": runtime_status.get("loaded_runtime_head"),
+            "runtime_loaded_code_stale": runtime_status.get("runtime_loaded_code_stale"),
+            "reload_needed_for_verification": runtime_status.get("reload_needed_for_verification"),
+            "reload_awareness_reason": runtime_status.get("reload_awareness_reason"),
+            "restart_needed_state": runtime_status.get("restart_needed_state"),
+            "restart_needed_reason": runtime_status.get("restart_needed_reason"),
+            "details_tool": "get_runtime_version_status",
+            "details_arguments": project_args,
+        }
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "app_manifest_version": COMMANDER_APP_MANIFEST_VERSION,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "project_name": project_name,
+            "app": {
+                "name": COMMANDER_APP_TITLE,
+                "status_line": f"{app_status} | {runtime_label}",
+                "archetype": "interactive-decoupled",
+                "widget_resource_uri": COMMANDER_APP_WIDGET_URI,
+                "widget_mime_type": COMMANDER_APP_WIDGET_MIME_TYPE,
+                "data_tool": "get_commander_app_manifest",
+                "render_tool": "render_commander_app",
+                "resource_methods": ["resources/list", "resources/read"],
+            },
+            "service_profile": {
+                "service_name": "ColaMeta MCP",
+                "mode": "service" if self.service_mode else "project",
+                "mcp_exposure_profile": self.mcp_exposure_profile,
+                "project_name_required_for_project_tools": bool(self.service_mode),
+                "project_hint": self.project_hint,
+                "visible_tool_count": len(visible_names),
+            },
+            "project_identity": project_identity,
+            "runtime": runtime_summary,
+            "connector": connector_summary,
+            "registered_projects": self._web_gpt_registered_project_summary(),
+            "profiles": profiles,
+            "initial_reads": [
+                {"tool": "list_registered_projects", "arguments": {}},
+                {"tool": "get_agent_consumer_contract", "arguments": {}},
+                {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
+                {"tool": "render_commander_app", "arguments": project_args},
+                {"tool": "get_connector_runtime_health_status", "arguments": project_args},
+                {"tool": "analyze_project_state", "arguments": project_args},
+            ],
+            "commander_panel": {
+                "primary_sections": [
+                    "service_facts",
+                    "runtime_freshness",
+                    "connector_health",
+                    "profile_aware_entries",
+                    "preview_first_workflows",
+                    "authorization_gates",
+                ],
+                "read_actions": [
+                    {"tool": "get_commander_app_manifest", "arguments": project_args},
+                    {"tool": "get_runtime_version_status", "arguments": project_args},
+                    {"tool": "get_connector_runtime_health_status", "arguments": project_args},
+                    {"tool": "analyze_project_state", "arguments": project_args},
+                ],
+                "preview_first_actions": [
+                    {
+                        "tool": "run_mcp_workflow",
+                        "arguments": {
+                            **project_args,
+                            "workflow": "thin_governed_loop_preview",
+                            "phase": "preview",
+                            "input_mode": "draft",
+                        },
+                    },
+                    {
+                        "tool": "manage_validation_run",
+                        "arguments": {
+                            **project_args,
+                            "action": "preview",
+                            "scope": "target_files",
+                        },
+                    },
+                    {
+                        "tool": "manage_executor_workflow",
+                        "arguments": {
+                            **project_args,
+                            "action": "run_once_preview",
+                            "provider": "codex",
+                            "profile_id": "local_codex_commander",
+                        },
+                    },
+                ],
+            },
+            "preview_first_workflows": {
+                "thin_governed_loop": "draft -> inspect generated_input_bundle -> provided next_request_payload",
+                "validation": "preview -> explicit authorization -> run -> status",
+                "executor": "run_once_preview -> explicit authorization -> run_once -> status -> get_executor_run_report",
+            },
+            "authority_boundary": {
+                "read_only_tools_do_not_authorize_executor_dispatch": True,
+                "read_only_tools_do_not_create_review_decision": True,
+                "read_only_tools_do_not_emit_gate_event": True,
+                "read_only_tools_do_not_write_delivery_state": True,
+                "does_not_authorize_stable_promotion": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_or_push": True,
+                "requires_explicit_commander_authorization_for": [
+                    "executor run",
+                    "commit",
+                    "push",
+                    "stable service replacement",
+                    "ReviewDecision",
+                    "GateEvent",
+                    "Delivery accepted",
+                ],
+            },
+            "connector_recovery": {
+                "healthy_path": [
+                    "call list_registered_projects",
+                    "call render_commander_app with project_name",
+                    "provide sanitized tunnel_client/control_plane evidence when available",
+                    "if Apps connector returns token_expired, reconnect the Apps connector session",
+                ],
+                "accepted_external_evidence_fields": ["status", "reason_code", "evidence_source", "last_observed_at"],
+                "forbidden_evidence": ["token", "cookie", "credential", "raw_log", "provider_raw_response", "browser_login_state"],
+            },
+            "docs_alignment": {
+                "tools": "one-job read tools plus a render tool",
+                "ui": "MCP Apps bridge iframe resource",
+                "resource_uri": COMMANDER_APP_WIDGET_URI,
+            },
             "visible_tool_names": visible_names,
         }
 
