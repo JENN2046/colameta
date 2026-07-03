@@ -524,6 +524,69 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "must-not-return" not in serialized
         assert "raw_token" not in serialized
 
+    def test_apps_connector_smoke_packet_is_read_only_and_surfaces_stable_drift(self) -> None:
+        project = self.make_git_checkout(head=HEAD_A, managed=True)
+        stable = self.make_git_checkout(head="b" * 40, branch="stable")
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        runtime_status = {
+            "project_checkout_head": HEAD_A,
+            "loaded_runtime_head": HEAD_A,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "project_checkout_matches_loaded_runtime",
+        }
+        local_service = {
+            "state": "running",
+            "health_source": "process_table",
+            "pid": 12345,
+            "enable_web": True,
+            "web_state": "healthy",
+            "enable_mcp": True,
+            "mcp_state": "healthy",
+            "project_root": str(project),
+        }
+
+        with (
+            patch("runner.mcp_server.DEFAULT_STABLE_RUNTIME_DIR", str(stable)),
+            patch("runner.mcp_server.get_runtime_version_status", return_value=runtime_status),
+            patch.object(server, "_connector_runtime_local_service_evidence", return_value=local_service),
+        ):
+            result = server.call_tool_for_agent(
+                "get_apps_connector_smoke_packet",
+                {
+                    "project_name": "demo-project",
+                    "tunnel_client": {
+                        "status": "healthy",
+                        "reason_code": "TUNNEL_CLIENT_HEALTHZ_READY",
+                        "evidence_source": "sanitized_test",
+                        "last_observed_at": "2026-07-03T00:00:00Z",
+                    },
+                    "control_plane": {
+                        "status": "healthy",
+                        "reason_code": "TUNNEL_CONTROL_PLANE_READYZ_READY",
+                        "evidence_source": "sanitized_test",
+                        "last_observed_at": "2026-07-03T00:00:00Z",
+                    },
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_apps_connector_smoke_packet"
+        data = result["data"]
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["apps_connector_closeout"]["status"] == "ready"
+        assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
+        assert data["connector_runtime_health"]["overall_status"] == "healthy"
+        assert data["stable_replacement_hint"]["status"] == "stable_replacement_available"
+        assert data["stable_replacement_hint"]["candidate_head"] == HEAD_A
+        assert data["stable_replacement_hint"]["stable_runtime_head"] == "b" * 40
+        assert data["stable_replacement_hint"]["exact_authorization_required"] is True
+        assert HEAD_A in data["stable_replacement_hint"]["exact_authorization_phrase"]
+        assert data["authority_boundary"]["does_not_authorize_stable_replacement"] is True
+
     def test_web_gpt_service_entrypoint_is_read_only_and_guides_project_routing(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
@@ -536,12 +599,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_web_gpt_service_entrypoint" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
         assert "render_commander_app" in tool_defs
+        assert "get_apps_connector_smoke_packet" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert commander_schema["properties"]["control_plane"]["additionalProperties"] is False
         assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
         assert tool_defs["render_commander_app"].title == "Render Commander App"
+        assert tool_defs["get_apps_connector_smoke_packet"].title == "Get Apps Connector Smoke Packet"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
         assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
         assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
@@ -556,6 +621,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
+        assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
         assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
@@ -563,6 +629,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
         widget_html = server._commander_widget_html()
@@ -570,6 +637,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Next Step" in widget_html
         assert "Primary blocker" in widget_html
         assert "Safe next action" in widget_html
+        assert "get_apps_connector_smoke_packet" in widget_html
 
         result = server.call_tool_for_agent("get_web_gpt_service_entrypoint", {})
 
@@ -598,8 +666,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
         assert data["entry_sequence"][3]["tool"] == "render_commander_app"
         assert data["entry_sequence"][4]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][5]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][6]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][5]["tool"] == "get_apps_connector_smoke_packet"
+        assert data["entry_sequence"][6]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][7]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"

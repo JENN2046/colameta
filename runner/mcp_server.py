@@ -46,8 +46,9 @@ from runner.runtime_observability import (
     build_service_readiness_summary,
     get_connector_runtime_health_status,
     get_runtime_version_status,
+    git_checkout_metadata,
 )
-from runner.stable_promotion_readiness import get_stable_promotion_readiness
+from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
@@ -89,6 +90,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_web_gpt_service_entrypoint",
     "get_commander_app_manifest",
     "render_commander_app",
+    "get_apps_connector_smoke_packet",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -163,6 +165,7 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
+    "get_apps_connector_smoke_packet",
     "get_stable_promotion_readiness",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
@@ -304,6 +307,7 @@ class MCPPlanningBridgeServer:
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
+            "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
@@ -469,6 +473,23 @@ class MCPPlanningBridgeServer:
                     "openai/outputTemplate": COMMANDER_APP_WIDGET_URI,
                     "openai/toolInvocation/invoking": "Opening ColaMeta Commander",
                     "openai/toolInvocation/invoked": "ColaMeta Commander ready",
+                },
+            ),
+            MCPToolDef(
+                name="get_apps_connector_smoke_packet",
+                title="Get Apps Connector Smoke Packet",
+                description=(
+                    f"[{self.project_hint}] ChatGPT Apps connector 只读 smoke packet。"
+                    "返回 list_registered_projects 检查、connector closeout 调用、token_expired 处理边界和稳定替换 drift 提示。"
+                    "只接受 sanitized tunnel/control-plane evidence；不读取 token、cookie、browser login state、配置或 raw logs。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
                 },
             ),
             MCPToolDef(
@@ -3692,6 +3713,7 @@ class MCPPlanningBridgeServer:
       <h2>Reads</h2>
       <div class="actions">
         <button data-tool="get_commander_app_manifest">Manifest</button>
+        <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
         <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
         <button class="secondary" data-tool="get_connector_runtime_health_status">Connector</button>
         <button class="secondary" data-tool="analyze_project_state">State</button>
@@ -5462,6 +5484,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
                     {"tool": "render_commander_app", "arguments": project_args()},
                     {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
+                    {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                 ],
@@ -5664,6 +5687,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
                 {"tool": "render_commander_app", "why": "Open the ChatGPT Apps Commander panel with project_name."},
                 {"tool": "get_commander_app_manifest", "why": "Read the same Commander App contract without rendering UI."},
+                {"tool": "get_apps_connector_smoke_packet", "why": "Run the Apps connector project-list and connector-closeout smoke checklist."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
@@ -5734,6 +5758,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stable_promotion_readiness",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "确认当前服务是否只是 dev 试用、可进入稳定晋升审查，还是仍有本地阻断。",
+                },
+                {
+                    "step": "inspect_apps_connector_smoke",
+                    "tool": "get_apps_connector_smoke_packet",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "确认 Apps connector 可达、项目列表命中、connector closeout 调用形状和 token_expired 处理边界。",
                 },
                 {
                     "step": "inspect_connector_runtime_health",
@@ -5857,6 +5887,59 @@ class MCPPlanningBridgeServer:
         }
         return manifest
 
+    def _tool_get_apps_connector_smoke_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
+        control_plane = self._connector_external_evidence_param(params, "control_plane")
+        local_service = self._connector_runtime_local_service_evidence(project_root)
+        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        connector_health = get_connector_runtime_health_status(
+            runtime_status=runtime_status,
+            local_service=local_service,
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
+        )
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        apps_connector_closeout = build_apps_connector_closeout_packet(
+            project_name=project_name,
+            connector_health=connector_health,
+        )
+        return {
+            "ok": True,
+            "source": "apps_connector_smoke_packet",
+            "scope": "mcp:read",
+            "read_only": True,
+            "side_effects": False,
+            "project_name": project_name,
+            "apps_connector_closeout": apps_connector_closeout,
+            "connector_runtime_health": connector_health,
+            "runtime": {
+                "project_checkout_head": runtime_status.get("project_checkout_head"),
+                "loaded_runtime_head": runtime_status.get("loaded_runtime_head"),
+                "runtime_loaded_code_stale": runtime_status.get("runtime_loaded_code_stale"),
+                "reload_needed_for_verification": runtime_status.get("reload_needed_for_verification"),
+                "reload_awareness_reason": runtime_status.get("reload_awareness_reason"),
+            },
+            "stable_replacement_hint": self._stable_replacement_hint(project_root, runtime_status),
+            "operator_sequence": [
+                apps_connector_closeout["project_list_check"],
+                apps_connector_closeout["connector_closeout_check"],
+            ],
+            "token_expired_recovery": apps_connector_closeout["token_expired_recovery"],
+            "authority_boundary": {
+                "read_only": True,
+                "does_not_read_tokens_or_cookies": True,
+                "does_not_read_browser_login_state": True,
+                "does_not_read_tunnel_client_config": True,
+                "does_not_read_raw_logs": True,
+                "does_not_restart_tunnel_client": True,
+                "does_not_modify_proxy_or_auth_config": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_or_push": True,
+                "does_not_authorize_stable_replacement": True,
+            },
+        }
+
     def _commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
@@ -5883,14 +5966,7 @@ class MCPPlanningBridgeServer:
         project_identity = self._project_identity_for_root(project_root)
         if isinstance(project_record, dict):
             project_identity["project"] = project_record
-        raw_project_name = params.get("project_name")
-        project_name = ""
-        if isinstance(project_record, dict) and isinstance(project_record.get("project_name"), str):
-            project_name = str(project_record.get("project_name") or "").strip()
-        if not project_name and isinstance(raw_project_name, str):
-            project_name = raw_project_name.strip()
-        if not project_name:
-            project_name = os.path.basename(project_root.rstrip(os.sep)) or self.project_hint
+        project_name = self._project_name_for_context(project_root, project_record, params)
 
         project_args = {"project_name": project_name}
         profiles = self._service_entry_profiles()
@@ -5955,6 +6031,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_agent_consumer_contract", "arguments": {}},
                 {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
                 {"tool": "render_commander_app", "arguments": project_args},
+                {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
             ],
@@ -5971,6 +6048,7 @@ class MCPPlanningBridgeServer:
                 ],
                 "read_actions": [
                     {"tool": "get_commander_app_manifest", "arguments": project_args},
+                    {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                     apps_connector_closeout["connector_closeout_check"],
@@ -6074,6 +6152,55 @@ class MCPPlanningBridgeServer:
             }
             summary.append(item)
         return summary[:20]
+
+    def _project_name_for_context(
+        self,
+        project_root: str,
+        project_record: dict[str, Any] | None,
+        params: dict[str, Any],
+    ) -> str:
+        if isinstance(project_record, dict) and isinstance(project_record.get("project_name"), str):
+            project_name = str(project_record.get("project_name") or "").strip()
+            if project_name:
+                return project_name
+        raw_project_name = params.get("project_name")
+        if isinstance(raw_project_name, str) and raw_project_name.strip():
+            return raw_project_name.strip()
+        return os.path.basename(project_root.rstrip(os.sep)) or self.project_hint
+
+    def _stable_replacement_hint(self, project_root: str, runtime_status: dict[str, Any]) -> dict[str, Any]:
+        candidate_head = runtime_status.get("project_checkout_head")
+        stable_metadata = git_checkout_metadata(DEFAULT_STABLE_RUNTIME_DIR)
+        stable_head = stable_metadata.get("head")
+        if isinstance(candidate_head, str) and candidate_head.strip() and isinstance(stable_head, str) and stable_head.strip():
+            replacement_available = candidate_head != stable_head
+            status = "stable_replacement_available" if replacement_available else "stable_aligned"
+        else:
+            replacement_available = False
+            status = "stable_replacement_unknown"
+        return {
+            "ok": True,
+            "read_only": True,
+            "side_effects": False,
+            "status": status,
+            "replacement_available": replacement_available,
+            "project_root": project_root,
+            "candidate_head": candidate_head,
+            "stable_runtime_dir": DEFAULT_STABLE_RUNTIME_DIR,
+            "stable_runtime_head": stable_head,
+            "exact_authorization_required": bool(replacement_available),
+            "exact_authorization_phrase": (
+                f"授权替换稳定服务到 {candidate_head}"
+                if replacement_available and isinstance(candidate_head, str) and candidate_head.strip()
+                else None
+            ),
+            "safety_boundary": {
+                "does_not_authorize_stable_replacement": True,
+                "does_not_restart_service": True,
+                "does_not_checkout_or_install": True,
+                "does_not_push": True,
+            },
+        }
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)

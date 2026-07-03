@@ -84,6 +84,7 @@ get_agent_consumer_contract
 get_service_entry_profile
 get_web_gpt_service_entrypoint
 get_runtime_version_status
+get_apps_connector_smoke_packet
 get_connector_runtime_health_status
 ```
 
@@ -103,6 +104,9 @@ packages the read-only smoke sequence: `list_registered_projects`, then
 `get_connector_runtime_health_status` with sanitized tunnel evidence. A
 `token_expired` response is an Apps session reconnect task, not evidence that
 the local Web/MCP service is broken.
+If the server exposes `get_apps_connector_smoke_packet`, use it for the same
+handoff in one read-only call. It also returns stable replacement drift as a
+hint, not as replacement authorization.
 
 ## 4. Minimal New-Project Smoke
 
@@ -112,6 +116,7 @@ After onboarding, the minimum smoke checklist is:
 project appears in list_registered_projects
 selected profile is readable
 get_runtime_version_status returns read_only=true
+get_apps_connector_smoke_packet returns read_only=true
 get_connector_runtime_health_status returns read_only=true
 service_readiness_summary/readiness returns ready, needs_attention, or blocked
 analyze_project_state returns project mode and recommended next step
@@ -292,7 +297,8 @@ Do read-only calibration first:
 2. get_agent_consumer_contract
 3. get_service_entry_profile
 4. get_runtime_version_status(project_name="<project_name>")
-5. get_connector_runtime_health_status(project_name="<project_name>")
+5. get_apps_connector_smoke_packet(project_name="<project_name>")
+6. get_connector_runtime_health_status(project_name="<project_name>")
 
 Do not run executors, write Delivery accepted, create ReviewDecision, emit
 GateEvent, replace stable service, or mutate provider/proxy/tunnel/auth config

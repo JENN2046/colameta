@@ -25,7 +25,8 @@
 3. get_service_entry_profile(profile_id="web_gpt_commander")
 4. get_web_gpt_service_entrypoint
 5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_connector_runtime_health_status(project_name="colameta-self-dev")
+6. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+7. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 如果要开一轮受控优化：
@@ -103,6 +104,13 @@ Apps connector reachable -> project list includes project_name -> connector clos
 以及 sanitized tunnel evidence 模板。如果 Apps connector 返回 `HTTP 401 token_expired`，
 这是 Apps session reconnect 问题，不是本地 ColaMeta 服务故障；不要读取 token、cookie、
 browser login state、tunnel-client config、raw logs 或 provider response。
+
+如果需要一次性给 ChatGPT Apps 做 smoke 交接，调用
+`get_apps_connector_smoke_packet(project_name=...)`。它会返回
+`apps_connector_closeout`、安全 operator sequence、token_expired 恢复指引、
+connector runtime health，以及 stable replacement drift hint。stable hint 可以提示
+“可替换”，但实际替换仍然必须有 Jenn 的精确授权：
+`授权替换稳定服务到 <exact_commit_sha>`。
 
 先分清这两个版本状态：
 
@@ -563,6 +571,8 @@ Web Commander 和 `get_commander_app_manifest` 也会暴露 `apps_connector_clos
 当下一位操作者是 ChatGPT Apps 时，用它先调 `list_registered_projects`，再用
 sanitized tunnel evidence 调 `get_connector_runtime_health_status`。如果返回
 `token_expired`，按 Apps session 重新连接处理，不要误判成本地 ColaMeta 服务故障。
+如果当前服务有 `get_apps_connector_smoke_packet(project_name=...)`，优先用它把同一
+交接打成一次只读调用，并同时读取 stable replacement drift hint。
 
 禁止把 raw token、cookie、credential、provider response、tunnel-client config、proxy config 或 logs 放进 evidence。
 

@@ -32,7 +32,8 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 3. get_service_entry_profile(profile_id="web_gpt_commander")
 4. get_web_gpt_service_entrypoint
 5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_connector_runtime_health_status(project_name="colameta-self-dev")
+6. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+7. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 If you want to start a controlled optimization round:
@@ -122,6 +123,13 @@ It includes the exact `list_registered_projects` and
 template. If the Apps connector returns `HTTP 401 token_expired`, reconnect the
 Apps connector session. Do not read tokens, cookies, browser login state,
 tunnel-client config, raw logs, or provider responses.
+
+For a one-call ChatGPT Apps smoke handoff, call
+`get_apps_connector_smoke_packet(project_name=...)`. It returns
+`apps_connector_closeout`, the safe operator sequence, token-expired recovery
+guidance, connector runtime health, and a stable replacement drift hint. The
+stable hint may say that replacement is available, but it still requires Jenn's
+exact `授权替换稳定服务到 <exact_commit_sha>` authorization.
 
 Keep these three versions separate:
 
@@ -580,6 +588,8 @@ Web Commander and `get_commander_app_manifest` also expose
 call `list_registered_projects`, then call `get_connector_runtime_health_status`
 with sanitized tunnel evidence, and treat `token_expired` as an Apps session
 reconnect task rather than a local ColaMeta service failure.
+When available, `get_apps_connector_smoke_packet(project_name=...)` packages the
+same handoff into one read-only call and adds a stable replacement drift hint.
 
 Never put these into evidence:
 
