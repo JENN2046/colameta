@@ -442,7 +442,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
         assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
+        assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
         assert tool_defs["render_commander_app"].annotations["readOnlyHint"] is True
+        assert tool_defs["render_commander_app"].annotations["idempotentHint"] is True
         connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
         assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert connector_schema["properties"]["control_plane"]["additionalProperties"] is False

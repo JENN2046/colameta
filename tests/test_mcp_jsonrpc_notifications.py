@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 
 from runner.mcp_server import (
+    COMMANDER_APP_SERVER_INSTRUCTIONS,
     COMMANDER_APP_WIDGET_MIME_TYPE,
     COMMANDER_APP_WIDGET_URI,
     MCPPlanningBridgeServer,
@@ -35,6 +36,9 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
         )
 
         capabilities = response["result"]["capabilities"]
+        self.assertEqual(response["result"]["instructions"], COMMANDER_APP_SERVER_INSTRUCTIONS)
+        self.assertIn("render_commander_app", response["result"]["instructions"])
+        self.assertIn("stable service replacement", response["result"]["instructions"])
         self.assertFalse(capabilities["tools"]["listChanged"])
         self.assertFalse(capabilities["resources"]["subscribe"])
         self.assertFalse(capabilities["resources"]["listChanged"])
@@ -76,6 +80,7 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
 
         self.assertEqual(render_tool["title"], "Render Commander App")
         self.assertTrue(render_tool["annotations"]["readOnlyHint"])
+        self.assertTrue(render_tool["annotations"]["idempotentHint"])
         self.assertEqual(render_tool["_meta"]["ui"]["resourceUri"], COMMANDER_APP_WIDGET_URI)
         self.assertEqual(render_tool["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertEqual(render_tool["_meta"]["openai/outputTemplate"], COMMANDER_APP_WIDGET_URI)
