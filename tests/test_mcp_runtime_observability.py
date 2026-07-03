@@ -525,6 +525,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
+        widget_html = server._commander_widget_html()
+        assert "Readiness" in widget_html
+        assert "Next Step" in widget_html
+        assert "Primary blocker" in widget_html
+        assert "Safe next action" in widget_html
 
         result = server.call_tool_for_agent("get_web_gpt_service_entrypoint", {})
 
@@ -606,6 +611,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
         assert data["readiness"]["read_only"] is True
         assert data["readiness"]["components"]["operator_closeout"]["status"]
+        assert data["readiness"]["safe_next_actions"][0]["authority"] in {"read_only", "preview_or_task_packet_only"}
         assert "service_readiness" in data["commander_panel"]["primary_sections"]
         assert data["authority_boundary"]["does_not_authorize_executor_run"] is True
         assert "Delivery accepted" in data["authority_boundary"]["requires_explicit_commander_authorization_for"]

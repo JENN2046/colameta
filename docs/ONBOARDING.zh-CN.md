@@ -74,6 +74,7 @@ get_connector_runtime_health_status
 `/api/v2/status` 的 `service_readiness_summary`。它会把 runtime、本地服务和 connector
 closeout 收敛成 `ready`、`needs_attention` 或 `blocked`；这是 read-only 状态解释，不授权
 executor run、commit、push、stable replacement、ReviewDecision 或 GateEvent。
+ChatGPT Apps 面板会把同一信息显示在 `Readiness` 和 `Next Step` 区块。
 
 ## 4. 新项目最小 smoke
 

@@ -96,6 +96,8 @@ For the one-line service decision, read `readiness` from
 into `ready`, `needs_attention`, or `blocked`; it is read-only and does not
 authorize executor runs, commits, pushes, stable replacement, ReviewDecision, or
 GateEvent.
+The ChatGPT Apps panel renders the same signal in the `Readiness` and
+`Next Step` sections.
 
 ## 4. Minimal New-Project Smoke
 

@@ -66,6 +66,11 @@
 
 网页端 GPT 应选择 `service_entry_profiles` 里的 `web_gpt_commander` 画像。这个画像的意思是：网页 GPT 可以负责读服务入口、整理 payload、向 Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。
 
+如果使用 `render_commander_app` 打开 ChatGPT Apps 面板，先看顶部的 `Readiness` 和
+`Next Step`。`Readiness` 只会是 `ready`、`needs_attention` 或 `blocked`；`Next Step` 展示
+primary blocker 和第一条 safe next action。它们都是 read-only 状态解释，不授权 executor run、
+commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。
+
 示例：
 
 ```json

@@ -718,6 +718,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert service["authority_boundary"]["does_not_authorize_executor_run"] is True
         assert service["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
         assert service["readiness"]["read_only"] is True
+        assert service["readiness"]["safe_next_actions"]
+        assert "executor_run" in service["readiness"]["not_authorized_actions"]
         assert payload["service_readiness_summary"]["status"] == service["readiness"]["status"]
         assert payload["service_readiness_summary"]["side_effects"] is False
         assert service["connector"]["local_service_status"] == "healthy"

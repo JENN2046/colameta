@@ -3510,7 +3510,7 @@ class MCPPlanningBridgeServer:
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 8px;
     }
     .tile {
@@ -3544,6 +3544,29 @@ class MCPPlanningBridgeServer:
       line-height: 1.2;
       font-weight: 700;
       color: #333a40;
+    }
+    .readiness {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+    }
+    .note {
+      min-height: 56px;
+      padding: 10px;
+      border: 1px solid #d8e0e6;
+      border-radius: 8px;
+      background: #ffffff;
+      font-size: 12px;
+      line-height: 1.35;
+      color: #334047;
+      overflow-wrap: anywhere;
+    }
+    .note strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 12px;
+      line-height: 1.25;
+      color: #243036;
     }
     .profiles {
       display: grid;
@@ -3623,6 +3646,7 @@ class MCPPlanningBridgeServer:
     @media (max-width: 760px) {
       .top { grid-template-columns: minmax(0, 1fr); }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .readiness { grid-template-columns: minmax(0, 1fr); }
       .profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .boundary { grid-template-columns: minmax(0, 1fr); }
     }
@@ -3638,10 +3662,18 @@ class MCPPlanningBridgeServer:
       <div class="badge" id="mode">read-only</div>
     </header>
     <section class="grid" aria-label="status">
+      <div class="tile"><div class="label">Readiness</div><div class="value" id="readiness">-</div></div>
       <div class="tile"><div class="label">Project</div><div class="value" id="project">-</div></div>
       <div class="tile"><div class="label">Runtime</div><div class="value" id="runtime">-</div></div>
       <div class="tile"><div class="label">Local</div><div class="value" id="local">-</div></div>
       <div class="tile"><div class="label">External</div><div class="value" id="external">-</div></div>
+    </section>
+    <section class="section">
+      <h2>Next Step</h2>
+      <div class="readiness">
+        <div class="note"><strong>Primary blocker</strong><span id="primary-blocker">-</span></div>
+        <div class="note"><strong>Safe next action</strong><span id="safe-next-action">-</span></div>
+      </div>
     </section>
     <section class="section">
       <h2>Profiles</h2>
@@ -3683,6 +3715,17 @@ class MCPPlanningBridgeServer:
         }
         return cur === undefined || cur === null || cur === "" ? "-" : String(cur);
       }
+      function firstSafeAction(readiness) {
+        var actions = readiness && Array.isArray(readiness.safe_next_actions) ? readiness.safe_next_actions : [];
+        if (!actions.length) return "-";
+        var first = actions[0] || {};
+        return [first.label, first.tool, first.authority].filter(Boolean).join(" | ");
+      }
+      function blockerText(readiness) {
+        var blocker = readiness && readiness.primary_blocker;
+        if (!blocker || typeof blocker !== "object") return "none";
+        return [blocker.component, blocker.reason_code, blocker.safe_evidence_needed].filter(Boolean).join(" | ");
+      }
       function profileCard(profile) {
         var node = document.createElement("div");
         node.className = "profile";
@@ -3705,7 +3748,11 @@ class MCPPlanningBridgeServer:
         if (data.app_manifest_version) manifest = data;
         var current = manifest || data;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
+        var readiness = current.readiness || current.service_readiness_summary || {};
         text("subtitle", statusValue(current, ["app", "status_line"]) || "Service facts and authorization gates");
+        text("readiness", statusValue(readiness, ["status"]));
+        text("primary-blocker", blockerText(readiness));
+        text("safe-next-action", firstSafeAction(readiness));
         text("project", projectName);
         text("runtime", statusValue(current, ["runtime", "reload_needed_for_verification"]) === "false" ? "current" : statusValue(current, ["runtime", "reload_awareness_reason"]));
         text("local", statusValue(current, ["connector", "local_service_status"]));
