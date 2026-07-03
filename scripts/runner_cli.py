@@ -295,7 +295,7 @@ def _probe_service_health(metadata: dict[str, object]) -> tuple[str | None, str 
     return web_state, mcp_state
 
 
-def _print_connector_runtime_health_summary(
+def _connector_runtime_health_packet(
     *,
     project_path: str,
     metadata: dict[str, object] | None,
@@ -304,7 +304,7 @@ def _print_connector_runtime_health_summary(
     mcp_state: str | None,
     tunnel_client: dict[str, object] | None = None,
     control_plane: dict[str, object] | None = None,
-) -> None:
+) -> dict[str, object]:
     local_service: dict[str, object] | None
     if isinstance(metadata, dict):
         local_service = {
@@ -331,12 +331,47 @@ def _print_connector_runtime_health_summary(
             "health_source": "metadata_absent",
             "project_root": _resolve_path(project_path),
         }
+    runtime_status = get_runtime_version_status(project_path)
     health = get_connector_runtime_health_status(
-        runtime_status=get_runtime_version_status(project_path),
+        runtime_status=runtime_status,
         local_service=local_service,
         tunnel_client=tunnel_client,
         control_plane=control_plane,
     )
+    project_name = _registered_project_name_for_path(project_path)
+    apps_closeout = build_apps_connector_closeout_packet(
+        project_name=project_name,
+        connector_health=health,
+    )
+    return {
+        "runtime_status": runtime_status,
+        "connector_runtime_health": health,
+        "apps_connector_closeout": apps_closeout,
+    }
+
+
+def _print_connector_runtime_health_summary(
+    *,
+    project_path: str,
+    metadata: dict[str, object] | None,
+    state: str,
+    web_state: str | None,
+    mcp_state: str | None,
+    tunnel_client: dict[str, object] | None = None,
+    control_plane: dict[str, object] | None = None,
+) -> None:
+    packet = _connector_runtime_health_packet(
+        project_path=project_path,
+        metadata=metadata,
+        state=state,
+        web_state=web_state,
+        mcp_state=mcp_state,
+        tunnel_client=tunnel_client,
+        control_plane=control_plane,
+    )
+    health = packet["connector_runtime_health"]
+    if not isinstance(health, dict):
+        health = {}
     local = health["local_service"]
     external = health["external_connector"]
     closeout = health["operator_closeout"]
@@ -352,11 +387,9 @@ def _print_connector_runtime_health_summary(
         f"{evidence}",
         file=sys.stderr,
     )
-    project_name = _registered_project_name_for_path(project_path)
-    apps_closeout = build_apps_connector_closeout_packet(
-        project_name=project_name,
-        connector_health=health,
-    )
+    apps_closeout = packet["apps_connector_closeout"]
+    if not isinstance(apps_closeout, dict):
+        apps_closeout = {}
     closeout_check = apps_closeout.get("connector_closeout_check")
     if not isinstance(closeout_check, dict):
         closeout_check = {}
@@ -402,6 +435,122 @@ def _registered_project_name_for_path(project_path: str) -> str:
             except Exception:
                 continue
     return os.path.basename(resolved.rstrip(os.sep)) or "colameta-project"
+
+
+def _service_status_payload(
+    *,
+    project_path: str,
+    metadata: dict[str, object] | None,
+    state: str,
+    web_state: str | None,
+    mcp_state: str | None,
+    log_path: str | None,
+    tunnel_client: dict[str, object] | None = None,
+    control_plane: dict[str, object] | None = None,
+) -> dict[str, object]:
+    packet = _connector_runtime_health_packet(
+        project_path=project_path,
+        metadata=metadata,
+        state=state,
+        web_state=web_state,
+        mcp_state=mcp_state,
+        tunnel_client=tunnel_client,
+        control_plane=control_plane,
+    )
+    service = {
+        "state": state,
+        "pid": int(metadata.get("pid", 0) or 0) if isinstance(metadata, dict) and metadata.get("pid") else None,
+        "project_root": (
+            str(metadata.get("project_root"))
+            if isinstance(metadata, dict) and isinstance(metadata.get("project_root"), str)
+            else _resolve_path(project_path)
+        ),
+        "web": {
+            "url": str(metadata.get("web_url") or "") if isinstance(metadata, dict) else None,
+            "state": web_state,
+        },
+        "mcp": {
+            "url": str(metadata.get("mcp_url") or "") if isinstance(metadata, dict) else None,
+            "state": mcp_state,
+        },
+        "log_path": log_path,
+    }
+    return {
+        "ok": state == "running",
+        "read_only": True,
+        "side_effects": False,
+        "project_path": _resolve_path(project_path),
+        "project_name": _registered_project_name_for_path(project_path),
+        "service": service,
+        "runtime_status": packet["runtime_status"],
+        "connector_runtime_health": packet["connector_runtime_health"],
+        "apps_connector_closeout": packet["apps_connector_closeout"],
+        "tunnel_evidence": {
+            "provided": bool(tunnel_client or control_plane),
+            "source": "tunnel_admin_probe" if tunnel_client or control_plane else None,
+            "tunnel_client": tunnel_client,
+            "control_plane": control_plane,
+        },
+        "authority_boundary": {
+            "status_is_read_only": True,
+            "does_not_read_tokens_or_cookies": True,
+            "does_not_read_tunnel_client_config": True,
+            "does_not_read_raw_logs": True,
+            "does_not_modify_service_state": True,
+            "does_not_authorize_executor_run": True,
+            "does_not_authorize_commit_push_or_stable_replacement": True,
+        },
+    }
+
+
+def _emit_service_status(
+    *,
+    project_path: str,
+    metadata: dict[str, object] | None,
+    state: str,
+    web_state: str | None,
+    mcp_state: str | None,
+    log_path: str | None,
+    tunnel_client: dict[str, object] | None = None,
+    control_plane: dict[str, object] | None = None,
+    json_output: bool = False,
+) -> None:
+    if json_output:
+        print(
+            json_dumps(
+                _service_status_payload(
+                    project_path=project_path,
+                    metadata=metadata,
+                    state=state,
+                    web_state=web_state,
+                    mcp_state=mcp_state,
+                    log_path=log_path,
+                    tunnel_client=tunnel_client,
+                    control_plane=control_plane,
+                )
+            )
+        )
+        return
+    cli_output.print_service_status_summary(
+        project_path=project_path,
+        pid=int(metadata.get("pid", 0) or 0) if isinstance(metadata, dict) and metadata.get("pid") else None,
+        state=state,
+        web_url=str(metadata.get("web_url") or "") or None if isinstance(metadata, dict) else None,
+        web_state=web_state,
+        mcp_url=str(metadata.get("mcp_url") or "") or None if isinstance(metadata, dict) else None,
+        mcp_state=mcp_state,
+        log_path=log_path,
+        stderr=sys.stderr,
+    )
+    _print_connector_runtime_health_summary(
+        project_path=project_path,
+        metadata=metadata,
+        state=state,
+        web_state=web_state,
+        mcp_state=mcp_state,
+        tunnel_client=tunnel_client,
+        control_plane=control_plane,
+    )
 
 
 def _option_value(tokens: list[str], flag: str, default: str) -> str:
@@ -1426,19 +1575,22 @@ def _run_service_logs(args: list[str]) -> int:
     return 0
 
 
-def _parse_service_status_options(args: list[str]) -> tuple[str, dict[str, object] | None] | None:
+def _parse_service_status_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
     project_path: str | None = None
     tunnel_admin_host = "127.0.0.1"
     tunnel_admin_port: int | None = None
     tunnel_pid: int | None = None
     with_tunnel_evidence = False
     explicit_tunnel_host = False
+    json_output = False
 
     idx = 1
     while idx < len(args):
         token = args[idx]
         if token == "--with-tunnel-evidence":
             with_tunnel_evidence = True
+        elif token == "--json":
+            json_output = True
         elif token == "--tunnel-admin-host":
             if idx + 1 >= len(args):
                 print("status 参数错误：--tunnel-admin-host 缺少值。", file=sys.stderr)
@@ -1485,7 +1637,7 @@ def _parse_service_status_options(args: list[str]) -> tuple[str, dict[str, objec
 
     include_tunnel = with_tunnel_evidence or tunnel_admin_port is not None or tunnel_pid is not None or explicit_tunnel_host
     if not include_tunnel:
-        return project_path or _default_service_project_root(), None
+        return project_path or _default_service_project_root(), {"json_output": json_output, "tunnel": None}
     if tunnel_admin_port is None or tunnel_pid is None:
         print(
             "status 参数错误：tunnel evidence 需要同时提供 --tunnel-admin-port 和 --tunnel-pid。",
@@ -1499,9 +1651,12 @@ def _parse_service_status_options(args: list[str]) -> tuple[str, dict[str, objec
         )
         return None
     return project_path or _default_service_project_root(), {
-        "host": tunnel_admin_host,
-        "port": tunnel_admin_port,
-        "pid": tunnel_pid,
+        "json_output": json_output,
+        "tunnel": {
+            "host": tunnel_admin_host,
+            "port": tunnel_admin_port,
+            "pid": tunnel_pid,
+        },
     }
 
 
@@ -1600,53 +1755,37 @@ def _run_service_status(args: list[str]) -> int:
     parsed = _parse_service_status_options(args)
     if parsed is None:
         return 1
-    project_path, tunnel_options = parsed
+    project_path, status_options = parsed
+    tunnel_options = status_options.get("tunnel")
+    json_output = bool(status_options.get("json_output"))
     tunnel_client, control_plane = _collect_status_tunnel_evidence(tunnel_options)
     metadata = _read_service_metadata(project_path)
     if metadata is None:
         discovered = _discover_running_service_metadata(project_path)
         if discovered is not None:
             web_state, mcp_state = _probe_service_health(discovered)
-            cli_output.print_service_status_summary(
-                project_path=project_path,
-                pid=int(discovered.get("pid", 0) or 0),
-                state="running",
-                web_url=str(discovered.get("web_url") or "") or None,
-                web_state=web_state,
-                mcp_url=str(discovered.get("mcp_url") or "") or None,
-                mcp_state=mcp_state,
-                log_path=None,
-                stderr=sys.stderr,
-            )
-            _print_connector_runtime_health_summary(
+            _emit_service_status(
                 project_path=project_path,
                 metadata=discovered,
                 state="running",
                 web_state=web_state,
                 mcp_state=mcp_state,
+                log_path=None,
                 tunnel_client=tunnel_client,
                 control_plane=control_plane,
+                json_output=json_output,
             )
             return 0
-        cli_output.print_service_status_summary(
-            project_path=project_path,
-            pid=None,
-            state="stopped",
-            web_url=None,
-            web_state=None,
-            mcp_url=None,
-            mcp_state=None,
-            log_path=_service_paths(project_path)["log"] if os.path.isfile(_service_paths(project_path)["log"]) else None,
-            stderr=sys.stderr,
-        )
-        _print_connector_runtime_health_summary(
+        _emit_service_status(
             project_path=project_path,
             metadata=None,
             state="stopped",
             web_state=None,
             mcp_state=None,
+            log_path=_service_paths(project_path)["log"] if os.path.isfile(_service_paths(project_path)["log"]) else None,
             tunnel_client=tunnel_client,
             control_plane=control_plane,
+            json_output=json_output,
         )
         return 1
     pid = int(metadata.get("pid", 0) or 0)
@@ -1655,69 +1794,42 @@ def _run_service_status(args: list[str]) -> int:
         discovered = _discover_running_service_metadata(project_path)
         if discovered is not None:
             web_state, mcp_state = _probe_service_health(discovered)
-            cli_output.print_service_status_summary(
-                project_path=project_path,
-                pid=int(discovered.get("pid", 0) or 0),
-                state="running",
-                web_url=str(discovered.get("web_url") or "") or None,
-                web_state=web_state,
-                mcp_url=str(discovered.get("mcp_url") or "") or None,
-                mcp_state=mcp_state,
-                log_path=None,
-                stderr=sys.stderr,
-            )
-            _print_connector_runtime_health_summary(
+            _emit_service_status(
                 project_path=project_path,
                 metadata=discovered,
                 state="running",
                 web_state=web_state,
                 mcp_state=mcp_state,
+                log_path=None,
                 tunnel_client=tunnel_client,
                 control_plane=control_plane,
+                json_output=json_output,
             )
             return 0
         web_state, mcp_state = _probe_service_health(metadata)
-        cli_output.print_service_status_summary(
-            project_path=project_path,
-            pid=pid,
-            state="stale",
-            web_url=str(metadata.get("web_url") or "") or None,
-            web_state=web_state,
-            mcp_url=str(metadata.get("mcp_url") or "") or None,
-            mcp_state=mcp_state,
-            log_path=str(metadata.get("log_path") or "") or None,
-            stderr=sys.stderr,
-        )
-        _print_connector_runtime_health_summary(
+        _emit_service_status(
             project_path=project_path,
             metadata=metadata,
             state="stale",
             web_state=web_state,
             mcp_state=mcp_state,
+            log_path=str(metadata.get("log_path") or "") or None,
             tunnel_client=tunnel_client,
             control_plane=control_plane,
+            json_output=json_output,
         )
         return 1
     web_state, mcp_state = _probe_service_health(metadata)
-    cli_output.print_service_status_summary(
-        project_path=project_path,
-        pid=pid,
-        state="running",
-        web_url=str(metadata.get("web_url") or "") or None,
-        web_state=web_state,
-        mcp_url=str(metadata.get("mcp_url") or "") or None,
-        mcp_state=mcp_state,
-        log_path=str(metadata.get("log_path") or "") or None,
-        stderr=sys.stderr,
-    )
-    _print_connector_runtime_health_summary(
+    _emit_service_status(
         project_path=project_path,
         metadata=metadata,
         state="running",
         web_state=web_state,
         mcp_state=mcp_state,
+        log_path=str(metadata.get("log_path") or "") or None,
         tunnel_client=tunnel_client,
         control_plane=control_plane,
+        json_output=json_output,
     )
     return 0
 

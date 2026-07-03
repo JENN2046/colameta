@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -136,6 +137,77 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "apps_reauth=reconnect_apps_connector" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
+
+    def test_status_json_outputs_apps_connector_closeout_packet(self) -> None:
+        from scripts import runner_cli
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                return False
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        metadata = {
+            "pid": 12345,
+            "project_root": str(self.project),
+            "web_host": "127.0.0.1",
+            "web_port": 8801,
+            "mcp_host": "127.0.0.1",
+            "mcp_port": 8766,
+            "web_url": "http://127.0.0.1:8801",
+            "mcp_url": "http://127.0.0.1:8766/mcp",
+            "enable_web": True,
+            "enable_mcp": True,
+            "discovered_from_process_table": False,
+        }
+        runtime_status = {
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+        }
+
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "_read_service_metadata", return_value=metadata),
+            patch.object(runner_cli, "_is_pid_running", return_value=True),
+            patch.object(runner_cli, "_probe_service_health", return_value=("healthy", "healthy")),
+            patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
+            patch.object(runner_cli.urllib.request, "urlopen", return_value=FakeResponse()),
+        ):
+            result = runner_cli._run_service_status(
+                [
+                    "status",
+                    str(self.project),
+                    "--json",
+                    "--tunnel-admin-port",
+                    "8080",
+                    "--tunnel-pid",
+                    "4034",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert stderr.getvalue() == ""
+        assert payload["ok"] is True
+        assert payload["read_only"] is True
+        assert payload["service"]["state"] == "running"
+        assert payload["connector_runtime_health"]["overall_status"] == "healthy"
+        assert payload["apps_connector_closeout"]["status"] == "ready"
+        assert (
+            payload["apps_connector_closeout"]["connector_closeout_check"]["current_operator_closeout"]
+            == "connector_closeout_ready"
+        )
+        assert payload["tunnel_evidence"]["provided"] is True
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert "raw_token" not in serialized.lower()
+        assert "secret_value" not in serialized.lower()
 
     def test_status_tunnel_evidence_requires_port_and_pid_together(self) -> None:
         from scripts import runner_cli

@@ -509,6 +509,14 @@ colameta status /home/jenn/src/colameta-dev --tunnel-admin-port <admin_port> --t
 同一个 status 输出也会打印 `Apps connector:` 交接行，包含项目列表检查、connector
 closeout 状态和安全的 Apps reconnect 下一步。它不会打印 token、cookie、raw log 或 config。
 
+脚本或 GPT handoff 包可以加 `--json`：
+
+```bash
+colameta status /home/jenn/src/colameta-dev --json --tunnel-admin-port <admin_port> --tunnel-pid <tunnel_client_pid>
+```
+
+JSON 输出会包含 `connector_runtime_health` 和 `apps_connector_closeout`，调用方不需要解析终端文本。
+
 只有使用 approved status surface 得到 sanitized evidence 后，才可以回灌。
 例如当前环境若有 tunnel-client admin port 和 PID，可以先由本地操作员运行：
 

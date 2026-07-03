@@ -523,6 +523,15 @@ The same status output also prints an `Apps connector:` handoff line with the
 project list check, connector closeout state, and the safe Apps reconnect next
 step. It does not print tokens, cookies, raw logs, or config.
 
+For scripts or GPT handoff packets, add `--json`:
+
+```bash
+colameta status /home/jenn/src/colameta-dev --json --tunnel-admin-port <admin_port> --tunnel-pid <tunnel_client_pid>
+```
+
+The JSON output includes `connector_runtime_health` and
+`apps_connector_closeout`, so callers do not need to parse terminal text.
+
 Only feed approved, sanitized evidence back into ColaMeta. If the environment
 has a tunnel-client admin port and PID, a local operator may run:
 
