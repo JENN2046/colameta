@@ -41,7 +41,11 @@ from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
-from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
+from runner.runtime_observability import (
+    build_service_readiness_summary,
+    get_connector_runtime_health_status,
+    get_runtime_version_status,
+)
 from runner.stable_promotion_readiness import get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.workflow_engine import should_record_tool, record_tool_call
@@ -5825,7 +5829,13 @@ class MCPPlanningBridgeServer:
         project_args = {"project_name": project_name}
         profiles = self._service_entry_profiles()
         visible_names = self._visible_tool_names()
+        readiness = build_service_readiness_summary(
+            runtime_status=runtime_status,
+            connector_health=connector_health,
+            project_name=project_name,
+        )
         app_status = str(connector_summary.get("overall_status") or "unknown")
+        readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
         runtime_summary = {
             "project_checkout_head": runtime_status.get("project_checkout_head"),
@@ -5847,7 +5857,7 @@ class MCPPlanningBridgeServer:
             "project_name": project_name,
             "app": {
                 "name": COMMANDER_APP_TITLE,
-                "status_line": f"{app_status} | {runtime_label}",
+                "status_line": f"{readiness_status} | {runtime_label}",
                 "archetype": "interactive-decoupled",
                 "widget_resource_uri": COMMANDER_APP_WIDGET_URI,
                 "widget_mime_type": COMMANDER_APP_WIDGET_MIME_TYPE,
@@ -5864,6 +5874,7 @@ class MCPPlanningBridgeServer:
                 "visible_tool_count": len(visible_names),
             },
             "project_identity": project_identity,
+            "readiness": readiness,
             "runtime": runtime_summary,
             "connector": connector_summary,
             "registered_projects": self._web_gpt_registered_project_summary(),
@@ -5878,6 +5889,7 @@ class MCPPlanningBridgeServer:
             ],
             "commander_panel": {
                 "primary_sections": [
+                    "service_readiness",
                     "service_facts",
                     "runtime_freshness",
                     "connector_health",

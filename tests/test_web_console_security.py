@@ -716,6 +716,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert service["read_only"] is True
         assert service["side_effects"] is False
         assert service["authority_boundary"]["does_not_authorize_executor_run"] is True
+        assert service["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
+        assert service["readiness"]["read_only"] is True
+        assert payload["service_readiness_summary"]["status"] == service["readiness"]["status"]
+        assert payload["service_readiness_summary"]["side_effects"] is False
         assert service["connector"]["local_service_status"] == "healthy"
         assert service["connector"]["external_connector_status"] == "unverified"
         assert "project_checkout_head" in payload["runtime_version_summary"]

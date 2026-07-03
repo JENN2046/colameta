@@ -103,6 +103,13 @@ dev repo: /home/jenn/src/colameta-dev
 Web GPT and external agents should prefer the stable MCP endpoint. Use a dev
 test MCP endpoint only when you are explicitly validating new dev repo behavior.
 
+For a single service decision, use `readiness` from
+`get_commander_app_manifest(project_name=...)` or `service_readiness_summary`
+from Web `/api/v2/status`. It returns `ready`, `needs_attention`, or `blocked`
+with safe next actions. It is read-only and does not authorize executor runs,
+commits, pushes, stable replacement, ReviewDecision, GateEvent, or Delivery
+accepted.
+
 Keep these three versions separate:
 
 ```text

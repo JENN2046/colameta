@@ -87,6 +87,11 @@ dev repo: /home/jenn/src/colameta-dev
 
 网页 GPT 或外部 agent 默认优先连稳定 MCP。只有在明确验证 dev repo 新能力时，才连 dev 测试 MCP。
 
+需要一句话服务决策时，看 `get_commander_app_manifest(project_name=...)` 的 `readiness`，
+或 Web `/api/v2/status` 的 `service_readiness_summary`。它返回 `ready`、`needs_attention`
+或 `blocked`，并给 safe next actions。这只是 read-only 状态解释，不授权 executor run、
+commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。
+
 先分清这两个版本状态：
 
 ```text

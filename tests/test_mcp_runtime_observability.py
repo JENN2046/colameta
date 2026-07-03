@@ -11,7 +11,7 @@ from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
 from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
-from runner.runtime_observability import get_connector_runtime_health_status
+from runner.runtime_observability import build_service_readiness_summary, get_connector_runtime_health_status
 
 
 HEAD_A = "a" * 40
@@ -398,6 +398,68 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["operator_closeout"]["status"] == "connector_closeout_ready"
         assert data["operator_closeout"]["decision"] == "ready"
 
+    def test_service_readiness_summary_collapses_connector_closeout(self) -> None:
+        connector_health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "project_checkout_matches_loaded_runtime",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+            tunnel_client={"status": "healthy", "reason_code": "TUNNEL_CLIENT_HEALTHY"},
+            control_plane={"status": "healthy", "reason_code": "CONTROL_PLANE_HEALTHY"},
+        )
+
+        summary = build_service_readiness_summary(
+            connector_health=connector_health,
+            project_name="demo-project",
+        )
+
+        assert summary["read_only"] is True
+        assert summary["side_effects"] is False
+        assert summary["status"] == "ready"
+        assert summary["decision"] == "ready"
+        assert summary["components"]["operator_closeout"]["status"] == "connector_closeout_ready"
+        assert summary["safe_next_actions"][0]["authority"] == "preview_or_task_packet_only"
+        assert "executor_run" in summary["not_authorized_actions"]
+
+    def test_service_readiness_summary_explains_attention_and_blocked_states(self) -> None:
+        attention_health = get_connector_runtime_health_status(
+            runtime_status={
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "reload_awareness_reason": "project_checkout_matches_loaded_runtime",
+            },
+            local_service={
+                "state": "running",
+                "health_source": "process_table",
+                "pid": 12345,
+                "enable_web": True,
+                "web_state": "healthy",
+                "enable_mcp": True,
+                "mcp_state": "healthy",
+            },
+        )
+        attention = build_service_readiness_summary(
+            connector_health=attention_health,
+            project_name="demo-project",
+        )
+        assert attention["status"] == "needs_attention"
+        assert attention["primary_blocker"]["component"] == "tunnel_client"
+        assert attention["safe_next_actions"][0]["tool"] == "get_connector_runtime_health_status"
+
+        blocked = build_service_readiness_summary(connector_health=get_connector_runtime_health_status())
+        assert blocked["status"] == "blocked"
+        assert blocked["safe_next_actions"][0]["tool"] == "get_web_gpt_service_entrypoint"
+
     def test_connector_runtime_health_tool_rejects_unsanitized_external_fields(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
@@ -541,6 +603,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["app"]["render_tool"] == "render_commander_app"
         assert data["project_name"] == "demo-project"
         assert data["connector"]["external_connector_status"] == "healthy"
+        assert data["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
+        assert data["readiness"]["read_only"] is True
+        assert data["readiness"]["components"]["operator_closeout"]["status"]
+        assert "service_readiness" in data["commander_panel"]["primary_sections"]
         assert data["authority_boundary"]["does_not_authorize_executor_run"] is True
         assert "Delivery accepted" in data["authority_boundary"]["requires_explicit_commander_authorization_for"]
 

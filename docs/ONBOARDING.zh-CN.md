@@ -70,6 +70,11 @@ get_connector_runtime_health_status
 
 项目级工具必须带 `project_name`。如果不知道项目名，先 `list_registered_projects`。
 
+需要一句话服务决策时，看 `get_commander_app_manifest` 的 `readiness`，或 Web
+`/api/v2/status` 的 `service_readiness_summary`。它会把 runtime、本地服务和 connector
+closeout 收敛成 `ready`、`needs_attention` 或 `blocked`；这是 read-only 状态解释，不授权
+executor run、commit、push、stable replacement、ReviewDecision 或 GateEvent。
+
 ## 4. 新项目最小 smoke
 
 接入后最小 smoke checklist：
@@ -79,6 +84,7 @@ get_connector_runtime_health_status
 选中的 profile 能读到
 get_runtime_version_status 返回 read_only=true
 get_connector_runtime_health_status 返回 read_only=true
+service_readiness_summary/readiness 返回 ready、needs_attention 或 blocked
 analyze_project_state 能返回项目模式和建议下一步
 source-only 项目不会被当成 managed workflow 项目
 managed 项目能进入 thin governed loop preview

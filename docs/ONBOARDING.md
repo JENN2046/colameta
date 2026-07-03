@@ -90,6 +90,13 @@ get_connector_runtime_health_status
 Project-level tools require `project_name`. If the agent does not know the
 project name, it must call `list_registered_projects` first.
 
+For the one-line service decision, read `readiness` from
+`get_commander_app_manifest` or `service_readiness_summary` from Web
+`/api/v2/status`. It collapses runtime, local service, and connector closeout
+into `ready`, `needs_attention`, or `blocked`; it is read-only and does not
+authorize executor runs, commits, pushes, stable replacement, ReviewDecision, or
+GateEvent.
+
 ## 4. Minimal New-Project Smoke
 
 After onboarding, the minimum smoke checklist is:
@@ -99,6 +106,7 @@ project appears in list_registered_projects
 selected profile is readable
 get_runtime_version_status returns read_only=true
 get_connector_runtime_health_status returns read_only=true
+service_readiness_summary/readiness returns ready, needs_attention, or blocked
 analyze_project_state returns project mode and recommended next step
 source-only project is not treated as a managed workflow project
 managed project can enter thin governed loop preview

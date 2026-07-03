@@ -207,6 +207,90 @@ def get_connector_runtime_health_status(
     }
 
 
+def build_service_readiness_summary(
+    *,
+    runtime_status: dict[str, Any] | None = None,
+    connector_health: dict[str, Any] | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    """Collapse service facts into one read-only Commander-facing status."""
+    connector = connector_health if isinstance(connector_health, dict) else {}
+    runtime = connector.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = _runtime_health_summary(runtime_status)
+    local_service = connector.get("local_service")
+    if not isinstance(local_service, dict):
+        local_service = {"status": "unverified", "reason_code": "LOCAL_SERVICE_HEALTH_UNVERIFIED"}
+    external_connector = connector.get("external_connector")
+    if not isinstance(external_connector, dict):
+        external_connector = {"status": "unverified", "reason_code": "CONNECTOR_HEALTH_UNVERIFIED"}
+    operator_closeout = connector.get("operator_closeout")
+    if not isinstance(operator_closeout, dict):
+        operator_closeout = {}
+
+    status = _service_readiness_status(operator_closeout)
+    reason_codes = _unique_reason_codes(
+        runtime.get("reason_codes"),
+        local_service.get("reason_codes"),
+        external_connector.get("reason_codes"),
+        connector.get("reason_codes"),
+        operator_closeout.get("status"),
+    )
+    project_arg = _clean_status_text(project_name) or "<registered project_name>"
+    safe_next_actions = _service_readiness_next_actions(
+        status=status,
+        operator_closeout=operator_closeout,
+        project_name=project_arg,
+    )
+
+    return {
+        "ok": True,
+        "source": "service_readiness_summary",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "decision": status,
+        "summary": _service_readiness_summary_text(status, operator_closeout),
+        "reason_codes": reason_codes,
+        "primary_blocker": _service_readiness_primary_blocker(status, operator_closeout),
+        "components": {
+            "local_service": {
+                "status": local_service.get("status"),
+                "reason_code": local_service.get("reason_code"),
+            },
+            "runtime": {
+                "status": runtime.get("status"),
+                "reason_code": runtime.get("reason_code"),
+            },
+            "external_connector": {
+                "status": external_connector.get("status"),
+                "reason_code": external_connector.get("reason_code"),
+            },
+            "operator_closeout": {
+                "status": operator_closeout.get("status"),
+                "decision": operator_closeout.get("decision"),
+                "evidence_gap_count": operator_closeout.get("evidence_gap_count"),
+            },
+        },
+        "safe_next_actions": safe_next_actions,
+        "not_authorized_actions": [
+            "read_tokens_or_cookies",
+            "read_tunnel_client_config",
+            "read_proxy_config",
+            "read_provider_auth",
+            "modify_network_or_proxy_state",
+            "restart_or_replace_stable_service",
+            "executor_run",
+            "commit",
+            "push",
+            "delivery_state_acceptance",
+            "review_decision",
+            "gate_event",
+        ],
+    }
+
+
 def loaded_runner_module_fingerprints() -> dict[str, dict[str, Any]]:
     return {module_name: dict(evidence) for module_name, evidence in _LOADED_RUNNER_MODULE_FINGERPRINTS.items()}
 
@@ -710,6 +794,108 @@ def _connector_safe_next_actions(closeout_status: str) -> list[str]:
     return [
         "Use an approved external connector or tunnel status surface to provide sanitized health evidence.",
         "Keep external_connector unverified until tunnel-client and control-plane evidence are both present.",
+    ]
+
+
+def _service_readiness_status(operator_closeout: dict[str, Any]) -> str:
+    closeout_status = operator_closeout.get("status")
+    if operator_closeout.get("decision") == "ready":
+        return "ready"
+    if closeout_status == "local_service_attention_needed":
+        return "blocked"
+    if closeout_status in {
+        "runtime_attention_needed",
+        "local_service_ready_runtime_unverified",
+        "external_connector_attention_needed",
+        "local_runtime_ready_external_connector_unverified",
+    }:
+        return "needs_attention"
+    return "blocked"
+
+
+def _service_readiness_summary_text(status: str, operator_closeout: dict[str, Any]) -> str:
+    if status == "ready":
+        return "Local runtime, Web/MCP service, and external connector evidence are ready."
+    summary = operator_closeout.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    if status == "needs_attention":
+        return "Service is reachable, but readiness evidence still needs attention."
+    return "Service readiness is blocked until required local service evidence is healthy."
+
+
+def _service_readiness_primary_blocker(status: str, operator_closeout: dict[str, Any]) -> dict[str, Any] | None:
+    if status == "ready":
+        return None
+    evidence_gaps = operator_closeout.get("evidence_gaps")
+    first_gap = evidence_gaps[0] if isinstance(evidence_gaps, list) and evidence_gaps else None
+    if isinstance(first_gap, dict):
+        return {
+            "component": first_gap.get("component"),
+            "reason_code": first_gap.get("reason_code"),
+            "safe_evidence_needed": first_gap.get("safe_evidence_needed"),
+        }
+    closeout_status = operator_closeout.get("status")
+    return {
+        "component": "operator_closeout",
+        "reason_code": closeout_status or "SERVICE_READINESS_BLOCKED",
+        "safe_evidence_needed": "Use read-only service status tools to collect the missing readiness evidence.",
+    }
+
+
+def _service_readiness_next_actions(
+    *,
+    status: str,
+    operator_closeout: dict[str, Any],
+    project_name: str,
+) -> list[dict[str, Any]]:
+    if status == "ready":
+        return [
+            {
+                "action_id": "continue_with_requested_work",
+                "label": "Continue with the requested low-risk or preview-first workflow.",
+                "tool": "run_mcp_workflow",
+                "arguments": {"project_name": project_name, "workflow": "thin_governed_loop_preview", "input_mode": "draft"},
+                "authority": "preview_or_task_packet_only",
+            }
+        ]
+
+    closeout_status = operator_closeout.get("status")
+    if closeout_status in {"runtime_attention_needed", "local_service_ready_runtime_unverified"}:
+        return [
+            {
+                "action_id": "read_runtime_version",
+                "label": "Read runtime freshness evidence.",
+                "tool": "get_runtime_version_status",
+                "arguments": {"project_name": project_name},
+                "authority": "read_only",
+            }
+        ]
+    if closeout_status in {"external_connector_attention_needed", "local_runtime_ready_external_connector_unverified"}:
+        return [
+            {
+                "action_id": "read_connector_health",
+                "label": "Read connector health with sanitized tunnel/control-plane evidence when available.",
+                "tool": "get_connector_runtime_health_status",
+                "arguments": {"project_name": project_name},
+                "authority": "read_only",
+            }
+        ]
+    return [
+        {
+            "action_id": "read_service_entrypoint",
+            "label": "Read the Web GPT service entrypoint and local service facts.",
+            "tool": "get_web_gpt_service_entrypoint",
+            "arguments": {"project_name": project_name},
+            "authority": "read_only",
+        },
+        {
+            "action_id": "read_connector_health",
+            "label": "Read connector health without reading secrets or raw tunnel config.",
+            "tool": "get_connector_runtime_health_status",
+            "arguments": {"project_name": project_name},
+            "authority": "read_only",
+        },
     ]
 
 

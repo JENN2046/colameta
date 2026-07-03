@@ -69,7 +69,11 @@ from runner.web_console_presenter import (
     extract_model_display_from_plan_data,
 )
 from runner.executor_status import polling_guidance_for_profile
-from runner.runtime_observability import get_connector_runtime_health_status, get_runtime_version_status
+from runner.runtime_observability import (
+    build_service_readiness_summary,
+    get_connector_runtime_health_status,
+    get_runtime_version_status,
+)
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
 WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
@@ -1744,6 +1748,11 @@ class WebConsoleServer:
 
         project_identity = build_project_identity(self.project_root)
         project_name = str(project_identity.get("project_name") or "colameta-self-dev")
+        readiness = build_service_readiness_summary(
+            runtime_status=runtime_status,
+            connector_health=connector_health,
+            project_name=project_name,
+        )
         copyable_mcp_calls = [
             {
                 "label": "读取项目列表",
@@ -1794,6 +1803,7 @@ class WebConsoleServer:
             "side_effects": False,
             "project_name": project_name,
             "project_root": self.project_root,
+            "readiness": readiness,
             "service": {
                 "pid": local_service.get("pid"),
                 "health_source": local_service.get("health_source"),
@@ -3230,6 +3240,7 @@ class WebConsoleServer:
         )
         result["runtime_version_summary"] = self._json_safe(web_commander_service["runtime"])
         result["web_commander_service"] = self._json_safe(web_commander_service)
+        result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
         fs_pi = (result.get("fact_snapshot") or {}).get("project_identity")
         if isinstance(fs_pi, dict) and fs_pi.get("project_name"):
             result["project_identity"] = dict(fs_pi)
