@@ -438,7 +438,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert commander_schema["properties"]["control_plane"]["additionalProperties"] is False
+        assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
+        assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
+        assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
         assert tool_defs["render_commander_app"].annotations["readOnlyHint"] is True
         connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
         assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False

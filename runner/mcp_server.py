@@ -257,6 +257,7 @@ class MCPToolDef:
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    title: str | None = None
     annotations: dict[str, Any] | None = None
     meta: dict[str, Any] | None = None
 
@@ -417,6 +418,7 @@ class MCPPlanningBridgeServer:
             ),
             MCPToolDef(
                 name="get_commander_app_manifest",
+                title="Get Commander App Manifest",
                 description=(
                     f"[{self.project_hint}] ChatGPT Apps 侧 ColaMeta Commander App 的只读 manifest。"
                     "汇总项目身份、runtime、connector health、profile-aware 入口、preview-first 工作流和授权闸门。"
@@ -432,6 +434,7 @@ class MCPPlanningBridgeServer:
             ),
             MCPToolDef(
                 name="render_commander_app",
+                title="Render Commander App",
                 description=(
                     f"[{self.project_hint}] 渲染 ChatGPT Apps iframe 版 ColaMeta Commander 面板。"
                     "返回 Commander manifest，并通过 MCP Apps resource URI 绑定 widget。"
@@ -445,7 +448,10 @@ class MCPPlanningBridgeServer:
                     "openWorldHint": False,
                 },
                 meta={
-                    "ui": {"resourceUri": COMMANDER_APP_WIDGET_URI},
+                    "ui": {
+                        "resourceUri": COMMANDER_APP_WIDGET_URI,
+                        "visibility": ["model", "app"],
+                    },
                     "openai/outputTemplate": COMMANDER_APP_WIDGET_URI,
                     "openai/toolInvocation/invoking": "Opening ColaMeta Commander",
                     "openai/toolInvocation/invoked": "ColaMeta Commander ready",
@@ -3394,7 +3400,6 @@ class MCPPlanningBridgeServer:
                 "csp": {
                     "connectDomains": [],
                     "resourceDomains": [],
-                    "frameDomains": [],
                 },
             },
             "openai/widgetDescription": (
@@ -3712,13 +3717,27 @@ class MCPPlanningBridgeServer:
           button.disabled = !projectName;
         });
       }
-      function callTool(name) {
+      async function callTool(name) {
         var projectName = manifest && manifest.project_name;
         if (!projectName) {
           text("log", "Project name unavailable.");
           return;
         }
         var args = { project_name: projectName };
+        if (window.openai && typeof window.openai.callTool === "function") {
+          try {
+            var next = await window.openai.callTool(name, args);
+            if (next && next.structuredContent) {
+              render(next.structuredContent);
+            } else if (next) {
+              render(next);
+            }
+            text("log", "Updated from " + name + ".");
+            return;
+          } catch (err) {
+            text("log", "Direct call failed; using bridge for " + name + ".");
+          }
+        }
         window.parent.postMessage({
           jsonrpc: "2.0",
           id: "colameta-commander-" + (seq++),
@@ -3727,6 +3746,10 @@ class MCPPlanningBridgeServer:
         }, "*");
         text("log", "Requested " + name + ".");
       }
+      window.addEventListener("openai:set_globals", function (event) {
+        var globals = event.detail && event.detail.globals;
+        render((globals && globals.toolOutput) || (window.openai && window.openai.toolOutput));
+      }, { passive: true });
       window.addEventListener("message", function (event) {
         var message = event.data || {};
         if (message.method === "ui/notifications/tool-result") {
@@ -3836,6 +3859,8 @@ class MCPPlanningBridgeServer:
                 "input_schema": tool.input_schema,
                 "outputSchema": tool.output_schema,
             }
+            if isinstance(tool.title, str) and tool.title.strip():
+                item["title"] = tool.title
             if isinstance(tool.annotations, dict):
                 item["annotations"] = copy.deepcopy(tool.annotations)
             if isinstance(tool.meta, dict):
@@ -5726,7 +5751,10 @@ class MCPPlanningBridgeServer:
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
         manifest = self._commander_app_manifest(params)
         manifest["_meta"] = {
-            "ui": {"resourceUri": COMMANDER_APP_WIDGET_URI},
+            "ui": {
+                "resourceUri": COMMANDER_APP_WIDGET_URI,
+                "visibility": ["model", "app"],
+            },
             "openai/outputTemplate": COMMANDER_APP_WIDGET_URI,
             "commander_app": {
                 "manifest_version": COMMANDER_APP_MANIFEST_VERSION,

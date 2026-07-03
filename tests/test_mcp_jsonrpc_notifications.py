@@ -48,6 +48,7 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
         self.assertEqual(resource["uri"], COMMANDER_APP_WIDGET_URI)
         self.assertEqual(resource["mimeType"], COMMANDER_APP_WIDGET_MIME_TYPE)
         self.assertEqual(resource["_meta"]["ui"]["csp"]["connectDomains"], [])
+        self.assertNotIn("frameDomains", resource["_meta"]["ui"]["csp"])
 
         read = self.server._handle_jsonrpc_request(
             {
@@ -62,6 +63,8 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
         self.assertEqual(content["uri"], COMMANDER_APP_WIDGET_URI)
         self.assertEqual(content["mimeType"], COMMANDER_APP_WIDGET_MIME_TYPE)
         self.assertIn("ColaMeta Commander", content["text"])
+        self.assertIn("openai:set_globals", content["text"])
+        self.assertIn("window.openai.callTool", content["text"])
         self.assertTrue(content["_meta"]["openai/widgetDescription"])
 
     def test_render_commander_app_tool_descriptor_and_call_attach_widget_meta(self) -> None:
@@ -71,8 +74,10 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
         tools = {item["name"]: item for item in listed["result"]["tools"]}
         render_tool = tools["render_commander_app"]
 
+        self.assertEqual(render_tool["title"], "Render Commander App")
         self.assertTrue(render_tool["annotations"]["readOnlyHint"])
         self.assertEqual(render_tool["_meta"]["ui"]["resourceUri"], COMMANDER_APP_WIDGET_URI)
+        self.assertEqual(render_tool["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertEqual(render_tool["_meta"]["openai/outputTemplate"], COMMANDER_APP_WIDGET_URI)
 
         called = self.server._handle_jsonrpc_request(
@@ -87,6 +92,7 @@ class MCPJsonrpcNotificationsTests(unittest.TestCase):
         data = result["structuredContent"]["data"]
 
         self.assertEqual(result["_meta"]["ui"]["resourceUri"], COMMANDER_APP_WIDGET_URI)
+        self.assertEqual(result["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertNotIn("_meta", result["structuredContent"])
         self.assertEqual(data["app_manifest_version"], "colameta_commander_app.v1")
         self.assertEqual(data["app"]["resource_methods"], ["resources/list", "resources/read"])
