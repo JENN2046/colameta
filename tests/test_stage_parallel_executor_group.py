@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
 from runner.mcp_stage_parallel_executor_runs import MCPStageParallelExecutorRunGroupManager
+from runner.mcp_stage_parallel_merges import MCPStageParallelMergeManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
 from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
 
@@ -438,3 +440,75 @@ def test_stage_parallel_executor_results_packet_reports_completed_validated_repo
     assert result["executor_results"][0]["validation_status"] == "passed"
     assert result["executor_results"][0]["changed_files"] == ["README.md"]
     assert result["group_status_preview"]["status"] == "merge_ready"
+
+
+def test_stage_parallel_merge_gate_preview_blocks_until_results_are_ready(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    manager = MCPStageParallelMergeManager(str(project))
+
+    result = manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "blocked"
+    assert result["can_apply"] is False
+    assert result["authority_boundary"]["does_not_merge_parallel_results"] is True
+
+
+def test_stage_parallel_merge_gate_apply_merges_local_branch_without_push(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    created = _create_worktree(project)
+    worktree = Path(created["worktree_path"])
+    readme = worktree / "README.md"
+    readme.write_text("demo\nparallel change\n", encoding="utf-8")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "parallel change", "-q")
+    source_head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    manager = MCPStageParallelMergeManager(str(project))
+    executor_results = [
+        {
+            "task_id": "one",
+            "status": "succeeded",
+            "validation_status": "passed",
+            "head": source_head,
+            "changed_files": ["README.md"],
+        }
+    ]
+    preview = manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+            "executor_results": executor_results,
+        },
+    )
+    assert preview["ok"] is True
+    assert preview["status"] == "preview_ready"
+    assert preview["planned_operations"][0]["source_branch"] == created["branch_name"]
+    assert preview["authority_boundary"]["does_not_merge_parallel_results"] is True
+
+    result = manager.handle("apply", {"preview_id": preview["preview_id"]})
+
+    assert result["ok"] is True
+    assert result["status"] == "succeeded"
+    assert result["merged_count"] == 1
+    assert result["authority_boundary"]["creates_local_merge_commits_on_apply"] is True
+    assert result["authority_boundary"]["does_not_push"] is True
+    assert "parallel change" in (project / "README.md").read_text(encoding="utf-8")
+
+
+def test_stage_parallel_merge_gate_apply_requires_preview_id(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    manager = MCPStageParallelMergeManager(str(project))
+
+    result = manager.handle("apply", {})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "PREVIEW_ID_REQUIRED"

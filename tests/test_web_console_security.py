@@ -769,6 +769,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["get_stage_parallel_executor_results_packet"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_group_status"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_merge_preview"]["arguments"]["project_name"]
+        assert calls["manage_stage_parallel_merges"]["arguments"]["project_name"]
+        assert calls["manage_stage_parallel_merges"]["arguments"]["action"] == "preview"
         assert calls["get_stage_parallel_closeout_packet"]["arguments"]["project_name"]
         assert calls["render_commander_app"]["arguments"]["project_name"]
         assert calls["get_commander_app_manifest"]["arguments"]["project_name"]
@@ -788,6 +790,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls_by_label["Parallel executor results packet"]["tool"] == "get_stage_parallel_executor_results_packet"
         assert calls_by_label["Parallel group status"]["tool"] == "get_stage_parallel_group_status"
         assert calls_by_label["Parallel merge preview"]["tool"] == "get_stage_parallel_merge_preview"
+        assert calls_by_label["Parallel merge apply preview"]["tool"] == "manage_stage_parallel_merges"
+        assert calls_by_label["Parallel merge apply preview"]["arguments"]["action"] == "preview"
         assert calls_by_label["Parallel closeout packet"]["tool"] == "get_stage_parallel_closeout_packet"
         assert calls_by_label["Apps smoke packet"]["arguments"]["tunnel_client"]["reason_code"] == "TUNNEL_CLIENT_HEALTHZ_READY"
         assert calls_by_label["Apps connector fallback"]["arguments"]["tunnel_client"]["reason_code"] == "TUNNEL_CLIENT_HEALTHZ_READY"

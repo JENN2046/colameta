@@ -122,6 +122,7 @@ NORMAL_EXPOSED_TOOLS = (
     "manage_stage_parallel_worktrees",
     "manage_stage_parallel_executor_group",
     "manage_stage_parallel_executor_runs",
+    "manage_stage_parallel_merges",
     "manage_git",
     "manage_project_docs",
     "manage_prompt_file",
@@ -335,6 +336,30 @@ def _manage_stage_parallel_executor_runs_input_schema() -> dict[str, Any]:
     }
 
 
+def _manage_stage_parallel_merges_input_schema() -> dict[str, Any]:
+    schema = _stage_parallel_preview_input_schema(include_executor_results=True)
+    properties = dict(schema["properties"])
+    properties["action"] = {
+        "type": "string",
+        "enum": ["preview", "apply", "status", "discard"],
+        "description": "preview 生成受控 stage parallel merge apply preview；apply 用 preview_id 顺序执行本地 git merge。",
+    }
+    properties["preview_id"] = {
+        "type": "string",
+        "description": "apply/status/discard 必填。来自 preview 的 preview_id。",
+    }
+    properties["reason"] = {
+        "type": "string",
+        "description": "preview 可选。记录执行并行 merge gate 的原因。",
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
@@ -383,6 +408,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_stage_parallel_worktrees",
     "manage_stage_parallel_executor_group",
     "manage_stage_parallel_executor_runs",
+    "manage_stage_parallel_merges",
     "manage_workflow_run",
     "list_workflow_runs",
     "get_workflow_run",
@@ -562,6 +588,7 @@ class MCPPlanningBridgeServer:
             "manage_stage_parallel_worktrees": self._tool_manage_stage_parallel_worktrees,
             "manage_stage_parallel_executor_group": self._tool_manage_stage_parallel_executor_group,
             "manage_stage_parallel_executor_runs": self._tool_manage_stage_parallel_executor_runs,
+            "manage_stage_parallel_merges": self._tool_manage_stage_parallel_merges,
             "list_workflow_runs": self._tool_list_workflow_runs,
             "get_workflow_run": self._tool_get_workflow_run,
         }
@@ -1011,6 +1038,25 @@ class MCPPlanningBridgeServer:
                     "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
                 ),
                 input_schema=_manage_stage_parallel_executor_runs_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
+                },
+            ),
+            MCPToolDef(
+                name="manage_stage_parallel_merges",
+                title="Manage Stage Parallel Merges",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 merge 受控工具。"
+                    "preview 会校验 sanitized executor_results、target branch/head、source branch/head 和 clean target worktree；"
+                    "apply 使用 preview_id 顺序执行本地 git merge --no-ff。"
+                    "它不 push、不替换 stable、不写 Delivery accepted、不创建 ReviewDecision/GateEvent。"
+                    "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
+                ),
+                input_schema=_manage_stage_parallel_merges_input_schema(),
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -5799,6 +5845,18 @@ class MCPPlanningBridgeServer:
                 required_scope = "mcp:preview"
             else:
                 required_scope = "mcp:commit"
+        elif name == "manage_stage_parallel_merges":
+            action = params.get("action")
+            if isinstance(action, str):
+                action = action.strip().lower()
+            else:
+                action = None
+            if action == "status":
+                required_scope = "mcp:read"
+            elif action in ("preview", "discard"):
+                required_scope = "mcp:preview"
+            else:
+                required_scope = "mcp:commit"
         elif name == "manage_files":
             action = params.get("action")
             if isinstance(action, str):
@@ -6037,6 +6095,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args()},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
                     {"tool": "get_stage_parallel_merge_preview", "arguments": project_args()},
+                    {"tool": "manage_stage_parallel_merges", "arguments": {**project_args(), "action": "preview"}},
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args()},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
@@ -6253,6 +6312,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_executor_results_packet", "why": "Read structured parallel executor claim/report summaries without raw logs."},
                 {"tool": "get_stage_parallel_group_status", "why": "Read planned or provided shard result status before merge preview."},
                 {"tool": "get_stage_parallel_merge_preview", "why": "Preview merge order and validation gates after shard results pass."},
+                {"tool": "manage_stage_parallel_merges", "why": "Preview the controlled local merge gate; apply performs local git merge only."},
                 {"tool": "get_stage_parallel_closeout_packet", "why": "Prepare the stage parallel closeout packet for human review."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
@@ -6371,6 +6431,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stage_parallel_merge_preview",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "结果齐备后预览 merge order 和 validation gates，不执行 merge。",
+                },
+                {
+                    "step": "preview_stage_parallel_merge_apply",
+                    "tool": "manage_stage_parallel_merges",
+                    "arguments": {"project_name": "<registered project_name>", "action": "preview"},
+                    "why": "merge preview ready 后生成受控 merge apply preview；apply 才会执行本地 git merge。",
                 },
                 {
                     "step": "inspect_stage_parallel_closeout_packet",
@@ -6673,6 +6739,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
                 {"tool": "get_stage_parallel_group_status", "arguments": project_args},
                 {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
+                {"tool": "manage_stage_parallel_merges", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
@@ -6701,6 +6768,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args},
                     {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
+                    {"tool": "manage_stage_parallel_merges", "arguments": {**project_args, "action": "preview"}},
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
@@ -6743,6 +6811,14 @@ class MCPPlanningBridgeServer:
                     },
                     {
                         "tool": "manage_stage_parallel_executor_runs",
+                        "arguments": {
+                            **project_args,
+                            "action": "preview",
+                            "stage_id": "stage_parallel_automation",
+                        },
+                    },
+                    {
+                        "tool": "manage_stage_parallel_merges",
                         "arguments": {
                             **project_args,
                             "action": "preview",
@@ -9624,6 +9700,23 @@ class MCPPlanningBridgeServer:
         manager = MCPStageParallelExecutorRunGroupManager(self.project_root)
         result = manager.handle(action, params)
         self._record_workflow_if_needed("manage_stage_parallel_executor_runs", action, params, result)
+        return self._with_project_identity(result)
+
+    def _tool_manage_stage_parallel_merges(self, params: dict[str, Any]) -> dict[str, Any]:
+        from runner.mcp_stage_parallel_merges import MCPStageParallelMergeManager
+
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"preview", "apply", "status", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 preview、apply、status 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stage_parallel_merges", params, require_managed=True)
+        manager = MCPStageParallelMergeManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stage_parallel_merges", action, params, result)
         return self._with_project_identity(result)
 
     def _create_mcp_workflow_router(self) -> MCPWorkflowRouter:

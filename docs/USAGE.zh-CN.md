@@ -714,7 +714,8 @@ preview-first 的 `stage_parallel_run_preview` 一类入口。
 6. `get_stage_parallel_executor_results_packet`
 7. `get_stage_parallel_group_status`
 8. `get_stage_parallel_merge_preview`
-9. `get_stage_parallel_closeout_packet`
+9. `manage_stage_parallel_merges action=preview`
+10. `get_stage_parallel_closeout_packet`
 
 这组工具让 ChatGPT/Jenn 在任何 mutation 前先读完整并行阶段路径。
 `group_status`、`merge_preview` 和 `closeout_packet` 可以接收调用方提供的 sanitized
@@ -748,6 +749,12 @@ executor runs 已启动或完成后，使用
 claim 和 report metadata。它会输出可交给 `get_stage_parallel_group_status` 和 merge
 preview 的 sanitized `executor_results`。它不读 raw logs、不启动 executor、不 merge、不
 commit、不 push、不写 Delivery accepted、不创建 ReviewDecision/GateEvent，也不替换 stable。
+
+merge preview ready 后，使用 `manage_stage_parallel_merges`。
+`action=preview` 会冻结 target branch/head、source branch heads、干净 target 状态和 merge
+sequence；`action=apply` 会用这个 `preview_id` 顺序执行本地
+`git merge --no-ff --no-edit`。它可以创建本地 merge commits，但仍然不 push、不写
+Delivery accepted、不创建 ReviewDecision/GateEvent，也不替换 stable。
 
 ## 10. 常见故障
 

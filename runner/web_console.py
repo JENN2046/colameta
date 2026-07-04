@@ -1855,6 +1855,15 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel merge apply preview",
+                "tool": "manage_stage_parallel_merges",
+                "arguments": {
+                    "project_name": project_name,
+                    "action": "preview",
+                    "stage_id": "stage_parallel_automation",
+                },
+            },
+            {
                 "label": "Parallel closeout packet",
                 "tool": "get_stage_parallel_closeout_packet",
                 "arguments": {"project_name": project_name},
