@@ -1798,6 +1798,11 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel run preview",
+                "tool": "get_stage_parallel_run_preview",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "读取 Web GPT 入口",
                 "tool": "get_web_gpt_service_entrypoint",
                 "arguments": {"project_name": project_name},

@@ -699,6 +699,11 @@ receipt
 不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。下一步产品化仍应是
 preview-first 的 `stage_parallel_run_preview` 一类入口。
 
+使用 `get_stage_parallel_run_preview(project_name=...)` 预览下一层编排。它会生成确定性的
+`parallel_group_id`，为每个 shard 提议隔离 worktree 和 branch，并展示未来
+`manage_executor_workflow action=run_once_preview` 的请求形状。它仍然不创建 worktree、
+不创建 executor preview artifact、不启动 executor run，也不合并结果。
+
 ## 10. 常见故障
 
 ### 说明书 smoke checklist

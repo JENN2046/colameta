@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from typing import Any
 
 
@@ -89,6 +90,166 @@ def build_stage_parallel_plan_preview(
             "does_not_emit_gate_event": True,
         },
         "safe_next_actions": _safe_next_actions(suggested_next_action),
+    }
+
+
+def build_stage_parallel_run_preview(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+) -> dict[str, Any]:
+    """Build a read-only run orchestration preview for parallel task shards.
+
+    The returned packet describes the isolated worktrees, branches, and future
+    executor preview requests that would be needed. It deliberately does not
+    create those worktrees, create executor preview artifacts, or start runs.
+    """
+    plan = build_stage_parallel_plan_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+    )
+    stage = _clean_text(stage_id) or str(plan.get("stage_id") or "stage_parallel_automation")
+    executor_provider = _clean_provider(provider)
+    base = _clean_branch(base_branch) or "main"
+    shards = plan.get("task_shards") if isinstance(plan.get("task_shards"), list) else []
+    group_id = _parallel_group_id(project_name=project_name, stage_id=stage, shards=shards)
+    blocking_reasons = list(plan.get("blocking_reasons", [])) if isinstance(plan.get("blocking_reasons"), list) else []
+    preview_ready = bool(shards) and not blocking_reasons
+    run_shards = [
+        _build_run_shard(
+            shard=shard,
+            project_root=project_root,
+            project_name=project_name,
+            stage_id=stage,
+            group_id=group_id,
+            provider=executor_provider,
+            base_branch=base,
+        )
+        for shard in shards
+        if isinstance(shard, dict)
+    ]
+    status = "preview_ready" if preview_ready else "blocked" if blocking_reasons else "empty"
+
+    return {
+        "ok": True,
+        "source": "stage_parallel_run_preview",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "project_root": os.path.abspath(os.path.expanduser(project_root or "")),
+        "project_name": project_name,
+        "stage_id": stage,
+        "parallel_group_id": group_id,
+        "base_branch": base,
+        "provider": executor_provider,
+        "plan_preview": {
+            "status": plan.get("status"),
+            "risk_level": plan.get("risk_level"),
+            "suggested_next_action": plan.get("suggested_next_action"),
+            "planned_task_count": plan.get("parallelism", {}).get("planned_task_count")
+            if isinstance(plan.get("parallelism"), dict)
+            else None,
+        },
+        "parallelism": {
+            "planned_task_count": len(run_shards),
+            "max_concurrency": len(run_shards) if preview_ready else 0,
+            "requires_isolated_worktrees": True,
+            "requires_start_new_executor_sessions": True,
+            "requires_merge_preview_before_main": True,
+        },
+        "run_shards": run_shards,
+        "blocking_reasons": blocking_reasons,
+        "risk_level": "blocked" if blocking_reasons else _run_preview_risk(plan, run_shards),
+        "suggested_next_action": (
+            "create_isolated_worktree_preview"
+            if preview_ready
+            else "refine_task_boundaries"
+            if blocking_reasons
+            else "keep_planning"
+        ),
+        "next_capability_steps": [
+            "isolated_worktree_assignment_apply",
+            "executor_preview_group_apply",
+            "parallel_group_status",
+            "stage_parallel_merge_preview",
+            "stage_closeout_packet",
+        ],
+        "authority_boundary": {
+            "does_not_authorize_executor_run": True,
+            "does_not_create_executor_preview": True,
+            "does_not_create_branch_or_worktree": True,
+            "does_not_start_background_worker": True,
+            "does_not_merge_parallel_results": True,
+            "does_not_commit": True,
+            "does_not_push": True,
+            "does_not_replace_stable_service": True,
+            "does_not_write_delivery_accepted": True,
+            "does_not_create_review_decision": True,
+            "does_not_emit_gate_event": True,
+        },
+        "safe_next_actions": _run_preview_safe_next_actions(preview_ready, blocking_reasons),
+    }
+
+
+def _build_run_shard(
+    *,
+    shard: dict[str, Any],
+    project_root: str,
+    project_name: str | None,
+    stage_id: str,
+    group_id: str,
+    provider: str,
+    base_branch: str,
+) -> dict[str, Any]:
+    task_id = _clean_text(shard.get("task_id")) or "parallel_task"
+    branch_name = _parallel_branch_name(stage_id, task_id)
+    worktree_path = os.path.join(
+        os.path.abspath(os.path.expanduser(project_root or "")),
+        ".colameta",
+        "runtime",
+        "parallel-worktrees",
+        group_id,
+        task_id,
+    )
+    return {
+        "task_id": task_id,
+        "title": _clean_text(shard.get("title")) or task_id,
+        "allowed_files": _clean_string_list(shard.get("allowed_files")),
+        "surfaces": _clean_surface_list(shard.get("surfaces")),
+        "risk_level": _clean_risk_level(shard.get("risk_level")) or "low",
+        "isolation": {
+            "strategy": "git_worktree_required",
+            "worktree_path": worktree_path,
+            "base_branch": base_branch,
+            "branch_name": branch_name,
+            "created": False,
+        },
+        "executor_preview_request": {
+            "status": "not_created",
+            "tool": "manage_executor_workflow",
+            "arguments": {
+                "action": "run_once_preview",
+                "project_name": project_name or "<registered project_name>",
+                "provider": provider,
+                "executor_session_mode": "start_new",
+                "execution_mode": "run",
+                "reason": f"{group_id}/{task_id}: {_clean_text(shard.get('title')) or task_id}",
+            },
+        },
+        "merge_policy": {
+            "merge_into_main_allowed": False,
+            "requires_stage_parallel_merge_preview": True,
+            "requires_validation_after_merge": True,
+        },
     }
 
 
@@ -319,3 +480,64 @@ def _slugify(value: str) -> str:
 def _append_unique(items: list[str], value: str) -> None:
     if value not in items:
         items.append(value)
+
+
+def _parallel_group_id(*, project_name: str | None, stage_id: str, shards: list[Any]) -> str:
+    task_ids = [
+        str(item.get("task_id") or "")
+        for item in shards
+        if isinstance(item, dict) and item.get("task_id")
+    ]
+    raw = "|".join([project_name or "", stage_id, *task_ids])
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    return f"parallel_group_{_slugify(stage_id)}_{digest}"
+
+
+def _parallel_branch_name(stage_id: str, task_id: str) -> str:
+    return f"colameta/{_slugify(stage_id)}/{_slugify(task_id)}"
+
+
+def _clean_provider(value: str | None) -> str:
+    cleaned = _clean_text(value)
+    if cleaned in {"codex", "opencode", "pi"}:
+        return cleaned
+    return "codex"
+
+
+def _clean_branch(value: str | None) -> str | None:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9._/-]{1,120}", cleaned):
+        return cleaned
+    return None
+
+
+def _run_preview_risk(plan: dict[str, Any], run_shards: list[dict[str, Any]]) -> str:
+    plan_risk = _clean_risk_level(plan.get("risk_level")) or "unknown"
+    if plan_risk in {"high", "moderate"}:
+        return plan_risk
+    if len(run_shards) > 4:
+        return "moderate"
+    return "low" if run_shards else "none"
+
+
+def _run_preview_safe_next_actions(
+    preview_ready: bool,
+    blocking_reasons: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if blocking_reasons:
+        return [
+            {
+                "action_id": "refine_parallel_task_boundaries",
+                "label": "Resolve overlap blockers before any parallel run preview can be applied.",
+            }
+        ]
+    if preview_ready:
+        return [
+            {
+                "action_id": "create_isolated_worktree_preview",
+                "label": "Preview isolated worktree creation for each shard before executor previews are created.",
+            }
+        ]
+    return [{"action_id": "keep_planning", "label": "Add task_intents before building a run preview."}]

@@ -739,6 +739,13 @@ start executors, create branches or worktrees, merge results, commit, push, or
 replace stable. The next productized step should still be a preview-first
 surface such as `stage_parallel_run_preview`.
 
+Use `get_stage_parallel_run_preview(project_name=...)` to preview the next
+orchestration layer. It assigns a deterministic `parallel_group_id`, proposes an
+isolated worktree and branch for each shard, and shows the future
+`manage_executor_workflow action=run_once_preview` request shape. It still does
+not create worktrees, create executor preview artifacts, start executor runs, or
+merge results.
+
 ## 10. Local Codex HTTP MCP
 
 For local Codex, the stable HTTP MCP endpoint can be registered as:

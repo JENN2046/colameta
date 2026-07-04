@@ -51,7 +51,7 @@ from runner.runtime_observability import (
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
-from runner.stage_parallel_plan import build_stage_parallel_plan_preview
+from runner.stage_parallel_plan import build_stage_parallel_plan_preview, build_stage_parallel_run_preview
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -96,6 +96,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
     "get_stage_parallel_plan_preview",
+    "get_stage_parallel_run_preview",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
@@ -173,6 +174,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
     "get_stage_parallel_plan_preview",
+    "get_stage_parallel_run_preview",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "get_plan_standards_report",
@@ -317,6 +319,7 @@ class MCPPlanningBridgeServer:
             "get_stable_replacement_cadence": self._tool_get_stable_replacement_cadence,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
+            "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
             "get_runner_status": self._tool_get_runner_status,
@@ -576,6 +579,72 @@ class MCPPlanningBridgeServer:
                         "task_intents": {
                             "type": "array",
                             "description": "可选。候选任务意图；只用于只读拆分预览。",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "task_id": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "allowed_files": {"type": "array", "items": {"type": "string"}},
+                                    "surfaces": {"type": "array", "items": {"type": "string"}},
+                                    "risk_level": {
+                                        "type": "string",
+                                        "enum": ["none", "low", "moderate", "high", "blocked"],
+                                    },
+                                },
+                                "required": ["title"],
+                            },
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_run_preview",
+                title="Get Stage Parallel Run Preview",
+                description=(
+                    f"[{self.project_hint}] 阶段并行运行只读预览卡片。"
+                    "基于 stage/task_intents 输出 parallel_group_id、每个 shard 的隔离 worktree/branch 建议和未来 executor preview request。"
+                    "它不创建 executor preview、不启动 executor、不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 project_name 路由读取目标项目；服务模式下必须显式提供。",
+                        },
+                        "stage_id": {
+                            "type": "string",
+                            "description": "可选。要规划的阶段 ID；不传时使用 stage_parallel_automation。",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "enum": ["codex", "opencode", "pi"],
+                            "description": "可选。未来 executor preview 的 provider 偏好。默认 codex。",
+                        },
+                        "base_branch": {
+                            "type": "string",
+                            "description": "可选。未来隔离 worktree 的基准分支名。默认 main。",
+                        },
+                        "max_parallel_tasks": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8,
+                            "description": "可选。最多纳入多少个候选 task shard。默认 3，最大 8。",
+                        },
+                        "task_intents": {
+                            "type": "array",
+                            "description": "可选。候选任务意图；只用于只读运行预览。",
                             "items": {
                                 "type": "object",
                                 "additionalProperties": False,
@@ -5786,6 +5855,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stable_replacement_cadence", "why": "Read whether dev/stable drift should be batched instead of promoted immediately."},
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "get_stage_parallel_plan_preview", "why": "Preview stage-level parallel task sharding without starting executors."},
+                {"tool": "get_stage_parallel_run_preview", "why": "Preview isolated parallel run orchestration without creating worktrees or executor previews."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
             ],
@@ -5861,6 +5931,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stage_parallel_plan_preview",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "预览阶段级并行任务拆分和文件边界，不启动 executor。",
+                },
+                {
+                    "step": "inspect_stage_parallel_run_preview",
+                    "tool": "get_stage_parallel_run_preview",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "预览隔离 worktree/branch 和未来 executor preview request，不创建执行器 preview。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -6150,6 +6226,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "render_commander_app", "arguments": project_args},
                 {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
@@ -6170,6 +6247,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                     apps_connector_closeout["connector_closeout_check"],
@@ -6320,6 +6398,19 @@ class MCPPlanningBridgeServer:
             stage_id=params.get("stage_id") if isinstance(params.get("stage_id"), str) else None,
             task_intents=params.get("task_intents") if isinstance(params.get("task_intents"), list) else None,
             max_parallel_tasks=params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
+        )
+
+    def _tool_get_stage_parallel_run_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        return build_stage_parallel_run_preview(
+            project_root=project_root,
+            project_name=project_name,
+            stage_id=params.get("stage_id") if isinstance(params.get("stage_id"), str) else None,
+            task_intents=params.get("task_intents") if isinstance(params.get("task_intents"), list) else None,
+            max_parallel_tasks=params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
+            provider=params.get("provider") if isinstance(params.get("provider"), str) else None,
+            base_branch=params.get("base_branch") if isinstance(params.get("base_branch"), str) else None,
         )
 
     def _tool_get_project_identity(self, params: dict[str, Any]) -> dict[str, Any]:
