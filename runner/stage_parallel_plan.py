@@ -426,14 +426,19 @@ def build_stage_parallel_group_status(
     has_results = bool(result_by_task)
     all_succeeded = bool(shard_statuses) and all(item.get("status") == "succeeded" for item in shard_statuses)
     all_validated = bool(shard_statuses) and all(item.get("validation_status") == "passed" for item in shard_statuses)
-    blockers = list(executor_group.get("blocking_reasons", [])) if isinstance(executor_group.get("blocking_reasons"), list) else []
+    has_incomplete_results = any(item.get("status") in {"planned", "running"} for item in shard_statuses)
+    raw_group_blockers = list(executor_group.get("blocking_reasons", [])) if isinstance(executor_group.get("blocking_reasons"), list) else []
+    blockers = _parallel_group_blockers_for_results(raw_group_blockers, has_results=has_results)
     if has_results:
         blockers.extend(_parallel_result_blockers(shard_statuses))
     status = (
         "merge_ready"
         if has_results and all_succeeded and all_validated and not blockers
         else "waiting_for_executor_results"
-        if executor_group.get("status") == "preview_ready" and not has_results
+        if (
+            (has_results and has_incomplete_results and not blockers)
+            or (executor_group.get("status") == "preview_ready" and not has_results)
+        )
         else "blocked"
         if blockers
         else str(executor_group.get("status") or "empty")
@@ -950,6 +955,17 @@ def _parallel_result_blockers(shard_statuses: list[dict[str, Any]]) -> list[dict
                 }
             )
     return blockers
+
+
+def _parallel_group_blockers_for_results(blockers: list[dict[str, Any]], *, has_results: bool) -> list[dict[str, Any]]:
+    if not has_results:
+        return blockers
+    pre_creation_only = {"WORKTREE_PATH_ALREADY_EXISTS"}
+    return [
+        item
+        for item in blockers
+        if str(item.get("code") or "") not in pre_creation_only
+    ]
 
 
 def _parallel_group_status_risk(status: str, blockers: list[dict[str, Any]]) -> str:

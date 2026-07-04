@@ -753,9 +753,10 @@ The local parallel orchestration packet chain is:
 3. `get_stage_parallel_worktree_assignment_preview`
 4. `get_stage_parallel_executor_group_preview`
 5. `manage_stage_parallel_executor_runs action=preview`
-6. `get_stage_parallel_group_status`
-7. `get_stage_parallel_merge_preview`
-8. `get_stage_parallel_closeout_packet`
+6. `get_stage_parallel_executor_results_packet`
+7. `get_stage_parallel_group_status`
+8. `get_stage_parallel_merge_preview`
+9. `get_stage_parallel_closeout_packet`
 
 These tools let ChatGPT/Jenn inspect the whole local parallel stage path before
 any mutation. `group_status`, `merge_preview`, and `closeout_packet` may accept
@@ -786,6 +787,13 @@ branch/head/provider. `action=apply` starts one executor run per isolated
 worktree with `executor_session_mode=start_new`. It still does not merge results
 back to main, commit main, push, write Delivery accepted, create
 ReviewDecision/GateEvent, or replace stable.
+
+After executor runs are started or completed, use
+`get_stage_parallel_executor_results_packet` to read structured preview,
+claim, and report metadata from the isolated worktrees. It emits sanitized
+`executor_results` for `get_stage_parallel_group_status` and merge preview. It
+does not read raw logs, start executors, merge, commit, push, write Delivery
+accepted, create ReviewDecision/GateEvent, or replace stable.
 
 ## 10. Local Codex HTTP MCP
 

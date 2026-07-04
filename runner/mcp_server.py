@@ -60,6 +60,7 @@ from runner.stage_parallel_plan import (
     build_stage_parallel_run_preview,
     build_stage_parallel_worktree_assignment_preview,
 )
+from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -107,6 +108,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
     "get_stage_parallel_executor_group_preview",
+    "get_stage_parallel_executor_results_packet",
     "get_stage_parallel_group_status",
     "get_stage_parallel_merge_preview",
     "get_stage_parallel_closeout_packet",
@@ -343,6 +345,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
     "get_stage_parallel_executor_group_preview",
+    "get_stage_parallel_executor_results_packet",
     "get_stage_parallel_group_status",
     "get_stage_parallel_merge_preview",
     "get_stage_parallel_closeout_packet",
@@ -496,6 +499,7 @@ class MCPPlanningBridgeServer:
             "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
             "get_stage_parallel_worktree_assignment_preview": self._tool_get_stage_parallel_worktree_assignment_preview,
             "get_stage_parallel_executor_group_preview": self._tool_get_stage_parallel_executor_group_preview,
+            "get_stage_parallel_executor_results_packet": self._tool_get_stage_parallel_executor_results_packet,
             "get_stage_parallel_group_status": self._tool_get_stage_parallel_group_status,
             "get_stage_parallel_merge_preview": self._tool_get_stage_parallel_merge_preview,
             "get_stage_parallel_closeout_packet": self._tool_get_stage_parallel_closeout_packet,
@@ -880,6 +884,23 @@ class MCPPlanningBridgeServer:
                     f"[{self.project_hint}] 阶段并行 executor group 只读预览卡片。"
                     "基于 worktree assignment 预览每个 shard 的未来 executor preview request。"
                     "它不创建 executor preview、不启动 executor、不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_executor_results_packet",
+                title="Get Stage Parallel Executor Results Packet",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 executor results 只读 packet。"
+                    "扫描隔离 worktree 的 structured preview/claim/report metadata，生成 sanitized executor_results。"
+                    "它不读 raw logs、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
                 ),
                 input_schema=_stage_parallel_preview_input_schema(),
                 output_schema=common_output_schema,
@@ -6013,6 +6034,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args()},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args(), "action": "preview"}},
+                    {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args()},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
                     {"tool": "get_stage_parallel_merge_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args()},
@@ -6228,6 +6250,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "why": "Check deterministic worktree and branch assignments without creating them."},
                 {"tool": "get_stage_parallel_executor_group_preview", "why": "Preview executor group requests without creating previews or starting runs."},
                 {"tool": "manage_stage_parallel_executor_runs", "why": "Preview the executor run group after run_once_preview artifacts exist; apply starts isolated executor runs only."},
+                {"tool": "get_stage_parallel_executor_results_packet", "why": "Read structured parallel executor claim/report summaries without raw logs."},
                 {"tool": "get_stage_parallel_group_status", "why": "Read planned or provided shard result status before merge preview."},
                 {"tool": "get_stage_parallel_merge_preview", "why": "Preview merge order and validation gates after shard results pass."},
                 {"tool": "get_stage_parallel_closeout_packet", "why": "Prepare the stage parallel closeout packet for human review."},
@@ -6330,6 +6353,12 @@ class MCPPlanningBridgeServer:
                     "tool": "manage_stage_parallel_executor_runs",
                     "arguments": {"project_name": "<registered project_name>", "action": "preview"},
                     "why": "executor preview artifacts 已存在后，预览并行 executor run group；apply 才会启动隔离 worktree executor。",
+                },
+                {
+                    "step": "inspect_stage_parallel_executor_results_packet",
+                    "tool": "get_stage_parallel_executor_results_packet",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "读取 structured executor claim/report 摘要，生成 sanitized executor_results；不读 raw logs。",
                 },
                 {
                     "step": "inspect_stage_parallel_group_status",
@@ -6641,6 +6670,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                 {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
+                {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
                 {"tool": "get_stage_parallel_group_status", "arguments": project_args},
                 {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
@@ -6668,6 +6698,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
+                    {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args},
                     {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
@@ -6868,6 +6899,9 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_stage_parallel_executor_group_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         return build_stage_parallel_executor_group_preview(**self._stage_parallel_builder_args(params))
+
+    def _tool_get_stage_parallel_executor_results_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+        return build_stage_parallel_executor_results_packet(**self._stage_parallel_builder_args(params))
 
     def _tool_get_stage_parallel_group_status(self, params: dict[str, Any]) -> dict[str, Any]:
         args = self._stage_parallel_builder_args(params)

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import subprocess
 
+from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
 from runner.mcp_stage_parallel_executor_runs import MCPStageParallelExecutorRunGroupManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
+from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
 
 
 def _git(project, *args: str) -> subprocess.CompletedProcess[str]:
@@ -324,3 +326,115 @@ def test_stage_parallel_executor_runs_apply_requires_preview_id(tmp_path) -> Non
 
     assert result["ok"] is False
     assert result["error_code"] == "PREVIEW_ID_REQUIRED"
+
+
+def test_stage_parallel_executor_results_packet_reports_planned_preview(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_executor_preview(project)
+
+    result = build_stage_parallel_executor_results_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["ok"] is True
+    assert result["read_only"] is True
+    assert result["authority_boundary"]["does_not_read_raw_logs"] is True
+    assert result["result_summary"]["planned"] == 1
+    assert result["executor_results"][0]["status"] == "planned"
+    assert result["executor_results"][0]["validation_status"] == "not_run"
+    assert result["group_status_preview"]["status"] == "waiting_for_executor_results"
+
+
+def test_stage_parallel_executor_results_packet_reports_running_claim(tmp_path, monkeypatch) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_executor_preview(project)
+    run_manager = MCPStageParallelExecutorRunGroupManager(str(project))
+    preview = run_manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+
+    monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", lambda self, **kwargs: None)
+    started = run_manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert started["ok"] is True
+
+    result = build_stage_parallel_executor_results_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["result_summary"]["running"] == 1
+    assert result["executor_results"][0]["status"] == "running"
+    assert result["executor_results"][0]["validation_status"] == "running"
+    assert result["group_status_preview"]["status"] == "waiting_for_executor_results"
+
+
+def test_stage_parallel_executor_results_packet_reports_completed_validated_report(tmp_path, monkeypatch) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_executor_preview(project)
+    run_manager = MCPStageParallelExecutorRunGroupManager(str(project))
+    preview = run_manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+
+    monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", lambda self, **kwargs: None)
+    started = run_manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert started["ok"] is True
+    executor_preview_id = started["started_executor_runs"][0]["executor_preview_id"]
+    worktree_path = started["started_executor_runs"][0]["worktree_path"]
+    report = ExecutorRunReportStore(worktree_path).record_report(
+        version="v1",
+        version_name="One",
+        provider="codex",
+        execution_mode="run",
+        status="completed",
+        commit_head_before="abc",
+        commit_head_after="def",
+        changed_files=["README.md"],
+        summary_validation_results=["PASSED: pytest"],
+    )
+    assert report["ok"] is True
+    claim_file = (
+        project
+        / ".colameta"
+        / "runtime"
+        / "parallel-worktrees"
+        / preview["parallel_group_id"]
+        / "one"
+        / ".colameta"
+        / "runtime"
+        / "executor-workflow-previews"
+        / "claims"
+        / f"{executor_preview_id}.json"
+    )
+    claim = json.loads(claim_file.read_text(encoding="utf-8"))
+    claim["status"] = "COMPLETED"
+    claim["report_id"] = report["report_id"]
+    claim_file.write_text(json.dumps(claim), encoding="utf-8")
+
+    result = build_stage_parallel_executor_results_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["result_summary"]["succeeded"] == 1
+    assert result["executor_results"][0]["status"] == "succeeded"
+    assert result["executor_results"][0]["validation_status"] == "passed"
+    assert result["executor_results"][0]["changed_files"] == ["README.md"]
+    assert result["group_status_preview"]["status"] == "merge_ready"

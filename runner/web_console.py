@@ -1840,6 +1840,11 @@ class WebConsoleServer:
                 },
             },
             {
+                "label": "Parallel executor results packet",
+                "tool": "get_stage_parallel_executor_results_packet",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "Parallel group status",
                 "tool": "get_stage_parallel_group_status",
                 "arguments": {"project_name": project_name},

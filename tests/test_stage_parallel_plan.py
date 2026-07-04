@@ -222,6 +222,21 @@ def test_stage_parallel_executor_group_and_status_wait_for_results(tmp_path) -> 
     assert status["merge_readiness"]["ready"] is False
     assert status["suggested_next_action"] == "wait_for_executor_results"
 
+    running_status = build_stage_parallel_group_status(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=[
+            {"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]},
+            {"task_id": "two", "title": "Two", "allowed_files": ["docs/two.md"]},
+        ],
+        executor_results=[
+            {"task_id": "one", "status": "running", "validation_status": "running"},
+            {"task_id": "two", "status": "planned", "validation_status": "not_run"},
+        ],
+    )
+    assert running_status["status"] == "waiting_for_executor_results"
+    assert running_status["status_counts"]["running"] == 1
+
 
 def test_stage_parallel_merge_preview_and_closeout_accept_sanitized_results(tmp_path) -> None:
     task_intents = [
