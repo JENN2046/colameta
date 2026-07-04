@@ -26,6 +26,7 @@ from runner.runner_paths import (
     resolve_project_runner_dir,
     resolve_project_runner_plan_path,
 )
+from runner.stage_parallel_shard_input_overlay import load_valid_overlay
 from runner.sensitive_redaction import redact_sensitive_text
 from runner.source_review_bridge import SourceReviewBridge
 from runner.state_machine import RunnerStateMachine
@@ -184,6 +185,12 @@ class ExecutorRunOnceService:
             runner_dir = resolve_project_runner_dir(project_root)
             plan_file = os.path.join(runner_dir, "plan.json")
             state_file = os.path.join(runner_dir, "state.json")
+        overlay = load_valid_overlay(project_root)
+        runner_input_source = (
+            "stage_parallel_shard_overlay"
+            if overlay is not None and os.path.abspath(str(overlay.get("plan_file") or "")) == os.path.abspath(plan_file)
+            else "project_runner"
+        )
         blocks: list[dict[str, str]] = []
         warnings: list[str] = []
 
@@ -336,6 +343,19 @@ class ExecutorRunOnceService:
             "execution_branch_ready": execution_branch_ready,
             "execution_mode": mode,
             "executor_inventory": inventory_raw,
+            "runner_input_source": runner_input_source,
+            "runner_input_overlay": self._compact_runner_input_overlay(overlay) if runner_input_source == "stage_parallel_shard_overlay" else None,
+        }
+
+    def _compact_runner_input_overlay(self, overlay: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(overlay, dict):
+            return None
+        return {
+            "stage_id": overlay.get("stage_id"),
+            "parallel_group_id": overlay.get("parallel_group_id"),
+            "task_id": overlay.get("task_id"),
+            "version": overlay.get("version"),
+            "allowed_files": overlay.get("allowed_files", []),
         }
 
     def _normalized_runner_status_from_state(self, plan_file: str, state_file: str) -> str:

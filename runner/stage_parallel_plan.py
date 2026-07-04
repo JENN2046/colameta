@@ -73,6 +73,7 @@ def build_stage_parallel_plan_preview(
         "next_capability_steps": [
             "stage_parallel_run_preview",
             "stage_parallel_worktree_assignment_preview",
+            "stage_parallel_shard_input_preview",
             "stage_parallel_executor_group_preview",
             "parallel_group_status",
             "stage_parallel_merge_preview",
@@ -179,6 +180,7 @@ def build_stage_parallel_run_preview(
         ),
         "next_capability_steps": [
             "stage_parallel_worktree_assignment_preview",
+            "stage_parallel_shard_input_preview",
             "stage_parallel_executor_group_preview",
             "parallel_group_status",
             "stage_parallel_merge_preview",
@@ -278,13 +280,14 @@ def build_stage_parallel_worktree_assignment_preview(
         "blocking_reasons": blocking_reasons,
         "risk_level": "blocked" if blocking_reasons else _worktree_assignment_risk(assignments),
         "suggested_next_action": (
-            "build_executor_preview_group"
+            "materialize_shard_inputs_preview"
             if status == "preview_ready"
             else "resolve_worktree_assignment_blockers"
             if status == "blocked"
             else "keep_planning"
         ),
         "next_capability_steps": [
+            "stage_parallel_shard_input_preview",
             "executor_preview_group",
             "parallel_group_status",
             "stage_parallel_merge_preview",
@@ -755,8 +758,8 @@ def _worktree_assignment_safe_next_actions(status: str) -> list[dict[str, Any]]:
     if status == "preview_ready":
         return [
             {
-                "action_id": "build_executor_preview_group",
-                "label": "Preview executor preview requests for each assignable worktree.",
+                "action_id": "materialize_shard_inputs_preview",
+                "label": "Preview shard runner input materialization for each assignable worktree.",
             }
         ]
     if status == "blocked":

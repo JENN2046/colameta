@@ -1817,6 +1817,15 @@ class WebConsoleServer:
                 },
             },
             {
+                "label": "Parallel shard inputs preview",
+                "tool": "manage_stage_parallel_shard_inputs",
+                "arguments": {
+                    "project_name": project_name,
+                    "action": "preview",
+                    "stage_id": "stage_parallel_automation",
+                },
+            },
+            {
                 "label": "Parallel executor group",
                 "tool": "get_stage_parallel_executor_group_preview",
                 "arguments": {"project_name": project_name},

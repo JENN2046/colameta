@@ -760,6 +760,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_merge_preview" in tool_defs
         assert "get_stage_parallel_closeout_packet" in tool_defs
         assert "manage_stage_parallel_worktrees" in tool_defs
+        assert "manage_stage_parallel_shard_inputs" in tool_defs
         assert "manage_stage_parallel_executor_group" in tool_defs
         assert "manage_stage_parallel_executor_runs" in tool_defs
         assert "manage_stage_parallel_merges" in tool_defs
@@ -780,6 +781,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_stage_parallel_merge_preview"].title == "Get Stage Parallel Merge Preview"
         assert tool_defs["get_stage_parallel_closeout_packet"].title == "Get Stage Parallel Closeout Packet"
         assert tool_defs["manage_stage_parallel_worktrees"].title == "Manage Stage Parallel Worktrees"
+        assert tool_defs["manage_stage_parallel_shard_inputs"].title == "Manage Stage Parallel Shard Inputs"
         assert tool_defs["manage_stage_parallel_executor_group"].title == "Manage Stage Parallel Executor Group"
         assert tool_defs["manage_stage_parallel_executor_runs"].title == "Manage Stage Parallel Executor Runs"
         assert tool_defs["manage_stage_parallel_merges"].title == "Manage Stage Parallel Merges"
@@ -808,6 +810,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_merge_preview" in server._visible_tool_names()
         assert "get_stage_parallel_closeout_packet" in server._visible_tool_names()
         assert "manage_stage_parallel_worktrees" in server._visible_tool_names()
+        assert "manage_stage_parallel_shard_inputs" in server._visible_tool_names()
         assert "manage_stage_parallel_executor_group" in server._visible_tool_names()
         assert "manage_stage_parallel_executor_runs" in server._visible_tool_names()
         assert "manage_stage_parallel_merges" in server._visible_tool_names()
@@ -832,6 +835,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "preview"}) == "mcp:preview"
         assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "discard"}) == "mcp:preview"
         assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "apply"}) == "mcp:commit"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_shard_inputs", {"action": "status"}) == "mcp:read"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_shard_inputs", {"action": "preview"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_shard_inputs", {"action": "discard"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_shard_inputs", {"action": "apply"}) == "mcp:commit"
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "status"}) == "mcp:read"
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "preview"}) == "mcp:preview"
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "discard"}) == "mcp:preview"
@@ -884,17 +891,18 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][5]["tool"] == "get_stage_parallel_plan_preview"
         assert data["entry_sequence"][6]["tool"] == "get_stage_parallel_run_preview"
         assert data["entry_sequence"][7]["tool"] == "get_stage_parallel_worktree_assignment_preview"
-        assert data["entry_sequence"][8]["tool"] == "get_stage_parallel_executor_group_preview"
-        assert data["entry_sequence"][9]["tool"] == "manage_stage_parallel_executor_runs"
-        assert data["entry_sequence"][10]["tool"] == "get_stage_parallel_executor_results_packet"
-        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_group_status"
-        assert data["entry_sequence"][12]["tool"] == "get_stage_parallel_merge_preview"
-        assert data["entry_sequence"][13]["tool"] == "manage_stage_parallel_merges"
-        assert data["entry_sequence"][14]["tool"] == "get_stage_parallel_closeout_packet"
-        assert data["entry_sequence"][15]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][16]["tool"] == "get_apps_connector_smoke_packet"
-        assert data["entry_sequence"][17]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][18]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][8]["tool"] == "manage_stage_parallel_shard_inputs"
+        assert data["entry_sequence"][9]["tool"] == "get_stage_parallel_executor_group_preview"
+        assert data["entry_sequence"][10]["tool"] == "manage_stage_parallel_executor_runs"
+        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_executor_results_packet"
+        assert data["entry_sequence"][12]["tool"] == "get_stage_parallel_group_status"
+        assert data["entry_sequence"][13]["tool"] == "get_stage_parallel_merge_preview"
+        assert data["entry_sequence"][14]["tool"] == "manage_stage_parallel_merges"
+        assert data["entry_sequence"][15]["tool"] == "get_stage_parallel_closeout_packet"
+        assert data["entry_sequence"][16]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][17]["tool"] == "get_apps_connector_smoke_packet"
+        assert data["entry_sequence"][18]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][19]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"

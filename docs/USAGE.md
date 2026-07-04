@@ -751,13 +751,14 @@ The local parallel orchestration packet chain is:
 1. `get_stage_parallel_plan_preview`
 2. `get_stage_parallel_run_preview`
 3. `get_stage_parallel_worktree_assignment_preview`
-4. `get_stage_parallel_executor_group_preview`
-5. `manage_stage_parallel_executor_runs action=preview`
-6. `get_stage_parallel_executor_results_packet`
-7. `get_stage_parallel_group_status`
-8. `get_stage_parallel_merge_preview`
-9. `manage_stage_parallel_merges action=preview`
-10. `get_stage_parallel_closeout_packet`
+4. `manage_stage_parallel_shard_inputs action=preview`
+5. `get_stage_parallel_executor_group_preview`
+6. `manage_stage_parallel_executor_runs action=preview`
+7. `get_stage_parallel_executor_results_packet`
+8. `get_stage_parallel_group_status`
+9. `get_stage_parallel_merge_preview`
+10. `manage_stage_parallel_merges action=preview`
+11. `get_stage_parallel_closeout_packet`
 
 These tools let ChatGPT/Jenn inspect the whole local parallel stage path before
 any mutation. `group_status`, `merge_preview`, and `closeout_packet` may accept
@@ -774,12 +775,21 @@ This apply step still does not create executor previews, start executors, merge,
 commit, push, write Delivery accepted, create ReviewDecision/GateEvent, or
 replace stable.
 
-After isolated worktrees exist, use `manage_stage_parallel_executor_group`.
+After isolated worktrees exist, use `manage_stage_parallel_shard_inputs`.
 `action=preview` validates that each worktree exists, is on the expected
-branch/head, is clean, and passes executor preflight. `action=apply` then creates
-one `manage_executor_workflow action=run_once_preview` artifact per worktree.
-It still does not start executors, merge, commit, push, write Delivery accepted,
-create ReviewDecision/GateEvent, or replace stable.
+branch/head, and is clean. `action=apply` writes a shard-specific runtime
+`plan.json`, `state.json`, and prompt overlay under each worktree's
+`.colameta/runtime/stage-parallel-shard-inputs/current/`. It does not change the
+Git baseline, create executor previews, start executors, merge, commit, push,
+write Delivery accepted, create ReviewDecision/GateEvent, or replace stable.
+
+After shard inputs exist, use `manage_stage_parallel_executor_group`.
+`action=preview` validates that each worktree exists, is on the expected
+branch/head, is clean, and passes executor preflight using the shard input
+overlay. `action=apply` then creates one `manage_executor_workflow
+action=run_once_preview` artifact per worktree. It still does not start
+executors, merge, commit, push, write Delivery accepted, create
+ReviewDecision/GateEvent, or replace stable.
 
 After those `run_once_preview` artifacts exist, use
 `manage_stage_parallel_executor_runs`. `action=preview` validates that every

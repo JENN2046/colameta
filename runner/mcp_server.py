@@ -120,6 +120,7 @@ NORMAL_EXPOSED_TOOLS = (
     "manage_executor_workflow",
     "manage_validation_run",
     "manage_stage_parallel_worktrees",
+    "manage_stage_parallel_shard_inputs",
     "manage_stage_parallel_executor_group",
     "manage_stage_parallel_executor_runs",
     "manage_stage_parallel_merges",
@@ -312,6 +313,30 @@ def _manage_stage_parallel_executor_group_input_schema() -> dict[str, Any]:
     }
 
 
+def _manage_stage_parallel_shard_inputs_input_schema() -> dict[str, Any]:
+    schema = _stage_parallel_preview_input_schema()
+    properties = dict(schema["properties"])
+    properties["action"] = {
+        "type": "string",
+        "enum": ["preview", "apply", "status", "discard"],
+        "description": "preview 校验已创建 worktree 并生成 shard input preview；apply 用 preview_id 写入每个 shard 的 runtime plan/state/prompt overlay。",
+    }
+    properties["preview_id"] = {
+        "type": "string",
+        "description": "apply/status/discard 必填。来自 preview 的 preview_id。",
+    }
+    properties["reason"] = {
+        "type": "string",
+        "description": "preview 可选。记录写入 shard runner input 的原因。",
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+
 def _manage_stage_parallel_executor_runs_input_schema() -> dict[str, Any]:
     schema = _stage_parallel_preview_input_schema()
     properties = dict(schema["properties"])
@@ -406,6 +431,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_executor_workflow",
     "manage_validation_run",
     "manage_stage_parallel_worktrees",
+    "manage_stage_parallel_shard_inputs",
     "manage_stage_parallel_executor_group",
     "manage_stage_parallel_executor_runs",
     "manage_stage_parallel_merges",
@@ -586,6 +612,7 @@ class MCPPlanningBridgeServer:
             "manage_executor_workflow": self._tool_manage_executor_workflow,
             "manage_validation_run": self._tool_manage_validation_run,
             "manage_stage_parallel_worktrees": self._tool_manage_stage_parallel_worktrees,
+            "manage_stage_parallel_shard_inputs": self._tool_manage_stage_parallel_shard_inputs,
             "manage_stage_parallel_executor_group": self._tool_manage_stage_parallel_executor_group,
             "manage_stage_parallel_executor_runs": self._tool_manage_stage_parallel_executor_runs,
             "manage_stage_parallel_merges": self._tool_manage_stage_parallel_merges,
@@ -1000,6 +1027,25 @@ class MCPPlanningBridgeServer:
                     "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
                 ),
                 input_schema=_manage_stage_parallel_worktrees_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
+                },
+            ),
+            MCPToolDef(
+                name="manage_stage_parallel_shard_inputs",
+                title="Manage Stage Parallel Shard Inputs",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 shard runner input 受控工具。"
+                    "preview 会校验每个 isolated worktree 已存在、branch/head 匹配且干净；"
+                    "apply 只在每个 worktree 的 .colameta/runtime 内写入 shard-specific plan/state/prompt overlay。"
+                    "它不创建 executor preview、不启动 executor、不 merge、不 commit、不 push、不替换 stable。"
+                    "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
+                ),
+                input_schema=_manage_stage_parallel_shard_inputs_input_schema(),
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -5821,6 +5867,18 @@ class MCPPlanningBridgeServer:
                 required_scope = "mcp:preview"
             else:
                 required_scope = "mcp:commit"
+        elif name == "manage_stage_parallel_shard_inputs":
+            action = params.get("action")
+            if isinstance(action, str):
+                action = action.strip().lower()
+            else:
+                action = None
+            if action == "status":
+                required_scope = "mcp:read"
+            elif action in ("preview", "discard"):
+                required_scope = "mcp:preview"
+            else:
+                required_scope = "mcp:commit"
         elif name == "manage_stage_parallel_executor_group":
             action = params.get("action")
             if isinstance(action, str):
@@ -6090,6 +6148,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_run_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args()},
+                    {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args(), "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args()},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args(), "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args()},
@@ -6307,6 +6366,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_plan_preview", "why": "Preview stage-level parallel task sharding without starting executors."},
                 {"tool": "get_stage_parallel_run_preview", "why": "Preview isolated parallel run orchestration without creating worktrees or executor previews."},
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "why": "Check deterministic worktree and branch assignments without creating them."},
+                {"tool": "manage_stage_parallel_shard_inputs", "why": "Preview shard-specific runner input materialization after isolated worktrees exist."},
                 {"tool": "get_stage_parallel_executor_group_preview", "why": "Preview executor group requests without creating previews or starting runs."},
                 {"tool": "manage_stage_parallel_executor_runs", "why": "Preview the executor run group after run_once_preview artifacts exist; apply starts isolated executor runs only."},
                 {"tool": "get_stage_parallel_executor_results_packet", "why": "Read structured parallel executor claim/report summaries without raw logs."},
@@ -6401,6 +6461,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stage_parallel_worktree_assignment_preview",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "检查每个 shard 的 worktree path 和 branch 是否可分配，但不创建。",
+                },
+                {
+                    "step": "preview_stage_parallel_shard_inputs",
+                    "tool": "manage_stage_parallel_shard_inputs",
+                    "arguments": {"project_name": "<registered project_name>", "action": "preview"},
+                    "why": "隔离 worktree 已存在后，预览每个 shard 的 runner input materialization；apply 只写 runtime plan/state/prompt overlay。",
                 },
                 {
                     "step": "inspect_stage_parallel_executor_group_preview",
@@ -6734,6 +6800,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                 {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
@@ -6763,6 +6830,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                    {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args, "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_results_packet", "arguments": project_args},
@@ -9666,6 +9734,23 @@ class MCPPlanningBridgeServer:
         manager = MCPStageParallelWorktreeManager(self.project_root)
         result = manager.handle(action, params)
         self._record_workflow_if_needed("manage_stage_parallel_worktrees", action, params, result)
+        return self._with_project_identity(result)
+
+    def _tool_manage_stage_parallel_shard_inputs(self, params: dict[str, Any]) -> dict[str, Any]:
+        from runner.mcp_stage_parallel_shard_inputs import MCPStageParallelShardInputManager
+
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"preview", "apply", "status", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 preview、apply、status 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stage_parallel_shard_inputs", params, require_managed=True)
+        manager = MCPStageParallelShardInputManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stage_parallel_shard_inputs", action, params, result)
         return self._with_project_identity(result)
 
     def _tool_manage_stage_parallel_executor_group(self, params: dict[str, Any]) -> dict[str, Any]:

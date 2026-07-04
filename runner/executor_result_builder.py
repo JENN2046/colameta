@@ -43,6 +43,8 @@ def preflight_result(preflight: dict[str, Any], *, provider: str, execution_mode
         "execution_branch_required": preflight.get("execution_branch_required", False),
         "execution_branch_ready": preflight.get("execution_branch_ready", False),
         "executor_inventory": preflight.get("executor_inventory", {}),
+        "runner_input_source": preflight.get("runner_input_source", "project_runner"),
+        "runner_input_overlay": preflight.get("runner_input_overlay"),
     }
 
 

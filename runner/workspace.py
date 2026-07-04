@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 
 from runner.runner_paths import resolve_project_runner_dir
+from runner.stage_parallel_shard_input_overlay import load_valid_overlay
 
 
 @dataclass
@@ -20,7 +21,7 @@ class ProjectWorkspace:
     def from_project_path(cls, project_path: str) -> "ProjectWorkspace":
         workspace_root = os.path.abspath(os.path.expanduser(project_path))
         runner_dir = resolve_project_runner_dir(workspace_root)
-        return cls(
+        workspace = cls(
             workspace_root=workspace_root,
             runner_dir=runner_dir,
             prompts_dir=os.path.join(runner_dir, "prompts"),
@@ -30,6 +31,20 @@ class ProjectWorkspace:
             plan_file=os.path.join(runner_dir, "plan.json"),
             state_file=os.path.join(runner_dir, "state.json"),
             rules_file=os.path.join(runner_dir, "rules.md"),
+        )
+        overlay = load_valid_overlay(workspace_root)
+        if overlay is None:
+            return workspace
+        return cls(
+            workspace_root=workspace.workspace_root,
+            runner_dir=workspace.runner_dir,
+            prompts_dir=workspace.prompts_dir,
+            runtime_dir=str(overlay["runtime_dir"]),
+            logs_dir=str(overlay["logs_dir"]),
+            backup_dir=workspace.backup_dir,
+            plan_file=str(overlay["plan_file"]),
+            state_file=str(overlay["state_file"]),
+            rules_file=workspace.rules_file,
         )
 
     def ensure_directories(self) -> None:

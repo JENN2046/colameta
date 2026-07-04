@@ -9,6 +9,7 @@ from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
 from runner.mcp_stage_parallel_executor_runs import MCPStageParallelExecutorRunGroupManager
 from runner.mcp_stage_parallel_merges import MCPStageParallelMergeManager
+from runner.mcp_stage_parallel_shard_inputs import MCPStageParallelShardInputManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
 from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
 
@@ -34,6 +35,13 @@ def _init_managed_repo(tmp_path):
         json.dumps(
             {
                 "project_name": "demo",
+                "default_acceptance_commands": [
+                    {
+                        "command": "python3 -m compileall -q .",
+                        "timeout_seconds": 600,
+                        "continue_on_failure": False,
+                    }
+                ],
                 "versions": [
                     {
                         "version": "v1",
@@ -63,6 +71,54 @@ def _init_managed_repo(tmp_path):
     return project
 
 
+def _init_managed_repo_with_ignored_state(tmp_path):
+    project = tmp_path / "repo_ignored_state"
+    project.mkdir()
+    _git(project, "init", "-q", "-b", "main")
+    (project / "README.md").write_text("demo\n", encoding="utf-8")
+    (project / ".gitignore").write_text(".colameta/state.json\n.colameta/runtime/\n", encoding="utf-8")
+    runner_dir = project / ".colameta"
+    runner_dir.mkdir()
+    (runner_dir / "plan.json").write_text(
+        json.dumps(
+            {
+                "project_name": "demo",
+                "default_acceptance_commands": [
+                    {
+                        "command": "python3 -m compileall -q .",
+                        "timeout_seconds": 600,
+                        "continue_on_failure": False,
+                    }
+                ],
+                "versions": [
+                    {
+                        "version": "v1",
+                        "name": "One",
+                        "enabled": True,
+                        "allowed_files": ["README.md"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runner_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "project_name": "demo",
+                "status": "VERSION_PASSED",
+                "current_version": "v1",
+                "current_version_index": 0,
+                "versions": [{"version": "v1", "name": "One", "status": "PASSED"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _git(project, "add", "README.md", ".gitignore", ".colameta/plan.json")
+    _git(project, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init", "-q")
+    return project
+
+
 def _task_intents() -> list[dict[str, object]]:
     return [{"task_id": "one", "title": "One", "allowed_files": ["README.md"]}]
 
@@ -83,8 +139,26 @@ def _create_worktree(project, *, stage_id: str = "stage_parallel_dev") -> dict:
     return applied["created_worktrees"][0]
 
 
+def _materialize_shard_inputs(project, *, stage_id: str = "stage_parallel_dev") -> dict:
+    manager = MCPStageParallelShardInputManager(str(project))
+    preview = manager.handle(
+        "preview",
+        {
+            "stage_id": stage_id,
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+    assert preview["ok"] is True
+    assert preview["status"] == "preview_ready"
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert applied["ok"] is True
+    return applied["materialized_inputs"][0]
+
+
 def _create_executor_preview(project, *, stage_id: str = "stage_parallel_dev") -> dict:
     _create_worktree(project, stage_id=stage_id)
+    _materialize_shard_inputs(project, stage_id=stage_id)
     manager = MCPStageParallelExecutorGroupManager(str(project))
     preview = manager.handle(
         "preview",
@@ -118,6 +192,61 @@ def test_stage_parallel_executor_group_preview_blocks_until_worktree_exists(tmp_
     assert result["can_apply"] is False
     assert "preview_id" not in result
     assert result["blockers"][0]["code"] == "WORKTREE_PATH_NOT_FOUND"
+
+
+def test_stage_parallel_shard_inputs_overlay_unblocks_missing_state_worktree(tmp_path) -> None:
+    project = _init_managed_repo_with_ignored_state(tmp_path)
+    created = _create_worktree(project)
+    worktree_path = created["worktree_path"]
+    group_manager = MCPStageParallelExecutorGroupManager(str(project))
+
+    before = group_manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+    assert before["ok"] is True
+    assert before["status"] == "blocked"
+    assert before["blockers"][0]["code"] == "EXECUTOR_PREFLIGHT_BLOCKED"
+    assert before["blockers"][0]["blocks"][0]["code"] == "NO_STATE_FILE"
+
+    materialized = _materialize_shard_inputs(project)
+
+    assert materialized["worktree_path"] == worktree_path
+    assert materialized["runner_input_source"] == "stage_parallel_shard_overlay"
+    assert Path(materialized["manifest_file"]).is_file()
+    assert Path(materialized["plan_file"]).is_file()
+    assert Path(materialized["state_file"]).is_file()
+    assert Path(materialized["prompt_file"]).is_file()
+    status_lines = [
+        line
+        for line in _git(Path(worktree_path), "status", "--short", "--untracked-files=all").stdout.splitlines()
+        if line.strip()
+    ]
+    assert status_lines == []
+
+    preflight = MCPExecutorWorkflowManager(worktree_path).handle(
+        "preflight",
+        {"provider": "codex", "execution_mode": "run"},
+    )
+    assert preflight["preflight_blocked"] is False
+    assert preflight["runner_input_source"] == "stage_parallel_shard_overlay"
+    assert preflight["runner_input_overlay"]["task_id"] == "one"
+    assert preflight["current_version"] == "stage_parallel_one"
+
+    after = group_manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+    assert after["ok"] is True
+    assert after["status"] == "preview_ready"
 
 
 def test_stage_parallel_executor_group_preview_writes_group_preview_only(tmp_path) -> None:
