@@ -710,9 +710,10 @@ preview-first 的 `stage_parallel_run_preview` 一类入口。
 2. `get_stage_parallel_run_preview`
 3. `get_stage_parallel_worktree_assignment_preview`
 4. `get_stage_parallel_executor_group_preview`
-5. `get_stage_parallel_group_status`
-6. `get_stage_parallel_merge_preview`
-7. `get_stage_parallel_closeout_packet`
+5. `manage_stage_parallel_executor_runs action=preview`
+6. `get_stage_parallel_group_status`
+7. `get_stage_parallel_merge_preview`
+8. `get_stage_parallel_closeout_packet`
 
 这组工具让 ChatGPT/Jenn 在任何 mutation 前先读完整并行阶段路径。
 `group_status`、`merge_preview` 和 `closeout_packet` 可以接收调用方提供的 sanitized
@@ -733,6 +734,13 @@ executor preflight 可通过；`action=apply` 会在每个 worktree 内创建一
 `manage_executor_workflow action=run_once_preview` artifact。它仍然不启动 executor、不
 merge、不 commit、不 push、不写 Delivery accepted、不创建 ReviewDecision/GateEvent，也不
 替换 stable。
+
+这些 `run_once_preview` artifacts 已存在后，使用
+`manage_stage_parallel_executor_runs`。`action=preview` 会校验每个 worktree 都有未消费、
+未过期且匹配当前 branch/head/provider 的 preview artifact；`action=apply` 会用
+`executor_session_mode=start_new` 为每个隔离 worktree 启动一个 executor run。它仍然不把
+结果 merge 回 main、不 commit main、不 push、不写 Delivery accepted、不创建
+ReviewDecision/GateEvent，也不替换 stable。
 
 ## 10. 常见故障
 

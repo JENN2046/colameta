@@ -760,6 +760,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_closeout_packet" in tool_defs
         assert "manage_stage_parallel_worktrees" in tool_defs
         assert "manage_stage_parallel_executor_group" in tool_defs
+        assert "manage_stage_parallel_executor_runs" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
@@ -777,6 +778,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_stage_parallel_closeout_packet"].title == "Get Stage Parallel Closeout Packet"
         assert tool_defs["manage_stage_parallel_worktrees"].title == "Manage Stage Parallel Worktrees"
         assert tool_defs["manage_stage_parallel_executor_group"].title == "Manage Stage Parallel Executor Group"
+        assert tool_defs["manage_stage_parallel_executor_runs"].title == "Manage Stage Parallel Executor Runs"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
         assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
         assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
@@ -802,6 +804,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_closeout_packet" in server._visible_tool_names()
         assert "manage_stage_parallel_worktrees" in server._visible_tool_names()
         assert "manage_stage_parallel_executor_group" in server._visible_tool_names()
+        assert "manage_stage_parallel_executor_runs" in server._visible_tool_names()
         assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
@@ -826,6 +829,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "preview"}) == "mcp:preview"
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "discard"}) == "mcp:preview"
         assert server.get_required_scope_for_tool("manage_stage_parallel_executor_group", {"action": "apply"}) == "mcp:commit"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_executor_runs", {"action": "status"}) == "mcp:read"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_executor_runs", {"action": "preview"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_executor_runs", {"action": "discard"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_executor_runs", {"action": "apply"}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
         widget_html = server._commander_widget_html()
@@ -867,13 +874,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][6]["tool"] == "get_stage_parallel_run_preview"
         assert data["entry_sequence"][7]["tool"] == "get_stage_parallel_worktree_assignment_preview"
         assert data["entry_sequence"][8]["tool"] == "get_stage_parallel_executor_group_preview"
-        assert data["entry_sequence"][9]["tool"] == "get_stage_parallel_group_status"
-        assert data["entry_sequence"][10]["tool"] == "get_stage_parallel_merge_preview"
-        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_closeout_packet"
-        assert data["entry_sequence"][12]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][13]["tool"] == "get_apps_connector_smoke_packet"
-        assert data["entry_sequence"][14]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][15]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][9]["tool"] == "manage_stage_parallel_executor_runs"
+        assert data["entry_sequence"][10]["tool"] == "get_stage_parallel_group_status"
+        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_merge_preview"
+        assert data["entry_sequence"][12]["tool"] == "get_stage_parallel_closeout_packet"
+        assert data["entry_sequence"][13]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][14]["tool"] == "get_apps_connector_smoke_packet"
+        assert data["entry_sequence"][15]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][16]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"

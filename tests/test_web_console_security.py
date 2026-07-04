@@ -764,6 +764,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["get_stage_parallel_executor_group_preview"]["arguments"]["project_name"]
         assert calls["manage_stage_parallel_executor_group"]["arguments"]["project_name"]
         assert calls["manage_stage_parallel_executor_group"]["arguments"]["action"] == "preview"
+        assert calls["manage_stage_parallel_executor_runs"]["arguments"]["project_name"]
+        assert calls["manage_stage_parallel_executor_runs"]["arguments"]["action"] == "preview"
         assert calls["get_stage_parallel_group_status"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_merge_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_closeout_packet"]["arguments"]["project_name"]
@@ -780,6 +782,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls_by_label["Parallel executor group"]["tool"] == "get_stage_parallel_executor_group_preview"
         assert calls_by_label["Parallel executor group apply preview"]["tool"] == "manage_stage_parallel_executor_group"
         assert calls_by_label["Parallel executor group apply preview"]["arguments"]["action"] == "preview"
+        assert calls_by_label["Parallel executor runs apply preview"]["tool"] == "manage_stage_parallel_executor_runs"
+        assert calls_by_label["Parallel executor runs apply preview"]["arguments"]["action"] == "preview"
         assert calls_by_label["Parallel group status"]["tool"] == "get_stage_parallel_group_status"
         assert calls_by_label["Parallel merge preview"]["tool"] == "get_stage_parallel_merge_preview"
         assert calls_by_label["Parallel closeout packet"]["tool"] == "get_stage_parallel_closeout_packet"

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 
+from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
+from runner.mcp_stage_parallel_executor_runs import MCPStageParallelExecutorRunGroupManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
 
 
@@ -75,6 +77,24 @@ def _create_worktree(project, *, stage_id: str = "stage_parallel_dev") -> dict:
     applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
     assert applied["ok"] is True
     return applied["created_worktrees"][0]
+
+
+def _create_executor_preview(project, *, stage_id: str = "stage_parallel_dev") -> dict:
+    _create_worktree(project, stage_id=stage_id)
+    manager = MCPStageParallelExecutorGroupManager(str(project))
+    preview = manager.handle(
+        "preview",
+        {
+            "stage_id": stage_id,
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+    assert preview["ok"] is True
+    assert preview["status"] == "preview_ready"
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert applied["ok"] is True
+    return applied["created_executor_previews"][0]
 
 
 def test_stage_parallel_executor_group_preview_blocks_until_worktree_exists(tmp_path) -> None:
@@ -177,6 +197,128 @@ def test_stage_parallel_executor_group_apply_creates_executor_previews_without_r
 def test_stage_parallel_executor_group_apply_requires_preview_id(tmp_path) -> None:
     project = _init_managed_repo(tmp_path)
     manager = MCPStageParallelExecutorGroupManager(str(project))
+
+    result = manager.handle("apply", {})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "PREVIEW_ID_REQUIRED"
+
+
+def test_stage_parallel_executor_runs_preview_blocks_until_executor_preview_exists(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_worktree(project)
+    manager = MCPStageParallelExecutorRunGroupManager(str(project))
+
+    result = manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "blocked"
+    assert result["can_apply"] is False
+    assert result["blockers"][0]["code"] == "EXECUTOR_PREVIEW_NOT_FOUND"
+
+
+def test_stage_parallel_executor_runs_preview_writes_group_preview_without_claiming(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    created = _create_executor_preview(project)
+    manager = MCPStageParallelExecutorRunGroupManager(str(project))
+
+    result = manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "preview_ready"
+    assert result["side_effect_scope"] == "preview_artifact_only"
+    assert result["authority_boundary"]["does_not_start_executor"] is True
+    assert result["planned_operations"][0]["executor_preview_id"] == created["executor_preview_id"]
+    claim_file = (
+        project
+        / ".colameta"
+        / "runtime"
+        / "parallel-worktrees"
+        / result["parallel_group_id"]
+        / "one"
+        / ".colameta"
+        / "runtime"
+        / "executor-workflow-previews"
+        / "claims"
+        / f"{created['executor_preview_id']}.json"
+    )
+    assert not claim_file.exists()
+
+    status = manager.handle("status", {"preview_id": result["preview_id"]})
+    assert status["ok"] is True
+    assert status["status"] == "preview_ready"
+    assert status["confirmation"]["preview_id"] == result["preview_id"]
+
+
+def test_stage_parallel_executor_runs_apply_starts_claims_without_merge_or_push(tmp_path, monkeypatch) -> None:
+    project = _init_managed_repo(tmp_path)
+    created = _create_executor_preview(project)
+    manager = MCPStageParallelExecutorRunGroupManager(str(project))
+    preview = manager.handle(
+        "preview",
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        },
+    )
+    started_calls = []
+
+    def fake_start(self, **kwargs):
+        started_calls.append({"project_root": self.project_root, **kwargs})
+
+    monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", fake_start)
+
+    result = manager.handle("apply", {"preview_id": preview["preview_id"]})
+
+    assert result["ok"] is True
+    assert result["action"] == "apply"
+    assert result["status"] == "started"
+    assert result["started_count"] == 1
+    assert result["authority_boundary"]["starts_executor_runs_on_apply"] is True
+    assert result["authority_boundary"]["does_not_commit_to_main"] is True
+    assert result["authority_boundary"]["does_not_push"] is True
+    assert result["started_executor_runs"][0]["executor_preview_id"] == created["executor_preview_id"]
+    assert started_calls
+    claim_file = (
+        project
+        / ".colameta"
+        / "runtime"
+        / "parallel-worktrees"
+        / preview["parallel_group_id"]
+        / "one"
+        / ".colameta"
+        / "runtime"
+        / "executor-workflow-previews"
+        / "claims"
+        / f"{created['executor_preview_id']}.json"
+    )
+    claim = json.loads(claim_file.read_text(encoding="utf-8"))
+    assert claim["status"] == "RUNNING"
+    assert claim["preview_id"] == created["executor_preview_id"]
+
+    status = manager.handle("status", {"preview_id": preview["preview_id"]})
+    assert status["ok"] is False
+    assert status["error_code"] == "PREVIEW_NOT_FOUND"
+
+
+def test_stage_parallel_executor_runs_apply_requires_preview_id(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    manager = MCPStageParallelExecutorRunGroupManager(str(project))
 
     result = manager.handle("apply", {})
 

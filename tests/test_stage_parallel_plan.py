@@ -213,6 +213,9 @@ def test_stage_parallel_executor_group_and_status_wait_for_results(tmp_path) -> 
     assert group["executor_preview_summary"]["planned_preview_count"] == 2
     assert group["executor_preview_summary"]["created_preview_count"] == 0
     assert group["authority_boundary"]["does_not_create_executor_preview"] is True
+    assert group["suggested_next_action"] == "preview_executor_run_group"
+    assert group["next_capability_steps"][0] == "executor_run_group_preview"
+    assert group["safe_next_actions"][0]["action_id"] == "preview_executor_run_group"
     assert status["source"] == "stage_parallel_group_status"
     assert status["status"] == "waiting_for_executor_results"
     assert status["status_counts"]["planned"] == 2

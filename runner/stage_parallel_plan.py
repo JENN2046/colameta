@@ -378,11 +378,12 @@ def build_stage_parallel_executor_group_preview(
         else [],
         "risk_level": assignment_preview.get("risk_level"),
         "suggested_next_action": (
-            "track_parallel_group_status"
+            "preview_executor_run_group"
             if status == "preview_ready"
             else assignment_preview.get("suggested_next_action")
         ),
         "next_capability_steps": [
+            "executor_run_group_preview",
             "parallel_group_status",
             "stage_parallel_merge_preview",
             "stage_closeout_packet",
@@ -767,8 +768,8 @@ def _executor_group_safe_next_actions(status: str) -> list[dict[str, Any]]:
     if status == "preview_ready":
         return [
             {
-                "action_id": "track_parallel_group_status",
-                "label": "Track the planned group until executor result summaries are available.",
+                "action_id": "preview_executor_run_group",
+                "label": "Preview the executor run group after run_once_preview artifacts exist.",
             }
         ]
     return _worktree_assignment_safe_next_actions(status)
