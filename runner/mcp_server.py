@@ -117,6 +117,7 @@ NORMAL_EXPOSED_TOOLS = (
     "manage_executor_config",
     "manage_executor_workflow",
     "manage_validation_run",
+    "manage_stage_parallel_worktrees",
     "manage_git",
     "manage_project_docs",
     "manage_prompt_file",
@@ -258,6 +259,30 @@ def _stage_parallel_preview_input_schema(*, include_executor_results: bool = Fal
     }
 
 
+def _manage_stage_parallel_worktrees_input_schema() -> dict[str, Any]:
+    schema = _stage_parallel_preview_input_schema()
+    properties = dict(schema["properties"])
+    properties["action"] = {
+        "type": "string",
+        "enum": ["preview", "apply", "status", "discard"],
+        "description": "preview 生成受控 worktree apply preview；apply 用 preview_id 创建 worktree；status/discard 读取或废弃 preview。",
+    }
+    properties["preview_id"] = {
+        "type": "string",
+        "description": "apply/status/discard 必填。来自 preview 的 preview_id。",
+    }
+    properties["reason"] = {
+        "type": "string",
+        "description": "preview 可选。记录创建并行 worktree preview 的原因。",
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
@@ -302,6 +327,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_executor_config",
     "manage_executor_workflow",
     "manage_validation_run",
+    "manage_stage_parallel_worktrees",
     "manage_workflow_run",
     "list_workflow_runs",
     "get_workflow_run",
@@ -477,6 +503,7 @@ class MCPPlanningBridgeServer:
             "inspect_executor_activity": self._tool_inspect_executor_activity,
             "manage_executor_workflow": self._tool_manage_executor_workflow,
             "manage_validation_run": self._tool_manage_validation_run,
+            "manage_stage_parallel_worktrees": self._tool_manage_stage_parallel_worktrees,
             "list_workflow_runs": self._tool_list_workflow_runs,
             "get_workflow_run": self._tool_get_workflow_run,
         }
@@ -858,6 +885,25 @@ class MCPPlanningBridgeServer:
                     "destructiveHint": False,
                     "openWorldHint": False,
                     "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="manage_stage_parallel_worktrees",
+                title="Manage Stage Parallel Worktrees",
+                description=(
+                    f"[{self.project_hint}] 阶段并行隔离 git worktree 受控工具。"
+                    "preview 会生成 preview_id 并校验 base HEAD、dirty state、worktree path 和 branch；"
+                    "apply 只使用 preview_id 创建隔离 worktree。"
+                    "它不启动 executor、不创建 executor preview、不 merge、不 commit、不 push、不替换 stable。"
+                    "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
+                ),
+                input_schema=_manage_stage_parallel_worktrees_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
                 },
             ),
             MCPToolDef(
@@ -5604,6 +5650,18 @@ class MCPPlanningBridgeServer:
                 required_scope = "mcp:preview"
             else:
                 required_scope = "mcp:commit"
+        elif name == "manage_stage_parallel_worktrees":
+            action = params.get("action")
+            if isinstance(action, str):
+                action = action.strip().lower()
+            else:
+                action = None
+            if action == "status":
+                required_scope = "mcp:read"
+            elif action in ("preview", "discard"):
+                required_scope = "mcp:preview"
+            else:
+                required_scope = "mcp:commit"
         elif name == "manage_files":
             action = params.get("action")
             if isinstance(action, str):
@@ -6508,6 +6566,14 @@ class MCPPlanningBridgeServer:
                             **project_args,
                             "action": "preview",
                             "scope": "target_files",
+                        },
+                    },
+                    {
+                        "tool": "manage_stage_parallel_worktrees",
+                        "arguments": {
+                            **project_args,
+                            "action": "preview",
+                            "stage_id": "stage_parallel_automation",
                         },
                     },
                     {
@@ -9331,6 +9397,23 @@ class MCPPlanningBridgeServer:
         manager = MCPValidationRunManager(self.project_root)
         result = manager.handle(action, params)
         self._record_workflow_if_needed("manage_validation_run", action, params, result)
+        return self._with_project_identity(result)
+
+    def _tool_manage_stage_parallel_worktrees(self, params: dict[str, Any]) -> dict[str, Any]:
+        from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
+
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"preview", "apply", "status", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 preview、apply、status 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stage_parallel_worktrees", params, require_managed=True)
+        manager = MCPStageParallelWorktreeManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stage_parallel_worktrees", action, params, result)
         return self._with_project_identity(result)
 
     def _create_mcp_workflow_router(self) -> MCPWorkflowRouter:

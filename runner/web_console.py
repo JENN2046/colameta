@@ -1808,6 +1808,15 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel worktree apply preview",
+                "tool": "manage_stage_parallel_worktrees",
+                "arguments": {
+                    "project_name": project_name,
+                    "action": "preview",
+                    "stage_id": "stage_parallel_automation",
+                },
+            },
+            {
                 "label": "Parallel executor group",
                 "tool": "get_stage_parallel_executor_group_preview",
                 "arguments": {"project_name": project_name},

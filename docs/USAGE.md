@@ -763,6 +763,14 @@ not create worktrees, create executor previews, run executors, merge, commit,
 push, write Delivery accepted, create ReviewDecision/GateEvent, or replace
 stable.
 
+The first controlled mutation gate is `manage_stage_parallel_worktrees`.
+Use `action=preview` to create a short-lived preview artifact after validating
+base HEAD, dirty state, branch names, and isolated worktree paths. Use
+`action=apply` only with that `preview_id` to create the isolated git worktrees.
+This apply step still does not create executor previews, start executors, merge,
+commit, push, write Delivery accepted, create ReviewDecision/GateEvent, or
+replace stable.
+
 ## 10. Local Codex HTTP MCP
 
 For local Codex, the stable HTTP MCP endpoint can be registered as:

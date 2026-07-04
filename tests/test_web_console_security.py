@@ -759,6 +759,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["get_stage_parallel_plan_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_run_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_worktree_assignment_preview"]["arguments"]["project_name"]
+        assert calls["manage_stage_parallel_worktrees"]["arguments"]["project_name"]
+        assert calls["manage_stage_parallel_worktrees"]["arguments"]["action"] == "preview"
         assert calls["get_stage_parallel_executor_group_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_group_status"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_merge_preview"]["arguments"]["project_name"]
@@ -771,6 +773,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls_by_label["Parallel plan preview"]["tool"] == "get_stage_parallel_plan_preview"
         assert calls_by_label["Parallel run preview"]["tool"] == "get_stage_parallel_run_preview"
         assert calls_by_label["Parallel worktree assignment"]["tool"] == "get_stage_parallel_worktree_assignment_preview"
+        assert calls_by_label["Parallel worktree apply preview"]["tool"] == "manage_stage_parallel_worktrees"
+        assert calls_by_label["Parallel worktree apply preview"]["arguments"]["action"] == "preview"
         assert calls_by_label["Parallel executor group"]["tool"] == "get_stage_parallel_executor_group_preview"
         assert calls_by_label["Parallel group status"]["tool"] == "get_stage_parallel_group_status"
         assert calls_by_label["Parallel merge preview"]["tool"] == "get_stage_parallel_merge_preview"

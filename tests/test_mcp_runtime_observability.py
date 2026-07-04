@@ -758,6 +758,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_group_status" in tool_defs
         assert "get_stage_parallel_merge_preview" in tool_defs
         assert "get_stage_parallel_closeout_packet" in tool_defs
+        assert "manage_stage_parallel_worktrees" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
@@ -773,6 +774,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_stage_parallel_group_status"].title == "Get Stage Parallel Group Status"
         assert tool_defs["get_stage_parallel_merge_preview"].title == "Get Stage Parallel Merge Preview"
         assert tool_defs["get_stage_parallel_closeout_packet"].title == "Get Stage Parallel Closeout Packet"
+        assert tool_defs["manage_stage_parallel_worktrees"].title == "Manage Stage Parallel Worktrees"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
         assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
         assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
@@ -796,6 +798,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stage_parallel_group_status" in server._visible_tool_names()
         assert "get_stage_parallel_merge_preview" in server._visible_tool_names()
         assert "get_stage_parallel_closeout_packet" in server._visible_tool_names()
+        assert "manage_stage_parallel_worktrees" in server._visible_tool_names()
         assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
@@ -812,6 +815,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_stage_parallel_group_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stage_parallel_merge_preview", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stage_parallel_closeout_packet", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "status"}) == "mcp:read"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "preview"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "discard"}) == "mcp:preview"
+        assert server.get_required_scope_for_tool("manage_stage_parallel_worktrees", {"action": "apply"}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
         widget_html = server._commander_widget_html()
