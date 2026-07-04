@@ -118,6 +118,7 @@ NORMAL_EXPOSED_TOOLS = (
     "manage_executor_workflow",
     "manage_validation_run",
     "manage_stage_parallel_worktrees",
+    "manage_stage_parallel_executor_group",
     "manage_git",
     "manage_project_docs",
     "manage_prompt_file",
@@ -283,6 +284,30 @@ def _manage_stage_parallel_worktrees_input_schema() -> dict[str, Any]:
     }
 
 
+def _manage_stage_parallel_executor_group_input_schema() -> dict[str, Any]:
+    schema = _stage_parallel_preview_input_schema()
+    properties = dict(schema["properties"])
+    properties["action"] = {
+        "type": "string",
+        "enum": ["preview", "apply", "status", "discard"],
+        "description": "preview 校验已创建 worktree 并生成 group preview；apply 用 preview_id 批量创建 executor run_once_preview artifacts。",
+    }
+    properties["preview_id"] = {
+        "type": "string",
+        "description": "apply/status/discard 必填。来自 preview 的 preview_id。",
+    }
+    properties["reason"] = {
+        "type": "string",
+        "description": "preview 可选。记录创建 executor preview group 的原因。",
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
@@ -328,6 +353,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_executor_workflow",
     "manage_validation_run",
     "manage_stage_parallel_worktrees",
+    "manage_stage_parallel_executor_group",
     "manage_workflow_run",
     "list_workflow_runs",
     "get_workflow_run",
@@ -504,6 +530,7 @@ class MCPPlanningBridgeServer:
             "manage_executor_workflow": self._tool_manage_executor_workflow,
             "manage_validation_run": self._tool_manage_validation_run,
             "manage_stage_parallel_worktrees": self._tool_manage_stage_parallel_worktrees,
+            "manage_stage_parallel_executor_group": self._tool_manage_stage_parallel_executor_group,
             "list_workflow_runs": self._tool_list_workflow_runs,
             "get_workflow_run": self._tool_get_workflow_run,
         }
@@ -898,6 +925,25 @@ class MCPPlanningBridgeServer:
                     "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
                 ),
                 input_schema=_manage_stage_parallel_worktrees_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
+                },
+            ),
+            MCPToolDef(
+                name="manage_stage_parallel_executor_group",
+                title="Manage Stage Parallel Executor Group",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 executor preview group 受控工具。"
+                    "preview 会校验每个 isolated worktree 已存在、branch/head 匹配且 executor preflight 可通过；"
+                    "apply 只在每个 worktree 内创建 manage_executor_workflow run_once_preview artifact。"
+                    "它不启动 executor、不 merge、不 commit、不 push、不替换 stable。"
+                    "scope：status=mcp:read，preview/discard=mcp:preview，apply=mcp:commit。"
+                ),
+                input_schema=_manage_stage_parallel_executor_group_input_schema(),
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -5662,6 +5708,18 @@ class MCPPlanningBridgeServer:
                 required_scope = "mcp:preview"
             else:
                 required_scope = "mcp:commit"
+        elif name == "manage_stage_parallel_executor_group":
+            action = params.get("action")
+            if isinstance(action, str):
+                action = action.strip().lower()
+            else:
+                action = None
+            if action == "status":
+                required_scope = "mcp:read"
+            elif action in ("preview", "discard"):
+                required_scope = "mcp:preview"
+            else:
+                required_scope = "mcp:commit"
         elif name == "manage_files":
             action = params.get("action")
             if isinstance(action, str):
@@ -6570,6 +6628,14 @@ class MCPPlanningBridgeServer:
                     },
                     {
                         "tool": "manage_stage_parallel_worktrees",
+                        "arguments": {
+                            **project_args,
+                            "action": "preview",
+                            "stage_id": "stage_parallel_automation",
+                        },
+                    },
+                    {
+                        "tool": "manage_stage_parallel_executor_group",
                         "arguments": {
                             **project_args,
                             "action": "preview",
@@ -9414,6 +9480,23 @@ class MCPPlanningBridgeServer:
         manager = MCPStageParallelWorktreeManager(self.project_root)
         result = manager.handle(action, params)
         self._record_workflow_if_needed("manage_stage_parallel_worktrees", action, params, result)
+        return self._with_project_identity(result)
+
+    def _tool_manage_stage_parallel_executor_group(self, params: dict[str, Any]) -> dict[str, Any]:
+        from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
+
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"preview", "apply", "status", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 preview、apply、status 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stage_parallel_executor_group", params, require_managed=True)
+        manager = MCPStageParallelExecutorGroupManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stage_parallel_executor_group", action, params, result)
         return self._with_project_identity(result)
 
     def _create_mcp_workflow_router(self) -> MCPWorkflowRouter:

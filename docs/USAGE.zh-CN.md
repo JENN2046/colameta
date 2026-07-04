@@ -727,6 +727,13 @@ branch name 和隔离 worktree path；再用 `action=apply` 携带这个 `previe
 不 commit、不 push、不写 Delivery accepted、不创建 ReviewDecision/GateEvent，也不替换
 stable。
 
+隔离 worktree 已存在后，使用 `manage_stage_parallel_executor_group`。
+`action=preview` 会校验每个 worktree 已存在、位于预期 branch/head、工作区干净，并且
+executor preflight 可通过；`action=apply` 会在每个 worktree 内创建一个
+`manage_executor_workflow action=run_once_preview` artifact。它仍然不启动 executor、不
+merge、不 commit、不 push、不写 Delivery accepted、不创建 ReviewDecision/GateEvent，也不
+替换 stable。
+
 ## 10. 常见故障
 
 ### 说明书 smoke checklist

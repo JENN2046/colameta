@@ -1822,6 +1822,15 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel executor group apply preview",
+                "tool": "manage_stage_parallel_executor_group",
+                "arguments": {
+                    "project_name": project_name,
+                    "action": "preview",
+                    "stage_id": "stage_parallel_automation",
+                },
+            },
+            {
                 "label": "Parallel group status",
                 "tool": "get_stage_parallel_group_status",
                 "arguments": {"project_name": project_name},

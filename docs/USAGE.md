@@ -771,6 +771,13 @@ This apply step still does not create executor previews, start executors, merge,
 commit, push, write Delivery accepted, create ReviewDecision/GateEvent, or
 replace stable.
 
+After isolated worktrees exist, use `manage_stage_parallel_executor_group`.
+`action=preview` validates that each worktree exists, is on the expected
+branch/head, is clean, and passes executor preflight. `action=apply` then creates
+one `manage_executor_workflow action=run_once_preview` artifact per worktree.
+It still does not start executors, merge, commit, push, write Delivery accepted,
+create ReviewDecision/GateEvent, or replace stable.
+
 ## 10. Local Codex HTTP MCP
 
 For local Codex, the stable HTTP MCP endpoint can be registered as:
