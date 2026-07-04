@@ -72,7 +72,8 @@ def build_stage_parallel_plan_preview(
         "automation_stage": "parallel_plan_preview_only",
         "next_capability_steps": [
             "stage_parallel_run_preview",
-            "isolated_worktree_assignment",
+            "stage_parallel_worktree_assignment_preview",
+            "stage_parallel_executor_group_preview",
             "parallel_group_status",
             "stage_parallel_merge_preview",
             "stage_closeout_packet",
@@ -177,8 +178,8 @@ def build_stage_parallel_run_preview(
             else "keep_planning"
         ),
         "next_capability_steps": [
-            "isolated_worktree_assignment_apply",
-            "executor_preview_group_apply",
+            "stage_parallel_worktree_assignment_preview",
+            "stage_parallel_executor_group_preview",
             "parallel_group_status",
             "stage_parallel_merge_preview",
             "stage_closeout_packet",
@@ -197,6 +198,416 @@ def build_stage_parallel_run_preview(
             "does_not_emit_gate_event": True,
         },
         "safe_next_actions": _run_preview_safe_next_actions(preview_ready, blocking_reasons),
+    }
+
+
+def build_stage_parallel_worktree_assignment_preview(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+) -> dict[str, Any]:
+    """Preview deterministic isolated worktree assignments for a parallel group.
+
+    This is still read-only. It checks whether the suggested paths and branch
+    names are assignable, but does not create directories, branches, worktrees,
+    executor previews, runs, commits, pushes, or stable replacements.
+    """
+    run_preview = build_stage_parallel_run_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+    )
+    project_root_abs = os.path.abspath(os.path.expanduser(project_root or ""))
+    runtime_root = os.path.join(project_root_abs, ".colameta", "runtime", "parallel-worktrees")
+    run_shards = run_preview.get("run_shards") if isinstance(run_preview.get("run_shards"), list) else []
+    assignments = [
+        _build_worktree_assignment(
+            run_shard=run_shard,
+            project_root=project_root_abs,
+            runtime_root=runtime_root,
+        )
+        for run_shard in run_shards
+        if isinstance(run_shard, dict)
+    ]
+    blocking_reasons = _worktree_assignment_blockers(run_preview, assignments)
+    assignable_count = sum(1 for item in assignments if item.get("assignment_status") == "assignable")
+    status = (
+        "preview_ready"
+        if assignments and not blocking_reasons
+        else "blocked"
+        if blocking_reasons
+        else "empty"
+    )
+
+    return {
+        "ok": True,
+        "source": "stage_parallel_worktree_assignment_preview",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "project_root": project_root_abs,
+        "project_name": project_name,
+        "stage_id": run_preview.get("stage_id"),
+        "parallel_group_id": run_preview.get("parallel_group_id"),
+        "base_branch": run_preview.get("base_branch"),
+        "provider": run_preview.get("provider"),
+        "worktree_root": runtime_root,
+        "run_preview": {
+            "status": run_preview.get("status"),
+            "risk_level": run_preview.get("risk_level"),
+            "suggested_next_action": run_preview.get("suggested_next_action"),
+        },
+        "assignment_summary": {
+            "planned_assignment_count": len(assignments),
+            "assignable_count": assignable_count,
+            "blocked_count": max(0, len(assignments) - assignable_count),
+            "creates_worktrees": False,
+            "creates_branches": False,
+        },
+        "worktree_assignments": assignments,
+        "blocking_reasons": blocking_reasons,
+        "risk_level": "blocked" if blocking_reasons else _worktree_assignment_risk(assignments),
+        "suggested_next_action": (
+            "build_executor_preview_group"
+            if status == "preview_ready"
+            else "resolve_worktree_assignment_blockers"
+            if status == "blocked"
+            else "keep_planning"
+        ),
+        "next_capability_steps": [
+            "executor_preview_group",
+            "parallel_group_status",
+            "stage_parallel_merge_preview",
+            "stage_closeout_packet",
+        ],
+        "authority_boundary": _parallel_read_only_authority_boundary(),
+        "safe_next_actions": _worktree_assignment_safe_next_actions(status),
+    }
+
+
+def build_stage_parallel_executor_group_preview(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+) -> dict[str, Any]:
+    """Preview the executor preview group that would follow worktree assignment."""
+    assignment_preview = build_stage_parallel_worktree_assignment_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+    )
+    run_preview = build_stage_parallel_run_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+    )
+    run_by_task = _items_by_task_id(run_preview.get("run_shards"))
+    executor_previews = []
+    for assignment in assignment_preview.get("worktree_assignments", []):
+        if not isinstance(assignment, dict):
+            continue
+        task_id = str(assignment.get("task_id") or "")
+        run_shard = run_by_task.get(task_id, {})
+        request = run_shard.get("executor_preview_request") if isinstance(run_shard, dict) else None
+        executor_previews.append(
+            {
+                "task_id": task_id,
+                "title": run_shard.get("title") if isinstance(run_shard, dict) else task_id,
+                "preview_status": "not_created",
+                "executor_provider": run_preview.get("provider"),
+                "assigned_worktree_path": assignment.get("worktree_path"),
+                "assigned_branch_name": assignment.get("branch_name"),
+                "requires_assignment_status": "assignable",
+                "assignment_status": assignment.get("assignment_status"),
+                "future_preview_request": request if isinstance(request, dict) else {},
+            }
+        )
+    assignment_status = str(assignment_preview.get("status") or "empty")
+    status = "preview_ready" if assignment_status == "preview_ready" else assignment_status
+
+    return {
+        "ok": True,
+        "source": "stage_parallel_executor_group_preview",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "project_root": assignment_preview.get("project_root"),
+        "project_name": project_name,
+        "stage_id": assignment_preview.get("stage_id"),
+        "parallel_group_id": assignment_preview.get("parallel_group_id"),
+        "assignment_preview": {
+            "status": assignment_status,
+            "risk_level": assignment_preview.get("risk_level"),
+            "planned_assignment_count": assignment_preview.get("assignment_summary", {}).get("planned_assignment_count")
+            if isinstance(assignment_preview.get("assignment_summary"), dict)
+            else None,
+        },
+        "executor_preview_summary": {
+            "planned_preview_count": len(executor_previews),
+            "created_preview_count": 0,
+            "starts_executor_runs": False,
+            "requires_explicit_apply_before_creation": True,
+        },
+        "executor_previews": executor_previews,
+        "blocking_reasons": list(assignment_preview.get("blocking_reasons", []))
+        if isinstance(assignment_preview.get("blocking_reasons"), list)
+        else [],
+        "risk_level": assignment_preview.get("risk_level"),
+        "suggested_next_action": (
+            "track_parallel_group_status"
+            if status == "preview_ready"
+            else assignment_preview.get("suggested_next_action")
+        ),
+        "next_capability_steps": [
+            "parallel_group_status",
+            "stage_parallel_merge_preview",
+            "stage_closeout_packet",
+        ],
+        "authority_boundary": _parallel_read_only_authority_boundary(),
+        "safe_next_actions": _executor_group_safe_next_actions(status),
+    }
+
+
+def build_stage_parallel_group_status(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+    executor_results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Aggregate expected or caller-provided executor result summaries."""
+    executor_group = build_stage_parallel_executor_group_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+    )
+    result_by_task = _normalize_executor_results(executor_results)
+    shard_statuses = []
+    for preview in executor_group.get("executor_previews", []):
+        if not isinstance(preview, dict):
+            continue
+        task_id = str(preview.get("task_id") or "")
+        result = result_by_task.get(task_id)
+        shard_statuses.append(_build_parallel_shard_status(preview, result))
+    counts = _parallel_status_counts(shard_statuses)
+    has_results = bool(result_by_task)
+    all_succeeded = bool(shard_statuses) and all(item.get("status") == "succeeded" for item in shard_statuses)
+    all_validated = bool(shard_statuses) and all(item.get("validation_status") == "passed" for item in shard_statuses)
+    blockers = list(executor_group.get("blocking_reasons", [])) if isinstance(executor_group.get("blocking_reasons"), list) else []
+    if has_results:
+        blockers.extend(_parallel_result_blockers(shard_statuses))
+    status = (
+        "merge_ready"
+        if has_results and all_succeeded and all_validated and not blockers
+        else "waiting_for_executor_results"
+        if executor_group.get("status") == "preview_ready" and not has_results
+        else "blocked"
+        if blockers
+        else str(executor_group.get("status") or "empty")
+    )
+
+    return {
+        "ok": True,
+        "source": "stage_parallel_group_status",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "project_root": executor_group.get("project_root"),
+        "project_name": project_name,
+        "stage_id": executor_group.get("stage_id"),
+        "parallel_group_id": executor_group.get("parallel_group_id"),
+        "executor_group_preview": {
+            "status": executor_group.get("status"),
+            "planned_preview_count": executor_group.get("executor_preview_summary", {}).get("planned_preview_count")
+            if isinstance(executor_group.get("executor_preview_summary"), dict)
+            else None,
+        },
+        "result_source": "provided_executor_results" if has_results else "planned_no_executor_results",
+        "status_counts": counts,
+        "shard_statuses": shard_statuses,
+        "merge_readiness": {
+            "ready": status == "merge_ready",
+            "all_shards_succeeded": all_succeeded,
+            "all_validations_passed": all_validated,
+            "requires_stage_parallel_merge_preview": True,
+        },
+        "blocking_reasons": blockers,
+        "risk_level": _parallel_group_status_risk(status, blockers),
+        "suggested_next_action": (
+            "build_stage_parallel_merge_preview"
+            if status == "merge_ready"
+            else "wait_for_executor_results"
+            if status == "waiting_for_executor_results"
+            else "resolve_parallel_group_blockers"
+            if status == "blocked"
+            else "keep_planning"
+        ),
+        "next_capability_steps": [
+            "stage_parallel_merge_preview",
+            "stage_closeout_packet",
+        ],
+        "authority_boundary": _parallel_read_only_authority_boundary(),
+        "safe_next_actions": _parallel_group_status_safe_next_actions(status),
+    }
+
+
+def build_stage_parallel_merge_preview(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+    executor_results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Preview a safe merge plan for a completed parallel group."""
+    group_status = build_stage_parallel_group_status(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+        executor_results=executor_results,
+    )
+    merge_ready = group_status.get("status") == "merge_ready"
+    merge_sequence = _build_merge_sequence(group_status.get("shard_statuses")) if merge_ready else []
+    blockers = [] if merge_ready else _merge_preview_blockers(group_status)
+
+    return {
+        "ok": True,
+        "source": "stage_parallel_merge_preview",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": "preview_ready" if merge_ready else "blocked",
+        "project_root": group_status.get("project_root"),
+        "project_name": project_name,
+        "stage_id": group_status.get("stage_id"),
+        "parallel_group_id": group_status.get("parallel_group_id"),
+        "group_status": {
+            "status": group_status.get("status"),
+            "result_source": group_status.get("result_source"),
+            "merge_ready": group_status.get("merge_readiness", {}).get("ready")
+            if isinstance(group_status.get("merge_readiness"), dict)
+            else False,
+        },
+        "merge_plan": {
+            "strategy": "sequential_worktree_merge_after_explicit_authorization",
+            "target_branch": _clean_branch(base_branch) or "main",
+            "merge_sequence": merge_sequence,
+            "merge_allowed_now": False,
+            "requires_clean_target_worktree": True,
+            "requires_post_merge_validation": True,
+            "validation_commands": _default_parallel_validation_commands(),
+        },
+        "blocking_reasons": blockers,
+        "risk_level": "moderate" if merge_ready else "blocked",
+        "suggested_next_action": (
+            "prepare_stage_closeout_packet"
+            if merge_ready
+            else "complete_parallel_group_before_merge_preview"
+        ),
+        "next_capability_steps": ["stage_closeout_packet"],
+        "authority_boundary": _parallel_read_only_authority_boundary(),
+        "safe_next_actions": _merge_preview_safe_next_actions(merge_ready),
+    }
+
+
+def build_stage_parallel_closeout_packet(
+    *,
+    project_root: str,
+    project_name: str | None = None,
+    stage_id: str | None = None,
+    task_intents: list[dict[str, Any]] | None = None,
+    max_parallel_tasks: int | None = None,
+    provider: str | None = None,
+    base_branch: str | None = None,
+    executor_results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the read-only closeout packet for a parallel stage."""
+    merge_preview = build_stage_parallel_merge_preview(
+        project_root=project_root,
+        project_name=project_name,
+        stage_id=stage_id,
+        task_intents=task_intents,
+        max_parallel_tasks=max_parallel_tasks,
+        provider=provider,
+        base_branch=base_branch,
+        executor_results=executor_results,
+    )
+    ready_for_review = merge_preview.get("status") == "preview_ready"
+    return {
+        "ok": True,
+        "source": "stage_parallel_closeout_packet",
+        "scope": "mcp:read",
+        "read_only": True,
+        "side_effects": False,
+        "status": "ready_for_human_review" if ready_for_review else "not_ready",
+        "project_root": merge_preview.get("project_root"),
+        "project_name": project_name,
+        "stage_id": merge_preview.get("stage_id"),
+        "parallel_group_id": merge_preview.get("parallel_group_id"),
+        "closeout_summary": {
+            "parallel_orchestration_packet_ready": True,
+            "merge_preview_ready": ready_for_review,
+            "requires_human_review_before_apply": True,
+            "stable_replacement_in_scope": False,
+        },
+        "review_packet": {
+            "worktree_assignment": "reviewed_by_stage_parallel_worktree_assignment_preview",
+            "executor_group": "reviewed_by_stage_parallel_executor_group_preview",
+            "group_status": merge_preview.get("group_status"),
+            "merge_plan": merge_preview.get("merge_plan"),
+            "required_validation": _default_parallel_validation_commands(),
+        },
+        "blocking_reasons": list(merge_preview.get("blocking_reasons", []))
+        if isinstance(merge_preview.get("blocking_reasons"), list)
+        else [],
+        "risk_level": "moderate" if ready_for_review else "blocked",
+        "suggested_next_action": (
+            "human_review_parallel_closeout"
+            if ready_for_review
+            else "continue_parallel_group_execution_or_review_blockers"
+        ),
+        "authority_boundary": _parallel_read_only_authority_boundary(),
+        "safe_next_actions": _closeout_safe_next_actions(ready_for_review),
     }
 
 
@@ -251,6 +662,380 @@ def _build_run_shard(
             "requires_validation_after_merge": True,
         },
     }
+
+
+def _build_worktree_assignment(
+    *,
+    run_shard: dict[str, Any],
+    project_root: str,
+    runtime_root: str,
+) -> dict[str, Any]:
+    task_id = _clean_text(run_shard.get("task_id")) or "parallel_task"
+    isolation = run_shard.get("isolation") if isinstance(run_shard.get("isolation"), dict) else {}
+    worktree_path = str(isolation.get("worktree_path") or "")
+    branch_name = str(isolation.get("branch_name") or "")
+    worktree_abs = os.path.abspath(os.path.expanduser(worktree_path))
+    parent_path = os.path.dirname(worktree_abs)
+    branch_name_valid = _clean_branch(branch_name) == branch_name
+    path_within_runtime = _path_is_within(worktree_abs, runtime_root)
+    path_exists = os.path.exists(worktree_abs)
+    blockers = []
+    if not path_within_runtime:
+        blockers.append(
+            {
+                "code": "WORKTREE_PATH_OUTSIDE_PROJECT_RUNTIME",
+                "message": "The suggested worktree path is outside the project runtime worktree root.",
+            }
+        )
+    if path_exists:
+        blockers.append(
+            {
+                "code": "WORKTREE_PATH_ALREADY_EXISTS",
+                "message": "The suggested worktree path already exists and must be inspected before reuse.",
+            }
+        )
+    if not branch_name_valid:
+        blockers.append(
+            {
+                "code": "INVALID_PARALLEL_BRANCH_NAME",
+                "message": "The suggested branch name is not a safe Git branch name.",
+            }
+        )
+    return {
+        "task_id": task_id,
+        "title": _clean_text(run_shard.get("title")) or task_id,
+        "worktree_path": worktree_abs,
+        "worktree_parent_path": parent_path,
+        "worktree_root": runtime_root,
+        "branch_name": branch_name,
+        "base_branch": isolation.get("base_branch"),
+        "path_exists": path_exists,
+        "parent_exists": os.path.isdir(parent_path),
+        "path_within_project_runtime": path_within_runtime,
+        "branch_name_valid": branch_name_valid,
+        "assignment_status": "blocked" if blockers else "assignable",
+        "blocking_reasons": blockers,
+        "creates_worktree": False,
+        "creates_branch": False,
+    }
+
+
+def _worktree_assignment_blockers(
+    run_preview: dict[str, Any],
+    assignments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    run_blockers = run_preview.get("blocking_reasons")
+    if isinstance(run_blockers, list):
+        blockers.extend(item for item in run_blockers if isinstance(item, dict))
+    for assignment in assignments:
+        for item in assignment.get("blocking_reasons", []):
+            if isinstance(item, dict):
+                blocker = dict(item)
+                blocker["task_id"] = assignment.get("task_id")
+                blockers.append(blocker)
+    return blockers
+
+
+def _worktree_assignment_risk(assignments: list[dict[str, Any]]) -> str:
+    if not assignments:
+        return "none"
+    if len(assignments) > 4:
+        return "moderate"
+    return "low"
+
+
+def _worktree_assignment_safe_next_actions(status: str) -> list[dict[str, Any]]:
+    if status == "preview_ready":
+        return [
+            {
+                "action_id": "build_executor_preview_group",
+                "label": "Preview executor preview requests for each assignable worktree.",
+            }
+        ]
+    if status == "blocked":
+        return [
+            {
+                "action_id": "resolve_worktree_assignment_blockers",
+                "label": "Inspect path or branch blockers before any worktree is created.",
+            }
+        ]
+    return [{"action_id": "keep_planning", "label": "Add task_intents before assigning worktrees."}]
+
+
+def _executor_group_safe_next_actions(status: str) -> list[dict[str, Any]]:
+    if status == "preview_ready":
+        return [
+            {
+                "action_id": "track_parallel_group_status",
+                "label": "Track the planned group until executor result summaries are available.",
+            }
+        ]
+    return _worktree_assignment_safe_next_actions(status)
+
+
+def _parallel_group_status_safe_next_actions(status: str) -> list[dict[str, Any]]:
+    if status == "merge_ready":
+        return [
+            {
+                "action_id": "build_stage_parallel_merge_preview",
+                "label": "Preview merge order and validation before applying parallel results.",
+            }
+        ]
+    if status == "waiting_for_executor_results":
+        return [
+            {
+                "action_id": "wait_for_executor_results",
+                "label": "Collect executor result summaries before merge preview.",
+            }
+        ]
+    if status == "blocked":
+        return [
+            {
+                "action_id": "resolve_parallel_group_blockers",
+                "label": "Fix failed, blocked, or unvalidated shard results before merge preview.",
+            }
+        ]
+    return [{"action_id": "keep_planning", "label": "Add task_intents before tracking a parallel group."}]
+
+
+def _merge_preview_safe_next_actions(merge_ready: bool) -> list[dict[str, Any]]:
+    if merge_ready:
+        return [
+            {
+                "action_id": "prepare_stage_closeout_packet",
+                "label": "Prepare a closeout packet for human review before any merge apply.",
+            }
+        ]
+    return [
+        {
+            "action_id": "complete_parallel_group_before_merge_preview",
+            "label": "Provide succeeded and validated executor results before merge preview.",
+        }
+    ]
+
+
+def _closeout_safe_next_actions(ready_for_review: bool) -> list[dict[str, Any]]:
+    if ready_for_review:
+        return [
+            {
+                "action_id": "human_review_parallel_closeout",
+                "label": "Review the closeout packet; it still does not authorize merge, commit, push, or stable replacement.",
+            }
+        ]
+    return [
+        {
+            "action_id": "continue_parallel_group_execution_or_review_blockers",
+            "label": "Complete executor results and merge preview evidence before closeout review.",
+        }
+    ]
+
+
+def _items_by_task_id(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        task_id = _clean_text(item.get("task_id"))
+        if task_id:
+            result[task_id] = item
+    return result
+
+
+def _normalize_executor_results(value: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        task_id = _clean_text(item.get("task_id"))
+        if not task_id:
+            continue
+        result[task_id] = {
+            "task_id": task_id,
+            "status": _clean_executor_status(item.get("status")),
+            "validation_status": _clean_validation_status(item.get("validation_status")),
+            "head": _clean_text(item.get("head")),
+            "changed_files": _clean_string_list(item.get("changed_files")),
+            "summary": _clean_text(item.get("summary")) or "",
+        }
+    return result
+
+
+def _build_parallel_shard_status(
+    preview: dict[str, Any],
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    task_id = str(preview.get("task_id") or "")
+    if not result:
+        return {
+            "task_id": task_id,
+            "title": preview.get("title") or task_id,
+            "status": "planned",
+            "validation_status": "not_run",
+            "worktree_path": preview.get("assigned_worktree_path"),
+            "branch_name": preview.get("assigned_branch_name"),
+            "changed_files": [],
+            "merge_candidate": False,
+        }
+    status = str(result.get("status") or "unknown")
+    validation_status = str(result.get("validation_status") or "unknown")
+    return {
+        "task_id": task_id,
+        "title": preview.get("title") or task_id,
+        "status": status,
+        "validation_status": validation_status,
+        "worktree_path": preview.get("assigned_worktree_path"),
+        "branch_name": preview.get("assigned_branch_name"),
+        "head": result.get("head"),
+        "changed_files": _clean_string_list(result.get("changed_files")),
+        "summary": result.get("summary") or "",
+        "merge_candidate": status == "succeeded" and validation_status == "passed",
+    }
+
+
+def _parallel_status_counts(shard_statuses: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "planned": 0,
+        "running": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "unknown": 0,
+    }
+    for item in shard_statuses:
+        status = str(item.get("status") or "unknown")
+        if status not in counts:
+            status = "unknown"
+        counts[status] += 1
+    counts["total"] = len(shard_statuses)
+    return counts
+
+
+def _parallel_result_blockers(shard_statuses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for item in shard_statuses:
+        task_id = item.get("task_id")
+        status = item.get("status")
+        validation_status = item.get("validation_status")
+        if status in {"failed", "blocked"}:
+            blockers.append(
+                {
+                    "code": "PARALLEL_SHARD_NOT_SUCCESSFUL",
+                    "message": "A parallel shard did not finish successfully.",
+                    "task_id": task_id,
+                    "status": status,
+                }
+            )
+        elif status == "succeeded" and validation_status != "passed":
+            blockers.append(
+                {
+                    "code": "PARALLEL_SHARD_VALIDATION_NOT_PASSED",
+                    "message": "A parallel shard succeeded without passed validation evidence.",
+                    "task_id": task_id,
+                    "validation_status": validation_status,
+                }
+            )
+        elif status not in {"succeeded", "planned", "running"}:
+            blockers.append(
+                {
+                    "code": "PARALLEL_SHARD_STATUS_UNKNOWN",
+                    "message": "A parallel shard has an unknown status.",
+                    "task_id": task_id,
+                    "status": status,
+                }
+            )
+    return blockers
+
+
+def _parallel_group_status_risk(status: str, blockers: list[dict[str, Any]]) -> str:
+    if blockers or status == "blocked":
+        return "blocked"
+    if status in {"merge_ready", "waiting_for_executor_results"}:
+        return "moderate"
+    return "low" if status == "preview_ready" else "none"
+
+
+def _build_merge_sequence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    sequence = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        sequence.append(
+            {
+                "order": index,
+                "task_id": item.get("task_id"),
+                "source_branch": item.get("branch_name"),
+                "source_worktree_path": item.get("worktree_path"),
+                "head": item.get("head"),
+                "changed_files": _clean_string_list(item.get("changed_files")),
+                "merge_command_preview": "git merge --no-ff <source_branch>",
+            }
+        )
+    return sequence
+
+
+def _merge_preview_blockers(group_status: dict[str, Any]) -> list[dict[str, Any]]:
+    blockers = group_status.get("blocking_reasons")
+    if isinstance(blockers, list) and blockers:
+        return [item for item in blockers if isinstance(item, dict)]
+    return [
+        {
+            "code": "PARALLEL_GROUP_NOT_MERGE_READY",
+            "message": "The parallel group is not merge-ready yet.",
+            "group_status": group_status.get("status"),
+        }
+    ]
+
+
+def _default_parallel_validation_commands() -> list[str]:
+    return [
+        "python3 -m py_compile runner/stage_parallel_plan.py runner/mcp_server.py runner/web_console.py",
+        ".venv/bin/python -m pytest tests/test_stage_parallel_plan.py tests/test_mcp_runtime_observability.py tests/test_web_console_security.py -q",
+        ".venv/bin/python -m pytest -q",
+    ]
+
+
+def _parallel_read_only_authority_boundary() -> dict[str, bool]:
+    return {
+        "does_not_authorize_executor_run": True,
+        "does_not_create_executor_preview": True,
+        "does_not_create_branch_or_worktree": True,
+        "does_not_start_background_worker": True,
+        "does_not_merge_parallel_results": True,
+        "does_not_commit": True,
+        "does_not_push": True,
+        "does_not_replace_stable_service": True,
+        "does_not_write_delivery_accepted": True,
+        "does_not_create_review_decision": True,
+        "does_not_emit_gate_event": True,
+    }
+
+
+def _path_is_within(path: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([path, parent]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+
+def _clean_executor_status(value: Any) -> str:
+    cleaned = _clean_text(value)
+    if cleaned in {"planned", "running", "succeeded", "failed", "blocked"}:
+        return cleaned
+    return "unknown"
+
+
+def _clean_validation_status(value: Any) -> str:
+    cleaned = _clean_text(value)
+    if cleaned in {"not_run", "running", "passed", "failed", "blocked"}:
+        return cleaned
+    return "unknown"
 
 
 def _bounded_parallel_limit(value: int | None) -> int:

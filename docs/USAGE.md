@@ -746,6 +746,23 @@ isolated worktree and branch for each shard, and shows the future
 not create worktrees, create executor preview artifacts, start executor runs, or
 merge results.
 
+The local parallel orchestration packet chain is:
+
+1. `get_stage_parallel_plan_preview`
+2. `get_stage_parallel_run_preview`
+3. `get_stage_parallel_worktree_assignment_preview`
+4. `get_stage_parallel_executor_group_preview`
+5. `get_stage_parallel_group_status`
+6. `get_stage_parallel_merge_preview`
+7. `get_stage_parallel_closeout_packet`
+
+These tools let ChatGPT/Jenn inspect the whole local parallel stage path before
+any mutation. `group_status`, `merge_preview`, and `closeout_packet` may accept
+sanitized executor result summaries, but they do not read raw logs and they do
+not create worktrees, create executor previews, run executors, merge, commit,
+push, write Delivery accepted, create ReviewDecision/GateEvent, or replace
+stable.
+
 ## 10. Local Codex HTTP MCP
 
 For local Codex, the stable HTTP MCP endpoint can be registered as:

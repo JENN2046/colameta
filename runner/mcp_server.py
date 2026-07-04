@@ -51,7 +51,15 @@ from runner.runtime_observability import (
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
-from runner.stage_parallel_plan import build_stage_parallel_plan_preview, build_stage_parallel_run_preview
+from runner.stage_parallel_plan import (
+    build_stage_parallel_closeout_packet,
+    build_stage_parallel_executor_group_preview,
+    build_stage_parallel_group_status,
+    build_stage_parallel_merge_preview,
+    build_stage_parallel_plan_preview,
+    build_stage_parallel_run_preview,
+    build_stage_parallel_worktree_assignment_preview,
+)
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -97,6 +105,11 @@ NORMAL_EXPOSED_TOOLS = (
     "get_stable_promotion_readiness",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
+    "get_stage_parallel_worktree_assignment_preview",
+    "get_stage_parallel_executor_group_preview",
+    "get_stage_parallel_group_status",
+    "get_stage_parallel_merge_preview",
+    "get_stage_parallel_closeout_packet",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
@@ -167,6 +180,84 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
     return None
 
 
+def _stage_parallel_preview_input_schema(*, include_executor_results: bool = False) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "project_name": {
+            "type": "string",
+            "description": "可选。按已登记 project_name 路由读取目标项目；服务模式下必须显式提供。",
+        },
+        "stage_id": {
+            "type": "string",
+            "description": "可选。要规划的阶段 ID；不传时使用 stage_parallel_automation。",
+        },
+        "provider": {
+            "type": "string",
+            "enum": ["codex", "opencode", "pi"],
+            "description": "可选。未来 executor preview 的 provider 偏好。默认 codex。",
+        },
+        "base_branch": {
+            "type": "string",
+            "description": "可选。未来隔离 worktree 的基准分支名。默认 main。",
+        },
+        "max_parallel_tasks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8,
+            "description": "可选。最多纳入多少个候选 task shard。默认 3，最大 8。",
+        },
+        "task_intents": {
+            "type": "array",
+            "description": "可选。候选任务意图；只用于只读并行编排预览。",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "allowed_files": {"type": "array", "items": {"type": "string"}},
+                    "surfaces": {"type": "array", "items": {"type": "string"}},
+                    "risk_level": {
+                        "type": "string",
+                        "enum": ["none", "low", "moderate", "high", "blocked"],
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    }
+    if include_executor_results:
+        properties["executor_results"] = {
+            "type": "array",
+            "description": "可选。调用方提供的 sanitized executor result 摘要；不读取 raw logs。",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["planned", "running", "succeeded", "failed", "blocked", "unknown"],
+                    },
+                    "validation_status": {
+                        "type": "string",
+                        "enum": ["not_run", "running", "passed", "failed", "blocked", "unknown"],
+                    },
+                    "head": {"type": "string"},
+                    "changed_files": {"type": "array", "items": {"type": "string"}},
+                    "summary": {"type": "string"},
+                },
+                "required": ["task_id", "status"],
+            },
+        }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": [],
+        "additionalProperties": False,
+    }
+
+
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_commander_app_manifest",
     "render_commander_app",
@@ -175,6 +266,11 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_stable_promotion_readiness",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
+    "get_stage_parallel_worktree_assignment_preview",
+    "get_stage_parallel_executor_group_preview",
+    "get_stage_parallel_group_status",
+    "get_stage_parallel_merge_preview",
+    "get_stage_parallel_closeout_packet",
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "get_plan_standards_report",
@@ -320,6 +416,11 @@ class MCPPlanningBridgeServer:
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
             "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
             "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
+            "get_stage_parallel_worktree_assignment_preview": self._tool_get_stage_parallel_worktree_assignment_preview,
+            "get_stage_parallel_executor_group_preview": self._tool_get_stage_parallel_executor_group_preview,
+            "get_stage_parallel_group_status": self._tool_get_stage_parallel_group_status,
+            "get_stage_parallel_merge_preview": self._tool_get_stage_parallel_merge_preview,
+            "get_stage_parallel_closeout_packet": self._tool_get_stage_parallel_closeout_packet,
             "get_runtime_version_status": self._tool_get_runtime_version_status,
             "get_connector_runtime_health_status": self._tool_get_connector_runtime_health_status,
             "get_runner_status": self._tool_get_runner_status,
@@ -666,6 +767,91 @@ class MCPPlanningBridgeServer:
                     "required": [],
                     "additionalProperties": False,
                 },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_worktree_assignment_preview",
+                title="Get Stage Parallel Worktree Assignment Preview",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 worktree 分配只读预览卡片。"
+                    "检查每个 shard 的 deterministic worktree path 和 branch name 是否可分配。"
+                    "它不创建 branch/worktree、不创建 executor preview、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_executor_group_preview",
+                title="Get Stage Parallel Executor Group Preview",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 executor group 只读预览卡片。"
+                    "基于 worktree assignment 预览每个 shard 的未来 executor preview request。"
+                    "它不创建 executor preview、不启动 executor、不创建 branch/worktree、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_group_status",
+                title="Get Stage Parallel Group Status",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 group status 只读卡片。"
+                    "汇总 planned 或调用方提供的 sanitized executor result 摘要，判断是否 merge_ready。"
+                    "它不读取 raw logs、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(include_executor_results=True),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_merge_preview",
+                title="Get Stage Parallel Merge Preview",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 merge 只读预览卡片。"
+                    "当所有 shard succeeded 且 validation passed 时，生成 merge order 和验证命令预览。"
+                    "它不执行 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(include_executor_results=True),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_closeout_packet",
+                title="Get Stage Parallel Closeout Packet",
+                description=(
+                    f"[{self.project_hint}] 阶段并行 closeout 只读 packet。"
+                    "汇总 worktree assignment、executor group、group status 和 merge preview 的人审材料。"
+                    "它不写 Delivery accepted、不创建 ReviewDecision/GateEvent、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(include_executor_results=True),
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -5648,6 +5834,13 @@ class MCPPlanningBridgeServer:
                     {"tool": "render_commander_app", "arguments": project_args()},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args()},
                     {"tool": "get_stable_promotion_readiness", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_plan_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_run_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_merge_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args()},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "analyze_project_state", "arguments": project_args()},
@@ -5670,6 +5863,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=10)},
                     {"tool": "list_executor_run_reports", "arguments": project_args(limit=10)},
                 ],
@@ -5856,6 +6050,11 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stable_promotion_readiness", "why": "Check runtime/project readiness with project_name."},
                 {"tool": "get_stage_parallel_plan_preview", "why": "Preview stage-level parallel task sharding without starting executors."},
                 {"tool": "get_stage_parallel_run_preview", "why": "Preview isolated parallel run orchestration without creating worktrees or executor previews."},
+                {"tool": "get_stage_parallel_worktree_assignment_preview", "why": "Check deterministic worktree and branch assignments without creating them."},
+                {"tool": "get_stage_parallel_executor_group_preview", "why": "Preview executor group requests without creating previews or starting runs."},
+                {"tool": "get_stage_parallel_group_status", "why": "Read planned or provided shard result status before merge preview."},
+                {"tool": "get_stage_parallel_merge_preview", "why": "Preview merge order and validation gates after shard results pass."},
+                {"tool": "get_stage_parallel_closeout_packet", "why": "Prepare the stage parallel closeout packet for human review."},
                 {"tool": "get_connector_runtime_health_status", "why": "Check local/runtime/external connector closeout with project_name."},
                 {"tool": "analyze_project_state", "why": "Inspect project facts with project_name."},
             ],
@@ -5937,6 +6136,36 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stage_parallel_run_preview",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "预览隔离 worktree/branch 和未来 executor preview request，不创建执行器 preview。",
+                },
+                {
+                    "step": "inspect_stage_parallel_worktree_assignment_preview",
+                    "tool": "get_stage_parallel_worktree_assignment_preview",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "检查每个 shard 的 worktree path 和 branch 是否可分配，但不创建。",
+                },
+                {
+                    "step": "inspect_stage_parallel_executor_group_preview",
+                    "tool": "get_stage_parallel_executor_group_preview",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "预览 future executor preview group，不创建 preview，也不启动 executor。",
+                },
+                {
+                    "step": "inspect_stage_parallel_group_status",
+                    "tool": "get_stage_parallel_group_status",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "读取 planned 或 sanitized executor result 状态，判断是否可进入 merge preview。",
+                },
+                {
+                    "step": "inspect_stage_parallel_merge_preview",
+                    "tool": "get_stage_parallel_merge_preview",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "结果齐备后预览 merge order 和 validation gates，不执行 merge。",
+                },
+                {
+                    "step": "inspect_stage_parallel_closeout_packet",
+                    "tool": "get_stage_parallel_closeout_packet",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "生成人审 closeout packet；不写 Delivery accepted / ReviewDecision / GateEvent。",
                 },
                 {
                     "step": "inspect_stable_promotion_readiness",
@@ -6227,6 +6456,11 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_group_status", "arguments": project_args},
+                {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
@@ -6248,6 +6482,11 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_group_status", "arguments": project_args},
+                    {"tool": "get_stage_parallel_merge_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                     {"tool": "get_runtime_version_status", "arguments": project_args},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                     apps_connector_closeout["connector_closeout_check"],
@@ -6400,18 +6639,42 @@ class MCPPlanningBridgeServer:
             max_parallel_tasks=params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
         )
 
-    def _tool_get_stage_parallel_run_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _stage_parallel_builder_args(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
-        return build_stage_parallel_run_preview(
-            project_root=project_root,
-            project_name=project_name,
-            stage_id=params.get("stage_id") if isinstance(params.get("stage_id"), str) else None,
-            task_intents=params.get("task_intents") if isinstance(params.get("task_intents"), list) else None,
-            max_parallel_tasks=params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
-            provider=params.get("provider") if isinstance(params.get("provider"), str) else None,
-            base_branch=params.get("base_branch") if isinstance(params.get("base_branch"), str) else None,
-        )
+        return {
+            "project_root": project_root,
+            "project_name": project_name,
+            "stage_id": params.get("stage_id") if isinstance(params.get("stage_id"), str) else None,
+            "task_intents": params.get("task_intents") if isinstance(params.get("task_intents"), list) else None,
+            "max_parallel_tasks": params.get("max_parallel_tasks") if isinstance(params.get("max_parallel_tasks"), int) else None,
+            "provider": params.get("provider") if isinstance(params.get("provider"), str) else None,
+            "base_branch": params.get("base_branch") if isinstance(params.get("base_branch"), str) else None,
+        }
+
+    def _tool_get_stage_parallel_run_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        return build_stage_parallel_run_preview(**self._stage_parallel_builder_args(params))
+
+    def _tool_get_stage_parallel_worktree_assignment_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        return build_stage_parallel_worktree_assignment_preview(**self._stage_parallel_builder_args(params))
+
+    def _tool_get_stage_parallel_executor_group_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        return build_stage_parallel_executor_group_preview(**self._stage_parallel_builder_args(params))
+
+    def _tool_get_stage_parallel_group_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        args = self._stage_parallel_builder_args(params)
+        args["executor_results"] = params.get("executor_results") if isinstance(params.get("executor_results"), list) else None
+        return build_stage_parallel_group_status(**args)
+
+    def _tool_get_stage_parallel_merge_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        args = self._stage_parallel_builder_args(params)
+        args["executor_results"] = params.get("executor_results") if isinstance(params.get("executor_results"), list) else None
+        return build_stage_parallel_merge_preview(**args)
+
+    def _tool_get_stage_parallel_closeout_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+        args = self._stage_parallel_builder_args(params)
+        args["executor_results"] = params.get("executor_results") if isinstance(params.get("executor_results"), list) else None
+        return build_stage_parallel_closeout_packet(**args)
 
     def _tool_get_project_identity(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)

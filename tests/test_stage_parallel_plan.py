@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from runner.stage_parallel_plan import build_stage_parallel_plan_preview, build_stage_parallel_run_preview
+from runner.stage_parallel_plan import (
+    build_stage_parallel_closeout_packet,
+    build_stage_parallel_executor_group_preview,
+    build_stage_parallel_group_status,
+    build_stage_parallel_merge_preview,
+    build_stage_parallel_plan_preview,
+    build_stage_parallel_run_preview,
+    build_stage_parallel_worktree_assignment_preview,
+)
 
 
 def test_default_stage_parallel_plan_preview_is_read_only_and_actionable(tmp_path) -> None:
@@ -127,3 +135,140 @@ def test_stage_parallel_run_preview_blocks_when_plan_has_overlaps(tmp_path) -> N
     assert result["parallelism"]["max_concurrency"] == 0
     assert result["blocking_reasons"][0]["code"] == "PARALLEL_FILE_BOUNDARY_OVERLAP"
     assert result["authority_boundary"]["does_not_authorize_executor_run"] is True
+
+
+def test_stage_parallel_worktree_assignment_preview_checks_paths_without_creating(tmp_path) -> None:
+    result = build_stage_parallel_worktree_assignment_preview(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        stage_id="stage_parallel_dev",
+        task_intents=[
+            {
+                "task_id": "mcp_entry",
+                "title": "MCP entry",
+                "allowed_files": ["runner/mcp_server.py"],
+                "surfaces": ["MCP"],
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "stage_parallel_worktree_assignment_preview"
+    assert result["status"] == "preview_ready"
+    assert result["read_only"] is True
+    assert result["side_effects"] is False
+    assert result["assignment_summary"]["planned_assignment_count"] == 1
+    assert result["assignment_summary"]["assignable_count"] == 1
+    assignment = result["worktree_assignments"][0]
+    assert assignment["assignment_status"] == "assignable"
+    assert assignment["path_exists"] is False
+    assert assignment["path_within_project_runtime"] is True
+    assert assignment["branch_name"] == "colameta/stage_parallel_dev/mcp_entry"
+    assert result["authority_boundary"]["does_not_create_branch_or_worktree"] is True
+    assert not tmp_path.joinpath(".colameta").exists()
+
+
+def test_stage_parallel_worktree_assignment_preview_blocks_existing_path(tmp_path) -> None:
+    first = build_stage_parallel_worktree_assignment_preview(
+        project_root=str(tmp_path),
+        stage_id="stage_parallel_dev",
+        task_intents=[{"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]}],
+    )
+    existing_path = tmp_path / ".colameta" / "runtime" / "parallel-worktrees"
+    existing_path = existing_path / first["parallel_group_id"] / "one"
+    existing_path.mkdir(parents=True)
+
+    result = build_stage_parallel_worktree_assignment_preview(
+        project_root=str(tmp_path),
+        stage_id="stage_parallel_dev",
+        task_intents=[{"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]}],
+    )
+
+    assert result["status"] == "blocked"
+    assert result["worktree_assignments"][0]["path_exists"] is True
+    assert result["blocking_reasons"][0]["code"] == "WORKTREE_PATH_ALREADY_EXISTS"
+    assert result["authority_boundary"]["does_not_create_branch_or_worktree"] is True
+
+
+def test_stage_parallel_executor_group_and_status_wait_for_results(tmp_path) -> None:
+    group = build_stage_parallel_executor_group_preview(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=[
+            {"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]},
+            {"task_id": "two", "title": "Two", "allowed_files": ["docs/two.md"]},
+        ],
+    )
+    status = build_stage_parallel_group_status(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=[
+            {"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]},
+            {"task_id": "two", "title": "Two", "allowed_files": ["docs/two.md"]},
+        ],
+    )
+
+    assert group["source"] == "stage_parallel_executor_group_preview"
+    assert group["status"] == "preview_ready"
+    assert group["executor_preview_summary"]["planned_preview_count"] == 2
+    assert group["executor_preview_summary"]["created_preview_count"] == 0
+    assert group["authority_boundary"]["does_not_create_executor_preview"] is True
+    assert status["source"] == "stage_parallel_group_status"
+    assert status["status"] == "waiting_for_executor_results"
+    assert status["status_counts"]["planned"] == 2
+    assert status["merge_readiness"]["ready"] is False
+    assert status["suggested_next_action"] == "wait_for_executor_results"
+
+
+def test_stage_parallel_merge_preview_and_closeout_accept_sanitized_results(tmp_path) -> None:
+    task_intents = [
+        {"task_id": "one", "title": "One", "allowed_files": ["runner/one.py"]},
+        {"task_id": "two", "title": "Two", "allowed_files": ["docs/two.md"]},
+    ]
+    executor_results = [
+        {
+            "task_id": "one",
+            "status": "succeeded",
+            "validation_status": "passed",
+            "head": "abc123",
+            "changed_files": ["runner/one.py"],
+        },
+        {
+            "task_id": "two",
+            "status": "succeeded",
+            "validation_status": "passed",
+            "head": "def456",
+            "changed_files": ["docs/two.md"],
+        },
+    ]
+
+    group_status = build_stage_parallel_group_status(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=task_intents,
+        executor_results=executor_results,
+    )
+    merge = build_stage_parallel_merge_preview(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=task_intents,
+        executor_results=executor_results,
+    )
+    closeout = build_stage_parallel_closeout_packet(
+        project_root=str(tmp_path),
+        project_name="demo-project",
+        task_intents=task_intents,
+        executor_results=executor_results,
+    )
+
+    assert group_status["status"] == "merge_ready"
+    assert group_status["merge_readiness"]["ready"] is True
+    assert merge["source"] == "stage_parallel_merge_preview"
+    assert merge["status"] == "preview_ready"
+    assert merge["merge_plan"]["merge_allowed_now"] is False
+    assert len(merge["merge_plan"]["merge_sequence"]) == 2
+    assert merge["authority_boundary"]["does_not_merge_parallel_results"] is True
+    assert closeout["source"] == "stage_parallel_closeout_packet"
+    assert closeout["status"] == "ready_for_human_review"
+    assert closeout["closeout_summary"]["stable_replacement_in_scope"] is False
+    assert closeout["authority_boundary"]["does_not_write_delivery_accepted"] is True

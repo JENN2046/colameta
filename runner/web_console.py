@@ -1803,6 +1803,31 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel worktree assignment",
+                "tool": "get_stage_parallel_worktree_assignment_preview",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "Parallel executor group",
+                "tool": "get_stage_parallel_executor_group_preview",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "Parallel group status",
+                "tool": "get_stage_parallel_group_status",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "Parallel merge preview",
+                "tool": "get_stage_parallel_merge_preview",
+                "arguments": {"project_name": project_name},
+            },
+            {
+                "label": "Parallel closeout packet",
+                "tool": "get_stage_parallel_closeout_packet",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "读取 Web GPT 入口",
                 "tool": "get_web_gpt_service_entrypoint",
                 "arguments": {"project_name": project_name},

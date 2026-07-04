@@ -753,6 +753,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stable_replacement_cadence" in tool_defs
         assert "get_stage_parallel_plan_preview" in tool_defs
         assert "get_stage_parallel_run_preview" in tool_defs
+        assert "get_stage_parallel_worktree_assignment_preview" in tool_defs
+        assert "get_stage_parallel_executor_group_preview" in tool_defs
+        assert "get_stage_parallel_group_status" in tool_defs
+        assert "get_stage_parallel_merge_preview" in tool_defs
+        assert "get_stage_parallel_closeout_packet" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
@@ -763,6 +768,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_stable_replacement_cadence"].title == "Get Stable Replacement Cadence"
         assert tool_defs["get_stage_parallel_plan_preview"].title == "Get Stage Parallel Plan Preview"
         assert tool_defs["get_stage_parallel_run_preview"].title == "Get Stage Parallel Run Preview"
+        assert tool_defs["get_stage_parallel_worktree_assignment_preview"].title == "Get Stage Parallel Worktree Assignment Preview"
+        assert tool_defs["get_stage_parallel_executor_group_preview"].title == "Get Stage Parallel Executor Group Preview"
+        assert tool_defs["get_stage_parallel_group_status"].title == "Get Stage Parallel Group Status"
+        assert tool_defs["get_stage_parallel_merge_preview"].title == "Get Stage Parallel Merge Preview"
+        assert tool_defs["get_stage_parallel_closeout_packet"].title == "Get Stage Parallel Closeout Packet"
         assert tool_defs["render_commander_app"].meta["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
         assert tool_defs["render_commander_app"].meta["ui"]["visibility"] == ["model", "app"]
         assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
@@ -781,6 +791,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_stable_replacement_cadence" in server._visible_tool_names()
         assert "get_stage_parallel_plan_preview" in server._visible_tool_names()
         assert "get_stage_parallel_run_preview" in server._visible_tool_names()
+        assert "get_stage_parallel_worktree_assignment_preview" in server._visible_tool_names()
+        assert "get_stage_parallel_executor_group_preview" in server._visible_tool_names()
+        assert "get_stage_parallel_group_status" in server._visible_tool_names()
+        assert "get_stage_parallel_merge_preview" in server._visible_tool_names()
+        assert "get_stage_parallel_closeout_packet" in server._visible_tool_names()
         assert "get_connector_runtime_health_status" in server._visible_tool_names()
         assert "get_stable_promotion_readiness" in server._visible_tool_names()
         assert server.get_required_scope_for_tool("get_agent_consumer_contract", {}) == "mcp:read"
@@ -792,6 +807,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_stable_replacement_cadence", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stage_parallel_plan_preview", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stage_parallel_run_preview", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_stage_parallel_worktree_assignment_preview", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_stage_parallel_executor_group_preview", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_stage_parallel_group_status", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_stage_parallel_merge_preview", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_stage_parallel_closeout_packet", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
         widget_html = server._commander_widget_html()
@@ -831,10 +851,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][4]["tool"] == "get_stable_replacement_cadence"
         assert data["entry_sequence"][5]["tool"] == "get_stage_parallel_plan_preview"
         assert data["entry_sequence"][6]["tool"] == "get_stage_parallel_run_preview"
-        assert data["entry_sequence"][7]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][8]["tool"] == "get_apps_connector_smoke_packet"
-        assert data["entry_sequence"][9]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][10]["tool"] == "analyze_project_state"
+        assert data["entry_sequence"][7]["tool"] == "get_stage_parallel_worktree_assignment_preview"
+        assert data["entry_sequence"][8]["tool"] == "get_stage_parallel_executor_group_preview"
+        assert data["entry_sequence"][9]["tool"] == "get_stage_parallel_group_status"
+        assert data["entry_sequence"][10]["tool"] == "get_stage_parallel_merge_preview"
+        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_closeout_packet"
+        assert data["entry_sequence"][12]["tool"] == "get_stable_promotion_readiness"
+        assert data["entry_sequence"][13]["tool"] == "get_apps_connector_smoke_packet"
+        assert data["entry_sequence"][14]["tool"] == "get_connector_runtime_health_status"
+        assert data["entry_sequence"][15]["tool"] == "analyze_project_state"
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
@@ -924,6 +949,104 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert run_data["run_shards"][0]["executor_preview_request"]["status"] == "not_created"
         assert run_data["authority_boundary"]["does_not_create_executor_preview"] is True
         assert run_data["authority_boundary"]["does_not_authorize_executor_run"] is True
+
+        worktree_result = server.call_tool_for_agent(
+            "get_stage_parallel_worktree_assignment_preview",
+            {
+                "project_name": "demo-project",
+                "stage_id": "stage_parallel_dev",
+                "task_intents": [
+                    {
+                        "task_id": "mcp_entry",
+                        "title": "MCP entry",
+                        "allowed_files": ["runner/mcp_server.py"],
+                        "surfaces": ["MCP"],
+                    },
+                    {
+                        "task_id": "docs_entry",
+                        "title": "Docs entry",
+                        "allowed_files": ["docs/USAGE.md"],
+                        "surfaces": ["docs"],
+                    },
+                ],
+            },
+        )
+        assert worktree_result["ok"] is True
+        assert worktree_result["tool"] == "get_stage_parallel_worktree_assignment_preview"
+        worktree_data = worktree_result["data"]
+        assert worktree_data["source"] == "stage_parallel_worktree_assignment_preview"
+        assert worktree_data["status"] == "preview_ready"
+        assert worktree_data["assignment_summary"]["creates_worktrees"] is False
+        assert worktree_data["authority_boundary"]["does_not_create_branch_or_worktree"] is True
+
+        status_result = server.call_tool_for_agent(
+            "get_stage_parallel_group_status",
+            {
+                "project_name": "demo-project",
+                "stage_id": "stage_parallel_dev",
+                "task_intents": [
+                    {
+                        "task_id": "mcp_entry",
+                        "title": "MCP entry",
+                        "allowed_files": ["runner/mcp_server.py"],
+                        "surfaces": ["MCP"],
+                    },
+                    {
+                        "task_id": "docs_entry",
+                        "title": "Docs entry",
+                        "allowed_files": ["docs/USAGE.md"],
+                        "surfaces": ["docs"],
+                    },
+                ],
+            },
+        )
+        assert status_result["ok"] is True
+        status_data = status_result["data"]
+        assert status_data["source"] == "stage_parallel_group_status"
+        assert status_data["status"] == "waiting_for_executor_results"
+        assert status_data["authority_boundary"]["does_not_merge_parallel_results"] is True
+
+        closeout_result = server.call_tool_for_agent(
+            "get_stage_parallel_closeout_packet",
+            {
+                "project_name": "demo-project",
+                "stage_id": "stage_parallel_dev",
+                "task_intents": [
+                    {
+                        "task_id": "mcp_entry",
+                        "title": "MCP entry",
+                        "allowed_files": ["runner/mcp_server.py"],
+                        "surfaces": ["MCP"],
+                    },
+                    {
+                        "task_id": "docs_entry",
+                        "title": "Docs entry",
+                        "allowed_files": ["docs/USAGE.md"],
+                        "surfaces": ["docs"],
+                    },
+                ],
+                "executor_results": [
+                    {
+                        "task_id": "mcp_entry",
+                        "status": "succeeded",
+                        "validation_status": "passed",
+                        "changed_files": ["runner/mcp_server.py"],
+                    },
+                    {
+                        "task_id": "docs_entry",
+                        "status": "succeeded",
+                        "validation_status": "passed",
+                        "changed_files": ["docs/USAGE.md"],
+                    },
+                ],
+            },
+        )
+        assert closeout_result["ok"] is True
+        assert closeout_result["tool"] == "get_stage_parallel_closeout_packet"
+        closeout_data = closeout_result["data"]
+        assert closeout_data["source"] == "stage_parallel_closeout_packet"
+        assert closeout_data["status"] == "ready_for_human_review"
+        assert closeout_data["authority_boundary"]["does_not_write_delivery_accepted"] is True
 
     def test_commander_app_manifest_is_read_only_and_rejects_unsanitized_evidence(self) -> None:
         project = self.make_git_checkout(managed=True)

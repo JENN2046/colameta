@@ -704,6 +704,22 @@ preview-first 的 `stage_parallel_run_preview` 一类入口。
 `manage_executor_workflow action=run_once_preview` 的请求形状。它仍然不创建 worktree、
 不创建 executor preview artifact、不启动 executor run，也不合并结果。
 
+本地并行阶段编排 packet 链路是：
+
+1. `get_stage_parallel_plan_preview`
+2. `get_stage_parallel_run_preview`
+3. `get_stage_parallel_worktree_assignment_preview`
+4. `get_stage_parallel_executor_group_preview`
+5. `get_stage_parallel_group_status`
+6. `get_stage_parallel_merge_preview`
+7. `get_stage_parallel_closeout_packet`
+
+这组工具让 ChatGPT/Jenn 在任何 mutation 前先读完整并行阶段路径。
+`group_status`、`merge_preview` 和 `closeout_packet` 可以接收调用方提供的 sanitized
+executor result 摘要，但它们不读 raw logs，也不创建 worktree、不创建 executor preview、
+不启动 executor、不 merge、不 commit、不 push、不写 Delivery accepted、不创建
+ReviewDecision/GateEvent，也不替换 stable。
+
 ## 10. 常见故障
 
 ### 说明书 smoke checklist
