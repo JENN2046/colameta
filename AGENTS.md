@@ -98,8 +98,8 @@ Key paths:
 | `.colameta/runtime/`, `.colameta/logs/`, `.colameta/reports/`, `.colameta/audits/`, `.colameta/plan-patches/`, `.colameta/tmp/`, `.colameta/local/`, `.colameta/executor-sessions/` | Local runtime state ignored by `.gitignore`. | Do not read contents unless a scoped diagnostic needs it and no secret/private-state boundary is crossed. Do not commit. |
 | `.venv/`, `build/`, `dist/`, `*.egg-info/`, `.pytest_cache/`, `__pycache__/` | Local environment/build/cache outputs. | Do not commit; recreate as needed. |
 
-No repository-root `AGENTS.md` existed before this fill. No existing
-`AGENTS.override.md` was found during calibration.
+This file is now the repository-root project protocol. During the initial fill,
+no pre-existing repository-root `AGENTS.md` or `AGENTS.override.md` was found.
 
 ## 4. Setup And Local Commands
 
@@ -222,10 +222,10 @@ Protected or high-risk branches:
 * UNKNOWN — treat as blocked until verified: GitHub branch protection settings
   are not visible from local repository files.
 
-Approved delivery remote:
+Currently verified delivery remote:
 
 ```text
-origin, verified locally as git@github.com:JENN2046/colameta.git
+origin, verified locally as git@github.com:JENN2046/colameta.git; re-check git remote -v before every push.
 ```
 
 Remote safety notes:
@@ -536,7 +536,8 @@ Current fill status:
 * Validation commands: filled from CI workflow and smoke scripts.
 * Protected branches: `main` treated as high-risk shared branch; remote branch
   protection is `UNKNOWN — treat as blocked until verified.`
-* Approved delivery remote: filled from `git remote -v`.
+* Currently verified delivery remote: filled from `git remote -v`; agents must
+  re-check before every push.
 * CI behavior on feature branches: filled from `.github/workflows/ci.yml`.
 * Deployment triggers: no deployment workflow found; network-visible local
   service flags are high risk.
