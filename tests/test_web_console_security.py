@@ -759,6 +759,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["get_stage_parallel_plan_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_run_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_worktree_assignment_preview"]["arguments"]["project_name"]
+        assert calls["get_stage_parallel_next_action_packet"]["arguments"]["project_name"]
         assert calls["manage_stage_parallel_worktrees"]["arguments"]["project_name"]
         assert calls["manage_stage_parallel_worktrees"]["arguments"]["action"] == "preview"
         assert calls["manage_stage_parallel_shard_inputs"]["arguments"]["project_name"]
@@ -782,6 +783,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls_by_label["Parallel plan preview"]["tool"] == "get_stage_parallel_plan_preview"
         assert calls_by_label["Parallel run preview"]["tool"] == "get_stage_parallel_run_preview"
         assert calls_by_label["Parallel worktree assignment"]["tool"] == "get_stage_parallel_worktree_assignment_preview"
+        assert calls_by_label["Parallel next action"]["tool"] == "get_stage_parallel_next_action_packet"
         assert calls_by_label["Parallel worktree apply preview"]["tool"] == "manage_stage_parallel_worktrees"
         assert calls_by_label["Parallel worktree apply preview"]["arguments"]["action"] == "preview"
         assert calls_by_label["Parallel shard inputs preview"]["tool"] == "manage_stage_parallel_shard_inputs"

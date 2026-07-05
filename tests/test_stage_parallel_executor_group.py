@@ -12,6 +12,7 @@ from runner.mcp_stage_parallel_merges import MCPStageParallelMergeManager
 from runner.mcp_stage_parallel_shard_inputs import MCPStageParallelShardInputManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
 from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
+from runner.stage_parallel_next_action import build_stage_parallel_next_action_packet
 
 
 def _git(project, *args: str) -> subprocess.CompletedProcess[str]:
@@ -247,6 +248,77 @@ def test_stage_parallel_shard_inputs_overlay_unblocks_missing_state_worktree(tmp
     )
     assert after["ok"] is True
     assert after["status"] == "preview_ready"
+
+
+def test_stage_parallel_next_action_packet_points_to_worktree_gate_when_missing(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+
+    result = build_stage_parallel_next_action_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["ok"] is True
+    assert result["read_only"] is True
+    assert result["phase"] == "worktrees_missing"
+    assert result["status"] == "needs_worktrees"
+    assert result["next_action"]["tool"] == "manage_stage_parallel_worktrees"
+    assert result["next_action"]["arguments"]["action"] == "preview"
+    assert result["authority_boundary"]["does_not_create_preview_artifact"] is True
+
+
+def test_stage_parallel_next_action_packet_points_to_shard_inputs_after_worktree(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_worktree(project)
+
+    result = build_stage_parallel_next_action_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["phase"] == "shard_inputs_missing"
+    assert result["status"] == "needs_shard_inputs"
+    assert result["next_action"]["tool"] == "manage_stage_parallel_shard_inputs"
+    assert result["copyable_tool_call"]["arguments"]["action"] == "preview"
+
+
+def test_stage_parallel_next_action_packet_points_to_executor_group_after_inputs(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_worktree(project)
+    _materialize_shard_inputs(project)
+
+    result = build_stage_parallel_next_action_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["phase"] == "executor_previews_missing"
+    assert result["status"] == "needs_executor_previews"
+    assert result["next_action"]["tool"] == "manage_stage_parallel_executor_group"
+    assert result["next_action"]["arguments"]["action"] == "preview"
+
+
+def test_stage_parallel_next_action_packet_points_to_executor_runs_after_preview(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    _create_executor_preview(project)
+
+    result = build_stage_parallel_next_action_packet(
+        project_root=str(project),
+        stage_id="stage_parallel_dev",
+        task_intents=_task_intents(),
+        provider="codex",
+    )
+
+    assert result["phase"] == "executor_runs_not_started"
+    assert result["status"] == "needs_executor_runs"
+    assert result["next_action"]["tool"] == "manage_stage_parallel_executor_runs"
+    assert result["next_action"]["arguments"]["action"] == "preview"
 
 
 def test_stage_parallel_executor_group_preview_writes_group_preview_only(tmp_path) -> None:

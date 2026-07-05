@@ -751,14 +751,15 @@ The local parallel orchestration packet chain is:
 1. `get_stage_parallel_plan_preview`
 2. `get_stage_parallel_run_preview`
 3. `get_stage_parallel_worktree_assignment_preview`
-4. `manage_stage_parallel_shard_inputs action=preview`
-5. `get_stage_parallel_executor_group_preview`
-6. `manage_stage_parallel_executor_runs action=preview`
-7. `get_stage_parallel_executor_results_packet`
-8. `get_stage_parallel_group_status`
-9. `get_stage_parallel_merge_preview`
-10. `manage_stage_parallel_merges action=preview`
-11. `get_stage_parallel_closeout_packet`
+4. `get_stage_parallel_next_action_packet`
+5. `manage_stage_parallel_shard_inputs action=preview`
+6. `get_stage_parallel_executor_group_preview`
+7. `manage_stage_parallel_executor_runs action=preview`
+8. `get_stage_parallel_executor_results_packet`
+9. `get_stage_parallel_group_status`
+10. `get_stage_parallel_merge_preview`
+11. `manage_stage_parallel_merges action=preview`
+12. `get_stage_parallel_closeout_packet`
 
 These tools let ChatGPT/Jenn inspect the whole local parallel stage path before
 any mutation. `group_status`, `merge_preview`, and `closeout_packet` may accept
@@ -772,6 +773,13 @@ Use `action=preview` to create a short-lived preview artifact after validating
 base HEAD, dirty state, branch names, and isolated worktree paths. Use
 `action=apply` only with that `preview_id` to create the isolated git worktrees.
 This apply step still does not create executor previews, start executors, merge,
+commit, push, write Delivery accepted, create ReviewDecision/GateEvent, or
+replace stable.
+
+Use `get_stage_parallel_next_action_packet` whenever the current stage state is
+unclear. It reads current worktree, shard input, executor preview, claim, and
+report metadata, then returns one `copyable_tool_call` for the next safe step.
+It does not create preview artifacts, write shard input, start executors, merge,
 commit, push, write Delivery accepted, create ReviewDecision/GateEvent, or
 replace stable.
 

@@ -709,14 +709,15 @@ preview-first 的 `stage_parallel_run_preview` 一类入口。
 1. `get_stage_parallel_plan_preview`
 2. `get_stage_parallel_run_preview`
 3. `get_stage_parallel_worktree_assignment_preview`
-4. `manage_stage_parallel_shard_inputs action=preview`
-5. `get_stage_parallel_executor_group_preview`
-6. `manage_stage_parallel_executor_runs action=preview`
-7. `get_stage_parallel_executor_results_packet`
-8. `get_stage_parallel_group_status`
-9. `get_stage_parallel_merge_preview`
-10. `manage_stage_parallel_merges action=preview`
-11. `get_stage_parallel_closeout_packet`
+4. `get_stage_parallel_next_action_packet`
+5. `manage_stage_parallel_shard_inputs action=preview`
+6. `get_stage_parallel_executor_group_preview`
+7. `manage_stage_parallel_executor_runs action=preview`
+8. `get_stage_parallel_executor_results_packet`
+9. `get_stage_parallel_group_status`
+10. `get_stage_parallel_merge_preview`
+11. `manage_stage_parallel_merges action=preview`
+12. `get_stage_parallel_closeout_packet`
 
 这组工具让 ChatGPT/Jenn 在任何 mutation 前先读完整并行阶段路径。
 `group_status`、`merge_preview` 和 `closeout_packet` 可以接收调用方提供的 sanitized
@@ -730,6 +731,12 @@ branch name 和隔离 worktree path；再用 `action=apply` 携带这个 `previe
 创建隔离 git worktree。这个 apply 仍然不创建 executor preview、不启动 executor、不 merge、
 不 commit、不 push、不写 Delivery accepted、不创建 ReviewDecision/GateEvent，也不替换
 stable。
+
+当前阶段状态不清楚时，使用 `get_stage_parallel_next_action_packet`。它会读取当前
+worktree、shard input、executor preview、claim 和 report metadata，然后返回一个
+`copyable_tool_call` 指向下一步安全工具调用。它不创建 preview artifact、不写 shard
+input、不启动 executor、不 merge、不 commit、不 push、不写 Delivery accepted、不创建
+ReviewDecision/GateEvent，也不替换 stable。
 
 隔离 worktree 已存在后，使用 `manage_stage_parallel_shard_inputs`。
 `action=preview` 会校验每个 worktree 已存在、位于预期 branch/head 且工作区干净；

@@ -61,6 +61,7 @@ from runner.stage_parallel_plan import (
     build_stage_parallel_worktree_assignment_preview,
 )
 from runner.stage_parallel_executor_results import build_stage_parallel_executor_results_packet
+from runner.stage_parallel_next_action import build_stage_parallel_next_action_packet
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.runner_paths import (
@@ -107,6 +108,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
+    "get_stage_parallel_next_action_packet",
     "get_stage_parallel_executor_group_preview",
     "get_stage_parallel_executor_results_packet",
     "get_stage_parallel_group_status",
@@ -394,6 +396,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
+    "get_stage_parallel_next_action_packet",
     "get_stage_parallel_executor_group_preview",
     "get_stage_parallel_executor_results_packet",
     "get_stage_parallel_group_status",
@@ -550,6 +553,7 @@ class MCPPlanningBridgeServer:
             "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
             "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
             "get_stage_parallel_worktree_assignment_preview": self._tool_get_stage_parallel_worktree_assignment_preview,
+            "get_stage_parallel_next_action_packet": self._tool_get_stage_parallel_next_action_packet,
             "get_stage_parallel_executor_group_preview": self._tool_get_stage_parallel_executor_group_preview,
             "get_stage_parallel_executor_results_packet": self._tool_get_stage_parallel_executor_results_packet,
             "get_stage_parallel_group_status": self._tool_get_stage_parallel_group_status,
@@ -921,6 +925,23 @@ class MCPPlanningBridgeServer:
                     f"[{self.project_hint}] 阶段并行 worktree 分配只读预览卡片。"
                     "检查每个 shard 的 deterministic worktree path 和 branch name 是否可分配。"
                     "它不创建 branch/worktree、不创建 executor preview、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=_stage_parallel_preview_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_stage_parallel_next_action_packet",
+                title="Get Stage Parallel Next Action Packet",
+                description=(
+                    f"[{self.project_hint}] 阶段并行下一步只读 packet。"
+                    "根据当前 worktree、shard input、executor preview、run claim/report metadata 给出唯一 recommended next tool。"
+                    "它不创建 preview artifact、不写 shard input、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
                 ),
                 input_schema=_stage_parallel_preview_input_schema(),
                 output_schema=common_output_schema,
@@ -6148,6 +6169,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_run_preview", "arguments": project_args()},
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args()},
+                    {"tool": "get_stage_parallel_next_action_packet", "arguments": project_args()},
                     {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args(), "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args()},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args(), "action": "preview"}},
@@ -6366,6 +6388,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_plan_preview", "why": "Preview stage-level parallel task sharding without starting executors."},
                 {"tool": "get_stage_parallel_run_preview", "why": "Preview isolated parallel run orchestration without creating worktrees or executor previews."},
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "why": "Check deterministic worktree and branch assignments without creating them."},
+                {"tool": "get_stage_parallel_next_action_packet", "why": "Read the current stage parallel state and get the single recommended next tool call."},
                 {"tool": "manage_stage_parallel_shard_inputs", "why": "Preview shard-specific runner input materialization after isolated worktrees exist."},
                 {"tool": "get_stage_parallel_executor_group_preview", "why": "Preview executor group requests without creating previews or starting runs."},
                 {"tool": "manage_stage_parallel_executor_runs", "why": "Preview the executor run group after run_once_preview artifacts exist; apply starts isolated executor runs only."},
@@ -6461,6 +6484,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_stage_parallel_worktree_assignment_preview",
                     "arguments": {"project_name": "<registered project_name>"},
                     "why": "检查每个 shard 的 worktree path 和 branch 是否可分配，但不创建。",
+                },
+                {
+                    "step": "inspect_stage_parallel_next_action_packet",
+                    "tool": "get_stage_parallel_next_action_packet",
+                    "arguments": {"project_name": "<registered project_name>"},
+                    "why": "读取当前并行阶段状态，获得唯一 recommended next tool call；这个 packet 不创建 preview artifact。",
                 },
                 {
                     "step": "preview_stage_parallel_shard_inputs",
@@ -6800,6 +6829,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                {"tool": "get_stage_parallel_next_action_packet", "arguments": project_args},
                 {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                 {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
@@ -6830,6 +6860,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
                     {"tool": "get_stage_parallel_worktree_assignment_preview", "arguments": project_args},
+                    {"tool": "get_stage_parallel_next_action_packet", "arguments": project_args},
                     {"tool": "manage_stage_parallel_shard_inputs", "arguments": {**project_args, "action": "preview"}},
                     {"tool": "get_stage_parallel_executor_group_preview", "arguments": project_args},
                     {"tool": "manage_stage_parallel_executor_runs", "arguments": {**project_args, "action": "preview"}},
@@ -7040,6 +7071,9 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_stage_parallel_worktree_assignment_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         return build_stage_parallel_worktree_assignment_preview(**self._stage_parallel_builder_args(params))
+
+    def _tool_get_stage_parallel_next_action_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+        return build_stage_parallel_next_action_packet(**self._stage_parallel_builder_args(params))
 
     def _tool_get_stage_parallel_executor_group_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         return build_stage_parallel_executor_group_preview(**self._stage_parallel_builder_args(params))

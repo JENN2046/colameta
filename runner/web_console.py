@@ -1808,6 +1808,11 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Parallel next action",
+                "tool": "get_stage_parallel_next_action_packet",
+                "arguments": {"project_name": project_name},
+            },
+            {
                 "label": "Parallel worktree apply preview",
                 "tool": "manage_stage_parallel_worktrees",
                 "arguments": {
