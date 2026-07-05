@@ -11,6 +11,8 @@ dist/
 # Test and local environments
 .pytest_cache/
 .venv/
+.env
+.env.*
 
 # OS
 .DS_Store
