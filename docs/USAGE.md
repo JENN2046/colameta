@@ -116,9 +116,12 @@ accepted.
 For a role-aware agent handoff, use
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` before
 choosing lower-level tools. It returns one `primary_next_action`, the gate level
-for that action, and `advanced_actions` for agents that need the full context.
-The packet itself is read-only; it does not create preview artifacts, start
-executors, merge, commit, push, or replace stable.
+for that action, `persona_safe_next_tool`, confirmation flags, and
+`advanced_actions` for agents that need the full context. `advanced_actions`
+are filtered by profile: Reviewer and Source Observer profiles see read and
+evidence routes by default, not executor, commit, push, or stable promotion
+entry points. The packet itself is read-only; it does not create preview
+artifacts, start executors, merge, commit, push, or replace stable.
 
 For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
 same surfaces. It is a read-only smoke packet for:
@@ -147,6 +150,13 @@ connector, then call `list_registered_projects` again. Until the metadata
 refresh exposes the new tool, use `get_connector_runtime_health_status` with the
 same sanitized tunnel evidence as the read-only fallback. Do not read tokens,
 cookies, browser login state, connector config, or raw logs.
+
+`get_service_entry_profile` and `get_agent_operator_flow_packet` also return
+`tool_surface_guidance`. If the current Apps tool surface has not exposed a
+referenced tool, use `tool_search` with the exact ColaMeta tool name. If the
+Apps surface still cannot expose it, call the stable HTTP MCP endpoint
+`http://127.0.0.1:8766/mcp` with JSON-RPC `tools/call` and the
+`copyable_tool_call.arguments` payload.
 
 Keep these three versions separate:
 
@@ -242,18 +252,25 @@ Project-level tools require `project_name`:
 ```json
 {
   "name": "render_commander_app",
-  "arguments": {"project_name": "colameta-self-dev"}
+  "arguments": {
+    "project_name": "colameta-self-dev",
+    "profile_id": "web_gpt_commander"
+  }
 }
 ```
 
 `render_commander_app` is the ChatGPT Apps entry for the ColaMeta Commander
-panel. It returns a read-only manifest plus widget metadata. For clients that
-only need data, use:
+panel. It returns a read-only manifest plus widget metadata. Pass `profile_id`
+to make the embedded flow persona explicit in the panel. For clients that only
+need data, use:
 
 ```json
 {
   "name": "get_commander_app_manifest",
-  "arguments": {"project_name": "colameta-self-dev"}
+  "arguments": {
+    "project_name": "colameta-self-dev",
+    "profile_id": "web_gpt_commander"
+  }
 }
 ```
 

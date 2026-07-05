@@ -768,6 +768,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "manage_stage_parallel_merges" in tool_defs
         assert "get_connector_runtime_health_status" in tool_defs
         commander_schema = tool_defs["get_commander_app_manifest"].input_schema
+        assert "reviewer_agent" in commander_schema["properties"]["profile_id"]["enum"]
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert commander_schema["properties"]["control_plane"]["additionalProperties"] is False
         assert tool_defs["get_agent_operator_flow_packet"].title == "Get Agent Operator Flow Packet"
@@ -864,6 +865,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         widget_html = server._commander_widget_html()
         assert "Readiness" in widget_html
         assert "Next Step" in widget_html
+        assert "Flow persona" in widget_html
         assert "Primary blocker" in widget_html
         assert "Safe next action" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
@@ -898,6 +900,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
         assert data["entry_sequence"][3]["tool"] == "get_agent_operator_flow_packet"
         assert data["entry_sequence"][4]["tool"] == "render_commander_app"
+        assert data["entry_sequence"][4]["arguments"]["profile_id"] == "web_gpt_commander"
         assert data["entry_sequence"][5]["tool"] == "get_stable_replacement_cadence"
         assert data["entry_sequence"][6]["tool"] == "get_stage_parallel_plan_preview"
         assert data["entry_sequence"][7]["tool"] == "get_stage_parallel_run_preview"
@@ -1113,6 +1116,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "get_commander_app_manifest",
             {
                 "project_name": "demo-project",
+                "profile_id": "reviewer_agent",
                 "tunnel_client": {
                     "status": "healthy",
                     "reason_code": "TUNNEL_CLIENT_HEALTHY",
@@ -1136,20 +1140,38 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["side_effects"] is False
         assert data["app"]["archetype"] == "interactive-decoupled"
         assert data["app"]["render_tool"] == "render_commander_app"
+        assert data["app"]["embedded_flow_profile_id"] == "reviewer_agent"
         assert data["project_name"] == "demo-project"
         assert data["connector"]["external_connector_status"] == "healthy"
         assert data["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
         assert data["readiness"]["read_only"] is True
         assert data["readiness"]["components"]["operator_closeout"]["status"]
         assert data["readiness"]["safe_next_actions"][0]["authority"] in {"read_only", "preview_or_task_packet_only"}
+        assert data["agent_operator_flow_profile"]["profile_id"] == "reviewer_agent"
+        assert data["agent_operator_flow_profile"]["consumer_kind"] == "reviewer"
         assert data["agent_operator_flow"]["source"] == "agent_operator_flow_packet"
+        assert data["agent_operator_flow"]["profile_id"] == "reviewer_agent"
+        assert data["agent_operator_flow"]["current_state"]["resolved_flow_mode"] == "review"
+        assert data["agent_operator_flow"]["persona_safe_next_tool"] == "manage_workflow_run"
         assert data["agent_operator_flow"]["primary_next_action"]["tool"]
+        assert data["initial_reads"][2]["arguments"]["profile_id"] == "reviewer_agent"
+        assert data["initial_reads"][3]["arguments"]["profile_id"] == "reviewer_agent"
+        assert data["initial_reads"][4]["arguments"]["profile_id"] == "reviewer_agent"
         assert data["apps_connector_closeout"]["status"] in {"ready", "needs_attention"}
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert data["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
         assert "apps_connector_closeout" in data["commander_panel"]["primary_sections"]
         assert "agent_operator_flow" in data["commander_panel"]["primary_sections"]
-        assert any(item["tool"] == "get_agent_operator_flow_packet" for item in data["commander_panel"]["read_actions"])
+        assert any(
+            item["tool"] == "get_agent_operator_flow_packet"
+            and item["arguments"]["profile_id"] == "reviewer_agent"
+            for item in data["commander_panel"]["read_actions"]
+        )
+        assert any(
+            item["tool"] == "get_commander_app_manifest"
+            and item["arguments"]["profile_id"] == "reviewer_agent"
+            for item in data["commander_panel"]["read_actions"]
+        )
         assert any(
             item["tool"] == "get_connector_runtime_health_status"
             and "tunnel_client" in item.get("arguments", {})
@@ -1158,6 +1180,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "service_readiness" in data["commander_panel"]["primary_sections"]
         assert data["authority_boundary"]["does_not_authorize_executor_run"] is True
         assert "Delivery accepted" in data["authority_boundary"]["requires_explicit_commander_authorization_for"]
+
+        rendered = server.call_tool_for_agent(
+            "render_commander_app",
+            {"project_name": "demo-project", "profile_id": "source_observer"},
+        )
+        assert rendered["ok"] is True
+        assert rendered["data"]["agent_operator_flow_profile"]["profile_id"] == "source_observer"
+        assert rendered["data"]["app"]["embedded_flow_profile_id"] == "source_observer"
 
         rejected = server.call_tool_for_agent(
             "get_commander_app_manifest",
@@ -1234,6 +1264,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert default_data["selected_profile"]["consumer_kind"] == "web_gpt"
         assert default_data["selected_profile"]["executor_status_polling_guidance"]["next_poll_after_seconds"] == 3
         assert default_data["recommended_next_reads"][0]["tool"] == "list_registered_projects"
+        assert "tool_search" in default_data["tool_surface_guidance"]["if_tool_not_visible_in_current_apps_surface"]
+        assert default_data["tool_surface_guidance"]["http_mcp_fallback"]["endpoint"] == "http://127.0.0.1:8766/mcp"
 
         reviewer_result = server.call_tool_for_agent("get_service_entry_profile", {"profile_id": "reviewer_agent"})
 
@@ -1271,8 +1303,16 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert planner["current_state"]["resolved_flow_mode"] == "planning"
         assert planner["primary_next_action"]["tool"] == "run_mcp_workflow"
         assert planner["primary_next_action"]["gate_level"] == "read_only_workflow_packet"
+        assert planner["primary_next_action"]["requires_confirmation_before_preview"] is False
+        assert planner["primary_next_action"]["requires_confirmation_before_write_or_run"] is False
         assert planner["primary_next_action"]["arguments"]["workflow"] == "thin_governed_loop_preview"
         assert planner["primary_next_action"]["arguments"]["draft_seed"]["goal"].startswith("Make the onboarding")
+        assert planner["persona_safe_next_tool"] == "run_mcp_workflow"
+        assert planner["requires_confirmation_before_preview"] is False
+        assert planner["requires_confirmation_before_write_or_run"] is True
+        assert "executor_run" in planner["forbidden_workflows"]
+        assert "tool_search" in planner["tool_surface_guidance"]["if_tool_not_visible_in_current_apps_surface"]
+        assert planner["tool_surface_guidance"]["http_mcp_fallback"]["method"] == "tools/call"
         assert planner["copyable_tool_call"]["tool"] == "run_mcp_workflow"
         assert planner["authority_boundary"]["does_not_start_executor"] is True
         assert planner["authority_boundary"]["does_not_replace_stable"] is True
@@ -1287,6 +1327,13 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert reviewer["primary_next_action"]["tool"] == "manage_workflow_run"
         assert reviewer["primary_next_action"]["arguments"]["action"] == "list"
         assert reviewer["primary_next_action"]["gate_level"] == "read_only"
+        assert reviewer["persona_safe_next_tool"] == "manage_workflow_run"
+        reviewer_tools = {item["tool"] for item in reviewer["advanced_actions"]}
+        assert "run_mcp_workflow" not in reviewer_tools
+        assert "get_stage_parallel_next_action_packet" not in reviewer_tools
+        assert "list_executor_run_reports" not in reviewer_tools
+        assert "get_stable_replacement_cadence" not in reviewer_tools
+        assert "source_write" in reviewer["forbidden_workflows"]
 
         source_result = server.call_tool_for_agent(
             "get_agent_operator_flow_packet",
@@ -1296,6 +1343,13 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert source["current_state"]["resolved_flow_mode"] == "source_observation"
         assert source["primary_next_action"]["tool"] == "analyze_project_state"
         assert source["primary_next_action"]["gate_level"] == "read_only"
+        source_tools = {item["tool"] for item in source["advanced_actions"]}
+        assert "get_runtime_version_status" in source_tools
+        assert "run_mcp_workflow" not in source_tools
+        assert "get_stage_parallel_next_action_packet" not in source_tools
+        assert "list_executor_run_reports" not in source_tools
+        assert "get_stable_replacement_cadence" not in source_tools
+        assert "managed_workflow_apply" in source["forbidden_workflows"]
 
     def test_agent_operator_flow_parallel_stage_reuses_next_action_without_side_effects(self) -> None:
         project = self.make_git_checkout(managed=True)

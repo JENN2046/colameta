@@ -96,7 +96,17 @@ project name, it must call `list_registered_projects` first.
 After selecting a profile, prefer
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` as the
 single role-aware navigation packet. It gives one `primary_next_action`, keeps
-advanced context visible, and remains read-only.
+advanced context visible, and remains read-only. The packet also exposes
+`persona_safe_next_tool`, `requires_confirmation_before_preview`,
+`requires_confirmation_before_write_or_run`, `forbidden_workflows`, and
+`tool_surface_guidance`. Reviewer and Source Observer profiles get narrower
+advanced actions by default so they do not start from executor, commit, push, or
+stable promotion routes.
+
+If a referenced ColaMeta tool is not visible in the current ChatGPT Apps tool
+surface, first use `tool_search` with the exact tool name. If it still is not
+available, use the stable HTTP MCP endpoint with JSON-RPC `tools/call` and the
+packet's `copyable_tool_call.arguments` payload.
 
 For the one-line service decision, read `readiness` from
 `get_commander_app_manifest` or `service_readiness_summary` from Web

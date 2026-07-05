@@ -776,7 +776,9 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["manage_stage_parallel_merges"]["arguments"]["action"] == "preview"
         assert calls["get_stage_parallel_closeout_packet"]["arguments"]["project_name"]
         assert calls["render_commander_app"]["arguments"]["project_name"]
+        assert calls["render_commander_app"]["arguments"]["profile_id"] == "web_gpt_commander"
         assert calls["get_commander_app_manifest"]["arguments"]["project_name"]
+        assert calls["get_commander_app_manifest"]["arguments"]["profile_id"] == "web_gpt_commander"
         assert calls["get_connector_runtime_health_status"]["arguments"]["project_name"]
         assert calls_by_label["Apps smoke packet"]["tool"] == "get_apps_connector_smoke_packet"
         assert calls_by_label["Stable cadence"]["tool"] == "get_stable_replacement_cadence"

@@ -90,7 +90,7 @@ COMMANDER_APP_TITLE = "ColaMeta Commander"
 COMMANDER_APP_SERVER_INSTRUCTIONS = (
     "ColaMeta Commander is a read-only ChatGPT App surface for local ColaMeta service facts. "
     "Start with list_registered_projects, get_agent_consumer_contract, get_service_entry_profile, "
-    "get_agent_operator_flow_packet, then render_commander_app with a registered project_name. "
+    "get_agent_operator_flow_packet, then render_commander_app with a registered project_name and profile_id. "
     "Treat manifest, runtime, connector, "
     "profile, and preview outputs as evidence only; they do not authorize executor run, commit, push, "
     "stable service replacement, ReviewDecision, GateEvent, or Delivery accepted."
@@ -4335,6 +4335,7 @@ class MCPPlanningBridgeServer:
     <section class="section">
       <h2>Next Step</h2>
       <div class="readiness">
+        <div class="note"><strong>Flow persona</strong><span id="flow-persona">-</span></div>
         <div class="note"><strong>Primary blocker</strong><span id="primary-blocker">-</span></div>
         <div class="note"><strong>Safe next action</strong><span id="safe-next-action">-</span></div>
       </div>
@@ -4429,9 +4430,16 @@ class MCPPlanningBridgeServer:
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
         var readiness = current.readiness || current.service_readiness_summary || {};
         var flow = current.agent_operator_flow || (current.source === "agent_operator_flow_packet" ? current : {});
+        var flowProfile = current.agent_operator_flow_profile || {};
+        var flowState = flow.current_state || {};
         var apps = current.apps_connector_closeout || {};
         text("subtitle", statusValue(current, ["app", "status_line"]) || "Service facts and authorization gates");
         text("readiness", statusValue(readiness, ["status"]));
+        text("flow-persona", [
+          flowProfile.display_name || flowProfile.profile_id || flow.profile_id,
+          flowProfile.consumer_kind || flowState.consumer_kind,
+          flowState.resolved_flow_mode
+        ].filter(Boolean).join(" | "));
         text("primary-blocker", blockerText(readiness));
         text("safe-next-action", flowAction(flow) || firstSafeAction(readiness));
         text("project", projectName);
@@ -4475,6 +4483,16 @@ class MCPPlanningBridgeServer:
           return;
         }
         var args = { project_name: projectName };
+        var flow = manifest && manifest.agent_operator_flow ? manifest.agent_operator_flow : {};
+        var flowProfile = manifest && manifest.agent_operator_flow_profile ? manifest.agent_operator_flow_profile : {};
+        var profileId = flowProfile.profile_id || flow.profile_id || statusValue(flow, ["current_state", "profile_id"]);
+        if (profileId && profileId !== "-" && [
+          "get_commander_app_manifest",
+          "get_agent_operator_flow_packet",
+          "render_commander_app"
+        ].indexOf(name) >= 0) {
+          args.profile_id = profileId;
+        }
         if (window.openai && typeof window.openai.callTool === "function") {
           try {
             var next = await window.openai.callTool(name, args);
@@ -5151,6 +5169,17 @@ class MCPPlanningBridgeServer:
                 "project_name": {
                     "type": "string",
                     "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "profile_id": {
+                    "type": "string",
+                    "enum": [
+                        "web_gpt_commander",
+                        "local_codex_commander",
+                        "planner_agent",
+                        "reviewer_agent",
+                        "source_observer",
+                    ],
+                    "description": "可选。指定 Commander 内嵌 agent flow 所属 persona；默认 web_gpt_commander。",
                 },
                 "tunnel_client": self._sanitized_connector_evidence_schema(
                     "可选。调用方提供的 sanitized tunnel-client 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
@@ -6381,6 +6410,7 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_service_entry_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         profile_id, selected, profiles = self._select_service_entry_profile(params)
+        first_reads = selected.get("first_reads", [])
         return {
             "ok": True,
             "read_only": True,
@@ -6389,9 +6419,10 @@ class MCPPlanningBridgeServer:
             "default_profile_id": "web_gpt_commander",
             "available_profile_ids": [item["profile_id"] for item in profiles],
             "selected_profile": selected,
-            "recommended_next_reads": selected.get("first_reads", []),
+            "recommended_next_reads": first_reads,
             "authority": selected.get("default_authority"),
             "write_boundary": selected.get("write_boundary"),
+            "tool_surface_guidance": self._tool_surface_guidance_for_actions(first_reads),
         }
 
     def _tool_get_agent_operator_flow_packet(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -6445,8 +6476,16 @@ class MCPPlanningBridgeServer:
         advanced_actions = self._agent_flow_advanced_actions(
             project_args=project_args,
             profile_id=profile_id,
+            consumer_kind=str(selected_profile.get("consumer_kind") or ""),
             flow_mode=flow_mode,
             task_brief=task_brief,
+        )
+        forbidden_workflows = self._agent_flow_forbidden_workflows(
+            profile_id=profile_id,
+            consumer_kind=str(selected_profile.get("consumer_kind") or ""),
+        )
+        tool_surface_guidance = self._tool_surface_guidance_for_actions(
+            [primary_next_action, *advanced_actions]
         )
         current_state = {
             "project_name": project_name,
@@ -6515,13 +6554,21 @@ class MCPPlanningBridgeServer:
             "selected_profile": selected_profile,
             "current_state": current_state,
             "primary_next_action": primary_next_action,
+            "persona_safe_next_tool": primary_next_action.get("tool"),
+            "requires_confirmation_before_preview": bool(
+                primary_next_action.get("requires_confirmation_before_preview")
+            ),
+            "requires_confirmation_before_write_or_run": True,
+            "forbidden_workflows": forbidden_workflows,
             "copyable_tool_call": primary_next_action.get("copyable_tool_call"),
             "advanced_actions": advanced_actions,
+            "tool_surface_guidance": tool_surface_guidance,
             "flow_usage_rule": {
                 "start_here": True,
                 "execute_only_one_primary_action_then_reassess": True,
                 "smart_agents_should_use_advanced_context_before_escalating": True,
                 "do_not_infer_missing_authority_from_this_packet": True,
+                "if_tool_not_visible_use_tool_search_or_http_mcp_fallback": True,
             },
             "authority_boundary": {
                 "flow_packet_is_read_only": True,
@@ -6677,6 +6724,8 @@ class MCPPlanningBridgeServer:
                 first = safe_actions[0] if isinstance(safe_actions[0], dict) else {}
                 tool = str(first.get("tool") or "get_commander_app_manifest")
                 arguments = first.get("arguments") if isinstance(first.get("arguments"), dict) else dict(project_args)
+                if tool in {"get_commander_app_manifest", "get_agent_operator_flow_packet", "render_commander_app"}:
+                    arguments = {**arguments, "profile_id": profile_id}
                 return self._agent_flow_action(
                     action_id="readiness_safe_next_action",
                     label=str(first.get("label") or "Follow readiness safe next action"),
@@ -6699,7 +6748,7 @@ class MCPPlanningBridgeServer:
             action_id="read_commander_manifest",
             label="Read Commander manifest",
             tool="get_commander_app_manifest",
-            arguments=dict(project_args),
+            arguments={**project_args, "profile_id": profile_id},
             reason="No task-specific mode was selected; read the commander manifest for the current dashboard and safe next actions.",
             expected_output="Readiness, connector, runtime, profile entries, and preview-first workflow actions.",
         ), embedded_packets
@@ -6718,6 +6767,8 @@ class MCPPlanningBridgeServer:
     ) -> dict[str, Any]:
         scope = self._required_scope_for_tool(tool, arguments)
         gate_level = self._agent_flow_gate_level(tool=tool, arguments=arguments, scope=scope)
+        requires_preview_confirmation = bool(requires_confirmation or scope == "mcp:preview")
+        requires_write_or_run_confirmation = bool(scope != "mcp:read")
         return {
             "action_id": action_id,
             "label": label,
@@ -6728,7 +6779,11 @@ class MCPPlanningBridgeServer:
             "reason": reason,
             "expected_output": expected_output,
             "derived_from": derived_from,
-            "requires_confirmation_before_execution": bool(requires_confirmation or scope != "mcp:read"),
+            "requires_confirmation_before_preview": requires_preview_confirmation,
+            "requires_confirmation_before_write_or_run": requires_write_or_run_confirmation,
+            "requires_confirmation_before_execution": bool(
+                requires_preview_confirmation or requires_write_or_run_confirmation
+            ),
             "copyable_tool_call": {
                 "tool": tool,
                 "arguments": arguments,
@@ -6755,6 +6810,7 @@ class MCPPlanningBridgeServer:
         *,
         project_args: dict[str, Any],
         profile_id: str,
+        consumer_kind: str,
         flow_mode: str,
         task_brief: str,
     ) -> list[dict[str, Any]]:
@@ -6762,62 +6818,175 @@ class MCPPlanningBridgeServer:
         if task_brief.strip():
             draft_seed["goal"] = task_brief.strip()
             draft_seed["objective"] = task_brief.strip()
+        profile_contract = {
+            "label": "Profile contract",
+            "tool": "get_service_entry_profile",
+            "arguments": {"profile_id": profile_id},
+            "gate_level": "read_only",
+        }
+        project_state = {
+            "label": "Project state",
+            "tool": "analyze_project_state",
+            "arguments": dict(project_args),
+            "gate_level": "read_only",
+        }
+        runtime_status = {
+            "label": "Runtime status",
+            "tool": "get_runtime_version_status",
+            "arguments": dict(project_args),
+            "gate_level": "read_only",
+        }
+        thin_loop_draft = {
+            "label": "Thin loop draft",
+            "tool": "run_mcp_workflow",
+            "arguments": {
+                **project_args,
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": draft_seed,
+            },
+            "gate_level": "read_only_workflow_packet",
+        }
+        stage_parallel_next_action = {
+            "label": "Stage parallel next action",
+            "tool": "get_stage_parallel_next_action_packet",
+            "arguments": dict(project_args),
+            "gate_level": "read_only",
+        }
+        recent_workflow_records = {
+            "label": "Recent workflow records",
+            "tool": "manage_workflow_run",
+            "arguments": {**project_args, "action": "list", "limit": 10},
+            "gate_level": "read_only",
+        }
+        executor_reports = {
+            "label": "Executor reports",
+            "tool": "list_executor_run_reports",
+            "arguments": {**project_args, "limit": 10},
+            "gate_level": "read_only",
+        }
+        apps_connector_smoke = {
+            "label": "Apps connector smoke",
+            "tool": "get_apps_connector_smoke_packet",
+            "arguments": dict(project_args),
+            "gate_level": "read_only",
+        }
+        stable_cadence = {
+            "label": "Stable cadence",
+            "tool": "get_stable_replacement_cadence",
+            "arguments": dict(project_args),
+            "gate_level": "read_only",
+        }
+
+        if consumer_kind == "source_observer":
+            return [profile_contract, project_state, runtime_status, apps_connector_smoke]
+        if consumer_kind == "reviewer":
+            return [profile_contract, project_state, recent_workflow_records, apps_connector_smoke]
+        if consumer_kind == "planner":
+            return [
+                profile_contract,
+                project_state,
+                thin_loop_draft,
+                stage_parallel_next_action,
+                recent_workflow_records,
+                apps_connector_smoke,
+            ]
+        if consumer_kind == "local_codex":
+            return [
+                profile_contract,
+                project_state,
+                thin_loop_draft,
+                stage_parallel_next_action,
+                recent_workflow_records,
+                executor_reports,
+                apps_connector_smoke,
+            ]
         return [
-            {
-                "label": "Profile contract",
-                "tool": "get_service_entry_profile",
-                "arguments": {"profile_id": profile_id},
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Project state",
-                "tool": "analyze_project_state",
-                "arguments": dict(project_args),
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Thin loop draft",
-                "tool": "run_mcp_workflow",
-                "arguments": {
-                    **project_args,
-                    "workflow": "thin_governed_loop_preview",
-                    "phase": "preview",
-                    "input_mode": "draft",
-                    "draft_seed": draft_seed,
-                },
-                "gate_level": "read_only_workflow_packet",
-            },
-            {
-                "label": "Stage parallel next action",
-                "tool": "get_stage_parallel_next_action_packet",
-                "arguments": dict(project_args),
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Recent workflow records",
-                "tool": "manage_workflow_run",
-                "arguments": {**project_args, "action": "list", "limit": 10},
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Executor reports",
-                "tool": "list_executor_run_reports",
-                "arguments": {**project_args, "limit": 10},
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Apps connector smoke",
-                "tool": "get_apps_connector_smoke_packet",
-                "arguments": dict(project_args),
-                "gate_level": "read_only",
-            },
-            {
-                "label": "Stable cadence",
-                "tool": "get_stable_replacement_cadence",
-                "arguments": dict(project_args),
-                "gate_level": "read_only",
-            },
+            profile_contract,
+            project_state,
+            runtime_status,
+            thin_loop_draft,
+            stage_parallel_next_action,
+            recent_workflow_records,
+            executor_reports,
+            apps_connector_smoke,
+            stable_cadence,
         ]
+
+    @staticmethod
+    def _agent_flow_forbidden_workflows(*, profile_id: str, consumer_kind: str) -> list[str]:
+        common = [
+            "stable_replacement_without_exact_authorization",
+            "delivery_accepted_write",
+            "review_decision_write",
+            "gate_event_write",
+            "token_cookie_credential_access",
+            "raw_tunnel_log_or_config_read",
+        ]
+        by_consumer = {
+            "web_gpt": [
+                "executor_run_without_current_authorization",
+                "commit_or_push_without_current_authorization",
+            ],
+            "local_codex": [
+                "executor_run_without_preview_or_current_authorization",
+            ],
+            "planner": [
+                "executor_run",
+                "commit_or_push",
+            ],
+            "reviewer": [
+                "source_write",
+                "executor_run",
+                "commit_or_push",
+                "stable_replacement",
+            ],
+            "source_observer": [
+                "source_write",
+                "managed_workflow_apply",
+                "executor_run",
+                "commit_or_push",
+                "stable_replacement",
+            ],
+        }
+        selected = by_consumer.get(consumer_kind, [])
+        return [*selected, *common]
+
+    def _tool_surface_guidance_for_actions(self, actions: list[dict[str, Any]]) -> dict[str, Any]:
+        referenced_tools: list[str] = []
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            tool_name = action.get("tool")
+            if isinstance(tool_name, str) and tool_name:
+                referenced_tools.append(tool_name)
+            copyable_tool_call = action.get("copyable_tool_call")
+            if isinstance(copyable_tool_call, dict):
+                copyable_tool_name = copyable_tool_call.get("tool")
+                if isinstance(copyable_tool_name, str) and copyable_tool_name:
+                    referenced_tools.append(copyable_tool_name)
+        referenced_tools = list(dict.fromkeys(referenced_tools))
+        visible_tools = set(self._visible_tool_names())
+        missing_from_current_mcp_exposure = [
+            tool_name for tool_name in referenced_tools if tool_name not in visible_tools
+        ]
+        return {
+            "referenced_tools": referenced_tools,
+            "current_mcp_visible_tool_count": len(visible_tools),
+            "missing_from_current_mcp_exposure": missing_from_current_mcp_exposure,
+            "apps_tool_surface_may_lazy_load_tools": True,
+            "if_tool_not_visible_in_current_apps_surface": (
+                "Use tool_search with the exact ColaMeta tool name, or call the stable HTTP MCP endpoint "
+                "with tools/call and the copyable_tool_call arguments."
+            ),
+            "tool_search_query_hint": " ".join(referenced_tools[:8]),
+            "http_mcp_fallback": {
+                "endpoint": "http://127.0.0.1:8766/mcp",
+                "method": "tools/call",
+                "arguments_source": "copyable_tool_call.arguments",
+            },
+        }
 
     def _tool_get_agent_consumer_contract(self, _: dict[str, Any]) -> dict[str, Any]:
         visible_tools = self._visible_tool_names()
@@ -6983,7 +7152,7 @@ class MCPPlanningBridgeServer:
                 {
                     "step": "render_commander_app",
                     "tool": "render_commander_app",
-                    "arguments": {"project_name": "<registered project_name>"},
+                    "arguments": {"project_name": "<registered project_name>", "profile_id": "web_gpt_commander"},
                     "why": "打开 ChatGPT Apps Commander 面板，统一展示服务事实、connector health、profiles 和授权闸门。",
                 },
                 {
@@ -7194,6 +7363,11 @@ class MCPPlanningBridgeServer:
                 "manifest_version": COMMANDER_APP_MANIFEST_VERSION,
                 "widget_resource_uri": COMMANDER_APP_WIDGET_URI,
                 "project_name": manifest.get("project_name"),
+                "profile_id": (
+                    manifest.get("agent_operator_flow_profile", {}).get("profile_id")
+                    if isinstance(manifest.get("agent_operator_flow_profile"), dict)
+                    else None
+                ),
             },
         }
         return manifest
@@ -7288,7 +7462,7 @@ class MCPPlanningBridgeServer:
         project_name = self._project_name_for_context(project_root, project_record, params)
 
         project_args = {"project_name": project_name}
-        profiles = self._service_entry_profiles()
+        flow_profile_id, flow_profile, profiles = self._select_service_entry_profile(params)
         visible_names = self._visible_tool_names()
         readiness = build_service_readiness_summary(
             runtime_status=runtime_status,
@@ -7313,10 +7487,17 @@ class MCPPlanningBridgeServer:
             "details_tool": "get_runtime_version_status",
             "details_arguments": project_args,
         }
-        flow_args = {"profile_id": "web_gpt_commander", "include_advanced_context": False}
+        flow_args = {"profile_id": flow_profile_id, "include_advanced_context": False}
         if self.service_mode or params.get("project_name") is not None:
             flow_args.update(project_args)
         agent_operator_flow = self._tool_get_agent_operator_flow_packet(flow_args)
+        flow_profile_summary = {
+            "profile_id": flow_profile_id,
+            "display_name": flow_profile.get("display_name"),
+            "consumer_kind": flow_profile.get("consumer_kind"),
+            "default_authority": flow_profile.get("default_authority"),
+            "write_boundary": flow_profile.get("write_boundary"),
+        }
         return {
             "ok": True,
             "read_only": True,
@@ -7333,6 +7514,7 @@ class MCPPlanningBridgeServer:
                 "data_tool": "get_commander_app_manifest",
                 "render_tool": "render_commander_app",
                 "resource_methods": ["resources/list", "resources/read"],
+                "embedded_flow_profile_id": flow_profile_id,
             },
             "service_profile": {
                 "service_name": "ColaMeta MCP",
@@ -7344,6 +7526,7 @@ class MCPPlanningBridgeServer:
             },
             "project_identity": project_identity,
             "readiness": readiness,
+            "agent_operator_flow_profile": flow_profile_summary,
             "agent_operator_flow": agent_operator_flow,
             "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
@@ -7353,9 +7536,9 @@ class MCPPlanningBridgeServer:
             "initial_reads": [
                 {"tool": "list_registered_projects", "arguments": {}},
                 {"tool": "get_agent_consumer_contract", "arguments": {}},
-                {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
-                {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": "web_gpt_commander"}},
-                {"tool": "render_commander_app", "arguments": project_args},
+                {"tool": "get_service_entry_profile", "arguments": {"profile_id": flow_profile_id}},
+                {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": flow_profile_id}},
+                {"tool": "render_commander_app", "arguments": {**project_args, "profile_id": flow_profile_id}},
                 {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
                 {"tool": "get_stage_parallel_run_preview", "arguments": project_args},
@@ -7386,8 +7569,8 @@ class MCPPlanningBridgeServer:
                     "authorization_gates",
                 ],
                 "read_actions": [
-                    {"tool": "get_commander_app_manifest", "arguments": project_args},
-                    {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": "web_gpt_commander"}},
+                    {"tool": "get_commander_app_manifest", "arguments": {**project_args, "profile_id": flow_profile_id}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": flow_profile_id}},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
@@ -7497,7 +7680,7 @@ class MCPPlanningBridgeServer:
             "connector_recovery": {
                 "healthy_path": [
                     "call list_registered_projects",
-                    "call render_commander_app with project_name",
+                    "call render_commander_app with project_name and profile_id",
                     "provide sanitized tunnel_client/control_plane evidence when available",
                     "if Apps connector returns token_expired, reconnect the Apps connector session",
                 ],
