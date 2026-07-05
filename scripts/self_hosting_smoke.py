@@ -143,6 +143,13 @@ def _metadata_text(project: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _project_dependencies() -> list[str]:
+    dependencies = _read_pyproject_metadata().get("dependencies", [])
+    if not isinstance(dependencies, list):
+        return []
+    return [item for item in dependencies if isinstance(item, str) and item.strip()]
+
+
 def build_stdlib_wheel(wheelhouse: Path) -> None:
     project = _read_pyproject_metadata()
     distribution = str(project["name"]).replace("-", "_")
@@ -192,8 +199,24 @@ def main() -> int:
 
         builder_python = select_builder_python(temp_dir)
         if builder_python is None:
+            if _project_dependencies():
+                print("stdlib wheel fallback cannot prepare dependency wheels.", file=sys.stderr)
+                return 1
             build_stdlib_wheel(wheelhouse)
         else:
+            dependencies = _project_dependencies()
+            if dependencies:
+                run(
+                    [
+                        builder_python,
+                        "-m",
+                        "pip",
+                        "wheel",
+                        "--wheel-dir",
+                        wheelhouse,
+                        *dependencies,
+                    ]
+                )
             run(
                 [
                     builder_python,

@@ -121,6 +121,49 @@ the auth layer with an established identity provider or equivalent production
 authorization server. The resource server must verify issuer, audience/resource,
 expiration, replay risk, and required scopes on every request.
 
+## External OAuth Resource Server Mode
+
+For a production-grade ChatGPT connector, prefer `external-oauth`. In this mode,
+ColaMeta is only the MCP resource server:
+
+- `GET /.well-known/oauth-protected-resource` advertises the MCP resource and
+  external authorization server issuer;
+- `POST /mcp` requires `Authorization: Bearer <JWT>`;
+- ColaMeta verifies the JWT against the external IdP JWKS, issuer,
+  audience/resource, expiration/not-before, algorithm, and tool scopes;
+- ColaMeta does not serve `/authorize`, `/register`, `/token`, or `/revoke`.
+
+Example:
+
+```bash
+.venv/bin/colameta serve /home/jenn/src/colameta-dev \
+  --no-web \
+  --mcp-host 127.0.0.1 \
+  --mcp-port 8767 \
+  --auth-mode external-oauth \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --oauth-issuer https://YOUR_IDP_DOMAIN/ \
+  --oauth-jwks-url https://YOUR_IDP_DOMAIN/.well-known/jwks.json \
+  --oauth-audience https://colameta-mcp.skmt617.top/mcp \
+  --oauth-scopes mcp:read,mcp:preview,mcp:commit,mcp:plan
+```
+
+The issuer, JWKS URL, audience, scopes, algorithms, and leeway are not secrets.
+Do not put client secrets, bearer tokens, cookies, or refresh tokens in these
+flags, service files, docs, receipts, or logs.
+
+ChatGPT connector setup should use OAuth with the IdP as the authorization
+server. Use a predefined client or the IdP's supported dynamic registration
+flow, then set the connector URL to:
+
+```text
+https://colameta-mcp.skmt617.top/mcp
+```
+
+The current `oauth` mode remains available for Jenn-only private operation and
+local bring-up. Do not treat it as the long-term public or multi-user auth
+boundary.
+
 ## Preflight
 
 Shape-only check:
@@ -137,12 +180,16 @@ Live endpoint check after the HTTPS service exists:
 
 Expected live checks:
 
-- `/healthz` returns `service=colameta-mcp`, `ok=true`, and `auth_mode=oauth`;
-- `/mcp` advertises the protected resource metadata URL;
+- `/healthz` returns `service=colameta-mcp`, `ok=true`, and `auth_mode=oauth`
+  or `auth_mode=external-oauth`;
+- `/mcp` advertises the protected resource metadata URL and the same auth mode;
 - `/.well-known/oauth-protected-resource` returns resource metadata for
   `https://mcp.example.com/mcp`;
-- `/.well-known/oauth-authorization-server` returns authorization, token,
-  registration, revocation, and PKCE S256 metadata.
+- in `oauth` mode, `/.well-known/oauth-authorization-server` returns local
+  authorization, token, registration, revocation, and PKCE S256 metadata;
+- in `external-oauth` mode, the local authorization-server endpoint returns
+  `EXTERNAL_AUTH_SERVER`, and clients must use the external IdP advertised in
+  protected-resource metadata.
 
 The preflight output intentionally reports status and JSON field names only. It
 does not read local secret files and does not print tokens, cookies, config, or

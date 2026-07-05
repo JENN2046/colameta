@@ -16,6 +16,7 @@ class PreflightError(ValueError):
 
 
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
+REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 
 
 @dataclass(frozen=True)
@@ -112,16 +113,19 @@ def validate_remote_payloads(
         failures.append("healthz must return HTTP 200 with ok=true.")
     if health_payload.get("service") != "colameta-mcp":
         failures.append("healthz service must be colameta-mcp.")
-    if health_payload.get("auth_mode") != "oauth":
-        failures.append("healthz auth_mode must be oauth for ChatGPT remote MCP.")
+    health_auth_mode = health_payload.get("auth_mode")
+    if health_auth_mode not in REMOTE_MCP_AUTH_MODES:
+        failures.append("healthz auth_mode must be oauth or external-oauth for ChatGPT remote MCP.")
 
     mcp_status, mcp_payload = mcp
     if mcp_status != 200 or mcp_payload.get("ok") is not True:
         failures.append("GET /mcp must return HTTP 200 with ok=true readiness metadata.")
-    if mcp_payload.get("auth_mode") != "oauth":
-        failures.append("GET /mcp auth_mode must be oauth.")
+    mcp_auth_mode = mcp_payload.get("auth_mode")
+    if mcp_auth_mode not in REMOTE_MCP_AUTH_MODES:
+        failures.append("GET /mcp auth_mode must be oauth or external-oauth.")
     if mcp_payload.get("protected_resource_metadata") != plan.protected_resource_metadata_url:
         failures.append("GET /mcp must advertise the protected resource metadata URL.")
+    auth_mode = mcp_auth_mode if mcp_auth_mode in REMOTE_MCP_AUTH_MODES else health_auth_mode
 
     resource_status, resource_payload = protected_resource
     if resource_status != 200:
@@ -129,12 +133,23 @@ def validate_remote_payloads(
     if resource_payload.get("resource") != plan.connector_url:
         failures.append("protected resource metadata resource must equal the /mcp connector URL.")
     authorization_servers = resource_payload.get("authorization_servers")
-    if not isinstance(authorization_servers, list) or plan.public_base_url not in authorization_servers:
+    if not isinstance(authorization_servers, list) or not authorization_servers:
+        failures.append("protected resource metadata must list at least one authorization server.")
+    elif auth_mode == "oauth" and plan.public_base_url not in authorization_servers:
         failures.append("protected resource metadata must list the public base URL as an authorization server.")
+    elif auth_mode == "external-oauth" and not any(
+        isinstance(item, str) and item.startswith("https://") for item in authorization_servers
+    ):
+        failures.append("external-oauth protected resource metadata must list an HTTPS authorization server.")
     if "header" not in (resource_payload.get("bearer_methods_supported") or []):
         failures.append("protected resource metadata must support bearer tokens in the header.")
 
     auth_status, auth_payload = authorization_server
+    if auth_mode == "external-oauth":
+        if auth_status != 404 or auth_payload.get("error_code") != "EXTERNAL_AUTH_SERVER":
+            failures.append("external-oauth must delegate local authorization server metadata to the external IdP.")
+        return failures
+
     if auth_status != 200:
         failures.append("authorization server metadata must return HTTP 200.")
     if auth_payload.get("issuer") != plan.public_base_url:

@@ -119,6 +119,39 @@ def test_validate_remote_payloads_accepts_oauth_metadata_contract() -> None:
     assert failures == []
 
 
+def test_validate_remote_payloads_accepts_external_oauth_resource_server_contract() -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(200, {"ok": True, "service": "colameta-mcp", "auth_mode": "external-oauth"}),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "external-oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://idp.example.com/"],
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            404,
+            {
+                "ok": False,
+                "error_code": "EXTERNAL_AUTH_SERVER",
+            },
+        ),
+    )
+
+    assert failures == []
+
+
 def test_validate_remote_payloads_requires_oauth_for_remote_chatgpt_mcp() -> None:
     plan = build_endpoint_plan("https://mcp.example.com")
     failures = validate_remote_payloads(
@@ -129,5 +162,5 @@ def test_validate_remote_payloads_requires_oauth_for_remote_chatgpt_mcp() -> Non
         authorization_server=(404, {}),
     )
 
-    assert "healthz auth_mode must be oauth for ChatGPT remote MCP." in failures
-    assert "GET /mcp auth_mode must be oauth." in failures
+    assert "healthz auth_mode must be oauth or external-oauth for ChatGPT remote MCP." in failures
+    assert "GET /mcp auth_mode must be oauth or external-oauth." in failures

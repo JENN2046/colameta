@@ -237,6 +237,50 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
             )
         assert https_remote == "oauth"
 
+    def test_external_oauth_requires_external_idp_metadata(self) -> None:
+        from scripts import runner_cli
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            missing_idp = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "external-oauth",
+                None,
+                "https://mcp.example.com",
+                3600,
+            )
+        assert missing_idp is None
+        assert "--oauth-issuer" in stderr.getvalue()
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            insecure_issuer = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "external-oauth",
+                None,
+                "https://mcp.example.com",
+                3600,
+                oauth_issuer="http://idp.example.com/",
+                oauth_jwks_url="https://idp.example.com/.well-known/jwks.json",
+            )
+        assert insecure_issuer is None
+        assert "--oauth-issuer 必须是 HTTPS URL" in stderr.getvalue()
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            valid = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "external-oauth",
+                None,
+                "https://mcp.example.com",
+                3600,
+                oauth_issuer="https://idp.example.com/",
+                oauth_jwks_url="https://idp.example.com/.well-known/jwks.json",
+                oauth_audience="https://mcp.example.com/mcp",
+                oauth_token_leeway_seconds=60,
+            )
+        assert valid == "external-oauth"
+
     def test_default_start_summary_separates_web_mcp_and_public_urls(self) -> None:
         from scripts import runner_cli_output
 

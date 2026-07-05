@@ -102,6 +102,8 @@ def print_mcp_auth_status(auth_mode: str, public_base_url: str | None = None, *,
         print("  Auth: Bearer token enabled", file=target)
     elif auth_mode == "oauth":
         print("  Auth: OAuth enabled", file=target)
+    elif auth_mode == "external-oauth":
+        print("  Auth: external OAuth resource server enabled", file=target)
 
 
 def print_registry_project_list(

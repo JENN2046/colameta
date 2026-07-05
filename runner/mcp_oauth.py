@@ -231,6 +231,9 @@ class MCPOAuthProvider:
             "resource_name": "MVP Runner MCP",
         }
 
+    def protected_resource_metadata_url(self) -> str:
+        return f"{self.public_base_url}/.well-known/oauth-protected-resource"
+
     def authorization_server_metadata(self) -> dict[str, Any]:
         return {
             "issuer": self.public_base_url,

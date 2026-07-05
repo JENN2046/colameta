@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from runner.http_server_utils import ReusableThreadingHTTPServer
+from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
 from runner.mcp_oauth import MCPOAuthProvider, default_server_oauth_store_file
 from runner.planning_bridge import PlanningBridge, PlanningBridgeError
 from runner.source_review_bridge import SourceReviewBridge, SourceReviewError
@@ -3609,17 +3610,24 @@ class MCPPlanningBridgeServer:
         auth_mode: str | None = None,
         public_base_url: str | None = None,
         oauth_token_ttl_seconds: int = 3600,
+        oauth_issuer: str | None = None,
+        oauth_jwks_url: str | None = None,
+        oauth_audience: str | None = None,
+        oauth_scopes: str | list[str] | tuple[str, ...] | None = None,
+        oauth_algorithms: str | list[str] | tuple[str, ...] | None = None,
+        oauth_token_leeway_seconds: int = 60,
         debug_actions: bool = False,
     ) -> int:
         server = self
         _debug_counter = 0
         resolved_auth_mode = auth_mode or ("token" if auth_token else "none")
-        if resolved_auth_mode not in {"none", "token", "oauth"}:
+        if resolved_auth_mode not in {"none", "token", "oauth", "external-oauth"}:
             raise PlanningBridgeError(f"auth_mode 无效：{resolved_auth_mode}")
         if resolved_auth_mode == "token" and not auth_token:
             raise PlanningBridgeError("token auth mode requires auth_token.")
         normalized_public_base_url = public_base_url.rstrip("/") if public_base_url else None
         oauth_provider: MCPOAuthProvider | None = None
+        external_oauth_provider: ExternalOAuthProvider | None = None
         if resolved_auth_mode == "oauth":
             if not normalized_public_base_url:
                 raise PlanningBridgeError("oauth auth mode requires public_base_url.")
@@ -3628,6 +3636,25 @@ class MCPPlanningBridgeServer:
                 normalized_public_base_url,
                 token_ttl_seconds=oauth_token_ttl_seconds,
             )
+        elif resolved_auth_mode == "external-oauth":
+            if not normalized_public_base_url:
+                raise PlanningBridgeError("external-oauth auth mode requires public_base_url.")
+            if not isinstance(oauth_issuer, str) or not oauth_issuer.strip():
+                raise PlanningBridgeError("external-oauth auth mode requires oauth_issuer.")
+            if not isinstance(oauth_jwks_url, str) or not oauth_jwks_url.strip():
+                raise PlanningBridgeError("external-oauth auth mode requires oauth_jwks_url.")
+            external_oauth_provider = ExternalOAuthProvider(
+                ExternalOAuthConfig(
+                    public_base_url=normalized_public_base_url,
+                    issuer=oauth_issuer,
+                    jwks_url=oauth_jwks_url,
+                    audience=oauth_audience,
+                    scopes=oauth_scopes,  # type: ignore[arg-type]
+                    algorithms=oauth_algorithms,  # type: ignore[arg-type]
+                    token_leeway_seconds=oauth_token_leeway_seconds,
+                )
+            )
+        resource_oauth_provider = external_oauth_provider or oauth_provider
 
         def _debug_log(handler: BaseHTTPRequestHandler, status_code: int, response_payload: dict[str, Any] | None = None) -> None:
             if not debug_actions:
@@ -3742,10 +3769,10 @@ class MCPPlanningBridgeServer:
 
             def _send_auth_error(self) -> None:
                 headers: dict[str, str] = {}
-                if resolved_auth_mode == "oauth" and normalized_public_base_url:
+                if resource_oauth_provider is not None:
                     headers["WWW-Authenticate"] = (
                         'Bearer resource_metadata="'
-                        f'{normalized_public_base_url}/.well-known/oauth-protected-resource"'
+                        f'{resource_oauth_provider.protected_resource_metadata_url()}"'
                     )
                 self._send_json(
                     401,
@@ -3774,6 +3801,18 @@ class MCPPlanningBridgeServer:
                     if token_payload is None:
                         return None
                     return {"mode": "oauth", "token": token_payload, "oauth_provider": oauth_provider}
+                if resolved_auth_mode == "external-oauth" and external_oauth_provider is not None:
+                    if not authorization.startswith("Bearer "):
+                        return None
+                    token = authorization[len("Bearer ") :]
+                    token_payload = external_oauth_provider.validate_token(token)
+                    if token_payload is None:
+                        return None
+                    return {
+                        "mode": "external-oauth",
+                        "token": token_payload,
+                        "oauth_provider": external_oauth_provider,
+                    }
                 return None
 
             def _read_body(self) -> bytes:
@@ -3823,6 +3862,19 @@ class MCPPlanningBridgeServer:
                     return
                 self._send_json(500, {"ok": False, "error_code": "OAUTH_RESPONSE_INVALID"})
 
+            def _send_oauth_unavailable(self, message: str) -> None:
+                if resolved_auth_mode == "external-oauth":
+                    self._send_json(
+                        404,
+                        {
+                            "ok": False,
+                            "error_code": "EXTERNAL_AUTH_SERVER",
+                            "message": message,
+                        },
+                    )
+                    return
+                self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+
             def do_GET(self) -> None:
                 parsed_url = urlparse(self.path)
                 path = parsed_url.path
@@ -3870,27 +3922,27 @@ class MCPPlanningBridgeServer:
                         "message": "MCP endpoint ready. Use POST /mcp with JSON-RPC 2.0.",
                         "auth_mode": resolved_auth_mode,
                     }
-                    if resolved_auth_mode == "oauth" and normalized_public_base_url:
-                        payload["protected_resource_metadata"] = (
-                            f"{normalized_public_base_url}/.well-known/oauth-protected-resource"
-                        )
+                    if resource_oauth_provider is not None:
+                        payload["protected_resource_metadata"] = resource_oauth_provider.protected_resource_metadata_url()
                     self._send_json(200, payload)
                     return
                 if path == "/.well-known/oauth-protected-resource":
-                    if oauth_provider is None:
+                    if resource_oauth_provider is None:
                         self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
                         return
-                    self._send_json(200, oauth_provider.protected_resource_metadata())
+                    self._send_json(200, resource_oauth_provider.protected_resource_metadata())
                     return
                 if path == "/.well-known/oauth-authorization-server":
                     if oauth_provider is None:
-                        self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+                        self._send_oauth_unavailable(
+                            "external-oauth 模式由外部 IdP 提供 authorization server metadata。"
+                        )
                         return
                     self._send_json(200, oauth_provider.authorization_server_metadata())
                     return
                 if path == "/authorize":
                     if oauth_provider is None:
-                        self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+                        self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机处理授权页面。")
                         return
                     self._send_oauth_page_result(
                         oauth_provider.authorize(parse_qs(parsed_url.query, keep_blank_values=True))
@@ -3914,7 +3966,7 @@ class MCPPlanningBridgeServer:
                     self._debug_path = path
                 if path == "/register":
                     if oauth_provider is None:
-                        self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+                        self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机注册 OAuth 客户端。")
                         return
                     payload = self._read_json_body()
                     if payload is None:
@@ -3925,14 +3977,14 @@ class MCPPlanningBridgeServer:
                     return
                 if path == "/token":
                     if oauth_provider is None:
-                        self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+                        self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机签发 token。")
                         return
                     status_code, response = oauth_provider.exchange_token(self._read_params_body())
                     self._send_json(status_code, response)
                     return
                 if path == "/revoke":
                     if oauth_provider is None:
-                        self._send_json(404, {"ok": False, "error_code": "NOT_FOUND", "message": "OAuth 未启用。"})
+                        self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机撤销 token。")
                         return
                     status_code, response = oauth_provider.revoke_token(self._read_params_body())
                     self._send_json(status_code, response)
@@ -6082,14 +6134,15 @@ class MCPPlanningBridgeServer:
         params: dict[str, Any],
         auth_context: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        if not isinstance(auth_context, dict) or auth_context.get("mode") != "oauth":
+        if not isinstance(auth_context, dict) or auth_context.get("mode") not in {"oauth", "external-oauth"}:
             return None
         oauth_provider = auth_context.get("oauth_provider")
         token_payload = auth_context.get("token")
-        if not isinstance(oauth_provider, MCPOAuthProvider) or not isinstance(token_payload, dict):
+        validate_scope = getattr(oauth_provider, "validate_scope", None)
+        if not callable(validate_scope) or not isinstance(token_payload, dict):
             return self._tool_error(name, "UNAUTHORIZED", "OAuth token is invalid.")
         required_scope = self._required_scope_for_tool(name, params)
-        if oauth_provider.validate_scope(token_payload, required_scope):
+        if validate_scope(token_payload, required_scope):
             return None
         return self._tool_error(
             name,
