@@ -15,6 +15,9 @@ class PreflightError(ValueError):
     pass
 
 
+PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
+
+
 @dataclass(frozen=True)
 class EndpointPlan:
     public_base_url: str
@@ -69,7 +72,14 @@ def build_endpoint_plan(public_base_url: str) -> EndpointPlan:
 
 
 def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str, Any]]:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": PREFLIGHT_USER_AGENT,
+        },
+        method="GET",
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")

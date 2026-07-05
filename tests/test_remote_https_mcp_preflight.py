@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scripts.remote_https_mcp_preflight import (
+    PREFLIGHT_USER_AGENT,
     PreflightError,
     build_endpoint_plan,
+    fetch_json,
     normalize_public_base_url,
     run_preflight,
     validate_remote_payloads,
@@ -43,6 +47,38 @@ def test_run_preflight_no_network_reports_connector_urls() -> None:
     assert report["ok"] is True
     assert report["network_check"] == "not_run"
     assert report["connector_url"] == "https://mcp.example.com/mcp"
+
+
+def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        captured["timeout"] = timeout
+        captured["user_agent"] = request.get_header("User-agent")
+        captured["accept"] = request.get_header("Accept")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    status, payload = fetch_json("https://mcp.example.com/healthz", timeout_seconds=7)
+
+    assert status == 200
+    assert payload == {"ok": True}
+    assert captured["timeout"] == 7
+    assert captured["user_agent"] == PREFLIGHT_USER_AGENT
+    assert captured["accept"] == "application/json"
 
 
 def test_validate_remote_payloads_accepts_oauth_metadata_contract() -> None:
