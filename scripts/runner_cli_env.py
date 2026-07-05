@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import ipaddress
 import os
 import re
 import sys
 from typing import Callable, Mapping, TextIO
+from urllib.parse import urlparse
 
 from runner.runner_paths import resolve_project_runner_path
 
@@ -355,7 +357,16 @@ def normalize_public_base_url(url: str) -> str:
 
 
 def is_local_http_url(url: str) -> bool:
-    return url.startswith("http://127.0.0.1") or url.startswith("http://localhost")
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def resolve_debug_actions(cli_has_flag: bool) -> bool:

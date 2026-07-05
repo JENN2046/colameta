@@ -105,6 +105,21 @@ def _validate_mcp_auth_options(
     if resolved == "oauth" and not public_base_url:
         print(f"{command_name} 参数错误：--auth-mode oauth 需要 --public-base-url。", file=sys.stderr)
         return None
+    if resolved == "oauth" and public_base_url:
+        normalized_public_base_url = _normalize_public_base_url(str(public_base_url))
+        if not (
+            normalized_public_base_url.startswith("https://")
+            or normalized_public_base_url.startswith("http://")
+        ):
+            print(f"{command_name} 参数错误：--public-base-url 必须以 http:// 或 https:// 开头。", file=sys.stderr)
+            return None
+        if normalized_public_base_url.startswith("http://") and not _is_local_http_url(normalized_public_base_url):
+            print(
+                f"{command_name} 参数错误：OAuth MCP 远端服务要求 HTTPS public_base_url；"
+                "http:// 仅允许 localhost/loopback 本地调试。",
+                file=sys.stderr,
+            )
+            return None
     if oauth_token_ttl_seconds <= 0:
         print(f"{command_name} 参数错误：--oauth-token-ttl-seconds 必须是正整数。", file=sys.stderr)
         return None

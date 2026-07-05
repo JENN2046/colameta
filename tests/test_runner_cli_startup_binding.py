@@ -200,6 +200,43 @@ class RunnerCliStartupBindingTests(unittest.TestCase):
         assert "--web-read-token" in overridden["serve_args"]
         assert overridden["web_read_token_configured"] is True
 
+    def test_oauth_auth_options_require_https_for_remote_public_base_url(self) -> None:
+        from scripts import runner_cli
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            remote_http = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "oauth",
+                None,
+                "http://mcp.example.com",
+                3600,
+            )
+        assert remote_http is None
+        assert "HTTPS public_base_url" in stderr.getvalue()
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            local_http = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "oauth",
+                None,
+                "http://127.0.0.1:8765",
+                3600,
+            )
+        assert local_http == "oauth"
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            https_remote = runner_cli._validate_mcp_auth_options(
+                "serve",
+                "oauth",
+                None,
+                "https://mcp.example.com",
+                3600,
+            )
+        assert https_remote == "oauth"
+
     def test_default_start_summary_separates_web_mcp_and_public_urls(self) -> None:
         from scripts import runner_cli_output
 
