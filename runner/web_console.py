@@ -1783,6 +1783,11 @@ class WebConsoleServer:
                 "arguments": {},
             },
             {
+                "label": "Agent flow packet",
+                "tool": "get_agent_operator_flow_packet",
+                "arguments": {"project_name": project_name, "profile_id": "web_gpt_commander"},
+            },
+            {
                 "label": "Apps smoke packet",
                 "tool": str(apps_smoke_call.get("tool") or "get_apps_connector_smoke_packet"),
                 "arguments": apps_smoke_call.get("arguments") if isinstance(apps_smoke_call.get("arguments"), dict) else {"project_name": project_name},

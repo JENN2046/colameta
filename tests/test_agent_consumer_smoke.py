@@ -35,6 +35,8 @@ class AgentConsumerSmokeTests(unittest.TestCase):
         assert result["entry_profiles_match_contract"] is True
         assert result["invalid_profile_fail_closed"] is True
         assert result["readiness_missing_tools"] == []
+        assert result["operator_flow_primary_tool"] == "run_mcp_workflow"
+        assert result["operator_flow_gate_level"] == "read_only_workflow_packet"
         assert result["profile_results"]["reviewer_agent"]["authority"] == "review_only"
 
     def test_agent_consumer_smoke_summary_is_json_serializable(self) -> None:

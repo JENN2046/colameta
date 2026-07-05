@@ -23,11 +23,12 @@
 1. list_registered_projects
 2. get_agent_consumer_contract
 3. get_service_entry_profile(profile_id="web_gpt_commander")
-4. get_web_gpt_service_entrypoint
-5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_stable_replacement_cadence(project_name="colameta-self-dev")
-7. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-8. get_connector_runtime_health_status(project_name="colameta-self-dev")
+4. get_agent_operator_flow_packet(project_name="colameta-self-dev", profile_id="web_gpt_commander")
+5. get_web_gpt_service_entrypoint
+6. get_runtime_version_status(project_name="colameta-self-dev")
+7. get_stable_replacement_cadence(project_name="colameta-self-dev")
+8. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+9. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 如果要开一轮受控优化：
@@ -88,6 +89,12 @@ dev repo: /home/jenn/src/colameta-dev
 ```
 
 网页 GPT 或外部 agent 默认优先连稳定 MCP。只有在明确验证 dev repo 新能力时，才连 dev 测试 MCP。
+
+做角色化 agent 交接时，先调
+`get_agent_operator_flow_packet(project_name=..., profile_id=...)`。它会返回一个
+`primary_next_action`、该动作的 gate level，以及给聪明 agent 继续判断的
+`advanced_actions`。这个 packet 本身只读，不创建 preview artifact、不启动 executor、不
+merge、不 commit、不 push、不替换 stable。
 
 需要一句话服务决策时，看 `get_commander_app_manifest(project_name=...)` 的 `readiness`，
 或 Web `/api/v2/status` 的 `service_readiness_summary`。它返回 `ready`、`needs_attention`

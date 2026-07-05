@@ -90,7 +90,8 @@ COMMANDER_APP_TITLE = "ColaMeta Commander"
 COMMANDER_APP_SERVER_INSTRUCTIONS = (
     "ColaMeta Commander is a read-only ChatGPT App surface for local ColaMeta service facts. "
     "Start with list_registered_projects, get_agent_consumer_contract, get_service_entry_profile, "
-    "then render_commander_app with a registered project_name. Treat manifest, runtime, connector, "
+    "get_agent_operator_flow_packet, then render_commander_app with a registered project_name. "
+    "Treat manifest, runtime, connector, "
     "profile, and preview outputs as evidence only; they do not authorize executor run, commit, push, "
     "stable service replacement, ReviewDecision, GateEvent, or Delivery accepted."
 )
@@ -99,6 +100,7 @@ NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_agent_consumer_contract",
     "get_service_entry_profile",
+    "get_agent_operator_flow_packet",
     "get_web_gpt_service_entrypoint",
     "get_commander_app_manifest",
     "render_commander_app",
@@ -388,6 +390,7 @@ def _manage_stage_parallel_merges_input_schema() -> dict[str, Any]:
 
 
 PROJECT_NAME_REQUIRED_TOOLS = {
+    "get_agent_operator_flow_packet",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -544,6 +547,7 @@ class MCPPlanningBridgeServer:
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
             "get_service_entry_profile": self._tool_get_service_entry_profile,
+            "get_agent_operator_flow_packet": self._tool_get_agent_operator_flow_packet,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
@@ -667,6 +671,23 @@ class MCPPlanningBridgeServer:
                     "additionalProperties": False,
                 },
                 output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="get_agent_operator_flow_packet",
+                title="Get Agent Operator Flow Packet",
+                description=(
+                    f"[{self.project_hint}] 面向任意 agent profile 的只读操作流程 packet。"
+                    "按 profile_id、task_mode 和当前项目事实给出一个 primary_next_action、简短原因、gate level 和 advanced context。"
+                    "它不创建 preview artifact、不启动 executor、不 merge、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=self._agent_operator_flow_input_schema(),
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
             ),
             MCPToolDef(
                 name="get_web_gpt_service_entrypoint",
@@ -4333,6 +4354,7 @@ class MCPPlanningBridgeServer:
       <h2>Reads</h2>
       <div class="actions">
         <button data-tool="get_commander_app_manifest">Manifest</button>
+        <button class="secondary" data-tool="get_agent_operator_flow_packet">Flow</button>
         <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
         <button class="secondary" data-tool="get_stable_replacement_cadence">Cadence</button>
         <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
@@ -4373,6 +4395,11 @@ class MCPPlanningBridgeServer:
         var first = actions[0] || {};
         return [first.label, first.tool, first.authority].filter(Boolean).join(" | ");
       }
+      function flowAction(flow) {
+        var action = flow && flow.primary_next_action;
+        if (!action || typeof action !== "object") return "";
+        return [action.label, action.tool, action.gate_level].filter(Boolean).join(" | ");
+      }
       function blockerText(readiness) {
         var blocker = readiness && readiness.primary_blocker;
         if (!blocker || typeof blocker !== "object") return "none";
@@ -4401,11 +4428,12 @@ class MCPPlanningBridgeServer:
         var current = manifest || data;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
         var readiness = current.readiness || current.service_readiness_summary || {};
+        var flow = current.agent_operator_flow || (current.source === "agent_operator_flow_packet" ? current : {});
         var apps = current.apps_connector_closeout || {};
         text("subtitle", statusValue(current, ["app", "status_line"]) || "Service facts and authorization gates");
         text("readiness", statusValue(readiness, ["status"]));
         text("primary-blocker", blockerText(readiness));
-        text("safe-next-action", firstSafeAction(readiness));
+        text("safe-next-action", flowAction(flow) || firstSafeAction(readiness));
         text("project", projectName);
         text("runtime", statusValue(current, ["runtime", "reload_needed_for_verification"]) === "false" ? "current" : statusValue(current, ["runtime", "reload_awareness_reason"]));
         text("local", statusValue(current, ["connector", "local_service_status"]));
@@ -4677,6 +4705,7 @@ class MCPPlanningBridgeServer:
         return {
             "get_agent_consumer_contract",
             "get_service_entry_profile",
+            "get_agent_operator_flow_packet",
             "get_web_gpt_service_entrypoint",
             "get_commander_app_manifest",
             "render_commander_app",
@@ -5130,6 +5159,62 @@ class MCPPlanningBridgeServer:
                     "可选。调用方提供的 sanitized tunnel control-plane 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
                 ),
             },
+            "required": [],
+            "additionalProperties": False,
+        }
+
+    def _agent_operator_flow_input_schema(self) -> dict[str, Any]:
+        stage_schema = _stage_parallel_preview_input_schema()
+        properties = {
+            "project_name": {
+                "type": "string",
+                "description": "必填。服务模式下指定已登记 project_name。",
+            },
+            "profile_id": {
+                "type": "string",
+                "enum": [
+                    "web_gpt_commander",
+                    "local_codex_commander",
+                    "planner_agent",
+                    "reviewer_agent",
+                    "source_observer",
+                ],
+                "description": "可选。调用方 agent profile；默认 web_gpt_commander。",
+            },
+            "task_mode": {
+                "type": "string",
+                "enum": [
+                    "auto",
+                    "ordinary_task",
+                    "parallel_stage",
+                    "planning",
+                    "review",
+                    "source_observation",
+                    "connector_smoke",
+                    "readiness",
+                ],
+                "description": "可选。希望 ColaMeta 压缩的使用流程；默认 auto。",
+            },
+            "task_brief": {
+                "type": "string",
+                "description": "可选。当前任务一句话摘要；用于生成 thin governed loop draft seed，不作为执行授权。",
+            },
+            "include_advanced_context": {
+                "type": "boolean",
+                "description": "可选。是否返回高级上下文摘要；默认 true。",
+            },
+            "tunnel_client": self._sanitized_connector_evidence_schema(
+                "可选。调用方提供的 sanitized tunnel-client 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
+            ),
+            "control_plane": self._sanitized_connector_evidence_schema(
+                "可选。调用方提供的 sanitized tunnel control-plane 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
+            ),
+        }
+        for key in ("stage_id", "provider", "base_branch", "max_parallel_tasks", "task_intents"):
+            properties[key] = stage_schema["properties"][key]
+        return {
+            "type": "object",
+            "properties": properties,
             "required": [],
             "additionalProperties": False,
         }
@@ -6162,6 +6247,7 @@ class MCPPlanningBridgeServer:
                 "first_reads": [
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="web_gpt_commander")},
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
                     {"tool": "render_commander_app", "arguments": project_args()},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args()},
@@ -6198,6 +6284,7 @@ class MCPPlanningBridgeServer:
                 "first_reads": [
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="local_codex_commander")},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
@@ -6216,6 +6303,7 @@ class MCPPlanningBridgeServer:
                 "first_reads": [
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="reviewer_agent")},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=20)},
                     {"tool": "list_executor_run_reports", "arguments": project_args(limit=20)},
@@ -6232,6 +6320,7 @@ class MCPPlanningBridgeServer:
                 "first_reads": [
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="planner_agent")},
                     {"tool": "get_web_gpt_service_entrypoint", "arguments": project_args()},
                     {
                         "tool": "run_mcp_workflow",
@@ -6254,6 +6343,7 @@ class MCPPlanningBridgeServer:
                 "first_reads": [
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="source_observer")},
                     {"tool": "analyze_project_state", "arguments": project_args()},
                     {"tool": "get_runtime_version_status", "arguments": project_args()},
                 ],
@@ -6267,7 +6357,7 @@ class MCPPlanningBridgeServer:
             profile["executor_status_polling_guidance"] = polling_guidance_for_profile(profile_id)
         return profiles
 
-    def _tool_get_service_entry_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _select_service_entry_profile(self, params: dict[str, Any]) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
         profiles = self._service_entry_profiles()
         profile_by_id = {item["profile_id"]: item for item in profiles if isinstance(item.get("profile_id"), str)}
         raw_profile_id = params.get("profile_id")
@@ -6287,19 +6377,447 @@ class MCPPlanningBridgeServer:
                 "未知服务入口画像。",
                 {"profile_id": profile_id, "available_profile_ids": list(profile_by_id)},
             )
-        selected = profile_by_id[profile_id]
+        return profile_id, profile_by_id[profile_id], profiles
+
+    def _tool_get_service_entry_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        profile_id, selected, profiles = self._select_service_entry_profile(params)
         return {
             "ok": True,
             "read_only": True,
             "side_effects": False,
             "profile_id": profile_id,
             "default_profile_id": "web_gpt_commander",
-            "available_profile_ids": list(profile_by_id),
+            "available_profile_ids": [item["profile_id"] for item in profiles],
             "selected_profile": selected,
             "recommended_next_reads": selected.get("first_reads", []),
             "authority": selected.get("default_authority"),
             "write_boundary": selected.get("write_boundary"),
         }
+
+    def _tool_get_agent_operator_flow_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+        profile_id, selected_profile, profiles = self._select_service_entry_profile(params)
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        project_args = {"project_name": project_name}
+        tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
+        control_plane = self._connector_external_evidence_param(params, "control_plane")
+        local_service = self._connector_runtime_local_service_evidence(project_root)
+        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        connector_health = get_connector_runtime_health_status(
+            runtime_status=runtime_status,
+            local_service=local_service,
+            tunnel_client=tunnel_client,
+            control_plane=control_plane,
+        )
+        readiness = build_service_readiness_summary(
+            runtime_status=runtime_status,
+            connector_health=connector_health,
+            project_name=project_name,
+        )
+        apps_connector_closeout = build_apps_connector_closeout_packet(
+            project_name=project_name,
+            connector_health=connector_health,
+        )
+        stable_cadence = self._stable_replacement_hint(project_root, runtime_status)
+        requested_mode = self._normalize_agent_task_mode(params.get("task_mode"))
+        task_brief = params.get("task_brief") if isinstance(params.get("task_brief"), str) else ""
+        flow_mode = self._resolve_agent_flow_mode(
+            requested_mode=requested_mode,
+            consumer_kind=str(selected_profile.get("consumer_kind") or ""),
+            task_brief=task_brief,
+        )
+        primary_next_action, embedded_packets = self._agent_flow_primary_next_action(
+            params=params,
+            project_args=project_args,
+            project_root=project_root,
+            project_name=project_name,
+            profile_id=profile_id,
+            consumer_kind=str(selected_profile.get("consumer_kind") or ""),
+            flow_mode=flow_mode,
+            task_brief=task_brief,
+            readiness=readiness,
+            apps_connector_closeout=apps_connector_closeout,
+        )
+        token_recovery = apps_connector_closeout.get("token_expired_recovery")
+        if not isinstance(token_recovery, dict):
+            token_recovery = {}
+        include_advanced_context = params.get("include_advanced_context") is not False
+        advanced_actions = self._agent_flow_advanced_actions(
+            project_args=project_args,
+            profile_id=profile_id,
+            flow_mode=flow_mode,
+            task_brief=task_brief,
+        )
+        current_state = {
+            "project_name": project_name,
+            "profile_id": profile_id,
+            "consumer_kind": selected_profile.get("consumer_kind"),
+            "requested_task_mode": requested_mode,
+            "resolved_flow_mode": flow_mode,
+            "readiness": {
+                "status": readiness.get("status"),
+                "primary_blocker": readiness.get("primary_blocker"),
+                "safe_next_actions": readiness.get("safe_next_actions"),
+            },
+            "runtime": {
+                "project_checkout_head": runtime_status.get("project_checkout_head"),
+                "loaded_runtime_head": runtime_status.get("loaded_runtime_head"),
+                "runtime_loaded_code_stale": runtime_status.get("runtime_loaded_code_stale"),
+                "reload_needed_for_verification": runtime_status.get("reload_needed_for_verification"),
+                "reload_awareness_reason": runtime_status.get("reload_awareness_reason"),
+            },
+            "connector": {
+                "overall_status": connector_health.get("overall_status"),
+                "local_service_status": (
+                    connector_health.get("local_service", {}).get("status")
+                    if isinstance(connector_health.get("local_service"), dict)
+                    else None
+                ),
+                "external_connector_status": (
+                    connector_health.get("external_connector", {}).get("status")
+                    if isinstance(connector_health.get("external_connector"), dict)
+                    else None
+                ),
+                "operator_closeout": (
+                    connector_health.get("operator_closeout", {}).get("status")
+                    if isinstance(connector_health.get("operator_closeout"), dict)
+                    else None
+                ),
+                "evidence_gap_count": (
+                    connector_health.get("operator_closeout", {}).get("evidence_gap_count")
+                    if isinstance(connector_health.get("operator_closeout"), dict)
+                    else None
+                ),
+            },
+            "apps_connector": {
+                "status": apps_connector_closeout.get("status"),
+                "next_action": apps_connector_closeout.get("next_action"),
+                "token_expired_code": token_recovery.get("token_expired_code") or "token_expired",
+            },
+            "stable_cadence": {
+                "relationship": stable_cadence.get("relationship"),
+                "stable_replacement_not_required": stable_cadence.get("stable_replacement_not_required"),
+                "recommended_cadence": stable_cadence.get("recommended_cadence"),
+                "exact_authorization_required": stable_cadence.get("exact_authorization_required"),
+                "dev_batch_summary": stable_cadence.get("dev_batch_summary"),
+                "batch_review_summary": stable_cadence.get("batch_review_summary"),
+            },
+        }
+        result: dict[str, Any] = {
+            "ok": True,
+            "source": "agent_operator_flow_packet",
+            "scope": "mcp:read",
+            "read_only": True,
+            "side_effects": False,
+            "flow_packet_version": "agent_operator_flow.v1",
+            "project_name": project_name,
+            "profile_id": profile_id,
+            "selected_profile": selected_profile,
+            "current_state": current_state,
+            "primary_next_action": primary_next_action,
+            "copyable_tool_call": primary_next_action.get("copyable_tool_call"),
+            "advanced_actions": advanced_actions,
+            "flow_usage_rule": {
+                "start_here": True,
+                "execute_only_one_primary_action_then_reassess": True,
+                "smart_agents_should_use_advanced_context_before_escalating": True,
+                "do_not_infer_missing_authority_from_this_packet": True,
+            },
+            "authority_boundary": {
+                "flow_packet_is_read_only": True,
+                "does_not_create_preview_artifact": True,
+                "does_not_start_executor": True,
+                "does_not_merge": True,
+                "does_not_commit": True,
+                "does_not_push": True,
+                "does_not_replace_stable": True,
+                "does_not_write_delivery_accepted": True,
+                "does_not_create_review_decision": True,
+                "does_not_create_gate_event": True,
+                "does_not_read_tokens_or_cookies": True,
+                "does_not_read_tunnel_client_config": True,
+                "does_not_read_raw_logs": True,
+            },
+        }
+        if include_advanced_context:
+            result["advanced_context"] = {
+                "available_profile_ids": [item["profile_id"] for item in profiles],
+                "profile_first_reads": selected_profile.get("first_reads", []),
+                "embedded_read_only_packets": embedded_packets,
+                "service_entry_profiles_version": "service_entry_profiles.v1",
+                "project_identity": self._project_identity_for_root(project_root),
+            }
+            if isinstance(project_record, dict):
+                result["advanced_context"]["project_record"] = project_record
+        return result
+
+    @staticmethod
+    def _normalize_agent_task_mode(value: Any) -> str:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {
+                "auto",
+                "ordinary_task",
+                "parallel_stage",
+                "planning",
+                "review",
+                "source_observation",
+                "connector_smoke",
+                "readiness",
+            }:
+                return normalized
+        return "auto"
+
+    @staticmethod
+    def _resolve_agent_flow_mode(*, requested_mode: str, consumer_kind: str, task_brief: str) -> str:
+        if requested_mode != "auto":
+            return requested_mode
+        if consumer_kind == "planner":
+            return "planning"
+        if consumer_kind == "reviewer":
+            return "review"
+        if consumer_kind == "source_observer":
+            return "source_observation"
+        if task_brief.strip():
+            return "ordinary_task"
+        return "readiness"
+
+    def _agent_flow_primary_next_action(
+        self,
+        *,
+        params: dict[str, Any],
+        project_args: dict[str, Any],
+        project_root: str,
+        project_name: str,
+        profile_id: str,
+        consumer_kind: str,
+        flow_mode: str,
+        task_brief: str,
+        readiness: dict[str, Any],
+        apps_connector_closeout: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        embedded_packets: dict[str, Any] = {}
+        if flow_mode == "parallel_stage":
+            stage_packet = build_stage_parallel_next_action_packet(**self._stage_parallel_builder_args(params))
+            embedded_packets["stage_parallel_next_action_packet"] = stage_packet
+            nested_call = stage_packet.get("copyable_tool_call") if isinstance(stage_packet.get("copyable_tool_call"), dict) else {}
+            tool = str(nested_call.get("tool") or "get_stage_parallel_next_action_packet")
+            arguments = nested_call.get("arguments") if isinstance(nested_call.get("arguments"), dict) else dict(project_args)
+            next_action = stage_packet.get("next_action") if isinstance(stage_packet.get("next_action"), dict) else {}
+            return self._agent_flow_action(
+                action_id=f"parallel_stage_{stage_packet.get('phase') or 'next_action'}",
+                label="Follow stage parallel next action",
+                tool=tool,
+                arguments=arguments,
+                reason=str(next_action.get("reason") or "Use stage parallel state to choose the next safe gate."),
+                expected_output="Next stage-parallel packet, preview artifact, executor result packet, or blocker evidence.",
+                derived_from="get_stage_parallel_next_action_packet",
+                requires_confirmation=bool(next_action.get("requires_confirmation")),
+            ), embedded_packets
+
+        if flow_mode == "connector_smoke":
+            return self._agent_flow_action(
+                action_id="apps_connector_smoke",
+                label="Read Apps connector smoke packet",
+                tool="get_apps_connector_smoke_packet",
+                arguments=dict(project_args),
+                reason="Connector closeout needs the Apps project-list and sanitized connector health handoff in one read-only packet.",
+                expected_output="Apps connector reachability, project list check, connector closeout call, and token_expired recovery guidance.",
+            ), embedded_packets
+
+        if flow_mode == "review":
+            return self._agent_flow_action(
+                action_id="review_recent_evidence",
+                label="Read recent workflow and executor evidence",
+                tool="manage_workflow_run",
+                arguments={**project_args, "action": "list", "limit": 20},
+                reason="Reviewer agents should gather workflow evidence first and report findings without creating ReviewDecision or GateEvent.",
+                expected_output="Recent controlled workflow records for review orientation.",
+            ), embedded_packets
+
+        if flow_mode == "source_observation":
+            return self._agent_flow_action(
+                action_id="inspect_project_state",
+                label="Inspect project state",
+                tool="analyze_project_state",
+                arguments=dict(project_args),
+                reason="Source observers need project facts and recommended reads before suggesting or changing anything.",
+                expected_output="Project mode, Git state, Runner status, executor/report summary, and safe recommended reads.",
+            ), embedded_packets
+
+        if flow_mode in {"ordinary_task", "planning"}:
+            draft_seed: dict[str, Any] = {
+                "task_tier": "M0-M2",
+            }
+            if task_brief.strip():
+                draft_seed["goal"] = task_brief.strip()
+                draft_seed["objective"] = task_brief.strip()
+            return self._agent_flow_action(
+                action_id="thin_governed_loop_draft",
+                label="Create thin governed loop draft packet",
+                tool="run_mcp_workflow",
+                arguments={
+                    **project_args,
+                    "workflow": "thin_governed_loop_preview",
+                    "phase": "preview",
+                    "input_mode": "draft",
+                    "draft_seed": draft_seed,
+                },
+                reason=(
+                    "Planner/Web GPT/Local Codex can use the returned codex_execution_packet for bounded local work; "
+                    "this call itself is read-only evidence and does not dispatch execution."
+                ),
+                expected_output="codex_execution_packet plus allowed files, validation commands, and authority boundary.",
+            ), embedded_packets
+
+        readiness_status = str(readiness.get("status") or "")
+        if readiness_status and readiness_status != "ready":
+            safe_actions = readiness.get("safe_next_actions") if isinstance(readiness.get("safe_next_actions"), list) else []
+            if safe_actions:
+                first = safe_actions[0] if isinstance(safe_actions[0], dict) else {}
+                tool = str(first.get("tool") or "get_commander_app_manifest")
+                arguments = first.get("arguments") if isinstance(first.get("arguments"), dict) else dict(project_args)
+                return self._agent_flow_action(
+                    action_id="readiness_safe_next_action",
+                    label=str(first.get("label") or "Follow readiness safe next action"),
+                    tool=tool,
+                    arguments=arguments,
+                    reason=str(first.get("why") or first.get("reason") or "Readiness is not ready; follow the first safe read-only action."),
+                    expected_output="Updated service readiness evidence or a clear blocker.",
+                    derived_from="service_readiness_summary",
+                ), embedded_packets
+        if apps_connector_closeout.get("status") != "ready" and consumer_kind == "web_gpt":
+            return self._agent_flow_action(
+                action_id="apps_connector_smoke",
+                label="Read Apps connector smoke packet",
+                tool="get_apps_connector_smoke_packet",
+                arguments=dict(project_args),
+                reason="Web GPT should verify Apps connector reachability and connector closeout before coordinating external handoff.",
+                expected_output="Apps connector project-list check and connector closeout packet.",
+            ), embedded_packets
+        return self._agent_flow_action(
+            action_id="read_commander_manifest",
+            label="Read Commander manifest",
+            tool="get_commander_app_manifest",
+            arguments=dict(project_args),
+            reason="No task-specific mode was selected; read the commander manifest for the current dashboard and safe next actions.",
+            expected_output="Readiness, connector, runtime, profile entries, and preview-first workflow actions.",
+        ), embedded_packets
+
+    def _agent_flow_action(
+        self,
+        *,
+        action_id: str,
+        label: str,
+        tool: str,
+        arguments: dict[str, Any],
+        reason: str,
+        expected_output: str,
+        derived_from: str | None = None,
+        requires_confirmation: bool = False,
+    ) -> dict[str, Any]:
+        scope = self._required_scope_for_tool(tool, arguments)
+        gate_level = self._agent_flow_gate_level(tool=tool, arguments=arguments, scope=scope)
+        return {
+            "action_id": action_id,
+            "label": label,
+            "tool": tool,
+            "arguments": arguments,
+            "required_scope": scope,
+            "gate_level": gate_level,
+            "reason": reason,
+            "expected_output": expected_output,
+            "derived_from": derived_from,
+            "requires_confirmation_before_execution": bool(requires_confirmation or scope != "mcp:read"),
+            "copyable_tool_call": {
+                "tool": tool,
+                "arguments": arguments,
+            },
+        }
+
+    @staticmethod
+    def _agent_flow_gate_level(*, tool: str, arguments: dict[str, Any], scope: str) -> str:
+        if scope == "mcp:read":
+            if tool == "run_mcp_workflow":
+                return "read_only_workflow_packet"
+            return "read_only"
+        if scope == "mcp:preview":
+            action = arguments.get("action") if isinstance(arguments, dict) else None
+            if action == "preview":
+                return "preview_artifact"
+            return "preview_gate"
+        if scope == "mcp:commit":
+            return "explicit_apply_or_run_required"
+        return scope
+
+    def _agent_flow_advanced_actions(
+        self,
+        *,
+        project_args: dict[str, Any],
+        profile_id: str,
+        flow_mode: str,
+        task_brief: str,
+    ) -> list[dict[str, Any]]:
+        draft_seed: dict[str, Any] = {"task_tier": "M0-M2"}
+        if task_brief.strip():
+            draft_seed["goal"] = task_brief.strip()
+            draft_seed["objective"] = task_brief.strip()
+        return [
+            {
+                "label": "Profile contract",
+                "tool": "get_service_entry_profile",
+                "arguments": {"profile_id": profile_id},
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Project state",
+                "tool": "analyze_project_state",
+                "arguments": dict(project_args),
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Thin loop draft",
+                "tool": "run_mcp_workflow",
+                "arguments": {
+                    **project_args,
+                    "workflow": "thin_governed_loop_preview",
+                    "phase": "preview",
+                    "input_mode": "draft",
+                    "draft_seed": draft_seed,
+                },
+                "gate_level": "read_only_workflow_packet",
+            },
+            {
+                "label": "Stage parallel next action",
+                "tool": "get_stage_parallel_next_action_packet",
+                "arguments": dict(project_args),
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Recent workflow records",
+                "tool": "manage_workflow_run",
+                "arguments": {**project_args, "action": "list", "limit": 10},
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Executor reports",
+                "tool": "list_executor_run_reports",
+                "arguments": {**project_args, "limit": 10},
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Apps connector smoke",
+                "tool": "get_apps_connector_smoke_packet",
+                "arguments": dict(project_args),
+                "gate_level": "read_only",
+            },
+            {
+                "label": "Stable cadence",
+                "tool": "get_stable_replacement_cadence",
+                "arguments": dict(project_args),
+                "gate_level": "read_only",
+            },
+        ]
 
     def _tool_get_agent_consumer_contract(self, _: dict[str, Any]) -> dict[str, Any]:
         visible_tools = self._visible_tool_names()
@@ -6379,6 +6897,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "list_registered_projects", "why": "Discover allowed project_name values."},
                 {"tool": "get_agent_consumer_contract", "why": "Load this consumer contract."},
                 {"tool": "get_service_entry_profile", "why": "Select a consumer-specific entry profile."},
+                {"tool": "get_agent_operator_flow_packet", "why": "Get one role-aware primary next action before choosing lower-level tools."},
                 {"tool": "get_web_gpt_service_entrypoint", "why": "Read guided service entry flow."},
                 {"tool": "render_commander_app", "why": "Open the ChatGPT Apps Commander panel with project_name."},
                 {"tool": "get_commander_app_manifest", "why": "Read the same Commander App contract without rendering UI."},
@@ -6454,6 +6973,12 @@ class MCPPlanningBridgeServer:
                     "tool": "get_service_entry_profile",
                     "arguments": {"profile_id": "web_gpt_commander"},
                     "why": "按当前消费者角色读取最小进入路径，不把其他 agent 的路径混进来。",
+                },
+                {
+                    "step": "read_agent_operator_flow_packet",
+                    "tool": "get_agent_operator_flow_packet",
+                    "arguments": {"project_name": "<registered project_name>", "profile_id": "web_gpt_commander"},
+                    "why": "先读取一个 role-aware primary_next_action，再决定是否进入底层高级工具链。",
                 },
                 {
                     "step": "render_commander_app",
@@ -6640,7 +7165,7 @@ class MCPPlanningBridgeServer:
             },
             "web_gpt_handoff_prompt": (
                 "Start by calling list_registered_projects, get_agent_consumer_contract, "
-                "get_service_entry_profile with profile_id=web_gpt_commander, then "
+                "get_service_entry_profile with profile_id=web_gpt_commander, get_agent_operator_flow_packet, then "
                 "get_web_gpt_service_entrypoint, render_commander_app, get_stable_promotion_readiness, and "
                 "analyze_project_state with the selected project_name. "
                 "For thin governed loop work, "
@@ -6788,6 +7313,10 @@ class MCPPlanningBridgeServer:
             "details_tool": "get_runtime_version_status",
             "details_arguments": project_args,
         }
+        flow_args = {"profile_id": "web_gpt_commander", "include_advanced_context": False}
+        if self.service_mode or params.get("project_name") is not None:
+            flow_args.update(project_args)
+        agent_operator_flow = self._tool_get_agent_operator_flow_packet(flow_args)
         return {
             "ok": True,
             "read_only": True,
@@ -6815,6 +7344,7 @@ class MCPPlanningBridgeServer:
             },
             "project_identity": project_identity,
             "readiness": readiness,
+            "agent_operator_flow": agent_operator_flow,
             "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
             "connector": connector_summary,
@@ -6824,6 +7354,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "list_registered_projects", "arguments": {}},
                 {"tool": "get_agent_consumer_contract", "arguments": {}},
                 {"tool": "get_service_entry_profile", "arguments": {"profile_id": "web_gpt_commander"}},
+                {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": "web_gpt_commander"}},
                 {"tool": "render_commander_app", "arguments": project_args},
                 {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                 {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
@@ -6844,6 +7375,7 @@ class MCPPlanningBridgeServer:
             ],
             "commander_panel": {
                 "primary_sections": [
+                    "agent_operator_flow",
                     "service_readiness",
                     "apps_connector_closeout",
                     "service_facts",
@@ -6855,6 +7387,7 @@ class MCPPlanningBridgeServer:
                 ],
                 "read_actions": [
                     {"tool": "get_commander_app_manifest", "arguments": project_args},
+                    {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": "web_gpt_commander"}},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},

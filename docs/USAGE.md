@@ -30,11 +30,12 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 1. list_registered_projects
 2. get_agent_consumer_contract
 3. get_service_entry_profile(profile_id="web_gpt_commander")
-4. get_web_gpt_service_entrypoint
-5. get_runtime_version_status(project_name="colameta-self-dev")
-6. get_stable_replacement_cadence(project_name="colameta-self-dev")
-7. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-8. get_connector_runtime_health_status(project_name="colameta-self-dev")
+4. get_agent_operator_flow_packet(project_name="colameta-self-dev", profile_id="web_gpt_commander")
+5. get_web_gpt_service_entrypoint
+6. get_runtime_version_status(project_name="colameta-self-dev")
+7. get_stable_replacement_cadence(project_name="colameta-self-dev")
+8. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+9. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 If you want to start a controlled optimization round:
@@ -111,6 +112,13 @@ from Web `/api/v2/status`. It returns `ready`, `needs_attention`, or `blocked`
 with safe next actions. It is read-only and does not authorize executor runs,
 commits, pushes, stable replacement, ReviewDecision, GateEvent, or Delivery
 accepted.
+
+For a role-aware agent handoff, use
+`get_agent_operator_flow_packet(project_name=..., profile_id=...)` before
+choosing lower-level tools. It returns one `primary_next_action`, the gate level
+for that action, and `advanced_actions` for agents that need the full context.
+The packet itself is read-only; it does not create preview artifacts, start
+executors, merge, commit, push, or replace stable.
 
 For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
 same surfaces. It is a read-only smoke packet for:

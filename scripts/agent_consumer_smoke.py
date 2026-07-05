@@ -65,6 +65,7 @@ def run_agent_consumer_smoke(project_root: str | Path, *, project_name: str = "c
             "list_registered_projects",
             "get_agent_consumer_contract",
             "get_service_entry_profile",
+            "get_agent_operator_flow_packet",
             "get_web_gpt_service_entrypoint",
             "get_stable_replacement_cadence",
             "get_stable_promotion_readiness",
@@ -117,6 +118,26 @@ def run_agent_consumer_smoke(project_root: str | Path, *, project_name: str = "c
             f"unexpected invalid profile error: {invalid_profile}",
         )
 
+        flow = _require_outer_ok(
+            server.call_tool_for_agent(
+                "get_agent_operator_flow_packet",
+                {
+                    "project_name": effective_project_name,
+                    "profile_id": "planner_agent",
+                    "task_brief": "Smoke-test the role-aware agent flow packet.",
+                },
+            ),
+            "get_agent_operator_flow_packet",
+        )
+        primary_next_action = flow.get("primary_next_action")
+        _require(isinstance(primary_next_action, dict), "flow packet missing primary_next_action")
+        _require(primary_next_action.get("tool") == "run_mcp_workflow", f"unexpected flow primary action: {primary_next_action}")
+        _require(flow.get("read_only") is True, "flow packet is not read-only")
+        _require(flow.get("side_effects") is False, "flow packet declares side effects")
+        authority_boundary = flow.get("authority_boundary") if isinstance(flow.get("authority_boundary"), dict) else {}
+        _require(authority_boundary.get("does_not_start_executor") is True, "flow packet did not preserve executor boundary")
+        _require(authority_boundary.get("does_not_replace_stable") is True, "flow packet did not preserve stable boundary")
+
         entry = _require_outer_ok(
             server.call_tool_for_agent(
                 "get_web_gpt_service_entrypoint",
@@ -159,6 +180,8 @@ def run_agent_consumer_smoke(project_root: str | Path, *, project_name: str = "c
             "profile_results": profile_results,
             "entry_profiles_match_contract": entry_profiles == contract_profiles,
             "invalid_profile_fail_closed": True,
+            "operator_flow_primary_tool": primary_next_action.get("tool"),
+            "operator_flow_gate_level": primary_next_action.get("gate_level"),
             "readiness_status": readiness.get("readiness_status"),
             "readiness_missing_tools": tool_support.get("missing_visible_tools"),
         }

@@ -82,6 +82,7 @@ first. It should read:
 list_registered_projects
 get_agent_consumer_contract
 get_service_entry_profile
+get_agent_operator_flow_packet
 get_web_gpt_service_entrypoint
 get_runtime_version_status
 get_stable_replacement_cadence
@@ -91,6 +92,11 @@ get_connector_runtime_health_status
 
 Project-level tools require `project_name`. If the agent does not know the
 project name, it must call `list_registered_projects` first.
+
+After selecting a profile, prefer
+`get_agent_operator_flow_packet(project_name=..., profile_id=...)` as the
+single role-aware navigation packet. It gives one `primary_next_action`, keeps
+advanced context visible, and remains read-only.
 
 For the one-line service decision, read `readiness` from
 `get_commander_app_manifest` or `service_readiness_summary` from Web

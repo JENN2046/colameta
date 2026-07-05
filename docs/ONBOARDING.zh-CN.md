@@ -63,6 +63,7 @@ Agent 连接 MCP 后不要先 run，也不要先写状态。先读：
 list_registered_projects
 get_agent_consumer_contract
 get_service_entry_profile
+get_agent_operator_flow_packet
 get_web_gpt_service_entrypoint
 get_runtime_version_status
 get_stable_replacement_cadence
@@ -71,6 +72,10 @@ get_connector_runtime_health_status
 ```
 
 项目级工具必须带 `project_name`。如果不知道项目名，先 `list_registered_projects`。
+
+选择 profile 后，优先调
+`get_agent_operator_flow_packet(project_name=..., profile_id=...)`。它是一个只读的角色化导航
+packet：只给一个 `primary_next_action`，同时保留 `advanced_actions` 给需要完整上下文的 agent。
 
 需要一句话服务决策时，看 `get_commander_app_manifest` 的 `readiness`，或 Web
 `/api/v2/status` 的 `service_readiness_summary`。它会把 runtime、本地服务和 connector
