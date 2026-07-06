@@ -342,3 +342,40 @@ class ServiceAuthBaselineTests(unittest.TestCase):
         assert payload["reason_code"] in {"MCP_GLOBAL_RATE_LIMITED", "MCP_CLIENT_RATE_LIMITED"}
         assert isinstance(payload.get("request_id"), str)
         assert payload["request_id"]
+
+    def test_mcp_rate_limit_separates_bearer_bucket_from_anonymous_healthz(self) -> None:
+        project = self.tmp_path / "source-only-project"
+        project.mkdir()
+        mcp_port = free_tcp_port()
+        service = start_service(
+            self.tmp_path,
+            project,
+            "source-only",
+            web_port=None,
+            mcp_port=mcp_port,
+            extra_env={
+                "COLAMETA_MCP_GLOBAL_RATE_LIMIT_PER_MINUTE": "60",
+                "COLAMETA_MCP_GLOBAL_RATE_LIMIT_BURST": "20",
+                "COLAMETA_MCP_CLIENT_RATE_LIMIT_PER_MINUTE": "1",
+                "COLAMETA_MCP_CLIENT_RATE_LIMIT_BURST": "1",
+            },
+        )
+
+        try:
+            wait_for_json(f"http://{HOST}:{mcp_port}/healthz", service, "colameta-mcp")
+            status, payload = json_request(f"http://{HOST}:{mcp_port}/healthz")
+            assert status == 429
+            assert payload["reason_code"] == "MCP_CLIENT_RATE_LIMITED"
+
+            status, payload = json_request(
+                f"http://{HOST}:{mcp_port}/mcp",
+                method="POST",
+                payload=initialize_payload(),
+                token=TOKEN,
+            )
+        finally:
+            service.stop()
+
+        assert status == 200
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["result"]["serverInfo"]["name"] == "colameta-mcp"

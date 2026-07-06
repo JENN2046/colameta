@@ -761,6 +761,12 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         if phase in {"run", "apply", ""}:
             return "mcp:commit"
         return None
+    if workflow == "prompt_to_plan":
+        if phase in {"preview", "plan_preview", "run_preview"}:
+            return "mcp:preview"
+        if phase in {"apply", "plan_apply", "apply_all", "run"}:
+            return "mcp:commit"
+        return None
     return None
 
 
@@ -4232,6 +4238,19 @@ class MCPPlanningBridgeServer:
                     self._debug_request_id = request_id
                 return str(request_id)
 
+            def _rate_limit_client_id(self, method: str, path: str) -> str:
+                authorization = self.headers.get("Authorization", "")
+                if authorization.startswith("Bearer "):
+                    token = authorization[len("Bearer ") :].strip()
+                    if token:
+                        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+                        return f"bearer:{digest}"
+                source_ip = "unknown"
+                if isinstance(self.client_address, tuple) and self.client_address:
+                    source_ip = str(self.client_address[0] or "unknown")
+                safe_path = path[:128] if isinstance(path, str) else ""
+                return f"anon:{source_ip}:{method}:{safe_path}"
+
             def _prepare_request(self, method: str, path: str) -> bool:
                 self._debug_start = time.time()
                 self._debug_request_id = os.urandom(8).hex()
@@ -4243,9 +4262,7 @@ class MCPPlanningBridgeServer:
                     self.connection.settimeout(MCP_REQUEST_TIMEOUT_SECONDS)
                 except Exception:
                     pass
-                client_id = "unknown"
-                if isinstance(self.client_address, tuple) and self.client_address:
-                    client_id = str(self.client_address[0] or "unknown")
+                client_id = self._rate_limit_client_id(method, path)
                 limit_result = rate_limiter.check(client_id)
                 if limit_result.get("ok") is True:
                     return True

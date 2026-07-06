@@ -81,6 +81,66 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert result["error_code"] == "TOOL_POLICY_DENIED"
         assert result["details"]["policy"] == "mcp_tool_registry_fail_closed"
 
+    def test_run_mcp_workflow_policy_matrix_covers_supported_workflow_phases(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        expected_scopes = {
+            ("auto_preview", "preview"): "mcp:preview",
+            ("project_status", "inspect"): "mcp:read",
+            ("source_onboarding", "preview"): "mcp:preview",
+            ("plan_update", "preview"): "mcp:preview",
+            ("plan_update", "apply"): "mcp:commit",
+            ("small_project_patch", "status"): "mcp:read",
+            ("small_project_patch", "preview"): "mcp:preview",
+            ("small_project_patch", "apply"): "mcp:commit",
+            ("docs_update", "inspect"): "mcp:read",
+            ("docs_update", "preview"): "mcp:preview",
+            ("docs_update", "apply"): "mcp:commit",
+            ("git_commit", "status"): "mcp:read",
+            ("git_commit", "preview"): "mcp:preview",
+            ("git_commit", "commit"): "mcp:commit",
+            ("git_restore_file", "preview"): "mcp:preview",
+            ("git_restore_file", "apply"): "mcp:commit",
+            ("git_revert", "preview"): "mcp:preview",
+            ("git_revert", "apply"): "mcp:commit",
+            ("git_undo_version", "inspect"): "mcp:read",
+            ("git_undo_version", "preview"): "mcp:preview",
+            ("git_undo_version", "apply"): "mcp:commit",
+            ("agent_dispatch", "status"): "mcp:read",
+            ("agent_dispatch", "run_preview"): "mcp:preview",
+            ("agent_dispatch", "run"): "mcp:commit",
+            ("prompt_to_plan", "preview"): "mcp:preview",
+            ("prompt_to_plan", "plan_preview"): "mcp:preview",
+            ("prompt_to_plan", "run_preview"): "mcp:preview",
+            ("prompt_to_plan", "apply"): "mcp:commit",
+            ("prompt_to_plan", "plan_apply"): "mcp:commit",
+            ("prompt_to_plan", "apply_all"): "mcp:commit",
+            ("prompt_to_plan", "run"): "mcp:commit",
+            ("thin_governed_loop_preview", "preview"): "mcp:read",
+        }
+        tool_def = next(tool for tool in server.tool_defs if tool.name == "run_mcp_workflow")
+        declared_workflows = set(tool_def.input_schema["properties"]["workflow"]["enum"])
+        covered_workflows = {workflow for workflow, _phase in expected_scopes}
+
+        assert declared_workflows == covered_workflows
+
+        for (workflow, phase), expected_scope in expected_scopes.items():
+            assert (
+                server.get_required_scope_for_tool(
+                    "run_mcp_workflow",
+                    {"workflow": workflow, "phase": phase},
+                )
+                == expected_scope
+            )
+
+        unsupported = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {"workflow": "prompt_to_plan", "phase": "inspect"},
+        )
+
+        assert unsupported["ok"] is False
+        assert unsupported["error_code"] == "TOOL_POLICY_DENIED"
+
     def test_connector_runtime_local_service_evidence_uses_web_api_healthz(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
