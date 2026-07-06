@@ -26,12 +26,16 @@ class FakeCommandRunner:
         systemd_active: bool = True,
         systemd_output: str | None = None,
         curl_ok: bool = True,
+        web_health_payload: dict[str, object] | None = None,
+        mcp_health_payload: dict[str, object] | None = None,
         cat_file_ok: bool = True,
     ) -> None:
         self.head = head
         self.systemd_active = systemd_active
         self.systemd_output = systemd_output
         self.curl_ok = curl_ok
+        self.web_health_payload = web_health_payload or {"ok": True, "service": "colameta-web-console"}
+        self.mcp_health_payload = mcp_health_payload or {"ok": True, "service": "colameta-mcp"}
         self.cat_file_ok = cat_file_ok
         self.calls: list[list[str]] = []
 
@@ -50,7 +54,10 @@ class FakeCommandRunner:
                 return completed(args, "MainPID=123\nActiveState=active\nSubState=running\n")
             return completed(args, "MainPID=0\nActiveState=inactive\nSubState=dead\n")
         if args[:2] == ["curl", "-fsS"]:
-            return completed(args, "200" if self.curl_ok else "", 0 if self.curl_ok else 22)
+            if not self.curl_ok:
+                return completed(args, "", 22)
+            payload = self.web_health_payload if args[-1].endswith("/api/healthz") else self.mcp_health_payload
+            return completed(args, f"{json.dumps(payload)}\n200")
         return completed(args, "")
 
 
@@ -187,6 +194,31 @@ class ProductionOpsTests(unittest.TestCase):
         assert observed["no_network"] is True
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
 
+    def test_loopback_http_network_preflight_cannot_satisfy_beta_gate(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not probe loopback HTTP in network mode: {public_base_url} {kwargs}")
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="http://127.0.0.1:8766",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=fail_if_called,
+            now=NOW,
+        )
+
+        assert packet["status"] == "needs_attention"
+        assert packet["ops_check_ready"] is False
+        assert packet["connector_smoke_ready"] is True
+        assert packet["beta_gate_ready"] is False
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_LOCAL_HTTP_NOT_REMOTE"
+        assert "REMOTE_PREFLIGHT_LOCAL_HTTP_NOT_REMOTE" in packet["needs_attention_codes"]
+
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
@@ -222,6 +254,48 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["status"] == "blocked"
         assert packet["ops_check_ready"] is False
         assert "SYSTEMD_SERVICE_NOT_RUNNING" in packet["blocker_codes"]
+
+    def test_local_health_requires_colameta_web_and_mcp_services(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(web_health_payload={"ok": True, "service": "wrong-web"}),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "LOCAL_STABLE_HEALTH_FAILED"
+        assert check["web_healthz_http_status"] == "200"
+        assert check["web_healthz_service"] == "wrong-web"
+        assert "web_root_http_status" not in check
+
+    def test_local_health_requires_mcp_health_service_identity(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(mcp_health_payload={"ok": True, "service": "wrong-mcp"}),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert check["reason_code"] == "LOCAL_STABLE_HEALTH_FAILED"
+        assert check["mcp_healthz_http_status"] == "200"
+        assert check["mcp_healthz_service"] == "wrong-mcp"
 
     def test_remote_preflight_failure_is_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet
@@ -433,6 +507,10 @@ class ProductionOpsTests(unittest.TestCase):
             assert "--connect-timeout" in call
             assert "--max-time" in call
             assert call[call.index("--max-time") + 1] == str(int(LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS))
+        assert [call[-1] for call in curl_calls] == [
+            "http://127.0.0.1:8801/api/healthz",
+            "http://127.0.0.1:8766/healthz",
+        ]
 
     def test_default_command_runner_times_out_curl_processes(self) -> None:
         from runner import production_ops

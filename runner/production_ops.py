@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import json
 import os
 import re
 import subprocess
@@ -12,6 +14,7 @@ from typing import Any, Callable
 from runner.runtime_observability import git_checkout_metadata
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 from scripts.remote_https_mcp_preflight import normalize_public_base_url, run_preflight
+from urllib.parse import urlparse
 
 
 DEFAULT_PUBLIC_BASE_URL = "https://colameta-mcp.skmt617.top"
@@ -24,6 +27,8 @@ LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
 REDACTED_CONNECTOR_SMOKE_VALUE = "<redacted-connector-smoke-value>"
+EXPECTED_WEB_HEALTH_SERVICE = "colameta-web-console"
+EXPECTED_MCP_HEALTH_SERVICE = "colameta-mcp"
 
 BLOCKED = "blocked"
 NEEDS_ATTENTION = "needs_attention"
@@ -246,22 +251,32 @@ def _systemd_service_check(
 
 
 def _local_stable_health_check(command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> dict[str, Any]:
-    web = _curl_status("http://127.0.0.1:8801/", command_runner)
-    mcp = _curl_status("http://127.0.0.1:8766/healthz", command_runner)
-    if web != "200" or mcp != "200":
+    web = _curl_json_health("http://127.0.0.1:8801/api/healthz", command_runner)
+    mcp = _curl_json_health("http://127.0.0.1:8766/healthz", command_runner)
+    if not _health_endpoint_ready(web, EXPECTED_WEB_HEALTH_SERVICE) or not _health_endpoint_ready(
+        mcp, EXPECTED_MCP_HEALTH_SERVICE
+    ):
         return _check(
             BLOCKED,
             "LOCAL_STABLE_HEALTH_FAILED",
             "Stable local Web or MCP health check failed.",
-            web_root_http_status=web,
-            mcp_healthz_http_status=mcp,
+            web_healthz_http_status=web.get("http_status"),
+            web_healthz_ok=web.get("ok"),
+            web_healthz_service=web.get("service"),
+            mcp_healthz_http_status=mcp.get("http_status"),
+            mcp_healthz_ok=mcp.get("ok"),
+            mcp_healthz_service=mcp.get("service"),
         )
     return _check(
         READY,
         "LOCAL_STABLE_HEALTH_READY",
         "Stable local Web and MCP health checks passed.",
-        web_root_http_status=web,
-        mcp_healthz_http_status=mcp,
+        web_healthz_http_status=web.get("http_status"),
+        web_healthz_ok=web.get("ok"),
+        web_healthz_service=web.get("service"),
+        mcp_healthz_http_status=mcp.get("http_status"),
+        mcp_healthz_ok=mcp.get("ok"),
+        mcp_healthz_service=mcp.get("service"),
     )
 
 
@@ -270,8 +285,17 @@ def _remote_preflight_check(
     no_network: bool,
     preflight_runner: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
+    if _is_loopback_http_url(public_base_url) and not no_network:
+        return _check(
+            NEEDS_ATTENTION,
+            "REMOTE_PREFLIGHT_LOCAL_HTTP_NOT_REMOTE",
+            "Loopback HTTP cannot satisfy the production remote HTTPS MCP preflight.",
+            network_check="not_run",
+            connector_url=f"{public_base_url.rstrip('/')}/mcp",
+            failures=["loopback http is allowed only for offline shape checks"],
+        )
     try:
-        report = preflight_runner(public_base_url, allow_local_http=True, no_network=no_network)
+        report = preflight_runner(public_base_url, allow_local_http=no_network, no_network=no_network)
     except Exception as exc:
         return _check(BLOCKED, "REMOTE_PREFLIGHT_ERROR", "Remote HTTPS MCP preflight raised an error.", error=str(exc))
     failures = report.get("failures") if isinstance(report, dict) else None
@@ -421,6 +445,19 @@ def _contains_sensitive_text(value: str) -> bool:
     return any(pattern.search(value) for pattern in SECRET_PATTERNS)
 
 
+def _is_loopback_http_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _detect_sensitive_content(value: Any) -> dict[str, Any]:
     findings: list[str] = []
 
@@ -485,7 +522,7 @@ def _git_head(path: str, command_runner: Callable[[list[str]], subprocess.Comple
     return _clean_head(result.stdout.strip())
 
 
-def _curl_status(url: str, command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> str | None:
+def _curl_json_health(url: str, command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> dict[str, Any]:
     result = command_runner(
         [
             "curl",
@@ -494,17 +531,32 @@ def _curl_status(url: str, command_runner: Callable[[list[str]], subprocess.Comp
             "1",
             "--max-time",
             str(int(LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS)),
-            "-o",
-            os.devnull,
             "-w",
-            "%{http_code}",
+            "\n%{http_code}",
             url,
         ]
     )
     if result.returncode != 0:
-        return None
-    status = result.stdout.strip()
-    return status or None
+        return {"http_status": None, "ok": None, "service": None}
+    body, separator, status_text = result.stdout.rpartition("\n")
+    if not separator:
+        return {"http_status": None, "ok": None, "service": None}
+    status = status_text.strip() or None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "http_status": status,
+        "ok": payload.get("ok"),
+        "service": payload.get("service") if isinstance(payload.get("service"), str) else None,
+    }
+
+
+def _health_endpoint_ready(health: dict[str, Any], expected_service: str) -> bool:
+    return health.get("http_status") == "200" and health.get("ok") is True and health.get("service") == expected_service
 
 
 def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
