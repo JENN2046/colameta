@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from runner.runtime_observability import git_checkout_metadata
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
-from scripts.remote_https_mcp_preflight import run_preflight
+from scripts.remote_https_mcp_preflight import normalize_public_base_url, run_preflight
 
 
 DEFAULT_PUBLIC_BASE_URL = "https://colameta-mcp.skmt617.top"
@@ -20,6 +20,9 @@ DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS = 24
 DEFAULT_CLOUDFLARED_SERVICE = "cloudflared-colameta-mcp-prod.service"
 DEFAULT_STABLE_SERVICE = "colameta-stable.service"
 DEFAULT_BACKUP_DIR = "/home/jenn/tools/colameta-stable-backups"
+LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
+REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
 
 BLOCKED = "blocked"
 NEEDS_ATTENTION = "needs_attention"
@@ -55,6 +58,7 @@ def build_production_ops_packet(
     preflight_runner = preflight_runner or run_preflight
     candidate_head = _git_head(root, command_runner)
     target_head = _clean_head(expected_head) or candidate_head
+    safe_public_base_url, public_base_url_check = _public_base_url_for_packet(public_base_url)
 
     checks: dict[str, dict[str, Any]] = {
         "candidate_head": _candidate_head_check(candidate_head, target_head),
@@ -62,7 +66,8 @@ def build_production_ops_packet(
         "stable_runtime": _stable_runtime_check(stable_runtime_dir, target_head, command_runner),
         "stable_service": _systemd_service_check(stable_service_name, command_runner),
         "local_stable_health": _local_stable_health_check(command_runner),
-        "remote_https_mcp_preflight": _remote_preflight_check(public_base_url, no_network, preflight_runner),
+        "remote_https_mcp_preflight": public_base_url_check
+        or _remote_preflight_check(safe_public_base_url, no_network, preflight_runner),
         "cloudflared_service": _systemd_service_check(cloudflared_service_name, command_runner),
         "backup_inventory": _backup_inventory_check(backup_dir),
         "rollback_rehearsal": _rollback_rehearsal_check(root, backup_dir, target_head, command_runner),
@@ -97,7 +102,7 @@ def build_production_ops_packet(
         "read_only": True,
         "side_effects": False,
         "project_root": root,
-        "public_base_url": public_base_url.rstrip("/"),
+        "public_base_url": safe_public_base_url,
         "observed_at": observed_at,
         "status": status,
         "summary": summary,
@@ -265,7 +270,7 @@ def _remote_preflight_check(
     preflight_runner: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     try:
-        report = preflight_runner(public_base_url, no_network=no_network)
+        report = preflight_runner(public_base_url, allow_local_http=True, no_network=no_network)
     except Exception as exc:
         return _check(BLOCKED, "REMOTE_PREFLIGHT_ERROR", "Remote HTTPS MCP preflight raised an error.", error=str(exc))
     failures = report.get("failures") if isinstance(report, dict) else None
@@ -364,6 +369,40 @@ def _connector_smoke_check(
     return _check(READY, "CONNECTOR_SMOKE_READY", "Fresh ChatGPT connector smoke evidence is ready.", connector_status=status, last_observed_at=observed)
 
 
+def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(public_base_url, str):
+        return REDACTED_PUBLIC_BASE_URL, _check(
+            BLOCKED,
+            "PUBLIC_BASE_URL_REJECTED",
+            "public_base_url was rejected before status emission.",
+            error="public_base_url must be a string.",
+            redacted=True,
+        )
+    try:
+        normalized = normalize_public_base_url(public_base_url, allow_local_http=True)
+    except ValueError as exc:
+        return REDACTED_PUBLIC_BASE_URL, _check(
+            BLOCKED,
+            "PUBLIC_BASE_URL_REJECTED",
+            "public_base_url was rejected before status emission.",
+            error=str(exc),
+            redacted=True,
+        )
+    if _contains_sensitive_text(normalized):
+        return REDACTED_PUBLIC_BASE_URL, _check(
+            BLOCKED,
+            "PUBLIC_BASE_URL_REJECTED",
+            "public_base_url was rejected before status emission.",
+            error="public_base_url contains secret-like content.",
+            redacted=True,
+        )
+    return normalized, None
+
+
+def _contains_sensitive_text(value: str) -> bool:
+    return any(pattern.search(value) for pattern in SECRET_PATTERNS)
+
+
 def _detect_sensitive_content(value: Any) -> dict[str, Any]:
     findings: list[str] = []
 
@@ -429,7 +468,21 @@ def _git_head(path: str, command_runner: Callable[[list[str]], subprocess.Comple
 
 
 def _curl_status(url: str, command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> str | None:
-    result = command_runner(["curl", "-fsS", "-o", os.devnull, "-w", "%{http_code}", url])
+    result = command_runner(
+        [
+            "curl",
+            "-fsS",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            str(int(LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS)),
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}",
+            url,
+        ]
+    )
     if result.returncode != 0:
         return None
     status = result.stdout.strip()
@@ -437,7 +490,15 @@ def _curl_status(url: str, command_runner: Callable[[list[str]], subprocess.Comp
 
 
 def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=False, text=True, capture_output=True)
+    timeout = LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS + 1.0 if args[:1] == ["curl"] else DEFAULT_COMMAND_TIMEOUT_SECONDS
+    try:
+        return subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        if not stderr:
+            stderr = f"command timed out after {timeout:g}s"
+        return subprocess.CompletedProcess(args, 124, stdout=stdout, stderr=stderr)
 
 
 def _latest_backup(backup_dir: str) -> Path | None:
