@@ -33,6 +33,7 @@ from runner.production_ops import (
     DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     DEFAULT_PUBLIC_BASE_URL,
     build_production_ops_packet,
+    redact_status_written_path,
     validate_status_write_path,
     write_status_packet,
 )
@@ -2067,6 +2068,7 @@ def _print_ops_check_summary(packet: dict[str, object]) -> None:
     checks = packet.get("checks")
     if isinstance(checks, dict):
         for name in (
+            "expected_head",
             "stable_runtime",
             "origin_main",
             "stable_service",
@@ -2111,7 +2113,7 @@ def _run_ops_check(args: list[str]) -> int:
         except ValueError as exc:
             print(f"ops-check 写 status 失败：{exc}", file=sys.stderr)
             return 1
-        packet["status_written_path"] = written_path
+        packet["status_written_path"] = redact_status_written_path(written_path)
     if bool(options.get("json_output")):
         print(json_dumps(packet))
     else:

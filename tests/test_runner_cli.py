@@ -389,6 +389,42 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         assert payload["status_written_path"] == str(status_path)
 
+    def test_ops_check_json_redacts_secret_like_status_written_path(self) -> None:
+        from runner.production_ops import REDACTED_STATUS_WRITTEN_PATH
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "ready",
+            "ops_check_ready": True,
+            "connector_smoke_ready": True,
+            "beta_gate_ready": True,
+            "checks": {},
+        }
+        status_path = self.tmp_path / "state" / "sk-not-a-real-token-value" / "last-status.json"
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--json",
+                    "--write-status",
+                    str(status_path),
+                ]
+            )
+
+        assert result == 0
+        assert status_path.exists()
+        output = stdout.getvalue()
+        assert "sk-not-a-real-token-value" not in output
+        payload = json.loads(output)
+        assert payload["status_written_path"] == REDACTED_STATUS_WRITTEN_PATH
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,46 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["backup_inventory"]["backup_sha256"]
         assert packet["checks"]["rollback_rehearsal"]["rehearsal_executed_restore"] is False
 
+    def test_omitted_expected_head_falls_back_to_candidate_head(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["expected_head"] == HEAD
+        assert packet["checks"]["candidate_head"]["expected_stable_head"] == HEAD
+        assert packet["status"] == "ready"
+
+    def test_invalid_explicit_expected_head_blocks_without_fallback(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head="abc123",
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert packet["beta_gate_ready"] is False
+        assert packet["expected_head"] is None
+        assert "expected_stable_head" not in packet["checks"]["candidate_head"]
+        assert packet["checks"]["expected_head"]["reason_code"] == "EXPECTED_HEAD_INVALID"
+        assert "EXPECTED_HEAD_INVALID" in packet["blocker_codes"]
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
     def test_no_network_preflight_needs_attention_and_cannot_set_beta_gate_ready(self) -> None:
         from runner.production_ops import build_production_ops_packet
 

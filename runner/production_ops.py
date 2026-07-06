@@ -27,6 +27,7 @@ LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
 REDACTED_CONNECTOR_SMOKE_VALUE = "<redacted-connector-smoke-value>"
+REDACTED_STATUS_WRITTEN_PATH = "<redacted-status-written-path>"
 EXPECTED_WEB_HEALTH_SERVICE = "colameta-web-console"
 EXPECTED_MCP_HEALTH_SERVICE = "colameta-mcp"
 
@@ -63,7 +64,7 @@ def build_production_ops_packet(
     command_runner = command_runner or _run_command
     preflight_runner = preflight_runner or run_preflight
     candidate_head = _git_head(root, command_runner)
-    target_head = _clean_head(expected_head) or candidate_head
+    target_head, expected_head_check = _expected_head_for_packet(expected_head, candidate_head)
     safe_public_base_url, public_base_url_check = _public_base_url_for_packet(public_base_url)
 
     checks: dict[str, dict[str, Any]] = {
@@ -83,6 +84,8 @@ def build_production_ops_packet(
             now=now,
         ),
     }
+    if expected_head_check is not None:
+        checks["expected_head"] = expected_head_check
 
     reason_codes: list[str] = []
     blocker_codes: list[str] = []
@@ -170,6 +173,30 @@ def write_status_packet(path: str, packet: dict[str, Any], *, project_root: str,
         handle.write("\n")
     os.replace(tmp, resolved)
     return resolved
+
+
+def redact_status_written_path(path: str) -> str:
+    text = str(path)
+    if _contains_sensitive_text(text):
+        return REDACTED_STATUS_WRITTEN_PATH
+    return text
+
+
+def _expected_head_for_packet(
+    expected_head: str | None,
+    candidate_head: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if expected_head is None:
+        return candidate_head, None
+    cleaned = _clean_head(expected_head)
+    if cleaned:
+        return cleaned, None
+    return None, _check(
+        BLOCKED,
+        "EXPECTED_HEAD_INVALID",
+        "Explicit expected head must be a full 40-character commit SHA.",
+        expected_head_valid=False,
+    )
 
 
 def _candidate_head_check(candidate_head: str | None, expected_head: str | None) -> dict[str, Any]:
@@ -629,7 +656,7 @@ def _iso_now(now: datetime | None) -> str:
 def _clean_head(value: str | None) -> str | None:
     if not isinstance(value, str):
         return None
-    text = value.strip()
+    text = value.strip().lower()
     if re.fullmatch(r"[0-9a-f]{40}", text):
         return text
     return None
