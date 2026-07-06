@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import ipaddress
 import os
 import re
 import sys
 from typing import Callable, Mapping, TextIO
+from urllib.parse import urlparse
 
 from runner.runner_paths import resolve_project_runner_path
 
@@ -61,6 +63,12 @@ def load_global_runner_config(
         "public_base_url": None,
         "auth_token": None,
         "oauth_token_ttl_seconds": None,
+        "oauth_issuer": None,
+        "oauth_jwks_url": None,
+        "oauth_audience": None,
+        "oauth_scopes": None,
+        "oauth_algorithms": None,
+        "oauth_token_leeway_seconds": None,
     }
     if result["config_exists"]:
         config = config_result.get("config", {})
@@ -73,6 +81,12 @@ def load_global_runner_config(
         result["auth_mode"] = config.get("auth_mode")
         result["public_base_url"] = config.get("public_base_url")
         result["oauth_token_ttl_seconds"] = config.get("oauth_token_ttl_seconds")
+        result["oauth_issuer"] = config.get("oauth_issuer")
+        result["oauth_jwks_url"] = config.get("oauth_jwks_url")
+        result["oauth_audience"] = config.get("oauth_audience")
+        result["oauth_scopes"] = config.get("oauth_scopes")
+        result["oauth_algorithms"] = config.get("oauth_algorithms")
+        result["oauth_token_leeway_seconds"] = config.get("oauth_token_leeway_seconds")
 
     if include_auth_token:
         auth_result = store.load_auth(include_secret=True)
@@ -99,13 +113,30 @@ def extract_setup_relevant_options(args: list[str]) -> tuple[dict[str, object], 
         "auth_token": None,
         "public_base_url": None,
         "oauth_token_ttl_seconds": 3600,
+        "oauth_issuer": None,
+        "oauth_jwks_url": None,
+        "oauth_audience": None,
+        "oauth_scopes": None,
+        "oauth_algorithms": None,
+        "oauth_token_leeway_seconds": 60,
         "debug_actions": False,
     }
     explicit_fields: set[str] = set()
     idx = 2
     while idx < len(args):
         token = args[idx]
-        if token in {"--auth-mode", "--auth-token", "--public-base-url", "--oauth-token-ttl-seconds"}:
+        if token in {
+            "--auth-mode",
+            "--auth-token",
+            "--public-base-url",
+            "--oauth-token-ttl-seconds",
+            "--oauth-issuer",
+            "--oauth-jwks-url",
+            "--oauth-audience",
+            "--oauth-scopes",
+            "--oauth-algorithms",
+            "--oauth-token-leeway-seconds",
+        }:
             idx += 1
             if idx >= len(args):
                 break
@@ -124,6 +155,27 @@ def extract_setup_relevant_options(args: list[str]) -> tuple[dict[str, object], 
                 except ValueError:
                     values["oauth_token_ttl_seconds"] = args[idx]
                 explicit_fields.add("oauth_token_ttl_seconds")
+            elif token == "--oauth-issuer":
+                values["oauth_issuer"] = args[idx]
+                explicit_fields.add("oauth_issuer")
+            elif token == "--oauth-jwks-url":
+                values["oauth_jwks_url"] = args[idx]
+                explicit_fields.add("oauth_jwks_url")
+            elif token == "--oauth-audience":
+                values["oauth_audience"] = args[idx]
+                explicit_fields.add("oauth_audience")
+            elif token == "--oauth-scopes":
+                values["oauth_scopes"] = args[idx]
+                explicit_fields.add("oauth_scopes")
+            elif token == "--oauth-algorithms":
+                values["oauth_algorithms"] = args[idx]
+                explicit_fields.add("oauth_algorithms")
+            elif token == "--oauth-token-leeway-seconds":
+                try:
+                    values["oauth_token_leeway_seconds"] = int(args[idx])
+                except ValueError:
+                    values["oauth_token_leeway_seconds"] = args[idx]
+                explicit_fields.add("oauth_token_leeway_seconds")
         elif token == "--debug-actions":
             values["debug_actions"] = True
             explicit_fields.add("debug_actions")
@@ -151,7 +203,18 @@ def resolved_setup_config(
     except ValueError:
         if not explicit_fields.intersection({"auth_mode", "auth_token", "public_base_url"}):
             raise
-        global_config = {"auth_mode": None, "auth_token": None, "public_base_url": None, "oauth_token_ttl_seconds": None}
+        global_config = {
+            "auth_mode": None,
+            "auth_token": None,
+            "public_base_url": None,
+            "oauth_token_ttl_seconds": None,
+            "oauth_issuer": None,
+            "oauth_jwks_url": None,
+            "oauth_audience": None,
+            "oauth_scopes": None,
+            "oauth_algorithms": None,
+            "oauth_token_leeway_seconds": None,
+        }
 
     options = {
         "auth_mode": values["auth_mode"] if values["auth_mode"] is not None else global_config.get("auth_mode"),
@@ -162,6 +225,24 @@ def resolved_setup_config(
         "oauth_token_ttl_seconds": values["oauth_token_ttl_seconds"]
         if "oauth_token_ttl_seconds" in explicit_fields
         else (global_config.get("oauth_token_ttl_seconds") or values["oauth_token_ttl_seconds"]),
+        "oauth_issuer": values["oauth_issuer"]
+        if "oauth_issuer" in explicit_fields
+        else global_config.get("oauth_issuer"),
+        "oauth_jwks_url": values["oauth_jwks_url"]
+        if "oauth_jwks_url" in explicit_fields
+        else global_config.get("oauth_jwks_url"),
+        "oauth_audience": values["oauth_audience"]
+        if "oauth_audience" in explicit_fields
+        else global_config.get("oauth_audience"),
+        "oauth_scopes": values["oauth_scopes"]
+        if "oauth_scopes" in explicit_fields
+        else global_config.get("oauth_scopes"),
+        "oauth_algorithms": values["oauth_algorithms"]
+        if "oauth_algorithms" in explicit_fields
+        else global_config.get("oauth_algorithms"),
+        "oauth_token_leeway_seconds": values["oauth_token_leeway_seconds"]
+        if "oauth_token_leeway_seconds" in explicit_fields
+        else (global_config.get("oauth_token_leeway_seconds") or values["oauth_token_leeway_seconds"]),
         "debug_actions": values["debug_actions"],
     }
 
@@ -181,6 +262,12 @@ def resolved_setup_config(
         "auth_token": normalized_auth_token,
         "public_base_url": normalized_public_base_url,
         "oauth_token_ttl_seconds": options.get("oauth_token_ttl_seconds"),
+        "oauth_issuer": options.get("oauth_issuer"),
+        "oauth_jwks_url": options.get("oauth_jwks_url"),
+        "oauth_audience": options.get("oauth_audience"),
+        "oauth_scopes": options.get("oauth_scopes"),
+        "oauth_algorithms": options.get("oauth_algorithms"),
+        "oauth_token_leeway_seconds": options.get("oauth_token_leeway_seconds"),
         "debug_actions": options.get("debug_actions", False),
     }
 
@@ -275,6 +362,16 @@ def maybe_interactive_global_config_setup(
         config_for_check["public_base_url"] = resolved.get("public_base_url")
     if resolved.get("auth_mode") is not None:
         config_for_check["auth_mode"] = resolved.get("auth_mode")
+    for key in (
+        "oauth_issuer",
+        "oauth_jwks_url",
+        "oauth_audience",
+        "oauth_scopes",
+        "oauth_algorithms",
+        "oauth_token_leeway_seconds",
+    ):
+        if resolved.get(key) is not None:
+            config_for_check[key] = resolved.get(key)
     auth_for_check = {"auth_token_configured": bool(resolved.get("auth_token"))}
     setup_status = store.needs_interactive_setup(config=config_for_check, auth=auth_for_check)
     if not setup_status.get("ok"):
@@ -355,7 +452,16 @@ def normalize_public_base_url(url: str) -> str:
 
 
 def is_local_http_url(url: str) -> bool:
-    return url.startswith("http://127.0.0.1") or url.startswith("http://localhost")
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def resolve_debug_actions(cli_has_flag: bool) -> bool:

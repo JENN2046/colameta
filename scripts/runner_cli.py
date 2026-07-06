@@ -94,17 +94,56 @@ def _validate_mcp_auth_options(
     auth_token: str | None,
     public_base_url: str | None,
     oauth_token_ttl_seconds: int,
+    oauth_issuer: str | None = None,
+    oauth_jwks_url: str | None = None,
+    oauth_audience: str | None = None,
+    oauth_token_leeway_seconds: int = 60,
 ) -> str | None:
-    resolved = _resolve_auth_mode(auth_mode, auth_token)
-    if resolved not in {"none", "token", "oauth"}:
-        print(f"{command_name} 参数错误：--auth-mode 必须是 none、token 或 oauth。", file=sys.stderr)
+    raw_resolved = _resolve_auth_mode(auth_mode, auth_token)
+    resolved = raw_resolved.strip().lower() if isinstance(raw_resolved, str) else raw_resolved
+    if resolved not in {"none", "token", "oauth", "external-oauth"}:
+        print(f"{command_name} 参数错误：--auth-mode 必须是 none、token、oauth 或 external-oauth。", file=sys.stderr)
         return None
     if resolved == "token" and not auth_token:
         print(f"{command_name} 参数错误：--auth-mode token 需要 --auth-token。", file=sys.stderr)
         return None
-    if resolved == "oauth" and not public_base_url:
-        print(f"{command_name} 参数错误：--auth-mode oauth 需要 --public-base-url。", file=sys.stderr)
+    if resolved in {"oauth", "external-oauth"} and not public_base_url:
+        print(f"{command_name} 参数错误：--auth-mode {resolved} 需要 --public-base-url。", file=sys.stderr)
         return None
+    if resolved in {"oauth", "external-oauth"} and public_base_url:
+        normalized_public_base_url = _normalize_public_base_url(str(public_base_url))
+        if not (
+            normalized_public_base_url.startswith("https://")
+            or normalized_public_base_url.startswith("http://")
+        ):
+            print(f"{command_name} 参数错误：--public-base-url 必须以 http:// 或 https:// 开头。", file=sys.stderr)
+            return None
+        if normalized_public_base_url.startswith("http://") and not _is_local_http_url(normalized_public_base_url):
+            print(
+                f"{command_name} 参数错误：OAuth MCP 远端服务要求 HTTPS public_base_url；"
+                "http:// 仅允许 localhost/loopback 本地调试。",
+                file=sys.stderr,
+            )
+            return None
+    if resolved == "external-oauth":
+        if not isinstance(oauth_issuer, str) or not oauth_issuer.strip():
+            print(f"{command_name} 参数错误：--auth-mode external-oauth 需要 --oauth-issuer。", file=sys.stderr)
+            return None
+        if not isinstance(oauth_jwks_url, str) or not oauth_jwks_url.strip():
+            print(f"{command_name} 参数错误：--auth-mode external-oauth 需要 --oauth-jwks-url。", file=sys.stderr)
+            return None
+        if not oauth_issuer.strip().startswith("https://"):
+            print(f"{command_name} 参数错误：--oauth-issuer 必须是 HTTPS URL。", file=sys.stderr)
+            return None
+        if not oauth_jwks_url.strip().startswith("https://"):
+            print(f"{command_name} 参数错误：--oauth-jwks-url 必须是 HTTPS URL。", file=sys.stderr)
+            return None
+        if oauth_audience is not None and not str(oauth_audience).strip():
+            print(f"{command_name} 参数错误：--oauth-audience 不能为空字符串。", file=sys.stderr)
+            return None
+        if oauth_token_leeway_seconds < 0:
+            print(f"{command_name} 参数错误：--oauth-token-leeway-seconds 不能为负数。", file=sys.stderr)
+            return None
     if oauth_token_ttl_seconds <= 0:
         print(f"{command_name} 参数错误：--oauth-token-ttl-seconds 必须是正整数。", file=sys.stderr)
         return None
@@ -1502,7 +1541,18 @@ def _prepare_source_only_service_start(
                 return None
             explicit_fields.add("mcp_port")
             serve_args.extend(["--port", args[idx]])
-        elif token in {"--auth-mode", "--auth-token", "--public-base-url", "--oauth-token-ttl-seconds"}:
+        elif token in {
+            "--auth-mode",
+            "--auth-token",
+            "--public-base-url",
+            "--oauth-token-ttl-seconds",
+            "--oauth-issuer",
+            "--oauth-jwks-url",
+            "--oauth-audience",
+            "--oauth-scopes",
+            "--oauth-algorithms",
+            "--oauth-token-leeway-seconds",
+        }:
             idx += 1
             if idx >= len(args):
                 print(f"source-only 参数错误：{token} 缺少值。", file=sys.stderr)
@@ -2294,6 +2344,12 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
     auth_token: str | None = None
     public_base_url: str | None = None
     oauth_token_ttl_seconds = 3600
+    oauth_issuer: str | None = None
+    oauth_jwks_url: str | None = None
+    oauth_audience: str | None = None
+    oauth_scopes: str | None = None
+    oauth_algorithms: str | None = None
+    oauth_token_leeway_seconds = 60
     debug_actions_flag = _resolve_debug_actions(False)
     explicit_fields: set[str] = set()
 
@@ -2350,6 +2406,52 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
                 print("mcp-http-server 参数错误：--oauth-token-ttl-seconds 必须是整数。", file=sys.stderr)
                 return 1
             explicit_fields.add("oauth_token_ttl_seconds")
+        elif token == "--oauth-issuer":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-issuer 缺少值。", file=sys.stderr)
+                return 1
+            oauth_issuer = args[idx]
+            explicit_fields.add("oauth_issuer")
+        elif token == "--oauth-jwks-url":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-jwks-url 缺少值。", file=sys.stderr)
+                return 1
+            oauth_jwks_url = args[idx]
+            explicit_fields.add("oauth_jwks_url")
+        elif token == "--oauth-audience":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-audience 缺少值。", file=sys.stderr)
+                return 1
+            oauth_audience = args[idx]
+            explicit_fields.add("oauth_audience")
+        elif token == "--oauth-scopes":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-scopes 缺少值。", file=sys.stderr)
+                return 1
+            oauth_scopes = args[idx]
+            explicit_fields.add("oauth_scopes")
+        elif token == "--oauth-algorithms":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-algorithms 缺少值。", file=sys.stderr)
+                return 1
+            oauth_algorithms = args[idx]
+            explicit_fields.add("oauth_algorithms")
+        elif token == "--oauth-token-leeway-seconds":
+            idx += 1
+            if idx >= len(args):
+                print("mcp-http-server 参数错误：--oauth-token-leeway-seconds 缺少值。", file=sys.stderr)
+                return 1
+            try:
+                oauth_token_leeway_seconds = int(args[idx])
+            except ValueError:
+                print("mcp-http-server 参数错误：--oauth-token-leeway-seconds 必须是整数。", file=sys.stderr)
+                return 1
+            explicit_fields.add("oauth_token_leeway_seconds")
         elif token == "--debug-actions":
             debug_actions_flag = True
             explicit_fields.add("debug_actions")
@@ -2381,6 +2483,16 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
             "oauth_token_ttl_seconds": oauth_token_ttl_seconds
             if "oauth_token_ttl_seconds" in explicit_fields
             else (global_config.get("oauth_token_ttl_seconds") or oauth_token_ttl_seconds),
+            "oauth_issuer": oauth_issuer if oauth_issuer is not None else global_config.get("oauth_issuer"),
+            "oauth_jwks_url": oauth_jwks_url if oauth_jwks_url is not None else global_config.get("oauth_jwks_url"),
+            "oauth_audience": oauth_audience if oauth_audience is not None else global_config.get("oauth_audience"),
+            "oauth_scopes": oauth_scopes if oauth_scopes is not None else global_config.get("oauth_scopes"),
+            "oauth_algorithms": oauth_algorithms
+            if oauth_algorithms is not None
+            else global_config.get("oauth_algorithms"),
+            "oauth_token_leeway_seconds": oauth_token_leeway_seconds
+            if "oauth_token_leeway_seconds" in explicit_fields
+            else (global_config.get("oauth_token_leeway_seconds") or oauth_token_leeway_seconds),
             "debug_actions": debug_actions_flag,
         }
     except ValueError as e:
@@ -2390,6 +2502,12 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
     auth_token = options["auth_token"]  # type: ignore[assignment]
     public_base_url = options["public_base_url"]  # type: ignore[assignment]
     oauth_token_ttl_seconds = options["oauth_token_ttl_seconds"]  # type: ignore[assignment]
+    oauth_issuer = options["oauth_issuer"]  # type: ignore[assignment]
+    oauth_jwks_url = options["oauth_jwks_url"]  # type: ignore[assignment]
+    oauth_audience = options["oauth_audience"]  # type: ignore[assignment]
+    oauth_scopes = options["oauth_scopes"]  # type: ignore[assignment]
+    oauth_algorithms = options["oauth_algorithms"]  # type: ignore[assignment]
+    oauth_token_leeway_seconds = options["oauth_token_leeway_seconds"]  # type: ignore[assignment]
     debug_actions_flag = bool(options["debug_actions"])
 
     resolved_auth_mode = _validate_mcp_auth_options(
@@ -2398,6 +2516,10 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
         auth_token,
         public_base_url,
         oauth_token_ttl_seconds,
+        oauth_issuer=oauth_issuer,
+        oauth_jwks_url=oauth_jwks_url,
+        oauth_audience=oauth_audience,
+        oauth_token_leeway_seconds=oauth_token_leeway_seconds,
     )
     if resolved_auth_mode is None:
         return 1
@@ -2435,6 +2557,12 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
         auth_mode=resolved_auth_mode,
         public_base_url=public_base_url,
         oauth_token_ttl_seconds=oauth_token_ttl_seconds,
+        oauth_issuer=oauth_issuer,
+        oauth_jwks_url=oauth_jwks_url,
+        oauth_audience=oauth_audience,
+        oauth_scopes=oauth_scopes,
+        oauth_algorithms=oauth_algorithms,
+        oauth_token_leeway_seconds=oauth_token_leeway_seconds,
         debug_actions=debug_actions,
     )
 
@@ -2526,6 +2654,12 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
     auth_token: str | None = None
     public_base_url: str | None = None
     oauth_token_ttl_seconds = 3600
+    oauth_issuer: str | None = None
+    oauth_jwks_url: str | None = None
+    oauth_audience: str | None = None
+    oauth_scopes: str | None = None
+    oauth_algorithms: str | None = None
+    oauth_token_leeway_seconds = 60
     enable_web = True
     enable_mcp = True
     open_web = False
@@ -2605,6 +2739,52 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
                 print("serve 参数错误：--oauth-token-ttl-seconds 必须是整数。", file=sys.stderr)
                 return 1
             explicit_fields.add("oauth_token_ttl_seconds")
+        elif token == "--oauth-issuer":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-issuer 缺少值。", file=sys.stderr)
+                return 1
+            oauth_issuer = args[idx]
+            explicit_fields.add("oauth_issuer")
+        elif token == "--oauth-jwks-url":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-jwks-url 缺少值。", file=sys.stderr)
+                return 1
+            oauth_jwks_url = args[idx]
+            explicit_fields.add("oauth_jwks_url")
+        elif token == "--oauth-audience":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-audience 缺少值。", file=sys.stderr)
+                return 1
+            oauth_audience = args[idx]
+            explicit_fields.add("oauth_audience")
+        elif token == "--oauth-scopes":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-scopes 缺少值。", file=sys.stderr)
+                return 1
+            oauth_scopes = args[idx]
+            explicit_fields.add("oauth_scopes")
+        elif token == "--oauth-algorithms":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-algorithms 缺少值。", file=sys.stderr)
+                return 1
+            oauth_algorithms = args[idx]
+            explicit_fields.add("oauth_algorithms")
+        elif token == "--oauth-token-leeway-seconds":
+            idx += 1
+            if idx >= len(args):
+                print("serve 参数错误：--oauth-token-leeway-seconds 缺少值。", file=sys.stderr)
+                return 1
+            try:
+                oauth_token_leeway_seconds = int(args[idx])
+            except ValueError:
+                print("serve 参数错误：--oauth-token-leeway-seconds 必须是整数。", file=sys.stderr)
+                return 1
+            explicit_fields.add("oauth_token_leeway_seconds")
         elif token == "--service-child":
             pass
         elif token == "--global-mode":
@@ -2655,6 +2835,16 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
             "oauth_token_ttl_seconds": oauth_token_ttl_seconds
             if "oauth_token_ttl_seconds" in explicit_fields
             else (global_config.get("oauth_token_ttl_seconds") or oauth_token_ttl_seconds),
+            "oauth_issuer": oauth_issuer if oauth_issuer is not None else global_config.get("oauth_issuer"),
+            "oauth_jwks_url": oauth_jwks_url if oauth_jwks_url is not None else global_config.get("oauth_jwks_url"),
+            "oauth_audience": oauth_audience if oauth_audience is not None else global_config.get("oauth_audience"),
+            "oauth_scopes": oauth_scopes if oauth_scopes is not None else global_config.get("oauth_scopes"),
+            "oauth_algorithms": oauth_algorithms
+            if oauth_algorithms is not None
+            else global_config.get("oauth_algorithms"),
+            "oauth_token_leeway_seconds": oauth_token_leeway_seconds
+            if "oauth_token_leeway_seconds" in explicit_fields
+            else (global_config.get("oauth_token_leeway_seconds") or oauth_token_leeway_seconds),
             "debug_actions": debug_actions_flag,
         }
     except ValueError as e:
@@ -2664,6 +2854,12 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
     auth_token = options["auth_token"]  # type: ignore[assignment]
     public_base_url = options["public_base_url"]  # type: ignore[assignment]
     oauth_token_ttl_seconds = options["oauth_token_ttl_seconds"]  # type: ignore[assignment]
+    oauth_issuer = options["oauth_issuer"]  # type: ignore[assignment]
+    oauth_jwks_url = options["oauth_jwks_url"]  # type: ignore[assignment]
+    oauth_audience = options["oauth_audience"]  # type: ignore[assignment]
+    oauth_scopes = options["oauth_scopes"]  # type: ignore[assignment]
+    oauth_algorithms = options["oauth_algorithms"]  # type: ignore[assignment]
+    oauth_token_leeway_seconds = options["oauth_token_leeway_seconds"]  # type: ignore[assignment]
     debug_actions_flag = bool(options["debug_actions"])
 
     if not enable_web and not enable_mcp:
@@ -2684,6 +2880,10 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
             auth_token,
             public_base_url,
             oauth_token_ttl_seconds,
+            oauth_issuer=oauth_issuer,
+            oauth_jwks_url=oauth_jwks_url,
+            oauth_audience=oauth_audience,
+            oauth_token_leeway_seconds=oauth_token_leeway_seconds,
         )
         if validated_auth_mode is None:
             return 1
@@ -2830,6 +3030,8 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
             print("\U0001f510  Auth: Bearer token enabled", file=sys.stderr)
         elif resolved_auth_mode == "oauth":
             print("\U0001f510  Auth: OAuth enabled", file=sys.stderr)
+        elif resolved_auth_mode == "external-oauth":
+            print("\U0001f510  Auth: external OAuth resource server enabled", file=sys.stderr)
         threads.append(
             threading.Thread(
                 target=run_service,
@@ -2842,6 +3044,12 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
                         auth_mode=resolved_auth_mode,
                         public_base_url=public_base_url,
                         oauth_token_ttl_seconds=oauth_token_ttl_seconds,
+                        oauth_issuer=oauth_issuer,
+                        oauth_jwks_url=oauth_jwks_url,
+                        oauth_audience=oauth_audience,
+                        oauth_scopes=oauth_scopes,
+                        oauth_algorithms=oauth_algorithms,
+                        oauth_token_leeway_seconds=oauth_token_leeway_seconds,
                         debug_actions=bool(debug_actions_flag),
                     ),
                 ),
@@ -2920,7 +3128,18 @@ def _run_source_only_start(project_path: str, args: list[str]) -> int:
                 print("source-only 参数错误：--mcp-port 缺少值。", file=sys.stderr)
                 return 1
             forward_args.extend(["--port", args[idx]])
-        elif token in {"--auth-mode", "--auth-token", "--public-base-url", "--oauth-token-ttl-seconds"}:
+        elif token in {
+            "--auth-mode",
+            "--auth-token",
+            "--public-base-url",
+            "--oauth-token-ttl-seconds",
+            "--oauth-issuer",
+            "--oauth-jwks-url",
+            "--oauth-audience",
+            "--oauth-scopes",
+            "--oauth-algorithms",
+            "--oauth-token-leeway-seconds",
+        }:
             idx += 1
             if idx >= len(args):
                 print(f"source-only 参数错误：{token} 缺少值。", file=sys.stderr)
@@ -2967,6 +3186,12 @@ def _run_managed_start(project_path: str, args: list[str]) -> int:
             "--auth-token",
             "--public-base-url",
             "--oauth-token-ttl-seconds",
+            "--oauth-issuer",
+            "--oauth-jwks-url",
+            "--oauth-audience",
+            "--oauth-scopes",
+            "--oauth-algorithms",
+            "--oauth-token-leeway-seconds",
         }:
             idx += 1
             if idx >= len(args):

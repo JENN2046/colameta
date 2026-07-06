@@ -19,6 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+dependencies = [
+    "PyJWT[crypto]>=2.8,<3",
+]
 
 [project.urls]
 Homepage = "https://github.com/riccilnl/colameta"

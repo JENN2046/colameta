@@ -89,7 +89,11 @@ def _read_pyproject_metadata() -> dict[str, Any]:
     project: dict[str, Any] = {}
     scripts: dict[str, str] = {}
     section = ""
-    for raw_line in pyproject_path.read_text(encoding="utf-8").splitlines():
+    raw_lines = pyproject_path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(raw_lines):
+        raw_line = raw_lines[index]
+        index += 1
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -99,12 +103,39 @@ def _read_pyproject_metadata() -> dict[str, Any]:
         if "=" not in line:
             continue
         key, raw_value = [part.strip() for part in line.split("=", 1)]
+        if raw_value == "[":
+            array_lines = ["["]
+            while index < len(raw_lines):
+                array_line = raw_lines[index].strip()
+                index += 1
+                array_lines.append(array_line)
+                if array_line == "]":
+                    break
+            raw_value = "\n".join(array_lines)
         if section == "project.scripts":
-            scripts[key] = ast.literal_eval(raw_value)
-        elif section == "project" and key in {"name", "version", "description", "requires-python"}:
-            project[key] = ast.literal_eval(raw_value)
+            scripts[key] = _literal_toml_value(raw_value)
+        elif section == "project" and key in {"name", "version", "description", "requires-python", "license"}:
+            project[key] = _literal_toml_value(raw_value)
+        elif section == "project" and key in {"dependencies", "classifiers"}:
+            project[key] = _literal_toml_value(raw_value)
     project["scripts"] = scripts
     return project
+
+
+def _literal_toml_value(raw_value: str) -> Any:
+    try:
+        return ast.literal_eval(raw_value)
+    except (SyntaxError, ValueError):
+        if raw_value.startswith("{") and raw_value.endswith("}"):
+            table: dict[str, Any] = {}
+            inner = raw_value[1:-1].strip()
+            if not inner:
+                return table
+            for item in inner.split(","):
+                key, value = [part.strip() for part in item.split("=", 1)]
+                table[key] = ast.literal_eval(value)
+            return table
+        raise
 
 
 def _iter_package_files() -> list[Path]:
@@ -141,6 +172,13 @@ def _metadata_text(project: dict[str, Any]) -> str:
     for classifier in project.get("classifiers", []):
         lines.append(f"Classifier: {classifier}")
     return "\n".join(lines) + "\n"
+
+
+def _project_dependencies() -> list[str]:
+    dependencies = _read_pyproject_metadata().get("dependencies", [])
+    if not isinstance(dependencies, list):
+        return []
+    return [item for item in dependencies if isinstance(item, str) and item.strip()]
 
 
 def build_stdlib_wheel(wheelhouse: Path) -> None:
@@ -192,8 +230,24 @@ def main() -> int:
 
         builder_python = select_builder_python(temp_dir)
         if builder_python is None:
+            if _project_dependencies():
+                print("stdlib wheel fallback cannot prepare dependency wheels.", file=sys.stderr)
+                return 1
             build_stdlib_wheel(wheelhouse)
         else:
+            dependencies = _project_dependencies()
+            if dependencies:
+                run(
+                    [
+                        builder_python,
+                        "-m",
+                        "pip",
+                        "wheel",
+                        "--wheel-dir",
+                        wheelhouse,
+                        *dependencies,
+                    ]
+                )
             run(
                 [
                     builder_python,

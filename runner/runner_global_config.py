@@ -16,6 +16,7 @@ DEFAULT_WEB_PORT = 8799
 DEFAULT_MCP_HOST = "127.0.0.1"
 DEFAULT_MCP_PORT = 8765
 DEFAULT_AUTH_MODE = "oauth"
+DEFAULT_OAUTH_TOKEN_LEEWAY_SECONDS = 60
 AUTH_FILE_MODE = 0o600
 
 
@@ -28,6 +29,12 @@ class RunnerGlobalConfig:
     mcp_host: str
     mcp_port: int
     auth_mode: str
+    oauth_issuer: str | None
+    oauth_jwks_url: str | None
+    oauth_audience: str | None
+    oauth_scopes: str | None
+    oauth_algorithms: str | None
+    oauth_token_leeway_seconds: int
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,12 @@ class RunnerGlobalConfigStore:
                 mcp_host=DEFAULT_MCP_HOST,
                 mcp_port=DEFAULT_MCP_PORT,
                 auth_mode=DEFAULT_AUTH_MODE,
+                oauth_issuer=None,
+                oauth_jwks_url=None,
+                oauth_audience=None,
+                oauth_scopes=None,
+                oauth_algorithms=None,
+                oauth_token_leeway_seconds=DEFAULT_OAUTH_TOKEN_LEEWAY_SECONDS,
             )
         )
 
@@ -109,9 +122,41 @@ class RunnerGlobalConfigStore:
                 normalized[key] = default_value
 
         auth_mode = config.get("auth_mode", normalized["auth_mode"])
-        if not isinstance(auth_mode, str) or auth_mode.strip().lower() not in {"none", "token", "oauth"}:
-            return self._error("INVALID_AUTH_MODE", "auth_mode 只能是 none、token 或 oauth。", action="validate_config")
+        if not isinstance(auth_mode, str) or auth_mode.strip().lower() not in {"none", "token", "oauth", "external-oauth"}:
+            return self._error(
+                "INVALID_AUTH_MODE",
+                "auth_mode 只能是 none、token、oauth 或 external-oauth。",
+                action="validate_config",
+            )
         normalized["auth_mode"] = auth_mode.strip().lower()
+
+        for key in ("oauth_issuer", "oauth_jwks_url", "oauth_audience", "oauth_scopes", "oauth_algorithms"):
+            value = config.get(key, normalized[key])
+            if value is None:
+                normalized[key] = None
+            elif not isinstance(value, str):
+                return self._error(f"INVALID_{key.upper()}", f"{key} 必须是字符串或空值。", action="validate_config")
+            else:
+                normalized[key] = self._normalize_optional_string(value)
+
+        leeway = config.get("oauth_token_leeway_seconds", normalized["oauth_token_leeway_seconds"])
+        if not self._is_int(leeway) or int(leeway) < 0:
+            return self._error(
+                "INVALID_OAUTH_TOKEN_LEEWAY_SECONDS",
+                "oauth_token_leeway_seconds 必须是非负整数。",
+                action="validate_config",
+            )
+        normalized["oauth_token_leeway_seconds"] = int(leeway)
+
+        if normalized["auth_mode"] == "external-oauth":
+            if not normalized["oauth_issuer"]:
+                return self._error("INVALID_OAUTH_ISSUER", "auth_mode=external-oauth 需要 oauth_issuer。", action="validate_config")
+            if not str(normalized["oauth_issuer"]).startswith("https://"):
+                return self._error("INVALID_OAUTH_ISSUER", "oauth_issuer 必须是 HTTPS URL。", action="validate_config")
+            if not normalized["oauth_jwks_url"]:
+                return self._error("INVALID_OAUTH_JWKS_URL", "auth_mode=external-oauth 需要 oauth_jwks_url。", action="validate_config")
+            if not str(normalized["oauth_jwks_url"]).startswith("https://"):
+                return self._error("INVALID_OAUTH_JWKS_URL", "oauth_jwks_url 必须是 HTTPS URL。", action="validate_config")
 
         return {
             "ok": True,
@@ -303,7 +348,7 @@ class RunnerGlobalConfigStore:
         if auth_mode_missing:
             missing_fields.append("auth_mode")
             normalized_auth_mode = None
-        elif not isinstance(auth_mode, str) or auth_mode.strip().lower() not in {"none", "token", "oauth"}:
+        elif not isinstance(auth_mode, str) or auth_mode.strip().lower() not in {"none", "token", "oauth", "external-oauth"}:
             missing_fields.append("auth_mode")
             normalized_auth_mode = None
         else:
@@ -311,6 +356,11 @@ class RunnerGlobalConfigStore:
 
         if normalized_auth_mode == "token" and not auth_token_configured:
             missing_fields.append("auth_token")
+        if normalized_auth_mode == "external-oauth":
+            if not isinstance(config.get("oauth_issuer"), str) or not str(config.get("oauth_issuer")).strip():
+                missing_fields.append("oauth_issuer")
+            if not isinstance(config.get("oauth_jwks_url"), str) or not str(config.get("oauth_jwks_url")).strip():
+                missing_fields.append("oauth_jwks_url")
 
         return {
             "ok": True,

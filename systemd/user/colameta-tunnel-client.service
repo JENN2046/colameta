@@ -1,0 +1,23 @@
+[Unit]
+Description=ColaMeta tunnel-client for ChatGPT Apps
+Documentation=file:/home/jenn/src/colameta-dev/docs/managed-tunnel-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jenn/src/colameta-dev
+ExecStart=/home/jenn/src/colameta-dev/scripts/colameta_tunnel_client_service.sh start
+ExecStartPre=/home/jenn/src/colameta-dev/scripts/colameta_tunnel_client_service.sh check
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
