@@ -1657,6 +1657,42 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert result["details"]["required_scope"] == "mcp:commit"
         assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
 
+    def test_external_oauth_remote_policy_denies_run_mcp_workflow_plan_update_apply(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {"project_name": "demo-project", "workflow": "plan_update", "phase": "apply"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_docs_update_apply_with_conflicting_preview_phase(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "project_name": "demo-project",
+                "workflow": "docs_update",
+                "docs_action": "apply",
+                "phase": "preview",
+                "preview_id": "doc-preview-1",
+            },
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
 
 if __name__ == "__main__":
     unittest.main()

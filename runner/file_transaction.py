@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +121,7 @@ class FileTransaction:
         return {
             "exists": True,
             "content": path.read_text(encoding="utf-8"),
+            "mode": stat.S_IMODE(path.stat().st_mode),
         }
 
     def _apply_operation(self, operation: FileTransactionOperation) -> None:
@@ -135,12 +137,15 @@ class FileTransaction:
 
     def _atomic_write_text(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        existing_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if existing_mode is not None:
+                os.chmod(tmp_name, existing_mode)
             os.replace(tmp_name, path)
         except Exception:
             try:
@@ -159,6 +164,9 @@ class FileTransaction:
                 preimage = preimages.get(operation.abs_path, {"exists": False})
                 if preimage.get("exists") is True:
                     self._atomic_write_text(operation.abs_path, str(preimage.get("content", "")))
+                    mode = preimage.get("mode")
+                    if isinstance(mode, int):
+                        os.chmod(operation.abs_path, mode)
                 elif operation.abs_path.exists():
                     operation.abs_path.unlink()
         except Exception as exc:

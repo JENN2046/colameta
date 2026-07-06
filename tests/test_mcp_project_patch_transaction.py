@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from runner.file_transaction import FileTransaction
@@ -42,6 +44,32 @@ def test_project_patch_apply_returns_transaction_receipt(tmp_path: Path) -> None
     assert receipt["content_included"] is False
 
 
+def test_project_patch_apply_preserves_existing_file_mode(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    source_dir = project / "src"
+    source_dir.mkdir(parents=True)
+    target = source_dir / "tool.py"
+    target.write_text("print('old')\n", encoding="utf-8")
+    os.chmod(target, 0o755)
+
+    manager = _manager(project)
+    preview = manager.preview(
+        {
+            "file": "src/tool.py",
+            "old_text": "old",
+            "new_text": "new",
+            "reason": "test mode preservation",
+        }
+    )
+    assert preview["ok"] is True
+
+    result = manager.apply({"preview_id": preview["preview_id"], "reason": "accepted"})
+
+    assert result["ok"] is True
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert target.read_text(encoding="utf-8") == "print('new')\n"
+
+
 def test_project_patch_apply_rolls_back_partial_transaction(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "repo"
     source_dir = project / "src"
@@ -50,6 +78,7 @@ def test_project_patch_apply_rolls_back_partial_transaction(tmp_path: Path, monk
     second = source_dir / "b.py"
     first.write_text("ONE\n", encoding="utf-8")
     second.write_text("ALPHA\n", encoding="utf-8")
+    os.chmod(first, 0o755)
     patch_text = """diff --git a/src/a.py b/src/a.py
 --- a/src/a.py
 +++ b/src/a.py
@@ -81,6 +110,7 @@ diff --git a/src/b.py b/src/b.py
     assert result["ok"] is False
     assert result["error_code"] == "PATCH_TRANSACTION_FAILED"
     assert first.read_text(encoding="utf-8") == "ONE\n"
+    assert stat.S_IMODE(first.stat().st_mode) == 0o755
     assert second.read_text(encoding="utf-8") == "ALPHA\n"
     receipt = result["transaction_receipt"]
     assert receipt["status"] == "rolled_back"

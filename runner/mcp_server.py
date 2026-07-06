@@ -697,8 +697,16 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         return "mcp:preview"
     if workflow == "project_status":
         return "mcp:read"
-    if workflow in {"source_onboarding", "plan_update"}:
-        return "mcp:preview"
+    if workflow == "source_onboarding":
+        if phase in {"", "preview"}:
+            return "mcp:preview"
+        return None
+    if workflow == "plan_update":
+        if phase == "apply":
+            return "mcp:commit"
+        if phase in {"", "preview"}:
+            return "mcp:preview"
+        return None
     if workflow == "thin_governed_loop_preview":
         return "mcp:read"
     if workflow == "small_project_patch":
@@ -710,11 +718,17 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
             return "mcp:commit"
         return None
     if workflow == "docs_update":
-        if docs_action in {"index", "search", "read_section"} or phase == "inspect":
+        if docs_action in {"index", "search", "read_section"}:
+            return "mcp:read" if phase in {"", "inspect"} else None
+        if docs_action in {"update_section_preview", "append_section_preview", "sync_docs_preview"}:
+            return "mcp:preview" if phase in {"", "preview"} else None
+        if docs_action == "apply":
+            return "mcp:commit"
+        if phase in {"", "inspect"}:
             return "mcp:read"
-        if docs_action in {"update_section_preview", "append_section_preview", "sync_docs_preview"} or phase == "preview":
+        if phase == "preview":
             return "mcp:preview"
-        if phase in {"apply", ""}:
+        if phase == "apply":
             return "mcp:commit"
         return None
     if workflow == "git_commit":
