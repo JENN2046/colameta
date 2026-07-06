@@ -834,7 +834,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
     for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
         policies[name] = _static_policy(name, "mcp:preview")
     for name in ("todo_add", "todo_update", "todo_delete", "decision_add", "decision_update", "decision_delete"):
-        policies[name] = _static_policy(name, "mcp:preview")
+        policies[name] = _static_policy(name, "mcp:commit")
     policies.update(
         {
             "manage_git": _action_policy(
@@ -895,11 +895,11 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
             ),
             "manage_runner_record": _action_policy(
                 "manage_runner_record",
-                {"read": "mcp:read", "add": "mcp:preview", "update": "mcp:preview", "delete": "mcp:preview"},
+                {"read": "mcp:read", "add": "mcp:commit", "update": "mcp:commit", "delete": "mcp:commit"},
             ),
             "manage_project_memory": _action_policy(
                 "manage_project_memory",
-                {"read": "mcp:read", "add": "mcp:preview", "update": "mcp:preview", "delete": "mcp:preview"},
+                {"read": "mcp:read", "add": "mcp:commit", "update": "mcp:commit", "delete": "mcp:commit"},
             ),
             "manage_plan_version": _action_policy(
                 "manage_plan_version",

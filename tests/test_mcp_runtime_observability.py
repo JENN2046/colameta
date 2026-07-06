@@ -1751,6 +1751,50 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert result["details"]["required_scope"] == "mcp:commit"
         assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
 
+    def test_durable_project_memory_mutations_require_commit_scope(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        cases = [
+            ("manage_project_memory", {"action": "add"}),
+            ("manage_project_memory", {"action": "update"}),
+            ("manage_project_memory", {"action": "delete"}),
+            ("manage_runner_record", {"action": "add"}),
+            ("manage_runner_record", {"action": "update"}),
+            ("manage_runner_record", {"action": "delete"}),
+            ("todo_add", {}),
+            ("todo_update", {}),
+            ("todo_delete", {}),
+            ("decision_add", {}),
+            ("decision_update", {}),
+            ("decision_delete", {}),
+        ]
+
+        for tool_name, params in cases:
+            assert server.get_required_scope_for_tool(tool_name, params) == "mcp:commit"
+
+    def test_external_oauth_remote_policy_denies_preview_badged_durable_memory_writes(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        calls = [
+            ("manage_project_memory", {"project_name": "demo-project", "action": "add", "content": "remote write"}),
+            ("manage_runner_record", {"project_name": "demo-project", "action": "delete", "id": "rec-1"}),
+            ("todo_add", {"project_name": "demo-project", "content": "remote todo"}),
+            ("decision_update", {"project_name": "demo-project", "id": "decision-1", "decision": "remote decision"}),
+        ]
+
+        for tool_name, params in calls:
+            result = server.call_tool_for_agent(
+                tool_name,
+                params,
+                auth_context=self.external_oauth_context(),
+            )
+
+            assert result["ok"] is False
+            assert result["error_code"] == "REMOTE_POLICY_DENIED"
+            assert result["details"]["policy"] == "remote_public"
+            assert result["details"]["required_scope"] == "mcp:commit"
+            assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
     def test_external_oauth_remote_policy_denies_run_mcp_workflow_plan_update_apply(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=False)
