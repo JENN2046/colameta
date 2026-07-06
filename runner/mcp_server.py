@@ -111,6 +111,7 @@ MCP_GLOBAL_RATE_LIMIT_PER_MINUTE = _env_int("COLAMETA_MCP_GLOBAL_RATE_LIMIT_PER_
 MCP_GLOBAL_RATE_LIMIT_BURST = _env_int("COLAMETA_MCP_GLOBAL_RATE_LIMIT_BURST", 80)
 MCP_CLIENT_RATE_LIMIT_PER_MINUTE = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_PER_MINUTE", 120)
 MCP_CLIENT_RATE_LIMIT_BURST = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BURST", 40)
+MCP_CLIENT_RATE_LIMIT_BUCKETS = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BUCKETS", 2048)
 MCP_TARGET_TOOL_RESULT_CHARS = 60000
 MCP_HARD_TOOL_RESULT_CHARS = 75000
 REMOTE_EXTERNAL_OAUTH_POLICY = "remote_public"
@@ -236,12 +237,14 @@ class _MCPRateLimiter:
         global_burst: int,
         client_per_minute: int,
         client_burst: int,
+        max_client_buckets: int = MCP_CLIENT_RATE_LIMIT_BUCKETS,
     ) -> None:
         now = time.monotonic()
         self.global_per_minute = max(1, global_per_minute)
         self.global_burst = max(1, global_burst)
         self.client_per_minute = max(1, client_per_minute)
         self.client_burst = max(1, client_burst)
+        self.max_client_buckets = max(1, max_client_buckets)
         self._global_bucket: dict[str, float] = {"tokens": float(self.global_burst), "updated_at": now}
         self._client_buckets: dict[str, dict[str, float]] = {}
         self._lock = threading.Lock()
@@ -250,14 +253,16 @@ class _MCPRateLimiter:
         now = time.monotonic()
         with self._lock:
             self._refill(self._global_bucket, self.global_per_minute, self.global_burst, now)
-            client_bucket = self._client_buckets.setdefault(
-                client_id,
-                {"tokens": float(self.client_burst), "updated_at": now},
-            )
-            self._refill(client_bucket, self.client_per_minute, self.client_burst, now)
-            self._prune_clients(now)
             if self._global_bucket["tokens"] < 1.0:
                 return self._denied("MCP_GLOBAL_RATE_LIMITED", self._global_bucket, self.global_per_minute)
+            client_bucket = self._client_buckets.get(client_id)
+            if client_bucket is None:
+                self._prune_clients(now)
+                if len(self._client_buckets) >= self.max_client_buckets:
+                    return self._denied("MCP_CLIENT_BUCKET_LIMITED", self._global_bucket, self.global_per_minute)
+                client_bucket = {"tokens": float(self.client_burst), "updated_at": now}
+                self._client_buckets[client_id] = client_bucket
+            self._refill(client_bucket, self.client_per_minute, self.client_burst, now)
             if client_bucket["tokens"] < 1.0:
                 return self._denied("MCP_CLIENT_RATE_LIMITED", client_bucket, self.client_per_minute)
             self._global_bucket["tokens"] -= 1.0
@@ -280,11 +285,11 @@ class _MCPRateLimiter:
         }
 
     def _prune_clients(self, now: float) -> None:
-        if len(self._client_buckets) <= 4096:
+        if len(self._client_buckets) < self.max_client_buckets:
             return
         stale_before = now - 300.0
         stale = [key for key, bucket in self._client_buckets.items() if bucket.get("updated_at", now) < stale_before]
-        for key in stale[:1024]:
+        for key in stale[: max(1, self.max_client_buckets // 4)]:
             self._client_buckets.pop(key, None)
 
 
@@ -4248,8 +4253,21 @@ class MCPPlanningBridgeServer:
                 source_ip = "unknown"
                 if isinstance(self.client_address, tuple) and self.client_address:
                     source_ip = str(self.client_address[0] or "unknown")
-                safe_path = path[:128] if isinstance(path, str) else ""
-                return f"anon:{source_ip}:{method}:{safe_path}"
+                if path == "/mcp":
+                    path_bucket = "mcp"
+                elif path in {
+                    "/healthz",
+                    "/.well-known/oauth-protected-resource",
+                    "/.well-known/oauth-authorization-server",
+                    "/authorize",
+                    "/register",
+                    "/token",
+                    "/revoke",
+                }:
+                    path_bucket = path
+                else:
+                    path_bucket = "other"
+                return f"anon:{source_ip}:{method}:{path_bucket}"
 
             def _prepare_request(self, method: str, path: str) -> bool:
                 self._debug_start = time.time()

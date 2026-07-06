@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
-from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES
+from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES, _MCPRateLimiter
 from runner.project_registry import ProjectRegistry
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -140,6 +140,40 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
 
         assert unsupported["ok"] is False
         assert unsupported["error_code"] == "TOOL_POLICY_DENIED"
+
+    def test_rate_limiter_rejects_global_overflow_without_creating_client_buckets(self) -> None:
+        limiter = _MCPRateLimiter(
+            global_per_minute=1,
+            global_burst=1,
+            client_per_minute=1000,
+            client_burst=1000,
+            max_client_buckets=16,
+        )
+
+        assert limiter.check("bearer:first")["ok"] is True
+        for index in range(100):
+            result = limiter.check(f"bearer:random-{index}")
+            assert result["ok"] is False
+            assert result["reason_code"] == "MCP_GLOBAL_RATE_LIMITED"
+
+        assert list(limiter._client_buckets) == ["bearer:first"]
+
+    def test_rate_limiter_has_hard_client_bucket_cap(self) -> None:
+        limiter = _MCPRateLimiter(
+            global_per_minute=1000,
+            global_burst=1000,
+            client_per_minute=1000,
+            client_burst=1000,
+            max_client_buckets=2,
+        )
+
+        assert limiter.check("bearer:first")["ok"] is True
+        assert limiter.check("bearer:second")["ok"] is True
+        result = limiter.check("bearer:third")
+
+        assert result["ok"] is False
+        assert result["reason_code"] == "MCP_CLIENT_BUCKET_LIMITED"
+        assert sorted(limiter._client_buckets) == ["bearer:first", "bearer:second"]
 
     def test_connector_runtime_local_service_evidence_uses_web_api_healthz(self) -> None:
         project = self.make_git_checkout(managed=True)
