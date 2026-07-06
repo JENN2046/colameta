@@ -26,7 +26,12 @@ def _key_and_jwks() -> tuple[object, dict[str, object]]:
     return private_key, {"keys": [jwk]}
 
 
-def _provider(monkeypatch, *, audience: str | None = AUDIENCE) -> tuple[ExternalOAuthProvider, object]:
+def _provider(
+    monkeypatch,
+    *,
+    audience: str | None = AUDIENCE,
+    scopes: tuple[str, ...] = ("mcp:read", "mcp:preview", "mcp:commit", "mcp:plan"),
+) -> tuple[ExternalOAuthProvider, object]:
     private_key, jwks = _key_and_jwks()
     monkeypatch.setattr(PyJWKClient, "fetch_data", lambda self: jwks)
     provider = ExternalOAuthProvider(
@@ -35,6 +40,7 @@ def _provider(monkeypatch, *, audience: str | None = AUDIENCE) -> tuple[External
             issuer=ISSUER,
             jwks_url=JWKS_URL,
             audience=audience,
+            scopes=scopes,
             token_leeway_seconds=0,
         )
     )
@@ -110,6 +116,19 @@ def test_external_oauth_scope_claim_variants(monkeypatch) -> None:
     assert provider.validate_scope(payload, "mcp:read") is True
     assert provider.validate_scope(payload, "mcp:commit") is True
     assert provider.validate_scope(payload, "mcp:plan") is False
+
+
+def test_external_oauth_configured_scopes_are_server_side_allowlist(monkeypatch) -> None:
+    provider, private_key = _provider(monkeypatch, scopes=("mcp:read", "mcp:preview"))
+
+    payload = provider.validate_token(
+        _token(private_key, _remove=("scope",), scp=["mcp:read"], permissions=["mcp:commit"])
+    )
+
+    assert payload is not None
+    assert provider.validate_scope(payload, "mcp:read") is True
+    assert provider.validate_scope(payload, "mcp:commit") is False
+    assert provider.protected_resource_metadata()["scopes_supported"] == ["mcp:read", "mcp:preview"]
 
 
 def test_external_oauth_protected_resource_metadata_points_to_external_issuer(monkeypatch) -> None:

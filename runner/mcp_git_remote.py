@@ -19,6 +19,10 @@ class MCPGitRemoteManager:
     _PREVIEW_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
     _REMOTE_URL_CREDENTIALS_PATTERN = re.compile(r"(?i)^(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+@)(?P<rest>.+)$")
     _REMOTE_URL_AUTH_PATTERN = re.compile(r"(?i)^(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+:[^/@\s]*@)(?P<rest>.+)$")
+    _PUSH_ALLOWED_REMOTE_NAMES = frozenset({"origin"})
+    _PUSH_ALLOWED_BRANCH_PREFIXES = ("codex/",)
+    _PUSH_DENIED_BRANCH_NAMES = frozenset({"main", "master", "production"})
+    _PUSH_DENIED_BRANCH_PREFIXES = ("release/", "v")
 
     def __init__(self, project_root: str):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
@@ -938,6 +942,11 @@ class MCPGitRemoteManager:
                 blockers.append("upstream_missing")
         if state.get("upstream") and not state.get("remote_url_redacted"):
             blockers.append("remote_url_missing")
+        if state.get("remote_name") and state.get("remote_name") not in self._PUSH_ALLOWED_REMOTE_NAMES:
+            blockers.append("remote_not_allowed")
+        branch_blocker = self._push_branch_policy_blocker(state.get("branch"))
+        if branch_blocker:
+            blockers.append(branch_blocker)
         behind = state.get("behind")
         if isinstance(behind, int) and behind > 0:
             blockers.append("branch_behind_upstream")
@@ -1058,6 +1067,25 @@ class MCPGitRemoteManager:
                 preview=preview,
                 state=state,
             )
+        if remote_name not in self._PUSH_ALLOWED_REMOTE_NAMES:
+            return self._push_error(
+                action="push_apply",
+                error_code="REMOTE_NOT_ALLOWED",
+                message="当前 remote 不在受控 push allowlist 中。",
+                preview_id=preview.get("preview_id"),
+                preview=preview,
+                state=state,
+            )
+        branch_blocker = self._push_branch_policy_blocker(branch)
+        if branch_blocker:
+            return self._push_error(
+                action="push_apply",
+                error_code=branch_blocker.upper(),
+                message=self._blocker_message(branch_blocker),
+                preview_id=preview.get("preview_id"),
+                preview=preview,
+                state=state,
+            )
         remote_branch_exists = self._remote_branch_exists(remote_name, branch)
         if remote_branch_exists is None:
             return self._push_error(
@@ -1124,6 +1152,25 @@ class MCPGitRemoteManager:
                 action="push_apply",
                 error_code="WORKING_TREE_DIRTY",
                 message="工作区已变脏，请重新预览。",
+                preview_id=preview.get("preview_id"),
+                preview=preview,
+                state=state,
+            )
+        if state.get("remote_name") not in self._PUSH_ALLOWED_REMOTE_NAMES:
+            return self._push_error(
+                action="push_apply",
+                error_code="REMOTE_NOT_ALLOWED",
+                message="当前 remote 不在受控 push allowlist 中。",
+                preview_id=preview.get("preview_id"),
+                preview=preview,
+                state=state,
+            )
+        branch_blocker = self._push_branch_policy_blocker(current_branch)
+        if branch_blocker:
+            return self._push_error(
+                action="push_apply",
+                error_code=branch_blocker.upper(),
+                message=self._blocker_message(branch_blocker),
                 preview_id=preview.get("preview_id"),
                 preview=preview,
                 state=state,
@@ -1581,6 +1628,18 @@ class MCPGitRemoteManager:
         except ValueError:
             return None
 
+    def _push_branch_policy_blocker(self, branch: Any) -> str | None:
+        if not isinstance(branch, str) or not branch.strip() or branch == "HEAD":
+            return None
+        normalized = branch.strip()
+        if normalized in self._PUSH_DENIED_BRANCH_NAMES:
+            return "protected_branch"
+        if any(normalized.startswith(prefix) for prefix in self._PUSH_DENIED_BRANCH_PREFIXES):
+            return "protected_branch"
+        if not any(normalized.startswith(prefix) for prefix in self._PUSH_ALLOWED_BRANCH_PREFIXES):
+            return "branch_not_allowed"
+        return None
+
     def _shorten(self, text: str, max_len: int = 300) -> str:
         if len(text) <= max_len:
             return text
@@ -1823,6 +1882,9 @@ class MCPGitRemoteManager:
             "first_push_remote_branch_exists": "远端同名分支已存在，当前工具不会自动关联以避免错误覆盖。",
             "upstream_invalid": "当前 upstream 不能作为受控 remote 目标。",
             "remote_url_missing": "upstream 的 remote URL 无法读取。",
+            "remote_not_allowed": "当前 remote 不在受控 push allowlist 中。",
+            "protected_branch": "当前分支受保护，远端 push 被禁止。",
+            "branch_not_allowed": "当前分支不匹配受控 push 分支 allowlist。",
             "branch_behind_upstream": "当前分支落后于 upstream。",
             "nothing_to_push": "没有可推送的提交。",
             "diverged_from_upstream": "当前分支与 upstream 已分叉。",

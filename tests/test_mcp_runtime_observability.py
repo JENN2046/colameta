@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES, _MCPRateLimiter
 from runner.project_registry import ProjectRegistry
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -21,6 +21,11 @@ from runner.runtime_observability import (
 
 
 HEAD_A = "a" * 40
+
+
+class _PermissiveOAuthProvider:
+    def validate_scope(self, token_payload: dict, required_scope: str) -> bool:
+        return True
 
 
 class MCPRuntimeObservabilityTests(unittest.TestCase):
@@ -57,6 +62,118 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             last_selected=False,
         )
         assert registered["ok"] is True
+
+    def test_all_exposed_tools_have_policy_registry_entries(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        missing = sorted(set(server.tools) - set(MCP_TOOL_POLICIES))
+
+        assert missing == []
+
+    def test_unknown_tool_action_fails_closed_before_handler(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent("manage_git_remote", {"action": "push_apply_typo"})
+
+        assert result["ok"] is False
+        assert result["error_code"] == "TOOL_POLICY_DENIED"
+        assert result["details"]["policy"] == "mcp_tool_registry_fail_closed"
+
+    def test_run_mcp_workflow_policy_matrix_covers_supported_workflow_phases(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        expected_scopes = {
+            ("auto_preview", "preview"): "mcp:preview",
+            ("project_status", "inspect"): "mcp:read",
+            ("source_onboarding", "preview"): "mcp:preview",
+            ("plan_update", "preview"): "mcp:preview",
+            ("plan_update", "apply"): "mcp:commit",
+            ("small_project_patch", "status"): "mcp:read",
+            ("small_project_patch", "preview"): "mcp:preview",
+            ("small_project_patch", "apply"): "mcp:commit",
+            ("docs_update", "inspect"): "mcp:read",
+            ("docs_update", "preview"): "mcp:preview",
+            ("docs_update", "apply"): "mcp:commit",
+            ("git_commit", "status"): "mcp:read",
+            ("git_commit", "preview"): "mcp:preview",
+            ("git_commit", "commit"): "mcp:commit",
+            ("git_restore_file", "preview"): "mcp:preview",
+            ("git_restore_file", "apply"): "mcp:commit",
+            ("git_revert", "preview"): "mcp:preview",
+            ("git_revert", "apply"): "mcp:commit",
+            ("git_undo_version", "inspect"): "mcp:read",
+            ("git_undo_version", "preview"): "mcp:preview",
+            ("git_undo_version", "apply"): "mcp:commit",
+            ("agent_dispatch", "status"): "mcp:read",
+            ("agent_dispatch", "run_preview"): "mcp:preview",
+            ("agent_dispatch", "run"): "mcp:commit",
+            ("prompt_to_plan", "preview"): "mcp:preview",
+            ("prompt_to_plan", "plan_preview"): "mcp:preview",
+            ("prompt_to_plan", "run_preview"): "mcp:preview",
+            ("prompt_to_plan", "apply"): "mcp:commit",
+            ("prompt_to_plan", "plan_apply"): "mcp:commit",
+            ("prompt_to_plan", "apply_all"): "mcp:commit",
+            ("prompt_to_plan", "run"): "mcp:commit",
+            ("thin_governed_loop_preview", "preview"): "mcp:read",
+        }
+        tool_def = next(tool for tool in server.tool_defs if tool.name == "run_mcp_workflow")
+        declared_workflows = set(tool_def.input_schema["properties"]["workflow"]["enum"])
+        covered_workflows = {workflow for workflow, _phase in expected_scopes}
+
+        assert declared_workflows == covered_workflows
+
+        for (workflow, phase), expected_scope in expected_scopes.items():
+            assert (
+                server.get_required_scope_for_tool(
+                    "run_mcp_workflow",
+                    {"workflow": workflow, "phase": phase},
+                )
+                == expected_scope
+            )
+
+        unsupported = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {"workflow": "prompt_to_plan", "phase": "inspect"},
+        )
+
+        assert unsupported["ok"] is False
+        assert unsupported["error_code"] == "TOOL_POLICY_DENIED"
+
+    def test_rate_limiter_rejects_global_overflow_without_creating_client_buckets(self) -> None:
+        limiter = _MCPRateLimiter(
+            global_per_minute=1,
+            global_burst=1,
+            client_per_minute=1000,
+            client_burst=1000,
+            max_client_buckets=16,
+        )
+
+        assert limiter.check("bearer:first")["ok"] is True
+        for index in range(100):
+            result = limiter.check(f"bearer:random-{index}")
+            assert result["ok"] is False
+            assert result["reason_code"] == "MCP_GLOBAL_RATE_LIMITED"
+
+        assert list(limiter._client_buckets) == ["bearer:first"]
+
+    def test_rate_limiter_has_hard_client_bucket_cap(self) -> None:
+        limiter = _MCPRateLimiter(
+            global_per_minute=1000,
+            global_burst=1000,
+            client_per_minute=1000,
+            client_burst=1000,
+            max_client_buckets=2,
+        )
+
+        assert limiter.check("bearer:first")["ok"] is True
+        assert limiter.check("bearer:second")["ok"] is True
+        result = limiter.check("bearer:third")
+
+        assert result["ok"] is False
+        assert result["reason_code"] == "MCP_CLIENT_BUCKET_LIMITED"
+        assert sorted(limiter._client_buckets) == ["bearer:first", "bearer:second"]
 
     def test_connector_runtime_local_service_evidence_uses_web_api_healthz(self) -> None:
         project = self.make_git_checkout(managed=True)
@@ -1562,6 +1679,157 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "demo-project" not in response.message
         assert isinstance(response.data, dict)
         assert "available_project_names" not in response.data
+
+    def external_oauth_context(self) -> dict:
+        return {"mode": "external-oauth", "token": {}, "oauth_provider": _PermissiveOAuthProvider()}
+
+    def test_external_oauth_remote_policy_denies_git_remote_push_apply(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_git_remote",
+            {"project_name": "demo-project", "action": "push_apply", "preview_id": "preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["policy"] == "remote_public"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_executor_and_validation_runs(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        executor_result = server.call_tool_for_agent(
+            "manage_executor_workflow",
+            {"project_name": "demo-project", "action": "run_once", "preview_id": "exec-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+        validation_result = server.call_tool_for_agent(
+            "manage_validation_run",
+            {"project_name": "demo-project", "action": "run", "preview_id": "validation-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert executor_result["ok"] is False
+        assert executor_result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert executor_result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+        assert validation_result["ok"] is False
+        assert validation_result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert validation_result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_plan_scope(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_runner_plan",
+            {"action": "apply", "preview_id": "plan-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:plan"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_PLAN_DENIED"
+
+    def test_external_oauth_remote_policy_denies_all_commit_scope_tools(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_project_docs",
+            {"project_name": "demo-project", "action": "apply", "preview_id": "doc-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["policy"] == "remote_public"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_durable_project_memory_mutations_require_commit_scope(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        cases = [
+            ("manage_project_memory", {"action": "add"}),
+            ("manage_project_memory", {"action": "update"}),
+            ("manage_project_memory", {"action": "delete"}),
+            ("manage_runner_record", {"action": "add"}),
+            ("manage_runner_record", {"action": "update"}),
+            ("manage_runner_record", {"action": "delete"}),
+            ("todo_add", {}),
+            ("todo_update", {}),
+            ("todo_delete", {}),
+            ("decision_add", {}),
+            ("decision_update", {}),
+            ("decision_delete", {}),
+        ]
+
+        for tool_name, params in cases:
+            assert server.get_required_scope_for_tool(tool_name, params) == "mcp:commit"
+
+    def test_external_oauth_remote_policy_denies_preview_badged_durable_memory_writes(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        calls = [
+            ("manage_project_memory", {"project_name": "demo-project", "action": "add", "content": "remote write"}),
+            ("manage_runner_record", {"project_name": "demo-project", "action": "delete", "id": "rec-1"}),
+            ("todo_add", {"project_name": "demo-project", "content": "remote todo"}),
+            ("decision_update", {"project_name": "demo-project", "id": "decision-1", "decision": "remote decision"}),
+        ]
+
+        for tool_name, params in calls:
+            result = server.call_tool_for_agent(
+                tool_name,
+                params,
+                auth_context=self.external_oauth_context(),
+            )
+
+            assert result["ok"] is False
+            assert result["error_code"] == "REMOTE_POLICY_DENIED"
+            assert result["details"]["policy"] == "remote_public"
+            assert result["details"]["required_scope"] == "mcp:commit"
+            assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_run_mcp_workflow_plan_update_apply(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {"project_name": "demo-project", "workflow": "plan_update", "phase": "apply"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_docs_update_apply_with_conflicting_preview_phase(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "project_name": "demo-project",
+                "workflow": "docs_update",
+                "docs_action": "apply",
+                "phase": "preview",
+                "preview_id": "doc-preview-1",
+            },
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
 
 
 if __name__ == "__main__":

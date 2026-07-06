@@ -31,9 +31,15 @@ colameta = "scripts.runner_cli:main"
 
 [project.optional-dependencies]
 test = [
-    "pytest>=8,<9",
+    "pytest>=9.0.3,<10",
     "setuptools>=68",
     "wheel>=0.43",
+]
+quality = [
+    "bandit[toml]>=1.7,<2",
+    "pip-audit>=2.7,<3",
+    "pytest-cov>=5,<7",
+    "ruff>=0.8,<1",
 ]
 
 [tool.setuptools.packages.find]
@@ -41,3 +47,14 @@ include = ["runner", "runner.*", "adapters", "adapters.*", "schemas", "schemas.*
 
 [tool.setuptools.package-data]
 runner = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [".venv", "build", "dist", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "build", "dist"]

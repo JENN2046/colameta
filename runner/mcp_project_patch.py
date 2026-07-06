@@ -9,6 +9,7 @@ from runner.preview_artifact import PreviewArtifact
 from runner.current_version import load_current_version
 from runner.diff_utils import diff_hash, synthetic_unified_diff, truncate_text
 from runner.evidence_builder import build_post_executor_patch_evidence
+from runner.file_transaction import FileTransaction, FileTransactionError
 from runner.file_signature import signatures_equal, text_signature
 from runner.manual_acceptance import detect_manual_acceptance
 from runner.param_utils import bounded_int
@@ -418,6 +419,7 @@ class MCPProjectPatchManager:
                 return error_result("BASE_CHANGED", f"文件已变化：{file_path}")
 
         files = preview_data.get("files", [])
+        transaction = FileTransaction(self.project_root, label="manage_project_patch.apply")
 
         if mode == "exact_replace":
             specs = preview_data.get("exact_specs", [])
@@ -427,27 +429,33 @@ class MCPProjectPatchManager:
                 new_text = spec.get("new_text", "")
                 abs_path = Path(self.project_root) / file_path
                 if old_text == "":
-                    abs_path.parent.mkdir(parents=True, exist_ok=True)
-                    abs_path.write_text(new_text, encoding="utf-8")
+                    transaction.write_text(file_path, new_text)
                 else:
                     content = _read_text_file(abs_path)
                     new_content = content.replace(old_text, new_text, 1)
-                    abs_path.write_text(new_content, encoding="utf-8")
+                    transaction.write_text(file_path, new_content)
 
         elif mode == "unified_diff":
             patch_text = preview_data.get("patch_text", "")
-            result = self._apply_unified_diff_text(patch_text, files)
+            result = self._apply_unified_diff_text(patch_text, files, transaction)
             if isinstance(result, dict):
                 return result
 
         elif mode == "delete_file":
             for file_path in delete_file_set:
-                abs_path = Path(self.project_root) / file_path
-                if abs_path.exists():
-                    abs_path.unlink()
+                transaction.delete_file(file_path)
 
         else:
             return error_result("UNKNOWN_MODE", f"未知 preview 模式：{mode}")
+
+        try:
+            transaction_receipt = transaction.commit()
+        except FileTransactionError as exc:
+            return error_result(
+                "PATCH_TRANSACTION_FAILED",
+                str(exc),
+                transaction_receipt=exc.receipt,
+            )
 
         diff_text = _git_diff_for_files(self.project_root, files)
         if not diff_text:
@@ -496,6 +504,7 @@ class MCPProjectPatchManager:
             recommended_next_action="manage_git_commit.readiness",
             post_executor_patch_evidence=post_executor_patch_evidence,
             manual_acceptance_evidence=manual_acceptance,
+            transaction_receipt=transaction_receipt,
         )
 
     def status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -594,7 +603,12 @@ class MCPProjectPatchManager:
             path = path[2:]
         return path
 
-    def _apply_unified_diff_text(self, patch_text: str, expected_files: list[str]) -> None | dict:
+    def _apply_unified_diff_text(
+        self,
+        patch_text: str,
+        expected_files: list[str],
+        transaction: FileTransaction,
+    ) -> None | dict:
         sections = self._split_diff_by_file(patch_text)
         for file_path, file_diff in sections:
             if file_path not in expected_files:
@@ -619,9 +633,7 @@ class MCPProjectPatchManager:
             if isinstance(new_content, dict):
                 return new_content
 
-            if is_create:
-                abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_text(new_content, encoding="utf-8")
+            transaction.write_text(file_path, new_content)
 
         return None
 

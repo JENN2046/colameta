@@ -48,3 +48,46 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
+
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,quality]"
+
+      - name: Ruff static checks
+        run: python -m ruff check adapters runner schemas scripts tests
+
+      - name: Focused coverage gate
+        run: |
+          python -m pytest -q \
+            tests/test_mcp_external_oauth.py \
+            tests/test_mcp_git_remote_policy.py \
+            tests/test_mcp_project_patch_transaction.py \
+            tests/test_service_auth_baseline.py \
+            tests/test_shell_adapter.py \
+            --cov=runner.mcp_external_oauth \
+            --cov=runner.mcp_git_remote \
+            --cov=runner.mcp_project_patch \
+            --cov=runner.file_transaction \
+            --cov=adapters.shell_adapter \
+            --cov-report=term-missing \
+            --cov-fail-under=45
+
+      - name: High-confidence security scan
+        run: python -m bandit -q -r adapters runner scripts -x tests -lll --confidence-level high
+
+      - name: Dependency audit
+        run: python -m pip_audit --skip-editable --progress-spinner off

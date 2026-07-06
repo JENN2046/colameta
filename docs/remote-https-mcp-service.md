@@ -131,6 +131,11 @@ ColaMeta is only the MCP resource server:
 - `POST /mcp` requires `Authorization: Bearer <JWT>`;
 - ColaMeta verifies the JWT against the external IdP JWKS, issuer,
   audience/resource, expiration/not-before, algorithm, and tool scopes;
+- ColaMeta enforces the configured `--oauth-scopes` as the resource-server
+  allowlist, not only as metadata;
+- ColaMeta applies the `remote_public` tool policy after OAuth scope validation:
+  read/preview tools are allowed, while every `mcp:commit` and `mcp:plan`
+  action is denied before the tool handler runs;
 - ColaMeta does not serve `/authorize`, `/register`, `/token`, or `/revoke`.
 
 Example:
@@ -145,7 +150,7 @@ Example:
   --oauth-issuer https://YOUR_IDP_DOMAIN/ \
   --oauth-jwks-url https://YOUR_IDP_DOMAIN/.well-known/jwks.json \
   --oauth-audience https://colameta-mcp.skmt617.top/mcp \
-  --oauth-scopes mcp:read,mcp:preview,mcp:commit,mcp:plan
+  --oauth-scopes mcp:read,mcp:preview
 ```
 
 The issuer, JWKS URL, audience, scopes, algorithms, and leeway are not secrets.
@@ -159,6 +164,11 @@ flow, then set the connector URL to:
 ```text
 https://colameta-mcp.skmt617.top/mcp
 ```
+
+Do not grant `mcp:commit` or `mcp:plan` to public or default ChatGPT
+connectors. Enabling remote write/plan operations requires a separate trusted
+operator channel or local confirmation design; `external-oauth` public remote
+mode is intentionally read/preview only.
 
 The current `oauth` mode remains available for Jenn-only private operation and
 local bring-up. Do not treat it as the long-term public or multi-user auth

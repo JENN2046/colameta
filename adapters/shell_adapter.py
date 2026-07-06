@@ -1,5 +1,7 @@
 import subprocess
 import time
+import shlex
+import os
 from typing import Optional
 from dataclasses import dataclass
 
@@ -13,6 +15,30 @@ class ShellResult:
     duration_ms: int
 
 class ShellAdapter:
+    _SHELL_META_PATTERNS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
+    _ALLOWED_EXECUTABLES = frozenset(
+        {
+            "python",
+            "python3",
+            "pytest",
+            "git",
+            "make",
+            "tox",
+            "nox",
+            "ruff",
+            "mypy",
+            "pyright",
+            "node",
+            "npm",
+            "npx",
+            "pnpm",
+            "yarn",
+            "uv",
+            "go",
+            "cargo",
+        }
+    )
+
     def run(
         self,
         command: str,
@@ -25,10 +51,11 @@ class ShellAdapter:
         start_time = time.time()
         
         try:
+            argv = self._command_to_argv(command)
             result = subprocess.run(
-                command,
+                argv,
                 cwd=cwd,
-                shell=True,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
@@ -39,8 +66,8 @@ class ShellAdapter:
             stderr = result.stderr
         except subprocess.TimeoutExpired as e:
             exit_code = -1
-            stdout = e.stdout.decode('utf-8', errors='replace') if e.stdout else ""
-            stderr = f"Command timed out after {timeout_seconds} seconds.\n" + (e.stderr.decode('utf-8', errors='replace') if e.stderr else "")
+            stdout = self._output_to_text(e.stdout)
+            stderr = f"Command timed out after {timeout_seconds} seconds.\n" + self._output_to_text(e.stderr)
         except Exception as e:
             exit_code = -2
             stdout = ""
@@ -58,3 +85,23 @@ class ShellAdapter:
             completed_at=completed_at,
             duration_ms=duration_ms
         )
+
+    def _command_to_argv(self, command: str) -> list[str]:
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("Command must be a non-empty string.")
+        if any(pattern in command for pattern in self._SHELL_META_PATTERNS):
+            raise ValueError("Shell operators are not allowed in acceptance commands.")
+        argv = shlex.split(command, posix=True)
+        if not argv:
+            raise ValueError("Command must contain an executable.")
+        executable = os.path.basename(argv[0])
+        if executable not in self._ALLOWED_EXECUTABLES:
+            raise ValueError(f"Executable is not allowed for acceptance commands: {executable}")
+        return argv
+
+    def _output_to_text(self, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)

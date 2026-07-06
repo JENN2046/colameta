@@ -79,7 +79,7 @@ class ExternalOAuthProvider:
         return payload
 
     def validate_scope(self, token_payload: dict[str, Any], required_scope: str) -> bool:
-        return required_scope in _extract_scopes(token_payload)
+        return required_scope in self.scopes and required_scope in _extract_scopes(token_payload)
 
     def _accepts_audience_or_resource(self, payload: dict[str, Any]) -> bool:
         expected_audience = self.audience or self.resource
