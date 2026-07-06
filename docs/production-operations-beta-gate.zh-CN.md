@@ -49,6 +49,7 @@ backup sha256 unavailable
 backup archive unreadable
 rollback target commit unresolved
 connector smoke older than the configured freshness window
+remote HTTPS MCP preflight not run because --no-network was used
 ```
 
 只有所有运维检查 ready、fresh connector smoke ready，且 backup/rollback
@@ -72,6 +73,10 @@ CI/offline 形态检查：
   --no-network \
   --json
 ```
+
+`--no-network` 只验证 URL / endpoint 形态，不访问公网 HTTPS MCP。它会让
+`remote_https_mcp_preflight` 返回 `REMOTE_PREFLIGHT_NOT_RUN`，因此不能满足
+`ops_check_ready=true` 或 `beta_gate_ready=true`。
 
 写入本地脱敏状态：
 

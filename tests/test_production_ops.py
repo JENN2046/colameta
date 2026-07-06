@@ -23,11 +23,13 @@ class FakeCommandRunner:
         *,
         head: str = HEAD,
         systemd_active: bool = True,
+        systemd_output: str | None = None,
         curl_ok: bool = True,
         cat_file_ok: bool = True,
     ) -> None:
         self.head = head
         self.systemd_active = systemd_active
+        self.systemd_output = systemd_output
         self.curl_ok = curl_ok
         self.cat_file_ok = cat_file_ok
         self.calls: list[list[str]] = []
@@ -41,20 +43,23 @@ class FakeCommandRunner:
         if args[:2] == ["git", "-C"] and args[-3:-1] == ["cat-file", "-e"]:
             return completed(args, "", 0 if self.cat_file_ok else 1)
         if args[:3] == ["systemctl", "--user", "show"]:
+            if self.systemd_output is not None:
+                return completed(args, self.systemd_output)
             if self.systemd_active:
-                return completed(args, "123\nactive\nrunning\n")
-            return completed(args, "0\ninactive\ndead\n")
+                return completed(args, "MainPID=123\nActiveState=active\nSubState=running\n")
+            return completed(args, "MainPID=0\nActiveState=inactive\nSubState=dead\n")
         if args[:2] == ["curl", "-fsS"]:
             return completed(args, "200" if self.curl_ok else "", 0 if self.curl_ok else 22)
         return completed(args, "")
 
 
-def ready_preflight(public_base_url: str, **_: object) -> dict[str, object]:
+def ready_preflight(public_base_url: str, **kwargs: object) -> dict[str, object]:
+    no_network = bool(kwargs.get("no_network"))
     return {
         "ok": True,
         "public_base_url": public_base_url,
         "connector_url": f"{public_base_url}/mcp",
-        "network_check": "not_run",
+        "network_check": "not_run" if no_network else "run",
         "failures": [],
     }
 
@@ -97,7 +102,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(self.backups),
-            no_network=True,
             connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
             command_runner=FakeCommandRunner(),
             preflight_runner=ready_preflight,
@@ -108,8 +112,50 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["ops_check_ready"] is True
         assert packet["connector_smoke_ready"] is True
         assert packet["beta_gate_ready"] is True
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_READY"
+        assert packet["checks"]["remote_https_mcp_preflight"]["network_check"] == "run"
         assert packet["checks"]["backup_inventory"]["backup_sha256"]
         assert packet["checks"]["rollback_rehearsal"]["rehearsal_executed_restore"] is False
+
+    def test_no_network_preflight_needs_attention_and_cannot_set_beta_gate_ready(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            no_network=True,
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["status"] == "needs_attention"
+        assert packet["ops_check_ready"] is False
+        assert packet["connector_smoke_ready"] is True
+        assert packet["beta_gate_ready"] is False
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
+        assert "REMOTE_PREFLIGHT_NOT_RUN" in packet["needs_attention_codes"]
+
+    def test_systemd_keyed_output_is_order_independent(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(systemd_output="SubState=running\nMainPID=123\nActiveState=active\n"),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["status"] == "ready"
+        assert packet["checks"]["stable_service"]["status"] == "ready"
+        assert packet["checks"]["stable_service"]["main_pid"] == "123"
 
     def test_stable_inactive_is_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet
@@ -119,7 +165,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(self.backups),
-            no_network=True,
             connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
             command_runner=FakeCommandRunner(systemd_active=False),
             preflight_runner=ready_preflight,
@@ -155,7 +200,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(self.backups),
-            no_network=True,
             command_runner=FakeCommandRunner(),
             preflight_runner=ready_preflight,
             now=NOW,
@@ -175,7 +219,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(self.backups),
-            no_network=True,
             connector_smoke={"status": "ready", "last_observed_at": "2026-07-05T00:00:00Z"},
             command_runner=FakeCommandRunner(),
             preflight_runner=ready_preflight,
@@ -183,6 +226,25 @@ class ProductionOpsTests(unittest.TestCase):
         )
 
         assert packet["status"] == "needs_attention"
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_STALE"
+
+    def test_future_connector_smoke_needs_attention(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:01:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["status"] == "needs_attention"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["beta_gate_ready"] is False
         assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_STALE"
 
     def test_backup_missing_needs_attention(self) -> None:
@@ -195,7 +257,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(empty_backups),
-            no_network=True,
             connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
             command_runner=FakeCommandRunner(),
             preflight_runner=ready_preflight,
@@ -213,7 +274,6 @@ class ProductionOpsTests(unittest.TestCase):
             expected_head=HEAD,
             stable_runtime_dir=str(self.stable),
             backup_dir=str(self.backups),
-            no_network=True,
             connector_smoke={
                 "status": "ready",
                 "last_observed_at": "2026-07-07T00:00:00Z",

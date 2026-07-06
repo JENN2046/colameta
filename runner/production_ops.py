@@ -212,12 +212,12 @@ def _systemd_service_check(
     command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
 ) -> dict[str, Any]:
     result = command_runner(
-        ["systemctl", "--user", "show", service_name, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "--value"]
+        ["systemctl", "--user", "show", service_name, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"]
     )
-    values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    pid = values[0] if len(values) >= 1 else None
-    active = values[1] if len(values) >= 2 else None
-    sub = values[2] if len(values) >= 3 else None
+    properties = _parse_systemd_properties(result.stdout)
+    pid = properties.get("MainPID")
+    active = properties.get("ActiveState")
+    sub = properties.get("SubState")
     if result.returncode != 0 or active != "active" or sub != "running":
         return _check(
             BLOCKED,
@@ -270,9 +270,18 @@ def _remote_preflight_check(
         return _check(BLOCKED, "REMOTE_PREFLIGHT_ERROR", "Remote HTTPS MCP preflight raised an error.", error=str(exc))
     failures = report.get("failures") if isinstance(report, dict) else None
     if isinstance(report, dict) and report.get("ok") is True:
+        if no_network:
+            return _check(
+                NEEDS_ATTENTION,
+                "REMOTE_PREFLIGHT_NOT_RUN",
+                "Remote HTTPS MCP preflight was not run; offline shape check does not satisfy Beta Gate.",
+                network_check=report.get("network_check"),
+                connector_url=report.get("connector_url"),
+                failures=failures or [],
+            )
         return _check(
             READY,
-            "REMOTE_PREFLIGHT_READY" if not no_network else "REMOTE_PREFLIGHT_SHAPE_READY",
+            "REMOTE_PREFLIGHT_READY",
             "Remote HTTPS MCP preflight passed.",
             network_check=report.get("network_check"),
             connector_url=report.get("connector_url"),
@@ -462,7 +471,21 @@ def _is_fresh_iso8601(value: str, *, fresh_hours: int, now: datetime | None) -> 
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
+    if observed > reference:
+        return False
     return reference - observed <= timedelta(hours=max(0, fresh_hours))
+
+
+def _parse_systemd_properties(output: str) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            properties[key] = value.strip()
+    return properties
 
 
 def _iso_now(now: datetime | None) -> str:
