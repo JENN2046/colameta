@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 HEAD = "a" * 40
@@ -138,6 +139,53 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["beta_gate_ready"] is False
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
         assert "REMOTE_PREFLIGHT_NOT_RUN" in packet["needs_attention_codes"]
+
+    def test_loopback_http_no_network_preflight_uses_local_http_allowance(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="http://127.0.0.1:8766",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            no_network=True,
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            now=NOW,
+        )
+
+        assert packet["public_base_url"] == "http://127.0.0.1:8766"
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
+        assert packet["status"] == "needs_attention"
+
+    def test_remote_preflight_runner_receives_loopback_http_allowance(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        observed: dict[str, object] = {}
+
+        def capturing_preflight(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            observed["public_base_url"] = public_base_url
+            observed.update(kwargs)
+            return ready_preflight(public_base_url, **kwargs)
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="http://localhost:8766/",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            no_network=True,
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=capturing_preflight,
+            now=NOW,
+        )
+
+        assert observed["public_base_url"] == "http://localhost:8766"
+        assert observed["allow_local_http"] is True
+        assert observed["no_network"] is True
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
 
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet
@@ -287,6 +335,70 @@ class ProductionOpsTests(unittest.TestCase):
         serialized = json.dumps(packet)
         assert "sk-not-a-real-token-value" not in serialized
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_secret_bearing_public_base_url_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_PUBLIC_BASE_URL, build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not receive rejected URL: {public_base_url} {kwargs}")
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="https://user:sk-not-a-real-token-value@example.com",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=fail_if_called,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert "sk-not-a-real-token-value" not in serialized
+        assert "user:" not in serialized
+        assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
+        assert packet["status"] == "blocked"
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_local_health_probe_curl_is_timeout_bounded(self) -> None:
+        from runner.production_ops import LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS, build_production_ops_packet
+
+        runner = FakeCommandRunner()
+        build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=runner,
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        curl_calls = [call for call in runner.calls if call[:1] == ["curl"]]
+        assert len(curl_calls) == 2
+        for call in curl_calls:
+            assert "--connect-timeout" in call
+            assert "--max-time" in call
+            assert call[call.index("--max-time") + 1] == str(int(LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS))
+
+    def test_default_command_runner_times_out_curl_processes(self) -> None:
+        from runner import production_ops
+
+        captured: dict[str, object] = {}
+
+        def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured["args"] = args
+            captured["timeout"] = kwargs.get("timeout")
+            return completed(args, "200")
+
+        with patch.object(production_ops.subprocess, "run", side_effect=fake_run):
+            result = production_ops._run_command(["curl", "-fsS", "http://127.0.0.1:8766/healthz"])
+
+        assert result.returncode == 0
+        assert captured["timeout"] == production_ops.LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS + 1.0
 
     def test_status_write_path_rejects_repo_path(self) -> None:
         from runner.production_ops import validate_status_write_path
