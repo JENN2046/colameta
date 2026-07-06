@@ -23,6 +23,7 @@ DEFAULT_BACKUP_DIR = "/home/jenn/tools/colameta-stable-backups"
 LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
+REDACTED_CONNECTOR_SMOKE_VALUE = "<redacted-connector-smoke-value>"
 
 BLOCKED = "blocked"
 NEEDS_ATTENTION = "needs_attention"
@@ -362,11 +363,28 @@ def _connector_smoke_check(
         return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_MISSING", "Fresh ChatGPT connector smoke evidence was not provided.")
     status = connector_smoke.get("status") or connector_smoke.get("apps_connector_closeout_status")
     observed = connector_smoke.get("last_observed_at") or connector_smoke.get("observed_at")
+    safe_status, status_redacted = _redact_connector_smoke_field(status)
+    safe_observed, observed_redacted = _redact_connector_smoke_field(observed)
+    if status_redacted or observed_redacted:
+        return _check(
+            BLOCKED,
+            "CONNECTOR_SMOKE_REJECTED",
+            "Connector smoke evidence was rejected before status emission.",
+            connector_status=safe_status,
+            last_observed_at=safe_observed,
+            redacted=True,
+        )
     if status != "ready":
         return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_NOT_READY", "ChatGPT connector smoke evidence is not ready.", connector_status=status, last_observed_at=observed)
     if not _is_fresh_iso8601(str(observed or ""), fresh_hours=fresh_hours, now=now):
         return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_STALE", "ChatGPT connector smoke evidence is stale.", connector_status=status, last_observed_at=observed)
     return _check(READY, "CONNECTOR_SMOKE_READY", "Fresh ChatGPT connector smoke evidence is ready.", connector_status=status, last_observed_at=observed)
+
+
+def _redact_connector_smoke_field(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str) and _contains_sensitive_text(value):
+        return REDACTED_CONNECTOR_SMOKE_VALUE, True
+    return value, False
 
 
 def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, Any] | None]:

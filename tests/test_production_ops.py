@@ -362,6 +362,56 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
 
+    def test_secret_bearing_connector_smoke_observed_at_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={
+                "status": "ready",
+                "last_observed_at": "sk-not-a-real-token-value",
+            },
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert "sk-not-a-real-token-value" not in serialized
+        assert packet["status"] == "blocked"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_REJECTED"
+        assert packet["checks"]["connector_smoke"]["last_observed_at"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_secret_bearing_connector_smoke_status_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={
+                "status": "password=not-a-real-secret",
+                "last_observed_at": "2026-07-07T00:00:00Z",
+            },
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert "password=not-a-real-secret" not in serialized
+        assert packet["status"] == "blocked"
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_REJECTED"
+        assert packet["checks"]["connector_smoke"]["connector_status"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["connector_smoke"]["last_observed_at"] == "2026-07-07T00:00:00Z"
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
     def test_local_health_probe_curl_is_timeout_bounded(self) -> None:
         from runner.production_ops import LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS, build_production_ops_packet
 
