@@ -29,6 +29,13 @@ from runner.runner_paths import (
     resolve_project_runner_plan_path,
     resolve_project_runner_rel_dir,
 )
+from runner.production_ops import (
+    DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
+    DEFAULT_PUBLIC_BASE_URL,
+    build_production_ops_packet,
+    validate_status_write_path,
+    write_status_packet,
+)
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -1935,6 +1942,182 @@ def _run_service_status(args: list[str]) -> int:
         control_plane=control_plane,
         json_output=json_output,
     )
+    return 0
+
+
+def _parse_ops_check_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    public_base_url = DEFAULT_PUBLIC_BASE_URL
+    json_output = False
+    no_network = False
+    fail_on_not_ready = False
+    write_status: str | None = None
+    expected_head: str | None = None
+    connector_status: str | None = None
+    connector_observed_at: str | None = None
+    connector_smoke_fresh_hours = DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS
+
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            json_output = True
+        elif token == "--no-network":
+            no_network = True
+        elif token == "--fail-on-not-ready":
+            fail_on_not_ready = True
+        elif token == "--public-base-url":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--public-base-url 缺少值。", file=sys.stderr)
+                return None
+            public_base_url = args[idx + 1]
+            idx += 1
+        elif token == "--write-status":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--write-status 缺少值。", file=sys.stderr)
+                return None
+            write_status = args[idx + 1]
+            idx += 1
+        elif token == "--expected-head":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--expected-head 缺少值。", file=sys.stderr)
+                return None
+            expected_head = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-status":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--connector-smoke-status 缺少值。", file=sys.stderr)
+                return None
+            connector_status = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-observed-at":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--connector-smoke-observed-at 缺少值。", file=sys.stderr)
+                return None
+            connector_observed_at = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-fresh-hours":
+            if idx + 1 >= len(args):
+                print("ops-check 参数错误：--connector-smoke-fresh-hours 缺少值。", file=sys.stderr)
+                return None
+            try:
+                connector_smoke_fresh_hours = int(args[idx + 1])
+            except ValueError:
+                print("ops-check 参数错误：--connector-smoke-fresh-hours 必须是整数。", file=sys.stderr)
+                return None
+            if connector_smoke_fresh_hours < 1 or connector_smoke_fresh_hours > 24:
+                print("ops-check 参数错误：--connector-smoke-fresh-hours 必须在 1..24 范围内。", file=sys.stderr)
+                return None
+            idx += 1
+        elif token.startswith("-"):
+            print(f"ops-check 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"ops-check 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"ops-check 参数错误：项目目录不存在：{project_path}", file=sys.stderr)
+        return None
+    if public_base_url.startswith("http://") and not _is_local_http_url(public_base_url):
+        print("ops-check 参数错误：--public-base-url 必须是 HTTPS；http:// 仅允许 localhost/loopback。", file=sys.stderr)
+        return None
+    if not (public_base_url.startswith("https://") or _is_local_http_url(public_base_url)):
+        print("ops-check 参数错误：--public-base-url 必须是 HTTPS URL。", file=sys.stderr)
+        return None
+    if write_status is not None:
+        try:
+            validate_status_write_path(write_status, project_root=project_path)
+        except ValueError as exc:
+            print(f"ops-check 参数错误：{exc}", file=sys.stderr)
+            return None
+    connector_smoke = None
+    if connector_status is not None or connector_observed_at is not None:
+        connector_smoke = {
+            "status": connector_status,
+            "last_observed_at": connector_observed_at,
+            "evidence_source": "operator_supplied_sanitized_connector_smoke_status",
+        }
+    return project_path, {
+        "public_base_url": public_base_url,
+        "json_output": json_output,
+        "no_network": no_network,
+        "fail_on_not_ready": fail_on_not_ready,
+        "write_status": write_status,
+        "expected_head": expected_head,
+        "connector_smoke": connector_smoke,
+        "connector_smoke_fresh_hours": connector_smoke_fresh_hours,
+    }
+
+
+def _print_ops_check_summary(packet: dict[str, object]) -> None:
+    print(
+        "Production ops: "
+        f"status={packet.get('status')} "
+        f"ops_check_ready={packet.get('ops_check_ready')} "
+        f"connector_smoke_ready={packet.get('connector_smoke_ready')} "
+        f"beta_gate_ready={packet.get('beta_gate_ready')}",
+        file=sys.stderr,
+    )
+    checks = packet.get("checks")
+    if isinstance(checks, dict):
+        for name in (
+            "stable_runtime",
+            "origin_main",
+            "stable_service",
+            "local_stable_health",
+            "remote_https_mcp_preflight",
+            "cloudflared_service",
+            "backup_inventory",
+            "rollback_rehearsal",
+            "connector_smoke",
+        ):
+            check = checks.get(name)
+            if not isinstance(check, dict):
+                continue
+            print(
+                f"  {name}: status={check.get('status')} reason={check.get('reason_code')}",
+                file=sys.stderr,
+            )
+
+
+def _run_ops_check(args: list[str]) -> int:
+    parsed = _parse_ops_check_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_production_ops_packet(
+        project_path,
+        public_base_url=str(options["public_base_url"]),
+        expected_head=options.get("expected_head") if isinstance(options.get("expected_head"), str) else None,
+        no_network=bool(options.get("no_network")),
+        connector_smoke=options.get("connector_smoke") if isinstance(options.get("connector_smoke"), dict) else None,
+        connector_smoke_fresh_hours=int(options.get("connector_smoke_fresh_hours") or DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS),
+    )
+    write_status = options.get("write_status")
+    if isinstance(write_status, str) and write_status.strip():
+        try:
+            written_path = write_status_packet(
+                write_status,
+                packet,
+                project_root=project_path,
+                json_dumps=json_dumps,
+            )
+        except ValueError as exc:
+            print(f"ops-check 写 status 失败：{exc}", file=sys.stderr)
+            return 1
+        packet["status_written_path"] = written_path
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        _print_ops_check_summary(packet)
+    if bool(options.get("fail_on_not_ready")) and packet.get("beta_gate_ready") is not True:
+        return 2
     return 0
 
 
@@ -4121,6 +4304,8 @@ def main() -> int:
         return _run_service_restart(sys.argv[1:])
     if cmd == "status":
         return _run_service_status(sys.argv[1:])
+    if cmd == "ops-check":
+        return _run_ops_check(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":

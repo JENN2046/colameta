@@ -1,0 +1,13 @@
+[Unit]
+Description=ColaMeta production operations Beta Gate status check
+Documentation=file:/home/jenn/src/colameta-dev/docs/production-operations-beta-gate.zh-CN.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jenn/src/colameta-dev
+ExecStart=/home/jenn/src/colameta-dev/.venv/bin/colameta ops-check /home/jenn/src/colameta-dev --public-base-url https://colameta-mcp.skmt617.top --write-status %h/.local/state/colameta/ops/last-status.json --json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+RestrictSUIDSGID=true
+LockPersonality=true

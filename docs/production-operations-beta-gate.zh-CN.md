@@ -1,0 +1,186 @@
+# ColaMeta Production Operations Beta Gate
+
+本文定义 Stage 10 的维护者运维包。目标是证明 ColaMeta HTTPS MCP 不只是
+能运行，而是能被未来维护者检查、审计、恢复和安全接手。
+
+本文件不授权 stable replacement、rollback、restore、release、deploy、tag
+push、package publish、GitHub issue/PR 创建、ReviewDecision、GateEvent 或
+Delivery accepted。
+
+## 1. 三层结论
+
+`colameta ops-check` 输出三个独立结论：
+
+```text
+ops_check_ready
+  本地 stable runtime、本地 Web/MCP、公网 HTTPS MCP、cloudflared、backup
+  inventory 和 rollback rehearsal evidence 都满足。
+
+connector_smoke_ready
+  已提供 fresh ChatGPT Apps connector smoke 脱敏证据，且状态为 ready。
+
+beta_gate_ready
+  ops_check_ready=true 且 connector_smoke_ready=true。
+```
+
+不要把 remote HTTPS preflight 成功解读为 ChatGPT connector 已经成功。实际
+connector smoke 仍必须由 ChatGPT Apps connector 工具或人工授权的 Apps 调用
+产生。
+
+## 2. Gate 判定矩阵
+
+必须判为 `blocked`：
+
+```text
+stable service inactive
+stable runtime head != expected head
+remote HTTPS MCP preflight failed
+local stable Web/MCP health failed
+secret-like content detected in output packet
+```
+
+必须判为 `needs_attention`：
+
+```text
+external connector evidence missing
+fresh ChatGPT connector smoke missing
+backup missing
+backup sha256 unavailable
+backup archive unreadable
+rollback target commit unresolved
+connector smoke older than the configured freshness window
+```
+
+只有所有运维检查 ready、fresh connector smoke ready，且 backup/rollback
+evidence 完整时，`beta_gate_ready=true`。
+
+## 3. 运行检查
+
+只读检查，不写状态文件：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --json
+```
+
+CI/offline 形态检查：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --no-network \
+  --json
+```
+
+写入本地脱敏状态：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --write-status ~/.local/state/colameta/ops/last-status.json \
+  --json
+```
+
+如果 `main` 只有 receipt/docs 领先 stable runtime，可显式指定 stable runtime
+应对齐的运行代码 head：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --expected-head <stable-runtime-code-head> \
+  --json
+```
+
+告警集成才使用：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --fail-on-not-ready \
+  --json
+```
+
+默认 timer 不使用 `--fail-on-not-ready`，避免普通采集在 systemd 中形成持续
+失败噪声。
+
+## 4. ChatGPT Connector Smoke 补证
+
+`ops-check` 不替代 Apps connector 实际调用。拿到 ChatGPT Apps connector
+smoke 后，只回灌脱敏字段：
+
+```bash
+.venv/bin/colameta ops-check /home/jenn/src/colameta-dev \
+  --public-base-url https://colameta-mcp.skmt617.top \
+  --connector-smoke-status ready \
+  --connector-smoke-observed-at 2026-07-06T17:43:50Z \
+  --json
+```
+
+fresh 默认窗口为 24 小时。允许用 `--connector-smoke-fresh-hours` 收窄窗口，
+范围为 `1..24`。
+
+## 5. Systemd Timer
+
+安装或更新 user unit：
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sfn /home/jenn/src/colameta-dev/systemd/user/colameta-ops-check.service \
+  ~/.config/systemd/user/colameta-ops-check.service
+ln -sfn /home/jenn/src/colameta-dev/systemd/user/colameta-ops-check.timer \
+  ~/.config/systemd/user/colameta-ops-check.timer
+systemctl --user daemon-reload
+systemctl --user enable colameta-ops-check.timer
+systemctl --user start colameta-ops-check.timer
+```
+
+查看：
+
+```bash
+systemctl --user status colameta-ops-check.timer
+systemctl --user status colameta-ops-check.service
+cat ~/.local/state/colameta/ops/last-status.json
+```
+
+停用：
+
+```bash
+systemctl --user disable --now colameta-ops-check.timer
+```
+
+## 6. Backup / Rollback Rehearsal
+
+`ops-check` 的 rehearsal 是只读证明，不执行 restore。
+
+最低 evidence：
+
+```text
+backup inventory 至少存在 stable-before-*.tar.gz
+backup sha256 可重新计算
+backup archive 可 tar -tzf 等价列目录
+rollback target commit 可解析
+rehearsal_executed_restore=false
+```
+
+真正 rollback 或 restore 必须单独授权，并另写 receipt。
+
+## 7. 禁止动作
+
+Stage 10 运维检查不做：
+
+```text
+不接 Auth0 / Cloudflare 管理 API
+不读取 token、cookie、secret、.env 值、provider config、raw logs
+不发送通知
+不自动 rollback
+不自动 stable replacement
+不自动创建 GitHub issue / PR
+不修改 Beta classifier
+不 release、deploy、tag push、package publish
+```
+
+## 8. Beta 状态
+
+`beta_gate_ready=true` 只表示 Beta Gate evidence ready。是否把项目从 Alpha
+改成 Beta，必须作为后续独立产品/发布决策。

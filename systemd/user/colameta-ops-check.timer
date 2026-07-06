@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ColaMeta production operations Beta Gate status check
+Documentation=file:/home/jenn/src/colameta-dev/docs/production-operations-beta-gate.zh-CN.md
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

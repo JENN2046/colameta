@@ -5,6 +5,7 @@ USAGE_MESSAGE = """用法：
   colameta stop [project_path]
   colameta restart [project_path] [options]
   colameta status [project_path] [--json] [--tunnel-admin-port PORT --tunnel-pid PID]
+  colameta ops-check [project_path] [--public-base-url URL] [--json] [--no-network] [--write-status PATH]
   colameta logs [project_path] [--lines N]
   colameta models [project_path] [--refresh]
   colameta serve <project_path> [options]
