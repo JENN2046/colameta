@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES
 from runner.project_registry import ProjectRegistry
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -21,6 +21,11 @@ from runner.runtime_observability import (
 
 
 HEAD_A = "a" * 40
+
+
+class _PermissiveOAuthProvider:
+    def validate_scope(self, token_payload: dict, required_scope: str) -> bool:
+        return True
 
 
 class MCPRuntimeObservabilityTests(unittest.TestCase):
@@ -57,6 +62,24 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             last_selected=False,
         )
         assert registered["ok"] is True
+
+    def test_all_exposed_tools_have_policy_registry_entries(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        missing = sorted(set(server.tools) - set(MCP_TOOL_POLICIES))
+
+        assert missing == []
+
+    def test_unknown_tool_action_fails_closed_before_handler(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent("manage_git_remote", {"action": "push_apply_typo"})
+
+        assert result["ok"] is False
+        assert result["error_code"] == "TOOL_POLICY_DENIED"
+        assert result["details"]["policy"] == "mcp_tool_registry_fail_closed"
 
     def test_connector_runtime_local_service_evidence_uses_web_api_healthz(self) -> None:
         project = self.make_git_checkout(managed=True)
@@ -1562,6 +1585,77 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "demo-project" not in response.message
         assert isinstance(response.data, dict)
         assert "available_project_names" not in response.data
+
+    def external_oauth_context(self) -> dict:
+        return {"mode": "external-oauth", "token": {}, "oauth_provider": _PermissiveOAuthProvider()}
+
+    def test_external_oauth_remote_policy_denies_git_remote_push_apply(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_git_remote",
+            {"project_name": "demo-project", "action": "push_apply", "preview_id": "preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["policy"] == "remote_public"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_executor_and_validation_runs(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        executor_result = server.call_tool_for_agent(
+            "manage_executor_workflow",
+            {"project_name": "demo-project", "action": "run_once", "preview_id": "exec-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+        validation_result = server.call_tool_for_agent(
+            "manage_validation_run",
+            {"project_name": "demo-project", "action": "run", "preview_id": "validation-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert executor_result["ok"] is False
+        assert executor_result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert executor_result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+        assert validation_result["ok"] is False
+        assert validation_result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert validation_result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+    def test_external_oauth_remote_policy_denies_plan_scope(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_runner_plan",
+            {"action": "apply", "preview_id": "plan-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["required_scope"] == "mcp:plan"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_PLAN_DENIED"
+
+    def test_external_oauth_remote_policy_denies_all_commit_scope_tools(self) -> None:
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "manage_project_docs",
+            {"project_name": "demo-project", "action": "apply", "preview_id": "doc-preview-1"},
+            auth_context=self.external_oauth_context(),
+        )
+
+        assert result["ok"] is False
+        assert result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert result["details"]["policy"] == "remote_public"
+        assert result["details"]["required_scope"] == "mcp:commit"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import json
 import copy
+import threading
 import os
 import re
 import sys
@@ -74,6 +75,28 @@ from runner.runner_paths import (
 )
 
 
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
 MCP_EXPOSURE_PROFILE_ENV = "MCP_EXPOSURE_PROFILE"
 MCP_EXPOSURE_PROFILE_NORMAL = "normal"
 MCP_EXPOSURE_PROFILE_MAINTAINER = "maintainer"
@@ -82,8 +105,15 @@ ACTIONS_API_PREFIX = "/api/"
 ACTIONS_TARGET_RESPONSE_CHARS = 60000
 ACTIONS_HARD_RESPONSE_CHARS = 75000
 ACTIONS_HARD_REQUEST_CHARS = 90000
+MCP_HARD_REQUEST_CHARS = ACTIONS_HARD_REQUEST_CHARS
+MCP_REQUEST_TIMEOUT_SECONDS = _env_float("COLAMETA_MCP_REQUEST_TIMEOUT_SECONDS", 10.0, minimum=0.5)
+MCP_GLOBAL_RATE_LIMIT_PER_MINUTE = _env_int("COLAMETA_MCP_GLOBAL_RATE_LIMIT_PER_MINUTE", 240)
+MCP_GLOBAL_RATE_LIMIT_BURST = _env_int("COLAMETA_MCP_GLOBAL_RATE_LIMIT_BURST", 80)
+MCP_CLIENT_RATE_LIMIT_PER_MINUTE = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_PER_MINUTE", 120)
+MCP_CLIENT_RATE_LIMIT_BURST = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BURST", 40)
 MCP_TARGET_TOOL_RESULT_CHARS = 60000
 MCP_HARD_TOOL_RESULT_CHARS = 75000
+REMOTE_EXTERNAL_OAUTH_POLICY = "remote_public"
 COMMANDER_APP_WIDGET_URI = "ui://colameta/commander/v1.html"
 COMMANDER_APP_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
 COMMANDER_APP_MANIFEST_VERSION = "colameta_commander_app.v1"
@@ -96,6 +126,12 @@ COMMANDER_APP_SERVER_INSTRUCTIONS = (
     "profile, and preview outputs as evidence only; they do not authorize executor run, commit, push, "
     "stable service replacement, ReviewDecision, GateEvent, or Delivery accepted."
 )
+
+REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES: dict[str, str] = {
+    "mcp:commit": "REMOTE_MCP_COMMIT_DENIED",
+    "mcp:plan": "REMOTE_MCP_PLAN_DENIED",
+}
+
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
@@ -190,6 +226,66 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
         if isinstance(next_actions, list):
             return next_actions
     return None
+
+
+class _MCPRateLimiter:
+    def __init__(
+        self,
+        *,
+        global_per_minute: int,
+        global_burst: int,
+        client_per_minute: int,
+        client_burst: int,
+    ) -> None:
+        now = time.monotonic()
+        self.global_per_minute = max(1, global_per_minute)
+        self.global_burst = max(1, global_burst)
+        self.client_per_minute = max(1, client_per_minute)
+        self.client_burst = max(1, client_burst)
+        self._global_bucket: dict[str, float] = {"tokens": float(self.global_burst), "updated_at": now}
+        self._client_buckets: dict[str, dict[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, client_id: str) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            self._refill(self._global_bucket, self.global_per_minute, self.global_burst, now)
+            client_bucket = self._client_buckets.setdefault(
+                client_id,
+                {"tokens": float(self.client_burst), "updated_at": now},
+            )
+            self._refill(client_bucket, self.client_per_minute, self.client_burst, now)
+            self._prune_clients(now)
+            if self._global_bucket["tokens"] < 1.0:
+                return self._denied("MCP_GLOBAL_RATE_LIMITED", self._global_bucket, self.global_per_minute)
+            if client_bucket["tokens"] < 1.0:
+                return self._denied("MCP_CLIENT_RATE_LIMITED", client_bucket, self.client_per_minute)
+            self._global_bucket["tokens"] -= 1.0
+            client_bucket["tokens"] -= 1.0
+            return {"ok": True}
+
+    def _refill(self, bucket: dict[str, float], per_minute: int, burst: int, now: float) -> None:
+        elapsed = max(0.0, now - bucket["updated_at"])
+        bucket["tokens"] = min(float(burst), bucket["tokens"] + elapsed * (float(per_minute) / 60.0))
+        bucket["updated_at"] = now
+
+    def _denied(self, reason_code: str, bucket: dict[str, float], per_minute: int) -> dict[str, Any]:
+        missing = max(0.0, 1.0 - bucket["tokens"])
+        seconds = missing / max(float(per_minute) / 60.0, 0.001)
+        retry_after_seconds = max(1, min(60, int(seconds + 0.999)))
+        return {
+            "ok": False,
+            "reason_code": reason_code,
+            "retry_after_seconds": retry_after_seconds,
+        }
+
+    def _prune_clients(self, now: float) -> None:
+        if len(self._client_buckets) <= 4096:
+            return
+        stale_before = now - 300.0
+        stale = [key for key, bucket in self._client_buckets.items() if bucket.get("updated_at", now) < stale_before]
+        for key in stale[:1024]:
+            self._client_buckets.pop(key, None)
 
 
 def _stage_parallel_preview_input_schema(*, include_executor_results: bool = False) -> dict[str, Any]:
@@ -519,6 +615,378 @@ class MCPToolDef:
     title: str | None = None
     annotations: dict[str, Any] | None = None
     meta: dict[str, Any] | None = None
+
+
+VALID_MCP_SCOPES = frozenset({"mcp:read", "mcp:preview", "mcp:commit", "mcp:plan"})
+
+
+@dataclass(frozen=True)
+class MCPToolPolicy:
+    name: str
+    selector: str = "static"
+    static_scope: str | None = None
+    action_scopes: dict[str, str] | None = None
+    default_scope: str | None = None
+    side_effects: bool = False
+    requires_confirmation: bool = False
+    remote_public_allowed: bool = True
+
+    def scope_for(self, params: dict[str, Any]) -> str | None:
+        if self.selector == "static":
+            return self.static_scope
+        if self.selector == "action":
+            action = _policy_string_param(params, "action")
+            return (self.action_scopes or {}).get(action) or self.default_scope
+        if self.selector == "manage_files":
+            return _manage_files_policy_scope(params)
+        if self.selector == "run_mcp_workflow":
+            return _run_mcp_workflow_policy_scope(params)
+        return None
+
+
+def _policy_string_param(params: dict[str, Any], key: str) -> str:
+    value = params.get(key)
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _static_policy(name: str, scope: str) -> MCPToolPolicy:
+    return MCPToolPolicy(
+        name=name,
+        static_scope=scope,
+        side_effects=scope not in {"mcp:read", "mcp:preview"},
+        requires_confirmation=scope not in {"mcp:read"},
+        remote_public_allowed=scope in {"mcp:read", "mcp:preview"},
+    )
+
+
+def _action_policy(name: str, action_scopes: dict[str, str], *, default_scope: str | None = None) -> MCPToolPolicy:
+    return MCPToolPolicy(
+        name=name,
+        selector="action",
+        action_scopes=action_scopes,
+        default_scope=default_scope,
+        side_effects=any(scope not in {"mcp:read", "mcp:preview"} for scope in action_scopes.values())
+        or default_scope not in {None, "mcp:read", "mcp:preview"},
+        requires_confirmation=any(scope != "mcp:read" for scope in action_scopes.values())
+        or default_scope not in {None, "mcp:read"},
+        remote_public_allowed=all(scope in {"mcp:read", "mcp:preview"} for scope in action_scopes.values())
+        and default_scope in {None, "mcp:read", "mcp:preview"},
+    )
+
+
+def _manage_files_policy_scope(params: dict[str, Any]) -> str | None:
+    action = _policy_string_param(params, "action")
+    if action in {"search", "read"}:
+        return "mcp:read"
+    if action in {"create", "edit", "delete"}:
+        phase = _policy_string_param(params, "phase")
+        if phase == "status":
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase == "apply":
+            return "mcp:commit"
+    return None
+
+
+def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
+    workflow = _policy_string_param(params, "workflow")
+    phase = _policy_string_param(params, "phase")
+    docs_action = _policy_string_param(params, "docs_action")
+    if workflow == "auto_preview":
+        return "mcp:preview"
+    if workflow == "project_status":
+        return "mcp:read"
+    if workflow in {"source_onboarding", "plan_update"}:
+        return "mcp:preview"
+    if workflow == "thin_governed_loop_preview":
+        return "mcp:read"
+    if workflow == "small_project_patch":
+        if phase == "status":
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase in {"apply", ""}:
+            return "mcp:commit"
+        return None
+    if workflow == "docs_update":
+        if docs_action in {"index", "search", "read_section"} or phase == "inspect":
+            return "mcp:read"
+        if docs_action in {"update_section_preview", "append_section_preview", "sync_docs_preview"} or phase == "preview":
+            return "mcp:preview"
+        if phase in {"apply", ""}:
+            return "mcp:commit"
+        return None
+    if workflow == "git_commit":
+        if phase in {"inspect", "status"}:
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase in {"apply", "commit", ""}:
+            return "mcp:commit"
+        return None
+    if workflow in {"git_restore_file", "git_revert"}:
+        if phase == "preview":
+            return "mcp:preview"
+        if phase in {"apply", ""}:
+            return "mcp:commit"
+        return None
+    if workflow == "git_undo_version":
+        if phase == "inspect":
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase in {"apply", ""}:
+            return "mcp:commit"
+        return None
+    if workflow == "agent_dispatch":
+        if phase in {"inspect", "status"}:
+            return "mcp:read"
+        if phase in {"preview", "run_preview"}:
+            return "mcp:preview"
+        if phase in {"run", "apply", ""}:
+            return "mcp:commit"
+        return None
+    return None
+
+
+def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
+    read_tools = {
+        "list_registered_projects",
+        "get_agent_consumer_contract",
+        "get_service_entry_profile",
+        "get_agent_operator_flow_packet",
+        "get_web_gpt_service_entrypoint",
+        "get_commander_app_manifest",
+        "render_commander_app",
+        "get_apps_connector_smoke_packet",
+        "get_stable_replacement_cadence",
+        "get_stable_promotion_readiness",
+        "get_stage_parallel_plan_preview",
+        "get_stage_parallel_run_preview",
+        "get_stage_parallel_worktree_assignment_preview",
+        "get_stage_parallel_next_action_packet",
+        "get_stage_parallel_executor_group_preview",
+        "get_stage_parallel_executor_results_packet",
+        "get_stage_parallel_group_status",
+        "get_stage_parallel_merge_preview",
+        "get_stage_parallel_closeout_packet",
+        "get_runtime_version_status",
+        "get_connector_runtime_health_status",
+        "get_runner_status",
+        "get_version_result",
+        "get_next_version_plan",
+        "get_plan_overview",
+        "get_review_context",
+        "get_runner_workbench_context",
+        "get_project_doc_section",
+        "get_plan_patch_status",
+        "get_repo_overview",
+        "get_git_status",
+        "get_git_log",
+        "get_source_file",
+        "search_source",
+        "get_git_diff",
+        "get_executor_inventory",
+        "get_project_identity",
+        "get_runner_execution_standards",
+        "get_plan_standards_report",
+        "get_executor_session_status",
+        "get_executor_continuation_preview",
+        "get_executor_continuation_decision",
+        "get_executor_resume_invocation_preview",
+        "manage_workflow_run",
+        "todo_read",
+        "decision_read",
+        "list_executor_run_reports",
+        "get_executor_run_report",
+        "analyze_project_state",
+        "inspect_executor_activity",
+        "list_workflow_runs",
+        "get_workflow_run",
+    }
+    policies = {name: _static_policy(name, "mcp:read") for name in read_tools}
+    for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
+        policies[name] = _static_policy(name, "mcp:preview")
+    for name in ("todo_add", "todo_update", "todo_delete", "decision_add", "decision_update", "decision_delete"):
+        policies[name] = _static_policy(name, "mcp:preview")
+    policies.update(
+        {
+            "manage_git": _action_policy(
+                "manage_git",
+                {
+                    **dict.fromkeys(
+                        (
+                            "status",
+                            "diff",
+                            "review_context",
+                            "commit_readiness",
+                            "commit_message",
+                            "push_status",
+                            "pull_status",
+                            "history_log",
+                            "history_show",
+                            "diff_commits",
+                        ),
+                        "mcp:read",
+                    ),
+                    **dict.fromkeys(
+                        ("commit_preview", "push_preview", "pull_preview", "restore_file_preview", "revert_preview"),
+                        "mcp:preview",
+                    ),
+                    **dict.fromkeys(
+                        ("commit_apply", "push_apply", "pull_apply", "fetch_apply", "restore_file_apply", "revert_apply"),
+                        "mcp:commit",
+                    ),
+                },
+            ),
+            "manage_git_commit": _action_policy(
+                "manage_git_commit",
+                {
+                    "readiness": "mcp:read",
+                    "suggest_commit_message": "mcp:read",
+                    "preview": "mcp:preview",
+                    "commit_workflow_preview": "mcp:preview",
+                    "commit": "mcp:commit",
+                    "apply": "mcp:commit",
+                },
+            ),
+            "manage_git_remote": _action_policy(
+                "manage_git_remote",
+                {
+                    "push_status": "mcp:read",
+                    "pull_status": "mcp:read",
+                    "push_preview": "mcp:preview",
+                    "fetch_preview": "mcp:preview",
+                    "pull_preview": "mcp:preview",
+                    "push_apply": "mcp:commit",
+                    "fetch_apply": "mcp:commit",
+                    "pull_apply": "mcp:commit",
+                },
+            ),
+            "manage_runner_plan": _action_policy(
+                "manage_runner_plan",
+                {"inspect": "mcp:read", "bootstrap_preview": "mcp:preview", "import_preview": "mcp:preview", "apply": "mcp:plan"},
+            ),
+            "manage_runner_record": _action_policy(
+                "manage_runner_record",
+                {"read": "mcp:read", "add": "mcp:preview", "update": "mcp:preview", "delete": "mcp:preview"},
+            ),
+            "manage_project_memory": _action_policy(
+                "manage_project_memory",
+                {"read": "mcp:read", "add": "mcp:preview", "update": "mcp:preview", "delete": "mcp:preview"},
+            ),
+            "manage_plan_version": _action_policy(
+                "manage_plan_version",
+                {
+                    "inspect": "mcp:read",
+                    "apply_preview_status": "mcp:read",
+                    "insert_preview": "mcp:preview",
+                    "update_preview": "mcp:preview",
+                    "repair_preview": "mcp:preview",
+                    "insert_from_prompt_file_preview": "mcp:preview",
+                    "apply_preview": "mcp:commit",
+                    "reload_plan": "mcp:commit",
+                    "continue_next_version": "mcp:commit",
+                },
+            ),
+            "manage_project_patch": _action_policy(
+                "manage_project_patch",
+                {"status": "mcp:read", "preview": "mcp:preview", "preview_delete": "mcp:preview", "apply": "mcp:commit"},
+            ),
+            "manage_git_history": _action_policy(
+                "manage_git_history",
+                {
+                    "log": "mcp:read",
+                    "show": "mcp:read",
+                    "diff_commits": "mcp:read",
+                    "reconcile_git_history_preview": "mcp:preview",
+                    "restore_file_preview": "mcp:preview",
+                    "revert_preview": "mcp:preview",
+                    "restore_file_apply": "mcp:commit",
+                    "revert_apply": "mcp:commit",
+                },
+            ),
+            "manage_project_docs": _action_policy(
+                "manage_project_docs",
+                {
+                    "index": "mcp:read",
+                    "search": "mcp:read",
+                    "read_section": "mcp:read",
+                    "update_section_preview": "mcp:preview",
+                    "append_section_preview": "mcp:preview",
+                    "sync_docs_preview": "mcp:preview",
+                    "apply": "mcp:commit",
+                },
+            ),
+            "manage_prompt_file": _action_policy(
+                "manage_prompt_file",
+                {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"},
+            ),
+            "manage_executor_config": _action_policy(
+                "manage_executor_config",
+                {
+                    "inspect_inventory": "mcp:read",
+                    "probe_models_preview": "mcp:preview",
+                    "set_default_profile_preview": "mcp:preview",
+                    "probe_models_apply": "mcp:commit",
+                    "set_default_profile_apply": "mcp:commit",
+                },
+            ),
+            "manage_executor_workflow": _action_policy(
+                "manage_executor_workflow",
+                {
+                    "preflight": "mcp:read",
+                    "status": "mcp:read",
+                    "get_audit_package": "mcp:read",
+                    "run_once_preview": "mcp:preview",
+                    "run_bounded_preview": "mcp:preview",
+                    "recheck_report_preview": "mcp:preview",
+                    "manual_fix_prompt_preview": "mcp:preview",
+                    "manual_validation_preview": "mcp:preview",
+                    "scope_mismatch_preview": "mcp:preview",
+                    "state_lineage_reconciliation_preview": "mcp:preview",
+                    "final_version_closeout_preview": "mcp:preview",
+                    "reconcile_orphaned_claims_preview": "mcp:preview",
+                    "run_once": "mcp:commit",
+                    "run_bounded": "mcp:commit",
+                    "refresh_audit_package": "mcp:commit",
+                    "recheck_report_apply": "mcp:commit",
+                    "manual_fix_prompt_apply": "mcp:commit",
+                    "manual_validation_apply": "mcp:commit",
+                    "scope_mismatch_apply": "mcp:commit",
+                    "state_lineage_reconciliation_apply": "mcp:commit",
+                    "final_version_closeout_apply": "mcp:commit",
+                    "reconcile_orphaned_claims_apply": "mcp:commit",
+                },
+            ),
+            "manage_validation_run": _action_policy(
+                "manage_validation_run",
+                {"inspect": "mcp:read", "status": "mcp:read", "preview": "mcp:preview", "run": "mcp:commit"},
+            ),
+        }
+    )
+    stage_action_scopes = {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"}
+    for name in (
+        "manage_stage_parallel_worktrees",
+        "manage_stage_parallel_shard_inputs",
+        "manage_stage_parallel_executor_group",
+        "manage_stage_parallel_executor_runs",
+        "manage_stage_parallel_merges",
+    ):
+        policies[name] = _action_policy(name, stage_action_scopes)
+    policies["manage_files"] = MCPToolPolicy(name="manage_files", selector="manage_files", requires_confirmation=True)
+    policies["run_mcp_workflow"] = MCPToolPolicy(
+        name="run_mcp_workflow",
+        selector="run_mcp_workflow",
+        side_effects=True,
+        requires_confirmation=True,
+        remote_public_allowed=False,
+    )
+    return policies
+
+
+MCP_TOOL_POLICIES = _build_mcp_tool_policies()
 
 
 @dataclass
@@ -3655,6 +4123,12 @@ class MCPPlanningBridgeServer:
                 )
             )
         resource_oauth_provider = external_oauth_provider or oauth_provider
+        rate_limiter = _MCPRateLimiter(
+            global_per_minute=MCP_GLOBAL_RATE_LIMIT_PER_MINUTE,
+            global_burst=MCP_GLOBAL_RATE_LIMIT_BURST,
+            client_per_minute=MCP_CLIENT_RATE_LIMIT_PER_MINUTE,
+            client_burst=MCP_CLIENT_RATE_LIMIT_BURST,
+        )
 
         def _debug_log(handler: BaseHTTPRequestHandler, status_code: int, response_payload: dict[str, Any] | None = None) -> None:
             if not debug_actions:
@@ -3737,16 +4211,77 @@ class MCPPlanningBridgeServer:
             def log_message(self, format: str, *args: Any) -> None:
                 server._log(f"{self.address_string()} - {format % args}")
 
+            def _request_id(self) -> str:
+                request_id = getattr(self, "_debug_request_id", "")
+                if not request_id:
+                    request_id = os.urandom(8).hex()
+                    self._debug_request_id = request_id
+                return str(request_id)
+
+            def _prepare_request(self, method: str, path: str) -> bool:
+                self._debug_start = time.time()
+                self._debug_request_id = os.urandom(8).hex()
+                self._debug_method = method
+                self._debug_path = path
+                self._request_body_too_large = False
+                self._request_body_timed_out = False
+                try:
+                    self.connection.settimeout(MCP_REQUEST_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+                client_id = "unknown"
+                if isinstance(self.client_address, tuple) and self.client_address:
+                    client_id = str(self.client_address[0] or "unknown")
+                limit_result = rate_limiter.check(client_id)
+                if limit_result.get("ok") is True:
+                    return True
+                retry_after_seconds = int(limit_result.get("retry_after_seconds") or 1)
+                self._send_json(
+                    429,
+                    {
+                        "ok": False,
+                        "error_code": "MCP_RATE_LIMITED",
+                        "message": "请求过于频繁，请稍后重试。",
+                        "reason_code": str(limit_result.get("reason_code") or "MCP_RATE_LIMITED"),
+                        "retry_after_seconds": retry_after_seconds,
+                    },
+                    headers={"Retry-After": str(retry_after_seconds)},
+                )
+                return False
+
+            def _payload_with_request_id(self, status_code: int, payload: dict[str, Any]) -> dict[str, Any]:
+                should_attach = status_code >= 400 or payload.get("ok") is False
+                if not should_attach:
+                    return payload
+                request_id = self._request_id()
+                if isinstance(payload.get("error"), dict) and payload.get("jsonrpc") == "2.0":
+                    cloned = dict(payload)
+                    error = dict(cloned["error"])
+                    data = error.get("data")
+                    if not isinstance(data, dict):
+                        data = {}
+                    else:
+                        data = dict(data)
+                    data.setdefault("request_id", request_id)
+                    error["data"] = data
+                    cloned["error"] = error
+                    return cloned
+                cloned = dict(payload)
+                cloned.setdefault("request_id", request_id)
+                return cloned
+
             def _send_json(
                 self,
                 status_code: int,
                 payload: dict[str, Any],
                 headers: dict[str, str] | None = None,
             ) -> None:
+                payload = self._payload_with_request_id(status_code, payload)
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status_code)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Request-Id", self._request_id())
                 for key, value in (headers or {}).items():
                     self.send_header(key, value)
                 self.end_headers()
@@ -3758,6 +4293,7 @@ class MCPPlanningBridgeServer:
                 self.send_response(status_code)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Request-Id", self._request_id())
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -3765,6 +4301,7 @@ class MCPPlanningBridgeServer:
                 self.send_response(302)
                 self.send_header("Location", location)
                 self.send_header("Content-Length", "0")
+                self.send_header("X-Request-Id", self._request_id())
                 self.end_headers()
 
             def _send_auth_error(self) -> None:
@@ -3783,6 +4320,68 @@ class MCPPlanningBridgeServer:
                     },
                     headers=headers,
                 )
+
+            def _send_request_too_large(self, *, jsonrpc: bool = False, tool_name: str = "") -> None:
+                if jsonrpc:
+                    self._send_json(
+                        413,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {
+                                "code": -32000,
+                                "message": "请求体过大，请拆分请求后重试。",
+                                "data": {
+                                    "error_code": "MCP_REQUEST_TOO_LARGE",
+                                    "max_request_chars": MCP_HARD_REQUEST_CHARS,
+                                },
+                            },
+                        },
+                    )
+                    return
+                payload = {
+                    "ok": False,
+                    "error_code": "MCP_REQUEST_TOO_LARGE",
+                    "message": "请求体过大，请拆分请求后重试。",
+                    "max_request_chars": MCP_HARD_REQUEST_CHARS,
+                }
+                if tool_name:
+                    payload["tool"] = tool_name
+                self._send_json(413, payload)
+
+            def _send_request_timeout(self, *, jsonrpc: bool = False, tool_name: str = "") -> None:
+                if jsonrpc:
+                    self._send_json(
+                        408,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {
+                                "code": -32000,
+                                "message": "读取请求体超时，请缩小请求或稍后重试。",
+                                "data": {
+                                    "error_code": "MCP_REQUEST_TIMEOUT",
+                                    "timeout_seconds": MCP_REQUEST_TIMEOUT_SECONDS,
+                                },
+                            },
+                        },
+                    )
+                    return
+                payload = {
+                    "ok": False,
+                    "error_code": "MCP_REQUEST_TIMEOUT",
+                    "message": "读取请求体超时，请缩小请求或稍后重试。",
+                    "timeout_seconds": MCP_REQUEST_TIMEOUT_SECONDS,
+                }
+                if tool_name:
+                    payload["tool"] = tool_name
+                self._send_json(408, payload)
+
+            def _body_too_large(self) -> bool:
+                return bool(getattr(self, "_request_body_too_large", False))
+
+            def _body_timed_out(self) -> bool:
+                return bool(getattr(self, "_request_body_timed_out", False))
 
             def _auth_context(self) -> dict[str, Any] | None:
                 if resolved_auth_mode == "none":
@@ -3815,7 +4414,9 @@ class MCPPlanningBridgeServer:
                     }
                 return None
 
-            def _read_body(self) -> bytes:
+            def _read_body(self) -> bytes | None:
+                self._request_body_too_large = False
+                self._request_body_timed_out = False
                 length_value = self.headers.get("Content-Length", "0")
                 try:
                     content_length = int(length_value)
@@ -3823,10 +4424,19 @@ class MCPPlanningBridgeServer:
                     content_length = 0
                 if content_length <= 0:
                     return b""
-                return self.rfile.read(content_length)
+                if content_length > MCP_HARD_REQUEST_CHARS:
+                    self._request_body_too_large = True
+                    return None
+                try:
+                    return self.rfile.read(content_length)
+                except (TimeoutError, OSError):
+                    self._request_body_timed_out = True
+                    return None
 
             def _read_json_body(self) -> dict[str, Any] | None:
                 raw = self._read_body()
+                if raw is None:
+                    return None
                 if not raw:
                     return None
                 try:
@@ -3837,6 +4447,8 @@ class MCPPlanningBridgeServer:
 
             def _read_params_body(self) -> dict[str, Any]:
                 raw = self._read_body()
+                if raw is None:
+                    return {}
                 if not raw:
                     return {}
                 content_type = self.headers.get("Content-Type", "")
@@ -3878,11 +4490,8 @@ class MCPPlanningBridgeServer:
             def do_GET(self) -> None:
                 parsed_url = urlparse(self.path)
                 path = parsed_url.path
-                if debug_actions:
-                    self._debug_start = time.time()
-                    self._debug_request_id = os.urandom(4).hex()
-                    self._debug_method = "GET"
-                    self._debug_path = path
+                if not self._prepare_request("GET", path):
+                    return
                 if path == "/healthz":
                     try:
                         payload = {
@@ -3959,16 +4568,19 @@ class MCPPlanningBridgeServer:
 
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
-                if debug_actions:
-                    self._debug_start = time.time()
-                    self._debug_request_id = os.urandom(4).hex()
-                    self._debug_method = "POST"
-                    self._debug_path = path
+                if not self._prepare_request("POST", path):
+                    return
                 if path == "/register":
                     if oauth_provider is None:
                         self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机注册 OAuth 客户端。")
                         return
                     payload = self._read_json_body()
+                    if self._body_timed_out():
+                        self._send_request_timeout()
+                        return
+                    if self._body_too_large():
+                        self._send_request_too_large()
+                        return
                     if payload is None:
                         self._send_json(400, {"error": "invalid_request", "error_description": "JSON body is required."})
                         return
@@ -3979,14 +4591,28 @@ class MCPPlanningBridgeServer:
                     if oauth_provider is None:
                         self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机签发 token。")
                         return
-                    status_code, response = oauth_provider.exchange_token(self._read_params_body())
+                    params_body = self._read_params_body()
+                    if self._body_timed_out():
+                        self._send_request_timeout()
+                        return
+                    if self._body_too_large():
+                        self._send_request_too_large()
+                        return
+                    status_code, response = oauth_provider.exchange_token(params_body)
                     self._send_json(status_code, response)
                     return
                 if path == "/revoke":
                     if oauth_provider is None:
                         self._send_oauth_unavailable("external-oauth 模式不在 ColaMeta 本机撤销 token。")
                         return
-                    status_code, response = oauth_provider.revoke_token(self._read_params_body())
+                    params_body = self._read_params_body()
+                    if self._body_timed_out():
+                        self._send_request_timeout()
+                        return
+                    if self._body_too_large():
+                        self._send_request_too_large()
+                        return
+                    status_code, response = oauth_provider.revoke_token(params_body)
                     self._send_json(status_code, response)
                     return
                 tool_name = server._actions_tool_name_from_path(path)
@@ -4009,6 +4635,15 @@ class MCPPlanningBridgeServer:
                     if debug_actions:
                         self._debug_tool_name = tool_name
                     raw = self._read_body()
+                    if self._body_timed_out():
+                        self._send_request_timeout(tool_name=tool_name)
+                        return
+                    if self._body_too_large():
+                        self._send_request_too_large(tool_name=tool_name)
+                        return
+                    if raw is None:
+                        self._send_request_too_large(tool_name=tool_name)
+                        return
                     if server._is_actions_request_too_large(raw):
                         self._send_json(400, server._actions_request_too_large_payload(tool_name))
                         return
@@ -4064,6 +4699,12 @@ class MCPPlanningBridgeServer:
                     self._send_auth_error()
                     return
                 request = self._read_json_body()
+                if self._body_timed_out():
+                    self._send_request_timeout(jsonrpc=True)
+                    return
+                if self._body_too_large():
+                    self._send_request_too_large(jsonrpc=True)
+                    return
                 if debug_actions:
                     if request is not None:
                         self._debug_body_keys = list(request.keys())
@@ -4097,6 +4738,7 @@ class MCPPlanningBridgeServer:
                 if response is None:
                     self.send_response(202)
                     self.send_header("Content-Length", "0")
+                    self.send_header("X-Request-Id", self._request_id())
                     self.end_headers()
                     return
                 self._send_json(200, response)
@@ -5765,9 +6407,15 @@ class MCPPlanningBridgeServer:
                     message,
                     details,
                 )
+        policy_error = self._tool_policy_error(name, params)
+        if policy_error is not None:
+            return policy_error
         scope_error = self._oauth_scope_error(name, params, auth_context)
         if scope_error is not None:
             return scope_error
+        remote_policy_error = self._external_oauth_remote_policy_error(name, params, auth_context)
+        if remote_policy_error is not None:
+            return remote_policy_error
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
@@ -5800,333 +6448,32 @@ class MCPPlanningBridgeServer:
         return self._required_scope_for_tool(name, arguments)
 
     def _required_scope_for_tool(self, name: str, params: dict[str, Any]) -> str:
-        required_scope = "mcp:read"
-        if name in {"preview_insert_version", "preview_update_version"}:
-            required_scope = "mcp:preview"
-        elif name == "manage_git":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"status", "diff", "review_context", "commit_readiness", "commit_message",
-                          "push_status", "pull_status", "history_log", "history_show", "diff_commits"}:
-                required_scope = "mcp:read"
-            elif action in {"commit_preview", "push_preview", "pull_preview",
-                            "restore_file_preview", "revert_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_git_commit":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"readiness", "suggest_commit_message"}:
-                required_scope = "mcp:read"
-            elif action in {"preview", "commit_workflow_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_git_remote":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"push_status", "pull_status"}:
-                required_scope = "mcp:read"
-            elif action in {"push_preview", "fetch_preview", "pull_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_runner_plan":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "inspect":
-                required_scope = "mcp:read"
-            elif action in {"bootstrap_preview", "import_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:plan"
-        elif name in {"manage_runner_record", "manage_project_memory"}:
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "read":
-                required_scope = "mcp:read"
-            else:
-                required_scope = "mcp:preview"
-        elif name == "manage_workflow_run":
-            required_scope = "mcp:read"
-        elif name == "todo_read":
-            required_scope = "mcp:read"
-        elif name in {"todo_add", "todo_update", "todo_delete"}:
-            required_scope = "mcp:preview"
-        elif name == "decision_read":
-            required_scope = "mcp:read"
-        elif name in {"decision_add", "decision_update", "decision_delete"}:
-            required_scope = "mcp:preview"
-        elif name == "manage_plan_version":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"inspect", "apply_preview_status"}:
-                required_scope = "mcp:read"
-            elif action in {"insert_preview", "update_preview", "repair_preview", "insert_from_prompt_file_preview"}:
-                required_scope = "mcp:preview"
-            elif action in {"apply_preview", "reload_plan", "continue_next_version"}:
-                required_scope = "mcp:commit"
-            else:
-                required_scope = "mcp:preview"
-        elif name == "manage_project_patch":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in {"preview", "preview_delete"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_git_history":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"log", "show", "diff_commits"}:
-                required_scope = "mcp:read"
-            elif action in {"restore_file_preview", "revert_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_plan_workflow":
-            required_scope = "mcp:preview"
-        elif name == "manage_project_docs":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"index", "search", "read_section"}:
-                required_scope = "mcp:read"
-            elif action in {"update_section_preview", "append_section_preview", "sync_docs_preview"}:
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "run_mcp_workflow":
-            workflow = params.get("workflow")
-            phase = params.get("phase", "")
-            docs_action = params.get("docs_action", "")
-            if isinstance(workflow, str):
-                workflow = workflow.strip().lower()
-            if isinstance(phase, str):
-                phase = phase.strip().lower()
-            else:
-                phase = ""
-            if workflow == "auto_preview":
-                required_scope = "mcp:preview"
-            elif workflow == "project_status":
-                required_scope = "mcp:read"
-            elif workflow == "source_onboarding":
-                required_scope = "mcp:preview"
-            elif workflow == "plan_update":
-                required_scope = "mcp:preview"
-            elif workflow == "small_project_patch":
-                if phase == "status":
-                    required_scope = "mcp:read"
-                elif phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "docs_update":
-                if docs_action in ("index", "search", "read_section") or phase == "inspect":
-                    required_scope = "mcp:read"
-                elif docs_action in ("update_section_preview", "append_section_preview", "sync_docs_preview") or phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "git_commit":
-                if phase in ("inspect", "status"):
-                    required_scope = "mcp:read"
-                elif phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "git_restore_file":
-                if phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "git_revert":
-                if phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "git_undo_version":
-                if phase == "inspect":
-                    required_scope = "mcp:read"
-                elif phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "agent_dispatch":
-                if phase in ("inspect", "status"):
-                    required_scope = "mcp:read"
-                elif phase in ("preview", "run_preview"):
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            elif workflow == "thin_governed_loop_preview":
-                required_scope = "mcp:read"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_prompt_file":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_executor_config":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "inspect_inventory":
-                required_scope = "mcp:read"
-            elif action == "probe_models_preview":
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_executor_workflow":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in ("preflight", "status", "get_audit_package"):
-                required_scope = "mcp:read"
-            elif action in ("run_once_preview", "run_bounded_preview", "recheck_report_preview", "manual_validation_preview", "scope_mismatch_preview", "state_lineage_reconciliation_preview", "final_version_closeout_preview", "reconcile_orphaned_claims_preview"):
-                required_scope = "mcp:preview"
-            elif action in ("refresh_audit_package", "recheck_report_apply", "manual_validation_apply", "scope_mismatch_apply", "state_lineage_reconciliation_apply", "final_version_closeout_apply", "reconcile_orphaned_claims_apply"):
-                required_scope = "mcp:commit"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_validation_run":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in ("inspect", "status"):
-                required_scope = "mcp:read"
-            elif action == "preview":
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_stage_parallel_worktrees":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_stage_parallel_shard_inputs":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_stage_parallel_executor_group":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_stage_parallel_executor_runs":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_stage_parallel_merges":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action == "status":
-                required_scope = "mcp:read"
-            elif action in ("preview", "discard"):
-                required_scope = "mcp:preview"
-            else:
-                required_scope = "mcp:commit"
-        elif name == "manage_files":
-            action = params.get("action")
-            if isinstance(action, str):
-                action = action.strip().lower()
-            else:
-                action = None
-            if action in {"create", "edit", "delete"}:
-                phase = params.get("phase")
-                if isinstance(phase, str):
-                    phase = phase.strip().lower()
-                else:
-                    phase = None
-                if phase == "status":
-                    required_scope = "mcp:read"
-                elif phase == "preview":
-                    required_scope = "mcp:preview"
-                else:
-                    required_scope = "mcp:commit"
-            else:
-                required_scope = "mcp:read"
-        elif name == "inspect_executor_activity":
-            required_scope = "mcp:read"
-        elif name in {"list_workflow_runs", "get_workflow_run"}:
-            required_scope = "mcp:read"
-        return required_scope
+        return self._tool_policy_scope(name, params) or "mcp:unknown"
+
+    def _tool_policy_scope(self, name: str, params: dict[str, Any]) -> str | None:
+        policy = MCP_TOOL_POLICIES.get(name)
+        if policy is None:
+            return None
+        scope = policy.scope_for(params)
+        if scope not in VALID_MCP_SCOPES:
+            return None
+        return scope
+
+    def _tool_policy_error(self, name: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        if self._tool_policy_scope(name, params) is not None:
+            return None
+        return self._tool_error(
+            name,
+            "TOOL_POLICY_DENIED",
+            "Tool policy is missing or the requested action is not declared.",
+            {
+                "tool": name,
+                "action": _policy_string_param(params, "action"),
+                "phase": _policy_string_param(params, "phase"),
+                "workflow": _policy_string_param(params, "workflow"),
+                "policy": "mcp_tool_registry_fail_closed",
+            },
+        )
 
     def _oauth_scope_error(
         self,
@@ -6148,6 +6495,35 @@ class MCPPlanningBridgeServer:
             name,
             "INSUFFICIENT_SCOPE",
             "OAuth token scope is insufficient for this tool.",
+        )
+
+    def _external_oauth_remote_policy_error(
+        self,
+        name: str,
+        params: dict[str, Any],
+        auth_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
+            return None
+        required_scope = self._required_scope_for_tool(name, params)
+        if required_scope in {"mcp:read", "mcp:preview"}:
+            return None
+        reason_code = REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES.get(required_scope, "")
+        if not reason_code:
+            return None
+        action = params.get("action")
+        normalized_action = action.strip().lower() if isinstance(action, str) else ""
+        return self._tool_error(
+            name,
+            "REMOTE_POLICY_DENIED",
+            "external-oauth remote policy denied this tool action.",
+            {
+                "policy": REMOTE_EXTERNAL_OAUTH_POLICY,
+                "tool": name,
+                "action": normalized_action,
+                "required_scope": required_scope,
+                "reason_code": reason_code,
+            },
         )
 
     def _cloud_relay_scope_error(

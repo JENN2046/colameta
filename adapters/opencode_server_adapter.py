@@ -10,7 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from adapters.opencode_types import OpenCodeCliError
+from adapters.opencode_types import OpenCodeCliError, OpenCodeRunResult
 from runner.executor_events import ExecutorEventStore
 from runner.git_diff_helper import (
     collect_git_diff_name_paths,
@@ -883,9 +883,7 @@ class OpenCodeServerAdapter:
         resume_session_id: str | None = None,
         run_id: str | None = None,
         event_context: dict[str, Any] | None = None,
-    ) -> "OpenCodeRunResult":
-        from adapters.opencode_types import OpenCodeRunResult
-
+    ) -> OpenCodeRunResult:
         event_store = ExecutorEventStore(project_root) if run_id else None
         _append_live_event(
             event_store, run_id, "executor_command_started",

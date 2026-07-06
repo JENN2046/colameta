@@ -92,6 +92,26 @@ def json_request(
         return int(exc.code), json.loads(raw)
 
 
+def raw_json_request(
+    url: str,
+    *,
+    body: bytes,
+    token: str | None = None,
+    timeout: float = 2.0,
+) -> tuple[int, dict[str, Any]]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return int(response.status), json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        return int(exc.code), json.loads(raw)
+
+
 def wait_for_json(url: str, service: "ServiceProcess", expected_service: str) -> dict[str, Any]:
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
     last_error: Exception | None = None
@@ -150,6 +170,7 @@ def start_service(
     *,
     web_port: int | None,
     mcp_port: int,
+    extra_env: dict[str, str] | None = None,
 ) -> ServiceProcess:
     log_path = tmp_path / f"{mode}-service.log"
     command = [
@@ -173,11 +194,14 @@ def start_service(
 
     assert "0.0.0.0" not in command
     log_handle = log_path.open("wb")
+    env = isolated_env(tmp_path)
+    if extra_env:
+        env.update(extra_env)
     try:
         process = subprocess.Popen(
             command,
             cwd=ROOT,
-            env=isolated_env(tmp_path),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
@@ -199,10 +223,14 @@ def assert_token_auth_flow(service: ServiceProcess) -> None:
     status, payload = json_request(url, method="POST", payload=initialize_payload())
     assert status == 401
     assert payload["error_code"] == "UNAUTHORIZED"
+    assert isinstance(payload.get("request_id"), str)
+    assert payload["request_id"]
 
     status, payload = json_request(url, method="POST", payload=initialize_payload(), token="wrong-token")
     assert status == 401
     assert payload["error_code"] == "UNAUTHORIZED"
+    assert isinstance(payload.get("request_id"), str)
+    assert payload["request_id"]
 
     status, payload = json_request(url, method="POST", payload=initialize_payload(), token=TOKEN)
     assert status == 200
@@ -262,3 +290,55 @@ class ServiceAuthBaselineTests(unittest.TestCase):
 
         assert service.process.poll() is not None
         assert is_port_bindable(mcp_port)
+
+    def test_mcp_jsonrpc_rejects_oversized_body_before_parse(self) -> None:
+        project = self.tmp_path / "source-only-project"
+        project.mkdir()
+        mcp_port = free_tcp_port()
+        service = start_service(self.tmp_path, project, "source-only", web_port=None, mcp_port=mcp_port)
+
+        try:
+            wait_for_json(f"http://{HOST}:{mcp_port}/healthz", service, "colameta-mcp")
+            body = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pad":"' + b"x" * 91000 + b'"}}'
+            status, payload = raw_json_request(
+                f"http://{HOST}:{mcp_port}/mcp",
+                body=body,
+                token=TOKEN,
+            )
+        finally:
+            service.stop()
+
+        assert status == 413
+        assert payload["error"]["data"]["error_code"] == "MCP_REQUEST_TOO_LARGE"
+        assert isinstance(payload["error"]["data"].get("request_id"), str)
+        assert payload["error"]["data"]["request_id"]
+
+    def test_mcp_http_rate_limit_returns_429_with_request_id(self) -> None:
+        project = self.tmp_path / "source-only-project"
+        project.mkdir()
+        mcp_port = free_tcp_port()
+        service = start_service(
+            self.tmp_path,
+            project,
+            "source-only",
+            web_port=None,
+            mcp_port=mcp_port,
+            extra_env={
+                "COLAMETA_MCP_GLOBAL_RATE_LIMIT_PER_MINUTE": "1",
+                "COLAMETA_MCP_GLOBAL_RATE_LIMIT_BURST": "1",
+                "COLAMETA_MCP_CLIENT_RATE_LIMIT_PER_MINUTE": "1",
+                "COLAMETA_MCP_CLIENT_RATE_LIMIT_BURST": "1",
+            },
+        )
+
+        try:
+            wait_for_json(f"http://{HOST}:{mcp_port}/healthz", service, "colameta-mcp")
+            status, payload = json_request(f"http://{HOST}:{mcp_port}/healthz")
+        finally:
+            service.stop()
+
+        assert status == 429
+        assert payload["error_code"] == "MCP_RATE_LIMITED"
+        assert payload["reason_code"] in {"MCP_GLOBAL_RATE_LIMITED", "MCP_CLIENT_RATE_LIMITED"}
+        assert isinstance(payload.get("request_id"), str)
+        assert payload["request_id"]
