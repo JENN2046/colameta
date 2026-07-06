@@ -36,3 +36,7 @@ colameta = "scripts.runner_cli:main"
     assert metadata["dependencies"] == ["PyJWT[crypto]>=2.8,<3"]
     assert metadata["scripts"] == {"colameta": "scripts.runner_cli:main"}
     assert self_hosting_smoke._project_dependencies() == ["PyJWT[crypto]>=2.8,<3"]
+
+
+def test_toml_literal_fallback_reads_empty_inline_table() -> None:
+    assert self_hosting_smoke._literal_toml_value("{}") == {}

@@ -125,7 +125,7 @@ def _read_pyproject_metadata() -> dict[str, Any]:
 def _literal_toml_value(raw_value: str) -> Any:
     try:
         return ast.literal_eval(raw_value)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         if raw_value.startswith("{") and raw_value.endswith("}"):
             table: dict[str, Any] = {}
             inner = raw_value[1:-1].strip()
