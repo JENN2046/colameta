@@ -199,7 +199,8 @@ Expected live checks:
   authorization, token, registration, revocation, and PKCE S256 metadata;
 - in `external-oauth` mode, the local authorization-server endpoint returns
   `EXTERNAL_AUTH_SERVER`, and clients must use the external IdP advertised in
-  protected-resource metadata.
+  protected-resource metadata. The advertised external IdP must be a public
+  HTTPS authorization server and must not be the MCP service base URL.
 
 The preflight output intentionally reports status and JSON field names only. It
 does not read local secret files and does not print tokens, cookies, config, or

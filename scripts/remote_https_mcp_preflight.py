@@ -261,10 +261,8 @@ def validate_remote_payloads(
         failures.append("protected resource metadata must list at least one authorization server.")
     elif auth_mode == "oauth" and plan.public_base_url not in authorization_servers:
         failures.append("protected resource metadata must list the public base URL as an authorization server.")
-    elif auth_mode == "external-oauth" and not any(
-        isinstance(item, str) and item.startswith("https://") for item in authorization_servers
-    ):
-        failures.append("external-oauth protected resource metadata must list an HTTPS authorization server.")
+    elif auth_mode == "external-oauth":
+        failures.extend(_validate_external_oauth_authorization_servers(plan, authorization_servers))
     if "header" not in (resource_payload.get("bearer_methods_supported") or []):
         failures.append("protected resource metadata must support bearer tokens in the header.")
 
@@ -291,6 +289,27 @@ def validate_remote_payloads(
         failures.append("authorization server must support authorization_code grant.")
     if "S256" not in (auth_payload.get("code_challenge_methods_supported") or []):
         failures.append("authorization server must support PKCE S256.")
+    return failures
+
+
+def _validate_external_oauth_authorization_servers(plan: EndpointPlan, authorization_servers: list[Any]) -> list[str]:
+    failures: list[str] = []
+    accepted = 0
+    for item in authorization_servers:
+        if not isinstance(item, str):
+            failures.append("external-oauth authorization servers must be HTTPS URL strings.")
+            continue
+        try:
+            normalized = normalize_public_base_url(item)
+        except PreflightError as exc:
+            failures.append(f"external-oauth authorization server must be a public HTTPS URL: {exc}")
+            continue
+        if normalized == plan.public_base_url:
+            failures.append("external-oauth authorization server must not be the MCP public_base_url.")
+            continue
+        accepted += 1
+    if accepted == 0:
+        failures.append("external-oauth protected resource metadata must list a public external authorization server.")
     return failures
 
 

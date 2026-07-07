@@ -454,6 +454,85 @@ def test_validate_remote_payloads_accepts_external_oauth_resource_server_contrac
     assert failures == []
 
 
+@pytest.mark.parametrize(
+    "authorization_server",
+    [
+        "https://localhost/",
+        "https://127.0.0.1/",
+        "https://192.168.1.10/",
+        "https://colameta.local/",
+        "https://colameta/",
+    ],
+)
+def test_validate_remote_payloads_rejects_non_public_external_oauth_authorization_server(
+    authorization_server: str,
+) -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(200, {"ok": True, "service": "colameta-mcp", "auth_mode": "external-oauth"}),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "external-oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://idp.example.com/", authorization_server],
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            404,
+            {
+                "ok": False,
+                "error_code": "EXTERNAL_AUTH_SERVER",
+            },
+        ),
+    )
+
+    assert any("external-oauth authorization server must be a public HTTPS URL" in item for item in failures)
+
+
+def test_validate_remote_payloads_rejects_mcp_base_url_as_external_oauth_authorization_server() -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(200, {"ok": True, "service": "colameta-mcp", "auth_mode": "external-oauth"}),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "external-oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://mcp.example.com/"],
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            404,
+            {
+                "ok": False,
+                "error_code": "EXTERNAL_AUTH_SERVER",
+            },
+        ),
+    )
+
+    assert "external-oauth authorization server must not be the MCP public_base_url." in failures
+    assert "external-oauth protected resource metadata must list a public external authorization server." in failures
+
+
 def test_validate_remote_payloads_requires_oauth_for_remote_chatgpt_mcp() -> None:
     plan = build_endpoint_plan("https://mcp.example.com")
     failures = validate_remote_payloads(

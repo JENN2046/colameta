@@ -163,7 +163,9 @@ loopback HTTPS URL 会直接 rejected。private / link-local IP literal，例如
 `.localhost`、`.home.arpa` 等后缀和 single-label host，例如 `https://colameta`。
 联网 remote preflight 还会校验公网 `/healthz` 的 runtime provenance：public MCP
 endpoint 必须证明正在服务 `expected_head`，且 reload/source-clean evidence 为 ready；
-只满足 OAuth metadata contract 但指向旧实例或错误实例时会 blocked。每个 probe 的最终
+只满足 OAuth metadata contract 但指向旧实例或错误实例时会 blocked。`external-oauth`
+protected-resource metadata 里的 authorization server 也必须是公网 HTTPS 外部 IdP，
+不能是 loopback/private/local-only host，也不能是 MCP `public_base_url`。每个 probe 的最终
 响应 URL 必须仍是同一 public HTTPS endpoint；redirect 到 loopback、private LAN、
 其它 host、其它 path、query 或 fragment 都会 rejected。30x redirects 会在跟随
 `Location` 前直接失败，避免 operator 机器先访问内网目标再报告失败。显式传入的
