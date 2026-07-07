@@ -83,7 +83,10 @@ def build_production_ops_packet(
     candidate_head = _git_head(root, command_runner)
     target_head, expected_head_check = _expected_head_for_packet(expected_head, candidate_head)
     safe_project_root, project_root_check = _project_root_for_packet(root)
-    safe_public_base_url, public_base_url_check = _public_base_url_for_packet(public_base_url)
+    safe_public_base_url, public_base_url_check = _public_base_url_for_packet(
+        public_base_url,
+        resolve_https_dns=not no_network,
+    )
 
     checks: dict[str, dict[str, Any]] = {
         "candidate_head": _candidate_head_check(candidate_head, target_head),
@@ -571,7 +574,11 @@ def _project_root_for_packet(project_root: str) -> tuple[str, dict[str, Any] | N
     return project_root, None
 
 
-def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, Any] | None]:
+def _public_base_url_for_packet(
+    public_base_url: str,
+    *,
+    resolve_https_dns: bool = True,
+) -> tuple[str, dict[str, Any] | None]:
     if not isinstance(public_base_url, str):
         return REDACTED_PUBLIC_BASE_URL, _check(
             BLOCKED,
@@ -581,7 +588,11 @@ def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, An
             redacted=True,
         )
     try:
-        normalized = normalize_public_base_url(public_base_url, allow_local_http=True)
+        normalized = normalize_public_base_url(
+            public_base_url,
+            allow_local_http=True,
+            resolve_https_dns=resolve_https_dns,
+        )
     except ValueError as exc:
         return REDACTED_PUBLIC_BASE_URL, _check(
             BLOCKED,

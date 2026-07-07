@@ -223,6 +223,34 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
         assert "REMOTE_PREFLIGHT_NOT_RUN" in packet["needs_attention_codes"]
 
+    def test_no_network_preflight_does_not_require_dns(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        def fail_resolve(host: str) -> list[object]:
+            raise AssertionError(f"offline ops-check should not resolve {host}")
+
+        with patch("scripts.remote_https_mcp_preflight._resolve_hostname_addresses", fail_resolve):
+            packet = build_production_ops_packet(
+                str(self.project),
+                public_base_url="https://mcp.prod.example.com",
+                expected_head=HEAD,
+                stable_runtime_dir=str(self.stable),
+                backup_dir=str(self.backups),
+                no_network=True,
+                connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+                command_runner=FakeCommandRunner(),
+                preflight_runner=ready_preflight,
+                now=NOW,
+            )
+
+        check = packet["checks"]["remote_https_mcp_preflight"]
+        assert packet["status"] == "needs_attention"
+        assert packet["ops_check_ready"] is False
+        assert packet["public_base_url"] == "https://mcp.prod.example.com"
+        assert check["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
+        assert check["network_check"] == "not_run"
+        assert "REMOTE_PREFLIGHT_NOT_RUN" in packet["needs_attention_codes"]
+
     def test_loopback_http_no_network_preflight_uses_local_http_allowance(self) -> None:
         from runner.production_ops import build_production_ops_packet
 

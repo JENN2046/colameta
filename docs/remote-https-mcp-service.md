@@ -188,10 +188,11 @@ Live endpoint check after the HTTPS service exists:
 .venv/bin/python scripts/remote_https_mcp_preflight.py https://mcp.example.com
 ```
 
-The preflight rejects localhost, private/link-local IP literals, local-only DNS
+Live preflight rejects localhost, private/link-local IP literals, local-only DNS
 names, unresolved hostnames, and hostnames whose A/AAAA answers include any
 non-global address. This keeps split-horizon DNS or intranet-only endpoints from
-satisfying the public ChatGPT connector gate.
+satisfying the public ChatGPT connector gate. Shape-only `--no-network` checks
+do not resolve hostnames.
 
 Expected live checks:
 

@@ -163,9 +163,10 @@ loopback HTTPS URL 会直接 rejected。private / link-local IP literal，例如
 形式，例如 `https://127.1`、`https://2130706433`，会先按 IPv4 地址解释后再判定，
 不能绕过公网 endpoint 要求。local-only DNS 名称也会 rejected，包括 `.local`、
 `.localhost`、`.home.arpa` 等后缀和 single-label host，例如 `https://colameta`。
-其它 HTTPS hostname 会解析 A/AAAA；如果解析失败，或任一解析结果是 loopback、
-private、link-local、ULA 等 non-global 地址，也会 rejected，避免 split-horizon DNS
-把内网 endpoint 当成 public endpoint。
+联网检查中的其它 HTTPS hostname 会解析 A/AAAA；如果解析失败，或任一解析结果是
+loopback、private、link-local、ULA 等 non-global 地址，也会 rejected，避免
+split-horizon DNS 把内网 endpoint 当成 public endpoint。`--no-network` 离线形态检查
+不会解析 hostname。
 联网 remote preflight 还会校验公网 `/healthz` 的 runtime provenance：public MCP
 endpoint 必须证明正在服务 `expected_head`，且 reload/source-clean evidence 为 ready；
 只满足 OAuth metadata contract 但指向旧实例或错误实例时会 blocked。`external-oauth`

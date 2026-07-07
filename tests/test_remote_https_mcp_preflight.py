@@ -149,6 +149,19 @@ def test_run_preflight_no_network_reports_connector_urls() -> None:
     assert report["connector_url"] == "https://mcp.example.com/mcp"
 
 
+def test_run_preflight_no_network_does_not_require_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_resolve(host: str) -> list[object]:
+        raise AssertionError(f"offline preflight should not resolve {host}")
+
+    monkeypatch.setattr(remote_preflight, "_resolve_hostname_addresses", fail_resolve)
+
+    report = run_preflight("https://mcp.prod.example.com/", no_network=True)
+
+    assert report["ok"] is True
+    assert report["network_check"] == "not_run"
+    assert report["connector_url"] == "https://mcp.prod.example.com/mcp"
+
+
 def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 

@@ -60,7 +60,12 @@ class EndpointPlan:
     authorization_server_metadata_url: str
 
 
-def normalize_public_base_url(value: str, *, allow_local_http: bool = False) -> str:
+def normalize_public_base_url(
+    value: str,
+    *,
+    allow_local_http: bool = False,
+    resolve_https_dns: bool = True,
+) -> str:
     base = value.strip().rstrip("/")
     if not base:
         raise PreflightError("public_base_url is required.")
@@ -76,7 +81,7 @@ def normalize_public_base_url(value: str, *, allow_local_http: bool = False) -> 
         raise PreflightError("public_base_url must not include query or fragment.")
     if parsed.path.rstrip("/").endswith("/mcp"):
         raise PreflightError("public_base_url must be the service base URL, not the /mcp connector URL.")
-    if parsed.scheme == "https" and _is_non_public_https_host(parsed.hostname):
+    if parsed.scheme == "https" and _is_non_public_https_host(parsed.hostname, resolve_dns=resolve_https_dns):
         raise PreflightError(
             "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
             "local-only DNS, or otherwise non-public hosts."
@@ -99,7 +104,7 @@ def _is_loopback_host(hostname: str | None) -> bool:
         return bool(numeric_ipv4 and numeric_ipv4.is_loopback)
 
 
-def _is_non_public_https_host(hostname: str | None) -> bool:
+def _is_non_public_https_host(hostname: str | None, *, resolve_dns: bool = True) -> bool:
     host = (hostname or "").strip().lower().rstrip(".")
     if host == "localhost":
         return True
@@ -111,7 +116,7 @@ def _is_non_public_https_host(hostname: str | None) -> bool:
             return not numeric_ipv4.is_global
         if _is_local_only_dns_name(host):
             return True
-        return _hostname_resolves_to_non_global_addresses(host)
+        return resolve_dns and _hostname_resolves_to_non_global_addresses(host)
 
 
 def _is_local_only_dns_name(host: str) -> bool:
@@ -353,7 +358,11 @@ def run_preflight(
     timeout_seconds: float = 5.0,
     expected_head: str | None = None,
 ) -> dict[str, Any]:
-    normalized = normalize_public_base_url(public_base_url, allow_local_http=allow_local_http)
+    normalized = normalize_public_base_url(
+        public_base_url,
+        allow_local_http=allow_local_http,
+        resolve_https_dns=not no_network,
+    )
     expected_runtime_head = _clean_expected_head(expected_head)
     plan = build_endpoint_plan(normalized)
     report: dict[str, Any] = {
