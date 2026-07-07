@@ -142,11 +142,12 @@ def get_runtime_version_status(
 
 def runtime_healthz_provenance(project_root: str | None) -> dict[str, Any]:
     """Return cached public, non-secret runtime freshness fields for health endpoints."""
-    return dict(_runtime_healthz_provenance_cached(project_root))
+    cache_key = _runtime_healthz_cache_key(project_root)
+    return dict(_runtime_healthz_provenance_cached(project_root, cache_key))
 
 
 @lru_cache(maxsize=16)
-def _runtime_healthz_provenance_cached(project_root: str | None) -> dict[str, Any]:
+def _runtime_healthz_provenance_cached(project_root: str | None, cache_key: tuple[Any, ...]) -> dict[str, Any]:
     try:
         status = get_runtime_version_status(project_root)
     except Exception:
@@ -175,6 +176,21 @@ def _runtime_healthz_provenance_cached(project_root: str | None) -> dict[str, An
         "installed_package_project_source_clean": package.get("project_source_clean"),
         "installed_package_source_cleanliness_status": package.get("source_cleanliness_status"),
     }
+
+
+def _runtime_healthz_cache_key(project_root: str | None) -> tuple[Any, ...]:
+    project = git_checkout_metadata(project_root)
+    project_root_clean = project.get("project_root") if isinstance(project.get("project_root"), str) else None
+    source_cleanliness = _source_checkout_cleanliness(project_root_clean)
+    return (
+        project_root_clean,
+        _clean_head(project.get("head")),
+        project.get("head_source"),
+        source_cleanliness.get("project_source_clean"),
+        source_cleanliness.get("source_cleanliness_status"),
+        source_cleanliness.get("dirty_entry_count"),
+        source_cleanliness.get("unavailable_reason"),
+    )
 
 
 def get_connector_runtime_health_status(

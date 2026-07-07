@@ -40,6 +40,8 @@ class FakeCommandRunner:
             "loaded_runtime_head": head,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
         }
         self.mcp_health_payload = mcp_health_payload or {
             "ok": True,
@@ -47,6 +49,8 @@ class FakeCommandRunner:
             "loaded_runtime_head": head,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
         }
         self.cat_file_ok = cat_file_ok
         self.calls: list[list[str]] = []
@@ -528,6 +532,8 @@ class ProductionOpsTests(unittest.TestCase):
             "runtime_loaded_code_stale": True,
             "reload_needed_for_verification": True,
             "reload_awareness_reason": "loaded_module_source_changed",
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
         }
         mcp_health = {
             "ok": True,
@@ -535,6 +541,8 @@ class ProductionOpsTests(unittest.TestCase):
             "loaded_runtime_head": HEAD,
             "runtime_loaded_code_stale": False,
             "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
         }
         packet = build_production_ops_packet(
             str(self.project),
@@ -554,6 +562,47 @@ class ProductionOpsTests(unittest.TestCase):
         assert check["web_loaded_runtime_head"] == HEAD
         assert check["web_runtime_loaded_code_stale"] is True
         assert check["web_reload_needed_for_verification"] is True
+        assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
+
+    def test_local_health_blocks_loaded_head_without_clean_source_evidence(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        web_health = {
+            "ok": True,
+            "service": "colameta-web-console",
+            "loaded_runtime_head": HEAD,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": False,
+            "installed_package_source_cleanliness_status": "dirty",
+        }
+        mcp_health = {
+            "ok": True,
+            "service": "colameta-mcp",
+            "loaded_runtime_head": HEAD,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
+        }
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(web_health_payload=web_health, mcp_health_payload=mcp_health),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"
+        assert check["web_loaded_runtime_head"] == HEAD
+        assert check["web_installed_package_project_source_clean"] is False
+        assert check["web_installed_package_source_cleanliness_status"] == "dirty"
         assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
 
     def test_local_health_blocks_loaded_runtime_head_mismatch(self) -> None:

@@ -344,15 +344,63 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
             },
         }
 
-        with patch.object(runtime_observability, "get_runtime_version_status", return_value=status) as mocked_status:
-            first = runtime_observability.runtime_healthz_provenance(str(project))
-            second = runtime_observability.runtime_healthz_provenance(str(project))
+        with patch.object(runtime_observability, "_runtime_healthz_cache_key", return_value=("clean",)):
+            with patch.object(runtime_observability, "get_runtime_version_status", return_value=status) as mocked_status:
+                first = runtime_observability.runtime_healthz_provenance(str(project))
+                second = runtime_observability.runtime_healthz_provenance(str(project))
 
         assert mocked_status.call_count == 1
         assert first == second
         assert first is not second
         assert first["installed_package_project_source_clean"] is True
         assert first["installed_package_source_cleanliness_status"] == "clean"
+
+    def test_runtime_healthz_provenance_recomputes_when_cache_key_changes(self) -> None:
+        project = self.make_git_checkout(HEAD_A, branch="healthz-invalidate")
+        runtime_observability._runtime_healthz_provenance_cached.cache_clear()
+        clean_status = {
+            "loaded_runtime_head": HEAD_A,
+            "project_checkout_head": HEAD_A,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "loaded_code_verified_current",
+            "installed_package_verification": {
+                "matches_project_checkout": None,
+                "verification_status": "not_loaded_from_installed_package",
+                "project_source_clean": True,
+                "source_cleanliness_status": "clean",
+            },
+        }
+        dirty_status = {
+            **clean_status,
+            "runtime_loaded_code_stale": None,
+            "reload_needed_for_verification": True,
+            "reload_awareness_reason": "installed_package_project_checkout_dirty",
+            "installed_package_verification": {
+                "matches_project_checkout": None,
+                "verification_status": "dirty_project_checkout",
+                "project_source_clean": False,
+                "source_cleanliness_status": "dirty",
+            },
+        }
+
+        with patch.object(
+            runtime_observability,
+            "_runtime_healthz_cache_key",
+            side_effect=[("head", "clean"), ("head", "dirty")],
+        ):
+            with patch.object(
+                runtime_observability,
+                "get_runtime_version_status",
+                side_effect=[clean_status, dirty_status],
+            ) as mocked_status:
+                first = runtime_observability.runtime_healthz_provenance(str(project))
+                second = runtime_observability.runtime_healthz_provenance(str(project))
+
+        assert mocked_status.call_count == 2
+        assert first["installed_package_project_source_clean"] is True
+        assert second["installed_package_project_source_clean"] is False
+        assert second["reload_needed_for_verification"] is True
 
     def test_no_runtime_or_external_mutation_authority_is_exposed(self) -> None:
         project = self.make_git_checkout(HEAD_A)
