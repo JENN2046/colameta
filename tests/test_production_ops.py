@@ -378,6 +378,50 @@ class ProductionOpsTests(unittest.TestCase):
         assert check["healthz_runtime"]["loaded_runtime_head"] == stale_head
         assert "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED" in packet["blocker_codes"]
 
+    def test_remote_preflight_blocks_stale_loaded_head_before_package_fallback(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        stale_head = "b" * 40
+
+        def stale_loaded_with_package_fallback(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            return {
+                "ok": True,
+                "public_base_url": public_base_url,
+                "connector_url": f"{public_base_url}/mcp",
+                "network_check": "run",
+                "expected_runtime_head": kwargs.get("expected_head"),
+                "healthz_runtime": {
+                    "loaded_runtime_head": stale_head,
+                    "runtime_project_checkout_head": HEAD,
+                    "runtime_loaded_code_stale": False,
+                    "reload_needed_for_verification": False,
+                    "installed_package_matches_project_checkout": True,
+                    "installed_package_verification_status": "match",
+                    "installed_package_project_source_clean": True,
+                    "installed_package_source_cleanliness_status": "clean",
+                },
+                "failures": [],
+            }
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=stale_loaded_with_package_fallback,
+            now=NOW,
+        )
+
+        check = packet["checks"]["remote_https_mcp_preflight"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED"
+        assert check["healthz_runtime"]["loaded_runtime_head"] == stale_head
+        assert check["healthz_runtime"]["runtime_project_checkout_head"] == HEAD
+        assert "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED" in packet["blocker_codes"]
+
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet
 

@@ -370,6 +370,114 @@ def test_validate_remote_payloads_rejects_stale_public_healthz_runtime() -> None
     assert "healthz runtime provenance must prove the public MCP endpoint is serving expected_head." in failures
 
 
+def test_validate_remote_payloads_accepts_package_fallback_without_loaded_head() -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(
+            200,
+            {
+                "ok": True,
+                "service": "colameta-mcp",
+                "auth_mode": "oauth",
+                "loaded_runtime_head": None,
+                "runtime_project_checkout_head": HEAD,
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "installed_package_matches_project_checkout": True,
+                "installed_package_verification_status": "match",
+                "installed_package_project_source_clean": True,
+                "installed_package_source_cleanliness_status": "clean",
+            },
+        ),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://mcp.example.com"],
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            200,
+            {
+                "issuer": "https://mcp.example.com",
+                "authorization_endpoint": "https://mcp.example.com/authorize",
+                "token_endpoint": "https://mcp.example.com/token",
+                "registration_endpoint": "https://mcp.example.com/register",
+                "revocation_endpoint": "https://mcp.example.com/revoke",
+                "grant_types_supported": ["authorization_code"],
+                "code_challenge_methods_supported": ["S256"],
+            },
+        ),
+        expected_head=HEAD,
+    )
+
+    assert failures == []
+
+
+def test_validate_remote_payloads_rejects_stale_loaded_head_before_package_fallback() -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(
+            200,
+            {
+                "ok": True,
+                "service": "colameta-mcp",
+                "auth_mode": "oauth",
+                "loaded_runtime_head": STALE_HEAD,
+                "runtime_project_checkout_head": HEAD,
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "installed_package_matches_project_checkout": True,
+                "installed_package_verification_status": "match",
+                "installed_package_project_source_clean": True,
+                "installed_package_source_cleanliness_status": "clean",
+            },
+        ),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://mcp.example.com"],
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            200,
+            {
+                "issuer": "https://mcp.example.com",
+                "authorization_endpoint": "https://mcp.example.com/authorize",
+                "token_endpoint": "https://mcp.example.com/token",
+                "registration_endpoint": "https://mcp.example.com/register",
+                "revocation_endpoint": "https://mcp.example.com/revoke",
+                "grant_types_supported": ["authorization_code"],
+                "code_challenge_methods_supported": ["S256"],
+            },
+        ),
+        expected_head=HEAD,
+    )
+
+    assert "healthz runtime provenance must prove the public MCP endpoint is serving expected_head." in failures
+
+
 def test_validate_remote_payloads_rejects_dirty_public_healthz_runtime() -> None:
     plan = build_endpoint_plan("https://mcp.example.com")
     failures = validate_remote_payloads(

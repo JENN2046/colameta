@@ -143,7 +143,9 @@ smoke check blocked，并且不会在 `--json` 或 `--write-status` 输出中回
 `runtime_loaded_code_stale=false`，`reload_needed_for_verification=false`，
 且 installed-package/source-checkout verification 为 `match`，并且
 `installed_package_project_source_clean=true`、
-`installed_package_source_cleanliness_status=clean`。source roots 存在未提交或
+`installed_package_source_cleanliness_status=clean`。如果 `loaded_runtime_head`
+已报告但不同于 `expected_head`，则必须 fail-closed，不能用 packaged runtime
+provenance fallback 覆盖这条运行中代码证据。source roots 存在未提交或
 untracked 变化时，即使这些变化已经被安装到 site-packages，也会 fail-closed。
 这些 healthz runtime provenance 字段描述 loaded/stable runtime source root，而不是
 `serve <project_root>` 传入的被服务项目；packaged install 会从 distribution

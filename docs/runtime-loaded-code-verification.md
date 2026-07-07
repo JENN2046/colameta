@@ -59,6 +59,11 @@ This verification does not claim full Git worktree cleanliness. It does not scan
 - The loaded runtime HEAD matches the current checkout HEAD and captured loaded module fingerprints still match their current source files.
 - Or, for an installed package without a runtime `.git` directory, the installed package runtime files match the same relative files in the project checkout and the runtime source roots are clean against Git HEAD.
 
+Readiness gates may use installed-package provenance only when
+`loaded_runtime_head` is unavailable. A reported `loaded_runtime_head` that
+differs from the expected commit is stale running-code evidence and must not be
+overridden by package or checkout fallback fields.
+
 Installed package verification must not invent a Git HEAD for `site-packages`. It can clear `reload_needed_for_verification` only by proving file equivalence between the installed package and the project checkout for runtime-relevant roots, proving those source roots are clean against Git HEAD, and keeping loaded module fingerprints verified. Dirty or unverified source-root cleanliness remains fail-closed. That evidence is still weaker than full deployment authority and does not prove remote traceability by itself.
 
 Changed loaded source files are classified as reload verification risk because the running process may still be using code imported before the edit.

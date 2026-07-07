@@ -747,12 +747,13 @@ def _health_endpoint_ready(health: dict[str, Any], expected_service: str) -> boo
 def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str | None) -> bool:
     if not expected_head:
         return False
-    if (
-        health.get("loaded_runtime_head") == expected_head
-        and _health_runtime_reload_verified(health)
-        and _health_runtime_source_clean(health)
-    ):
-        return True
+    loaded_runtime_head = health.get("loaded_runtime_head")
+    if loaded_runtime_head:
+        return (
+            loaded_runtime_head == expected_head
+            and _health_runtime_reload_verified(health)
+            and _health_runtime_source_clean(health)
+        )
     return (
         health.get("runtime_project_checkout_head") == expected_head
         and _health_runtime_reload_verified(health)

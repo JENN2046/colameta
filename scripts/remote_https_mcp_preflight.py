@@ -369,12 +369,13 @@ def _validate_health_runtime(health_payload: dict[str, Any], expected_head: str)
 
 
 def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str) -> bool:
-    if (
-        _clean_head(health.get("loaded_runtime_head")) == expected_head
-        and _health_runtime_reload_verified(health)
-        and _health_runtime_source_clean(health)
-    ):
-        return True
+    loaded_runtime_head = _reported_loaded_runtime_head(health.get("loaded_runtime_head"))
+    if loaded_runtime_head is not None:
+        return (
+            loaded_runtime_head == expected_head
+            and _health_runtime_reload_verified(health)
+            and _health_runtime_source_clean(health)
+        )
     return (
         _clean_head(health.get("runtime_project_checkout_head") or health.get("project_checkout_head")) == expected_head
         and _health_runtime_reload_verified(health)
@@ -382,6 +383,14 @@ def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str)
         and health.get("installed_package_matches_project_checkout") is True
         and health.get("installed_package_verification_status") == "match"
     )
+
+
+def _reported_loaded_runtime_head(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _clean_head(value) or ""
 
 
 def _health_runtime_reload_verified(health: dict[str, Any]) -> bool:
