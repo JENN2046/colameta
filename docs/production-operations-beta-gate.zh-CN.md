@@ -138,8 +138,12 @@ smoke check blocked，并且不会在 `--json` 或 `--write-status` 输出中回
 healthz 返回的 packaged runtime provenance 证明：`runtime_project_checkout_head`
 等于 `expected_head`，`runtime_loaded_code_stale=false`，
 `reload_needed_for_verification=false`，且 installed-package/source-checkout
-verification 为 `match`。stable checkout 磁盘 HEAD 对齐但服务未重启时，这项会
-fail-closed，而不会把 disk HEAD 当作运行中代码证据。
+verification 为 `match`，并且 `installed_package_project_source_clean=true`、
+`installed_package_source_cleanliness_status=clean`。source roots 存在未提交或
+untracked 变化时，即使这些变化已经被安装到 site-packages，也会 fail-closed。
+stable checkout 磁盘 HEAD 对齐但服务未重启时，这项会 fail-closed，而不会把
+disk HEAD 当作运行中代码证据。公开 healthz 中的 packaged provenance 是进程内
+缓存的轻量摘要，避免远程轮询反复触发源码 hash 校验。
 
 `--public-base-url` 必须代表公网 remote MCP endpoint。`http://` loopback 只允许
 `--no-network` 离线形态检查；`https://127.0.0.1`、`https://localhost` 或其它

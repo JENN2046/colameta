@@ -23,8 +23,10 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="colameta-runtime-loaded-code-")
         self.tmp_path = Path(self._tmp.name)
+        runtime_observability._runtime_healthz_provenance_cached.cache_clear()
 
     def tearDown(self) -> None:
+        runtime_observability._runtime_healthz_provenance_cached.cache_clear()
         self._tmp.cleanup()
 
     def make_git_checkout(self, head: str = HEAD_A, branch: str = "main") -> Path:
@@ -194,11 +196,16 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
 
         with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
             with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
-                status = get_runtime_version_status(
-                    str(project),
-                    loaded_runtime_head="",
-                    loaded_module_fingerprints=loaded_fingerprints,
-                )
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head="",
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
 
         assert status["restart_needed_state"] == "unknown"
         assert status["runtime_loaded_code_stale"] is False
@@ -207,8 +214,44 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         package = status["installed_package_verification"]
         assert package["verification_status"] == "match"
         assert package["matches_project_checkout"] is True
+        assert package["project_source_clean"] is True
         assert package["checked_file_count"] == len(files)
         assert package["mismatched_file_count"] == 0
+
+    def test_installed_package_matching_dirty_project_checkout_stays_unverified(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages-dirty"
+        relative_path = "runner/runtime_observability.py"
+        for root in (project, installed_root):
+            target = root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("loaded = 'dirty-but-installed'\n", encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, [relative_path])
+        loaded_fingerprints = self.module_fingerprint(installed_root / relative_path)
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=False),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head="",
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
+
+        assert status["runtime_loaded_code_stale"] is None
+        assert status["reload_needed_for_verification"] is True
+        assert status["reload_awareness_reason"] == "installed_package_project_checkout_dirty"
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "dirty_project_checkout"
+        assert package["matches_project_checkout"] is False
+        assert package["matches_project_worktree"] is True
+        assert package["project_source_clean"] is False
+        assert package["source_cleanliness_status"] == "dirty"
 
     def test_installed_package_mismatch_keeps_reload_verification_blocked(self) -> None:
         project = self.make_git_checkout(HEAD_A)
@@ -226,11 +269,16 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
 
         with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
             with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
-                status = get_runtime_version_status(
-                    str(project),
-                    loaded_runtime_head="",
-                    loaded_module_fingerprints=loaded_fingerprints,
-                )
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head="",
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
 
         assert status["runtime_loaded_code_stale"] is None
         assert status["reload_needed_for_verification"] is True
@@ -261,11 +309,16 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
 
         with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
             with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
-                status = get_runtime_version_status(
-                    str(project),
-                    loaded_runtime_head="",
-                    loaded_module_fingerprints=loaded_fingerprints,
-                )
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head="",
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
 
         assert status["runtime_loaded_code_stale"] is None
         assert status["reload_needed_for_verification"] is True
@@ -273,6 +326,33 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         package = status["installed_package_verification"]
         assert package["verification_status"] == "match"
         assert package["matches_project_checkout"] is True
+
+    def test_runtime_healthz_provenance_caches_expensive_runtime_status(self) -> None:
+        project = self.make_git_checkout(HEAD_A, branch="healthz-cache")
+        runtime_observability._runtime_healthz_provenance_cached.cache_clear()
+        status = {
+            "loaded_runtime_head": None,
+            "project_checkout_head": HEAD_A,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+            "installed_package_verification": {
+                "matches_project_checkout": True,
+                "verification_status": "match",
+                "project_source_clean": True,
+                "source_cleanliness_status": "clean",
+            },
+        }
+
+        with patch.object(runtime_observability, "get_runtime_version_status", return_value=status) as mocked_status:
+            first = runtime_observability.runtime_healthz_provenance(str(project))
+            second = runtime_observability.runtime_healthz_provenance(str(project))
+
+        assert mocked_status.call_count == 1
+        assert first == second
+        assert first is not second
+        assert first["installed_package_project_source_clean"] is True
+        assert first["installed_package_source_cleanliness_status"] == "clean"
 
     def test_no_runtime_or_external_mutation_authority_is_exposed(self) -> None:
         project = self.make_git_checkout(HEAD_A)
@@ -360,6 +440,13 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
                 return self._root / text if text else self._root
 
         return FakeDistribution(root, files)
+
+    def source_cleanliness(self, *, clean: bool) -> dict[str, object]:
+        return {
+            "project_source_clean": clean,
+            "source_cleanliness_status": "clean" if clean else "dirty",
+            "dirty_entry_count": 0 if clean else 1,
+        }
 
 
 if __name__ == "__main__":

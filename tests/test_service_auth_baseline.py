@@ -261,6 +261,8 @@ class ServiceAuthBaselineTests(unittest.TestCase):
             assert "runtime_loaded_code_stale" in web_health
             assert "reload_needed_for_verification" in web_health
             assert "installed_package_matches_project_checkout" in web_health
+            assert "installed_package_project_source_clean" in web_health
+            assert "installed_package_source_cleanliness_status" in web_health
 
             mcp_health = wait_for_json(f"http://{HOST}:{mcp_port}/healthz", service, "colameta-mcp")
             assert mcp_health["ok"] is True
@@ -271,6 +273,8 @@ class ServiceAuthBaselineTests(unittest.TestCase):
             assert "runtime_loaded_code_stale" in mcp_health
             assert "reload_needed_for_verification" in mcp_health
             assert "installed_package_matches_project_checkout" in mcp_health
+            assert "installed_package_project_source_clean" in mcp_health
+            assert "installed_package_source_cleanliness_status" in mcp_health
 
             assert (project / ".colameta" / "plan.json").is_file()
             assert_token_auth_flow(service)
@@ -297,6 +301,8 @@ class ServiceAuthBaselineTests(unittest.TestCase):
             assert "runtime_loaded_code_stale" in mcp_health
             assert "reload_needed_for_verification" in mcp_health
             assert "installed_package_matches_project_checkout" in mcp_health
+            assert "installed_package_project_source_clean" in mcp_health
+            assert "installed_package_source_cleanliness_status" in mcp_health
             assert not (project / ".colameta").exists()
 
             assert_token_auth_flow(service)

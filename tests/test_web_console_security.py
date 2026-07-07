@@ -579,6 +579,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "runtime_loaded_code_stale" in health
         assert "reload_needed_for_verification" in health
         assert "installed_package_matches_project_checkout" in health
+        assert "installed_package_project_source_clean" in health
+        assert "installed_package_source_cleanliness_status" in health
 
         status, v2_health = json_request(f"http://{HOST}:{self.port}/api/v2/health")
         assert status == 200

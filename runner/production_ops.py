@@ -310,6 +310,8 @@ def _local_stable_health_check(
         "web_reload_awareness_reason": web.get("reload_awareness_reason"),
         "web_installed_package_matches_project_checkout": web.get("installed_package_matches_project_checkout"),
         "web_installed_package_verification_status": web.get("installed_package_verification_status"),
+        "web_installed_package_project_source_clean": web.get("installed_package_project_source_clean"),
+        "web_installed_package_source_cleanliness_status": web.get("installed_package_source_cleanliness_status"),
         "mcp_healthz_http_status": mcp.get("http_status"),
         "mcp_healthz_ok": mcp.get("ok"),
         "mcp_healthz_service": mcp.get("service"),
@@ -320,6 +322,8 @@ def _local_stable_health_check(
         "mcp_reload_awareness_reason": mcp.get("reload_awareness_reason"),
         "mcp_installed_package_matches_project_checkout": mcp.get("installed_package_matches_project_checkout"),
         "mcp_installed_package_verification_status": mcp.get("installed_package_verification_status"),
+        "mcp_installed_package_project_source_clean": mcp.get("installed_package_project_source_clean"),
+        "mcp_installed_package_source_cleanliness_status": mcp.get("installed_package_source_cleanliness_status"),
         "expected_head": expected_head,
     }
     if not _health_endpoint_ready(web, EXPECTED_WEB_HEALTH_SERVICE) or not _health_endpoint_ready(
@@ -688,6 +692,12 @@ def _curl_json_health(url: str, command_runner: Callable[[list[str]], subprocess
         "installed_package_verification_status": payload.get("installed_package_verification_status")
         if isinstance(payload.get("installed_package_verification_status"), str)
         else None,
+        "installed_package_project_source_clean": payload.get("installed_package_project_source_clean")
+        if isinstance(payload.get("installed_package_project_source_clean"), bool)
+        else None,
+        "installed_package_source_cleanliness_status": payload.get("installed_package_source_cleanliness_status")
+        if isinstance(payload.get("installed_package_source_cleanliness_status"), str)
+        else None,
     }
 
 
@@ -706,6 +716,8 @@ def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str 
         and health.get("reload_needed_for_verification") is False
         and health.get("installed_package_matches_project_checkout") is True
         and health.get("installed_package_verification_status") == "match"
+        and health.get("installed_package_project_source_clean") is True
+        and health.get("installed_package_source_cleanliness_status") == "clean"
     )
 
 
