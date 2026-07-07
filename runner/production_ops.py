@@ -39,11 +39,24 @@ SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{12,}"),
     re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+"),
+    re.compile(r"(?i)\bBearer\s+\S+"),
     re.compile(r"(?i)\bBearer\s+eyJ[A-Za-z0-9_\-]*(?:\.[A-Za-z0-9_\-]+){1,2}"),
     re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"),
     re.compile(r"(?i)\b(client_secret|access_token|refresh_token|id_token|cookie|password|private_key)\b"),
 )
 SENSITIVE_KEY_RE = re.compile(r"(?i)(secret|token|cookie|password|credential|private[_-]?key|authorization)")
+CONNECTOR_SMOKE_STATUS_ALLOWLIST = frozenset(
+    {
+        "ready",
+        "missing",
+        "stale",
+        "failed",
+        "needs_attention",
+        "blocked",
+        "unavailable",
+        "unknown",
+    }
+)
 
 
 def build_production_ops_packet(
@@ -75,7 +88,7 @@ def build_production_ops_packet(
         "origin_main": _origin_main_check(root, candidate_head, command_runner),
         "stable_runtime": _stable_runtime_check(stable_runtime_dir, target_head, command_runner),
         "stable_service": _systemd_service_check(stable_service_name, command_runner),
-        "local_stable_health": _local_stable_health_check(command_runner),
+        "local_stable_health": _local_stable_health_check(command_runner, target_head),
         "remote_https_mcp_preflight": public_base_url_check
         or _remote_preflight_check(safe_public_base_url, no_network, preflight_runner),
         "cloudflared_service": _systemd_service_check(cloudflared_service_name, command_runner),
@@ -280,9 +293,23 @@ def _systemd_service_check(
     )
 
 
-def _local_stable_health_check(command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> dict[str, Any]:
+def _local_stable_health_check(
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    expected_head: str | None,
+) -> dict[str, Any]:
     web = _curl_json_health("http://127.0.0.1:8801/api/healthz", command_runner)
     mcp = _curl_json_health("http://127.0.0.1:8766/healthz", command_runner)
+    health_evidence = {
+        "web_healthz_http_status": web.get("http_status"),
+        "web_healthz_ok": web.get("ok"),
+        "web_healthz_service": web.get("service"),
+        "web_loaded_runtime_head": web.get("loaded_runtime_head"),
+        "mcp_healthz_http_status": mcp.get("http_status"),
+        "mcp_healthz_ok": mcp.get("ok"),
+        "mcp_healthz_service": mcp.get("service"),
+        "mcp_loaded_runtime_head": mcp.get("loaded_runtime_head"),
+        "expected_head": expected_head,
+    }
     if not _health_endpoint_ready(web, EXPECTED_WEB_HEALTH_SERVICE) or not _health_endpoint_ready(
         mcp, EXPECTED_MCP_HEALTH_SERVICE
     ):
@@ -290,23 +317,29 @@ def _local_stable_health_check(command_runner: Callable[[list[str]], subprocess.
             BLOCKED,
             "LOCAL_STABLE_HEALTH_FAILED",
             "Stable local Web or MCP health check failed.",
-            web_healthz_http_status=web.get("http_status"),
-            web_healthz_ok=web.get("ok"),
-            web_healthz_service=web.get("service"),
-            mcp_healthz_http_status=mcp.get("http_status"),
-            mcp_healthz_ok=mcp.get("ok"),
-            mcp_healthz_service=mcp.get("service"),
+            **health_evidence,
+        )
+    web_head = web.get("loaded_runtime_head")
+    mcp_head = mcp.get("loaded_runtime_head")
+    if not expected_head or not web_head or not mcp_head:
+        return _check(
+            BLOCKED,
+            "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED",
+            "Stable local Web and MCP health checks did not prove the running loaded runtime head.",
+            **health_evidence,
+        )
+    if web_head != expected_head or mcp_head != expected_head:
+        return _check(
+            BLOCKED,
+            "LOCAL_STABLE_RUNTIME_HEAD_MISMATCH",
+            "Stable local Web or MCP service is not serving the expected loaded runtime head.",
+            **health_evidence,
         )
     return _check(
         READY,
         "LOCAL_STABLE_HEALTH_READY",
         "Stable local Web and MCP health checks passed.",
-        web_healthz_http_status=web.get("http_status"),
-        web_healthz_ok=web.get("ok"),
-        web_healthz_service=web.get("service"),
-        mcp_healthz_http_status=mcp.get("http_status"),
-        mcp_healthz_ok=mcp.get("ok"),
-        mcp_healthz_service=mcp.get("service"),
+        **health_evidence,
     )
 
 
@@ -417,7 +450,7 @@ def _connector_smoke_check(
         return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_MISSING", "Fresh ChatGPT connector smoke evidence was not provided.")
     status = connector_smoke.get("status") or connector_smoke.get("apps_connector_closeout_status")
     observed = connector_smoke.get("last_observed_at") or connector_smoke.get("observed_at")
-    safe_status, status_redacted = _redact_connector_smoke_field(status)
+    safe_status, status_redacted, status_allowlisted = _connector_smoke_status_for_packet(status)
     safe_observed, observed_redacted, observed_valid = _connector_smoke_observed_at_for_packet(observed)
     if status_redacted or observed_redacted:
         return _check(
@@ -428,15 +461,16 @@ def _connector_smoke_check(
             last_observed_at=safe_observed,
             redacted=True,
         )
-    if status != "ready":
+    if safe_status != "ready":
         return _check(
             NEEDS_ATTENTION,
             "CONNECTOR_SMOKE_NOT_READY",
             "ChatGPT connector smoke evidence is not ready.",
             connector_status=safe_status,
             last_observed_at=safe_observed,
+            connector_status_valid=status_allowlisted,
             observed_at_valid=observed_valid,
-            redacted=safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
+            redacted=safe_status == REDACTED_CONNECTOR_SMOKE_VALUE or safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
         )
     if not observed_valid:
         return _check(
@@ -457,6 +491,18 @@ def _redact_connector_smoke_field(value: Any) -> tuple[Any, bool]:
     if isinstance(value, str) and _contains_sensitive_text(value):
         return REDACTED_CONNECTOR_SMOKE_VALUE, True
     return value, False
+
+
+def _connector_smoke_status_for_packet(value: Any) -> tuple[Any, bool, bool]:
+    safe_value, redacted = _redact_connector_smoke_field(value)
+    if redacted:
+        return safe_value, True, False
+    if not isinstance(value, str):
+        return None, False, False
+    normalized = value.strip().lower()
+    if normalized in CONNECTOR_SMOKE_STATUS_ALLOWLIST:
+        return normalized, False, True
+    return REDACTED_CONNECTOR_SMOKE_VALUE, False, False
 
 
 def _connector_smoke_observed_at_for_packet(value: Any) -> tuple[Any, bool, bool]:
@@ -611,6 +657,7 @@ def _curl_json_health(url: str, command_runner: Callable[[list[str]], subprocess
         "http_status": status,
         "ok": payload.get("ok"),
         "service": payload.get("service") if isinstance(payload.get("service"), str) else None,
+        "loaded_runtime_head": _clean_head(payload.get("loaded_runtime_head")),
     }
 
 

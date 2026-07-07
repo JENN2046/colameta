@@ -34,8 +34,16 @@ class FakeCommandRunner:
         self.systemd_active = systemd_active
         self.systemd_output = systemd_output
         self.curl_ok = curl_ok
-        self.web_health_payload = web_health_payload or {"ok": True, "service": "colameta-web-console"}
-        self.mcp_health_payload = mcp_health_payload or {"ok": True, "service": "colameta-mcp"}
+        self.web_health_payload = web_health_payload or {
+            "ok": True,
+            "service": "colameta-web-console",
+            "loaded_runtime_head": head,
+        }
+        self.mcp_health_payload = mcp_health_payload or {
+            "ok": True,
+            "service": "colameta-mcp",
+            "loaded_runtime_head": head,
+        }
         self.cat_file_ok = cat_file_ok
         self.calls: list[list[str]] = []
 
@@ -337,6 +345,64 @@ class ProductionOpsTests(unittest.TestCase):
         assert check["mcp_healthz_http_status"] == "200"
         assert check["mcp_healthz_service"] == "wrong-mcp"
 
+    def test_local_health_blocks_without_loaded_runtime_head(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(
+                web_health_payload={"ok": True, "service": "colameta-web-console"},
+                mcp_health_payload={"ok": True, "service": "colameta-mcp"},
+            ),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"
+        assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
+
+    def test_local_health_blocks_loaded_runtime_head_mismatch(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        stale_head = "b" * 40
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(
+                web_health_payload={
+                    "ok": True,
+                    "service": "colameta-web-console",
+                    "loaded_runtime_head": stale_head,
+                },
+                mcp_health_payload={
+                    "ok": True,
+                    "service": "colameta-mcp",
+                    "loaded_runtime_head": stale_head,
+                },
+            ),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_MISMATCH"
+        assert check["web_loaded_runtime_head"] == stale_head
+        assert check["mcp_loaded_runtime_head"] == stale_head
+        assert check["expected_head"] == HEAD
+        assert "LOCAL_STABLE_RUNTIME_HEAD_MISMATCH" in packet["blocker_codes"]
+
     def test_remote_preflight_failure_is_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
@@ -577,6 +643,59 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["connector_smoke"]["connector_status"] == REDACTED_CONNECTOR_SMOKE_VALUE
         assert packet["checks"]["connector_smoke"]["last_observed_at"] == "2026-07-07T00:00:00Z"
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_bare_bearer_connector_smoke_status_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        pasted_status = "Bearer abcdef0123456789opaque"
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={
+                "status": pasted_status,
+                "last_observed_at": "2026-07-07T00:00:00Z",
+            },
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert pasted_status not in serialized
+        assert "abcdef0123456789opaque" not in serialized
+        assert packet["status"] == "blocked"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_REJECTED"
+        assert packet["checks"]["connector_smoke"]["connector_status"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_unknown_connector_smoke_status_is_redacted_without_blocking(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={
+                "status": "operator pasted a nonstandard status",
+                "last_observed_at": "2026-07-07T00:00:00Z",
+            },
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert "operator pasted a nonstandard status" not in serialized
+        assert packet["status"] == "needs_attention"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_NOT_READY"
+        assert packet["checks"]["connector_smoke"]["connector_status"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["connector_smoke"]["connector_status_valid"] is False
+        assert packet["checks"]["connector_smoke"]["redacted"] is True
 
     def test_local_health_probe_curl_is_timeout_bounded(self) -> None:
         from runner.production_ops import LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS, build_production_ops_packet

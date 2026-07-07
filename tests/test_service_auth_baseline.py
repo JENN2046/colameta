@@ -256,11 +256,13 @@ class ServiceAuthBaselineTests(unittest.TestCase):
         try:
             web_health = wait_for_json(f"http://{HOST}:{web_port}/api/healthz", service, "colameta-web-console")
             assert web_health["ok"] is True
+            assert "loaded_runtime_head" in web_health
 
             mcp_health = wait_for_json(f"http://{HOST}:{mcp_port}/healthz", service, "colameta-mcp")
             assert mcp_health["ok"] is True
             assert mcp_health["auth_mode"] == "token"
             assert mcp_health["routing"] == "registry"
+            assert "loaded_runtime_head" in mcp_health
 
             assert (project / ".colameta" / "plan.json").is_file()
             assert_token_auth_flow(service)
@@ -282,6 +284,7 @@ class ServiceAuthBaselineTests(unittest.TestCase):
             assert mcp_health["ok"] is True
             assert mcp_health["auth_mode"] == "token"
             assert mcp_health["project"] == str(project)
+            assert "loaded_runtime_head" in mcp_health
             assert not (project / ".colameta").exists()
 
             assert_token_auth_flow(service)

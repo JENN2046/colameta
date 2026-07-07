@@ -70,6 +70,7 @@ from runner.web_console_presenter import (
 )
 from runner.executor_status import polling_guidance_for_profile
 from runner.runtime_observability import (
+    LOADED_RUNTIME_HEAD,
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
     build_stable_replacement_cadence,
@@ -496,7 +497,13 @@ class WebConsoleServer:
                     self.end_headers()
                     return
                 if path == "/api/healthz":
-                    self._send_json({"ok": True, "service": "colameta-web-console"})
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "service": "colameta-web-console",
+                            "loaded_runtime_head": LOADED_RUNTIME_HEAD,
+                        }
+                    )
                     return
                 if path == "/api/v2/health":
                     self._send_json(server._api_v2_health())

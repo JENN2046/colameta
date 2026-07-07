@@ -34,6 +34,7 @@ connector smoke 仍必须由 ChatGPT Apps connector 工具或人工授权的 App
 ```text
 stable service inactive
 stable runtime head != expected head
+running Web/MCP loaded runtime head unavailable or != expected head
 remote HTTPS MCP preflight failed
 local stable Web/MCP health failed
 secret-like content detected in output packet
@@ -124,6 +125,16 @@ smoke 后，只回灌脱敏字段：
 
 fresh 默认窗口为 24 小时。允许用 `--connector-smoke-fresh-hours` 收窄窗口，
 范围为 `1..24`。
+
+`--connector-smoke-status` 只会原样保留 allowlisted 状态值，例如 `ready`、
+`missing`、`stale`、`failed`、`needs_attention`、`blocked`、
+`unavailable` 和 `unknown`。其它状态文本会在 packet 中改成固定占位符；
+`Bearer ...`、JWT、token、password、secret 等 secret-like 文本会让 connector
+smoke check blocked，并且不会在 `--json` 或 `--write-status` 输出中回显。
+
+`ops-check` 还要求本地 stable Web `/api/healthz` 和 MCP `/healthz` 返回的
+`loaded_runtime_head` 与 `expected_head` 一致。stable checkout 磁盘 HEAD
+对齐但服务未重启时，这项会 fail-closed，而不会把 disk HEAD 当作运行中代码证据。
 
 ## 5. Systemd Timer
 

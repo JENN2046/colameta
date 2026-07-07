@@ -574,6 +574,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         status, health = json_request(f"http://{HOST}:{self.port}/api/healthz")
         assert status == 200
         assert health["ok"] is True
+        assert "loaded_runtime_head" in health
 
         status, v2_health = json_request(f"http://{HOST}:{self.port}/api/v2/health")
         assert status == 200
