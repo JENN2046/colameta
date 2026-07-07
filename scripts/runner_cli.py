@@ -2110,7 +2110,7 @@ def _run_ops_check(args: list[str]) -> int:
                 project_root=project_path,
                 json_dumps=json_dumps,
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"ops-check 写 status 失败：{exc}", file=sys.stderr)
             return 1
         packet["status_written_path"] = redact_status_written_path(written_path)

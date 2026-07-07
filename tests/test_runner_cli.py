@@ -389,6 +389,38 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         assert payload["status_written_path"] == str(status_path)
 
+    def test_ops_check_write_status_handles_io_failure(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "ready",
+            "ops_check_ready": True,
+            "connector_smoke_ready": True,
+            "beta_gate_ready": True,
+            "checks": {},
+        }
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+            patch.object(runner_cli, "write_status_packet", side_effect=OSError("disk full")),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--write-status",
+                    str(self.tmp_path / "state" / "last-status.json"),
+                ]
+            )
+
+        assert result == 1
+        output = stderr.getvalue()
+        assert "ops-check 写 status 失败" in output
+        assert "disk full" in output
+
     def test_ops_check_json_redacts_secret_like_status_written_path(self) -> None:
         from runner.production_ops import REDACTED_STATUS_WRITTEN_PATH
         from scripts import runner_cli
