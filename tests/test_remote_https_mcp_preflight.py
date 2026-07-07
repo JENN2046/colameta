@@ -62,6 +62,21 @@ def test_normalize_public_base_url_rejects_private_and_link_local_https_ip_liter
     assert normalize_public_base_url("https://8.8.8.8") == "https://8.8.8.8"
 
 
+def test_normalize_public_base_url_rejects_local_only_dns_names() -> None:
+    for url in (
+        "https://colameta.local:8766",
+        "https://colameta.local.",
+        "https://api.localhost",
+        "https://stable.home.arpa",
+        "https://colameta",
+        "https://colameta:8766",
+    ):
+        with pytest.raises(PreflightError, match="local-only DNS"):
+            normalize_public_base_url(url)
+
+    assert normalize_public_base_url("https://mcp.example.com.") == "https://mcp.example.com."
+
+
 def test_normalize_public_base_url_allows_only_loopback_http_when_requested() -> None:
     assert normalize_public_base_url("http://127.0.0.2:8765", allow_local_http=True) == "http://127.0.0.2:8765"
     assert normalize_public_base_url("http://[::1]:8765", allow_local_http=True) == "http://[::1]:8765"

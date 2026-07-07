@@ -20,6 +20,16 @@ PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 _NUMERIC_IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[0-9]+)$")
+_LOCAL_ONLY_DNS_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".localdomain",
+    ".home.arpa",
+    ".lan",
+    ".home",
+    ".internal",
+    ".intranet",
+)
 
 
 @dataclass(frozen=True)
@@ -50,7 +60,7 @@ def normalize_public_base_url(value: str, *, allow_local_http: bool = False) -> 
     if parsed.scheme == "https" and _is_non_public_https_host(parsed.hostname):
         raise PreflightError(
             "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
-            "or otherwise non-public IP hosts."
+            "local-only DNS, or otherwise non-public hosts."
         )
     if parsed.scheme == "http" and not allow_local_http:
         raise PreflightError("remote MCP public_base_url must use https://.")
@@ -80,7 +90,15 @@ def _is_non_public_https_host(hostname: str | None) -> bool:
         numeric_ipv4 = _parse_numeric_ipv4_host(host)
         if numeric_ipv4 is not None:
             return not numeric_ipv4.is_global
+        return _is_local_only_dns_name(host)
+
+
+def _is_local_only_dns_name(host: str) -> bool:
+    if not host:
         return False
+    if "." not in host:
+        return True
+    return any(host.endswith(suffix) for suffix in _LOCAL_ONLY_DNS_SUFFIXES)
 
 
 def _parse_numeric_ipv4_host(host: str) -> ipaddress.IPv4Address | None:
