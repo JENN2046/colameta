@@ -206,6 +206,123 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
     assert captured["read_size"] == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
 
 
+def test_fetch_json_accepts_pinned_https_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSocket:
+        def getpeername(self) -> tuple[str, int]:
+            return ("93.184.216.34", 443)
+
+    class FakeRaw:
+        _sock = FakeSocket()
+
+    class FakeFp:
+        raw = FakeRaw()
+
+    class FakeResponse:
+        status = 200
+        fp = FakeFp()
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_open(request: object, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
+
+    status, payload = fetch_json(
+        "https://mcp.example.com/healthz",
+        pinned_https_addresses=(remote_preflight.ipaddress.ip_address("93.184.216.34"),),
+    )
+
+    assert status == 200
+    assert payload == {"ok": True}
+
+
+def test_fetch_json_rejects_rebound_private_https_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSocket:
+        def getpeername(self) -> tuple[str, int]:
+            return ("127.0.0.1", 443)
+
+    class FakeRaw:
+        _sock = FakeSocket()
+
+    class FakeFp:
+        raw = FakeRaw()
+
+    class FakeResponse:
+        status = 200
+        fp = FakeFp()
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_open(request: object, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
+
+    with pytest.raises(PreflightError, match="non-public peer"):
+        fetch_json(
+            "https://mcp.example.com/healthz",
+            pinned_https_addresses=(remote_preflight.ipaddress.ip_address("93.184.216.34"),),
+        )
+
+
+def test_run_preflight_pins_validated_dns_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_pins: list[tuple[object, ...]] = []
+
+    def fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float = 5.0,
+        pinned_https_addresses: tuple[object, ...] = (),
+    ) -> tuple[int, dict[str, object]]:
+        captured_pins.append(pinned_https_addresses)
+        if url.endswith("/healthz"):
+            return 200, {"ok": True, "service": "colameta-mcp", "auth_mode": "oauth"}
+        if url.endswith("/mcp"):
+            return 200, {
+                "ok": True,
+                "auth_mode": "oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            }
+        if url.endswith("/.well-known/oauth-protected-resource"):
+            return 200, {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": ["https://mcp.example.com"],
+                "bearer_methods_supported": ["header"],
+            }
+        return 200, {
+            "issuer": "https://mcp.example.com",
+            "authorization_endpoint": "https://mcp.example.com/authorize",
+            "token_endpoint": "https://mcp.example.com/token",
+            "registration_endpoint": "https://mcp.example.com/register",
+            "revocation_endpoint": "https://mcp.example.com/revoke",
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+        }
+
+    monkeypatch.setattr(remote_preflight, "fetch_json", fake_fetch_json)
+
+    report = run_preflight("https://mcp.example.com")
+
+    expected_pin = (remote_preflight.ipaddress.ip_address("93.184.216.34"),)
+    assert report["ok"] is True
+    assert captured_pins == [expected_pin, expected_pin, expected_pin, expected_pin]
+
+
 def test_fetch_json_rejects_oversized_success_response(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         status = 200

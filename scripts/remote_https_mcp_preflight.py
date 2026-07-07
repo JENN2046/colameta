@@ -68,12 +68,31 @@ class EndpointPlan:
     authorization_server_metadata_url: str
 
 
+@dataclass(frozen=True)
+class NormalizedPublicBaseUrl:
+    url: str
+    pinned_https_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] = ()
+
+
 def normalize_public_base_url(
     value: str,
     *,
     allow_local_http: bool = False,
     resolve_https_dns: bool = True,
 ) -> str:
+    return _normalize_public_base_url_result(
+        value,
+        allow_local_http=allow_local_http,
+        resolve_https_dns=resolve_https_dns,
+    ).url
+
+
+def _normalize_public_base_url_result(
+    value: str,
+    *,
+    allow_local_http: bool = False,
+    resolve_https_dns: bool = True,
+) -> NormalizedPublicBaseUrl:
     base = value.strip().rstrip("/")
     if not base:
         raise PreflightError("public_base_url is required.")
@@ -91,16 +110,17 @@ def normalize_public_base_url(
         raise PreflightError("public_base_url must not include query or fragment.")
     if parsed.path.rstrip("/").endswith("/mcp"):
         raise PreflightError("public_base_url must be the service base URL, not the /mcp connector URL.")
-    if parsed.scheme == "https" and _is_non_public_https_host(parsed.hostname, resolve_dns=resolve_https_dns):
-        raise PreflightError(
-            "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
-            "local-only DNS, or otherwise non-public hosts."
+    pinned_https_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] = ()
+    if parsed.scheme == "https":
+        pinned_https_addresses = _validated_public_https_host_addresses(
+            parsed.hostname,
+            resolve_dns=resolve_https_dns,
         )
     if parsed.scheme == "http" and not allow_local_http:
         raise PreflightError("remote MCP public_base_url must use https://.")
     if parsed.scheme == "http" and allow_local_http and not _is_loopback_host(parsed.hostname):
         raise PreflightError("http:// is allowed only for localhost preflight.")
-    return base
+    return NormalizedPublicBaseUrl(base, pinned_https_addresses)
 
 
 def _is_loopback_host(hostname: str | None) -> bool:
@@ -118,19 +138,51 @@ def _contains_secret_like_public_url_text(value: str) -> bool:
     return any(pattern.search(value) for pattern in _SECRET_LIKE_PUBLIC_URL_PATTERNS)
 
 
-def _is_non_public_https_host(hostname: str | None, *, resolve_dns: bool = True) -> bool:
+def _validated_public_https_host_addresses(
+    hostname: str | None,
+    *,
+    resolve_dns: bool = True,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
     host = (hostname or "").strip().lower().rstrip(".")
     if host == "localhost":
-        return True
+        raise _non_public_https_host_error()
     try:
-        return not ipaddress.ip_address(host).is_global
+        address = _normalize_ip_address(ipaddress.ip_address(host))
+        if not address.is_global:
+            raise _non_public_https_host_error()
+        return (address,)
     except ValueError:
         numeric_ipv4 = _parse_numeric_ipv4_host(host)
         if numeric_ipv4 is not None:
-            return not numeric_ipv4.is_global
+            if not numeric_ipv4.is_global:
+                raise _non_public_https_host_error()
+            return (numeric_ipv4,)
         if _is_local_only_dns_name(host):
-            return True
-        return resolve_dns and _hostname_resolves_to_non_global_addresses(host)
+            raise _non_public_https_host_error()
+        if not resolve_dns:
+            return ()
+        try:
+            addresses = tuple(_normalize_ip_address(address) for address in _resolve_hostname_addresses(host))
+        except OSError:
+            raise _non_public_https_host_error() from None
+        if not addresses or any(not address.is_global for address in addresses):
+            raise _non_public_https_host_error()
+        return tuple(dict.fromkeys(addresses))
+
+
+def _non_public_https_host_error() -> PreflightError:
+    return PreflightError(
+        "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
+        "local-only DNS, or otherwise non-public hosts."
+    )
+
+
+def _normalize_ip_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
 
 
 def _is_local_only_dns_name(host: str) -> bool:
@@ -139,14 +191,6 @@ def _is_local_only_dns_name(host: str) -> bool:
     if "." not in host:
         return True
     return any(host.endswith(suffix) for suffix in _LOCAL_ONLY_DNS_SUFFIXES)
-
-
-def _hostname_resolves_to_non_global_addresses(host: str) -> bool:
-    try:
-        addresses = _resolve_hostname_addresses(host)
-    except OSError:
-        return True
-    return not addresses or any(not address.is_global for address in addresses)
 
 
 def _resolve_hostname_addresses(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -212,7 +256,12 @@ def build_endpoint_plan(public_base_url: str) -> EndpointPlan:
     )
 
 
-def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str, Any]]:
+def fetch_json(
+    url: str,
+    *,
+    timeout_seconds: float = 5.0,
+    pinned_https_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] = (),
+) -> tuple[int, dict[str, Any]]:
     request = urllib.request.Request(
         url,
         headers={
@@ -224,6 +273,7 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
     try:
         with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
             _validate_final_response_url(url, _response_final_url(response, url))
+            _validate_response_peer(url, response, pinned_https_addresses)
             raw = _read_limited_response_body(response, url).decode("utf-8")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
@@ -231,6 +281,7 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
             return int(response.status), payload
     except urllib.error.HTTPError as exc:
         _validate_final_response_url(url, _response_final_url(exc, getattr(exc, "url", url)))
+        _validate_response_peer(url, exc, pinned_https_addresses)
         raw = _read_limited_response_body(exc, url).decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw)
@@ -253,6 +304,53 @@ def _read_limited_response_body(response: Any, url: str) -> bytes:
     if len(raw) > MAX_PREFLIGHT_RESPONSE_BYTES:
         raise PreflightError(f"{url} response body exceeds {MAX_PREFLIGHT_RESPONSE_BYTES} bytes.")
     return raw
+
+
+def _validate_response_peer(
+    url: str,
+    response: Any,
+    pinned_https_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...],
+) -> None:
+    if not pinned_https_addresses:
+        return
+    peer_address = _response_peer_address(response)
+    if peer_address is None:
+        raise PreflightError(f"{url} did not expose a connected peer address for DNS pin validation.")
+    if not peer_address.is_global:
+        raise PreflightError(f"{url} connected to a non-public peer address.")
+    if peer_address not in pinned_https_addresses:
+        raise PreflightError(f"{url} connected to an address outside the validated DNS result.")
+
+
+def _response_peer_address(response: Any) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    for chain in (
+        ("fp", "raw", "_sock"),
+        ("fp", "fp", "raw", "_sock"),
+        ("fp", "_sock"),
+        ("raw", "_sock"),
+        ("_sock",),
+        ("sock",),
+    ):
+        candidate = response
+        for attr in chain:
+            candidate = getattr(candidate, attr, None)
+            if candidate is None:
+                break
+        if candidate is None:
+            continue
+        getpeername = getattr(candidate, "getpeername", None)
+        if not callable(getpeername):
+            continue
+        try:
+            peer = getpeername()
+        except OSError:
+            continue
+        raw_address = peer[0] if isinstance(peer, tuple) and peer else peer
+        try:
+            return _normalize_ip_address(ipaddress.ip_address(str(raw_address).split("%", 1)[0]))
+        except ValueError:
+            continue
+    return None
 
 
 def _validate_final_response_url(request_url: str, final_url: str) -> None:
@@ -372,13 +470,13 @@ def run_preflight(
     timeout_seconds: float = 5.0,
     expected_head: str | None = None,
 ) -> dict[str, Any]:
-    normalized = normalize_public_base_url(
+    normalized = _normalize_public_base_url_result(
         public_base_url,
         allow_local_http=allow_local_http,
         resolve_https_dns=not no_network,
     )
     expected_runtime_head = _clean_expected_head(expected_head)
-    plan = build_endpoint_plan(normalized)
+    plan = build_endpoint_plan(normalized.url)
     report: dict[str, Any] = {
         "ok": True,
         "public_base_url": plan.public_base_url,
@@ -393,11 +491,28 @@ def run_preflight(
     if no_network:
         return report
 
+    pinned_https_addresses = normalized.pinned_https_addresses
     payloads = {
-        "healthz": fetch_json(plan.healthz_url, timeout_seconds=timeout_seconds),
-        "mcp": fetch_json(plan.connector_url, timeout_seconds=timeout_seconds),
-        "protected_resource": fetch_json(plan.protected_resource_metadata_url, timeout_seconds=timeout_seconds),
-        "authorization_server": fetch_json(plan.authorization_server_metadata_url, timeout_seconds=timeout_seconds),
+        "healthz": fetch_json(
+            plan.healthz_url,
+            timeout_seconds=timeout_seconds,
+            pinned_https_addresses=pinned_https_addresses,
+        ),
+        "mcp": fetch_json(
+            plan.connector_url,
+            timeout_seconds=timeout_seconds,
+            pinned_https_addresses=pinned_https_addresses,
+        ),
+        "protected_resource": fetch_json(
+            plan.protected_resource_metadata_url,
+            timeout_seconds=timeout_seconds,
+            pinned_https_addresses=pinned_https_addresses,
+        ),
+        "authorization_server": fetch_json(
+            plan.authorization_server_metadata_url,
+            timeout_seconds=timeout_seconds,
+            pinned_https_addresses=pinned_https_addresses,
+        ),
     }
     failures = validate_remote_payloads(
         plan,
