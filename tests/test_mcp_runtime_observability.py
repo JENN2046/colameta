@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 import json
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +25,13 @@ from runner.runtime_observability import (
 
 
 HEAD_A = "a" * 40
+HOST = "127.0.0.1"
+
+
+def free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((HOST, 0))
+        return int(sock.getsockname()[1])
 
 
 class _PermissiveOAuthProvider:
@@ -251,6 +262,62 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         for forbidden_field in ("restart", "reload", "kill", "apply"):
             assert forbidden_field not in result
             assert forbidden_field not in data
+
+    def test_mcp_healthz_runtime_provenance_uses_loaded_runtime_root(self) -> None:
+        project = self.make_git_checkout()
+        runtime_root = str(self.tmp_path / "stable-runtime-root")
+        calls: list[tuple[str | None, str | None]] = []
+
+        def fake_runtime_healthz_provenance(project_root: str | None, *, runtime_project_root: str | None) -> dict[str, object]:
+            calls.append((project_root, runtime_project_root))
+            return {
+                "loaded_runtime_head": None,
+                "runtime_project_checkout_head": HEAD_A,
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "installed_package_matches_project_checkout": True,
+                "installed_package_project_source_clean": True,
+                "installed_package_source_cleanliness_status": "clean",
+            }
+
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        port = free_tcp_port()
+        errors: list[BaseException] = []
+
+        def run_server() -> None:
+            try:
+                server.serve_http(host=HOST, port=port, auth_mode="none")
+            except BaseException as exc:  # noqa: BLE001 - surfaced after shutdown
+                errors.append(exc)
+
+        with (
+            patch("runner.mcp_server.loaded_runtime_project_root", return_value=runtime_root),
+            patch("runner.mcp_server.runtime_healthz_provenance", side_effect=fake_runtime_healthz_provenance),
+        ):
+            thread = threading.Thread(target=run_server, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 8
+                health: dict[str, object] | None = None
+                while time.monotonic() < deadline:
+                    if errors:
+                        raise AssertionError(f"MCP server failed: {errors[0]}")
+                    try:
+                        with urllib.request.urlopen(f"http://{HOST}:{port}/healthz", timeout=0.5) as response:
+                            health = json.loads(response.read().decode("utf-8"))
+                            break
+                    except Exception:
+                        time.sleep(0.05)
+                assert health is not None
+            finally:
+                httpd = getattr(server, "_httpd", None)
+                if httpd is not None:
+                    httpd.shutdown()
+                thread.join(timeout=2)
+
+        assert health["runtime_project_checkout_head"] == HEAD_A
+        assert calls
+        assert all(call == (str(project), runtime_root) for call in calls)
 
     def test_runtime_version_status_tool_uses_current_local_service_evidence(self) -> None:
         project = self.make_git_checkout(managed=True)

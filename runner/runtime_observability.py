@@ -5,9 +5,11 @@ import re
 import hashlib
 import sys
 import importlib.metadata
+import json
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from runner._internal_utils import run_git as _run_git_base
 
@@ -25,6 +27,7 @@ _ALL_POSSIBLY_STALE_SURFACES = (
 _RUNTIME_SOURCE_ROOTS = ("adapters", "runner", "schemas", "scripts")
 
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
+_RUNTIME_PROJECT_ROOT_UNSET = object()
 
 
 def git_checkout_metadata(project_root: str | None) -> dict[str, Any]:
@@ -140,10 +143,24 @@ def get_runtime_version_status(
     return status
 
 
-def runtime_healthz_provenance(project_root: str | None) -> dict[str, Any]:
+def runtime_healthz_provenance(
+    project_root: str | None,
+    *,
+    runtime_project_root: str | None | object = _RUNTIME_PROJECT_ROOT_UNSET,
+) -> dict[str, Any]:
     """Return cached public, non-secret runtime freshness fields for health endpoints."""
-    cache_key = _runtime_healthz_cache_key(project_root)
-    return dict(_runtime_healthz_provenance_cached(project_root, cache_key))
+    provenance_root = project_root if runtime_project_root is _RUNTIME_PROJECT_ROOT_UNSET else runtime_project_root
+    cache_key = _runtime_healthz_cache_key(provenance_root)
+    return dict(_runtime_healthz_provenance_cached(provenance_root, cache_key))
+
+
+def loaded_runtime_project_root() -> str | None:
+    """Return the source checkout that represents the loaded runtime, when known."""
+    loaded_source = git_checkout_metadata(LOADED_SOURCE_ROOT)
+    if loaded_source.get("git_dir_available"):
+        root = loaded_source.get("project_root")
+        return root if isinstance(root, str) else None
+    return _installed_distribution_direct_url_root()
 
 
 @lru_cache(maxsize=16)
@@ -1763,6 +1780,31 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "unverified_files": unverified[:20],
         "truncated_mismatch_or_unverified_lists": len(mismatched) > 20 or len(unverified) > 20,
     }
+
+
+def _installed_distribution_direct_url_root() -> str | None:
+    try:
+        distribution = importlib.metadata.distribution("colameta")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    try:
+        raw = distribution.read_text("direct_url.json")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+        return None
+    path = os.path.abspath(os.path.expanduser(unquote(parsed.path)))
+    return path if os.path.isdir(path) else None
 
 
 def _source_checkout_cleanliness(project_root: str | None) -> dict[str, Any]:

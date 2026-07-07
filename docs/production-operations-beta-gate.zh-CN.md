@@ -145,6 +145,10 @@ smoke check blocked，并且不会在 `--json` 或 `--write-status` 输出中回
 `installed_package_project_source_clean=true`、
 `installed_package_source_cleanliness_status=clean`。source roots 存在未提交或
 untracked 变化时，即使这些变化已经被安装到 site-packages，也会 fail-closed。
+这些 healthz runtime provenance 字段描述 loaded/stable runtime source root，而不是
+`serve <project_root>` 传入的被服务项目；packaged install 会从 distribution
+`direct_url.json` 恢复安装来源 checkout，用于 `runtime_project_checkout_head` 和
+source-clean/package-match 证据。
 stable checkout 磁盘 HEAD 对齐但服务未重启时，这项会 fail-closed，而不会把
 disk HEAD 当作运行中代码证据。公开 healthz 中的 packaged provenance 是进程内
 缓存的轻量摘要，避免远程轮询反复触发源码 hash 校验；缓存 key 包含当前 checkout

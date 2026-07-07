@@ -14,6 +14,13 @@ The status result compares three independent pieces of evidence:
 - Import-time SHA-256 fingerprints for loaded `runner.*` Python modules against the current on-disk source files for those loaded modules.
 - Installed package source files under runtime-relevant roots against the same relative files in the project checkout when the process is loaded from `site-packages`.
 
+For `/healthz` runtime provenance, the project checkout used for these runtime
+fields is the loaded runtime source checkout, not necessarily the project being
+served. When ColaMeta is running from a non-editable package install,
+`direct_url.json` is used to recover the local source checkout that installed the
+package, so `runtime_project_checkout_head` and source-clean/package-match fields
+describe the stable runtime source rather than an unrelated served project.
+
 The implementation uses direct filesystem reads. It does not use shell fallback, subprocesses, remote Git operations, service lifecycle operations, or executor workflow mutation.
 
 ## Operator Fields

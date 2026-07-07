@@ -10,6 +10,7 @@ from pathlib import Path
 import runner.runtime_observability as runtime_observability
 from runner.runtime_observability import (
     get_runtime_version_status,
+    loaded_runtime_project_root,
     loaded_runner_module_fingerprints,
 )
 
@@ -402,6 +403,52 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert second["installed_package_project_source_clean"] is False
         assert second["reload_needed_for_verification"] is True
 
+    def test_loaded_runtime_project_root_uses_loaded_source_checkout(self) -> None:
+        runtime_project = self.make_git_checkout(HEAD_A, branch="loaded-source-root")
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(runtime_project)):
+            assert loaded_runtime_project_root() == str(runtime_project)
+
+    def test_loaded_runtime_project_root_uses_packaged_direct_url_source(self) -> None:
+        runtime_project = self.make_git_checkout(HEAD_A, branch="packaged-runtime")
+        site_packages = self.tmp_path / "site-packages-runtime"
+        site_packages.mkdir()
+        fake_distribution = self.fake_distribution(
+            site_packages,
+            [],
+            direct_url_text=json.dumps({"url": runtime_project.as_uri(), "dir_info": {}}),
+        )
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(site_packages)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                assert loaded_runtime_project_root() == str(runtime_project)
+
+    def test_runtime_healthz_provenance_uses_explicit_runtime_project_root(self) -> None:
+        served_project = self.make_git_checkout(HEAD_B, branch="served-project")
+        runtime_project = self.make_git_checkout(HEAD_A, branch="runtime-project")
+        status = {
+            "loaded_runtime_head": None,
+            "project_checkout_head": HEAD_A,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+            "installed_package_verification": {
+                "matches_project_checkout": True,
+                "verification_status": "match",
+                "project_source_clean": True,
+                "source_cleanliness_status": "clean",
+            },
+        }
+
+        with patch.object(runtime_observability, "get_runtime_version_status", return_value=status) as mocked_status:
+            result = runtime_observability.runtime_healthz_provenance(
+                str(served_project),
+                runtime_project_root=str(runtime_project),
+            )
+
+        mocked_status.assert_called_once_with(str(runtime_project))
+        assert result["runtime_project_checkout_head"] == HEAD_A
+
     def test_no_runtime_or_external_mutation_authority_is_exposed(self) -> None:
         project = self.make_git_checkout(HEAD_A)
         source_path = self.make_module_file("loaded = 'same'\n")
@@ -475,19 +522,25 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
             for nested in value:
                 self.assert_no_forbidden_runtime_mutation_fields(nested)
 
-    def fake_distribution(self, root: Path, files: list[str]):
+    def fake_distribution(self, root: Path, files: list[str], *, direct_url_text: str | None = None):
         class FakeDistribution:
             version = "0.1.2"
 
-            def __init__(self, root_path: Path, relative_files: list[str]):
+            def __init__(self, root_path: Path, relative_files: list[str], direct_url: str | None):
                 self._root = root_path
                 self.files = [Path(item) for item in relative_files]
+                self._direct_url = direct_url
 
             def locate_file(self, path: object) -> Path:
                 text = str(path)
                 return self._root / text if text else self._root
 
-        return FakeDistribution(root, files)
+            def read_text(self, path: str) -> str | None:
+                if path == "direct_url.json":
+                    return self._direct_url
+                return None
+
+        return FakeDistribution(root, files, direct_url_text)
 
     def source_cleanliness(self, *, clean: bool) -> dict[str, object]:
         return {
