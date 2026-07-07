@@ -17,6 +17,7 @@ class PreflightError(ValueError):
 
 
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
+MAX_PREFLIGHT_RESPONSE_BYTES = 64 * 1024
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 _FULL_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -180,14 +181,14 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
     try:
         with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
             _validate_final_response_url(url, _response_final_url(response, url))
-            raw = response.read().decode("utf-8")
+            raw = _read_limited_response_body(response, url).decode("utf-8")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise PreflightError(f"{url} did not return a JSON object.")
             return int(response.status), payload
     except urllib.error.HTTPError as exc:
         _validate_final_response_url(url, _response_final_url(exc, getattr(exc, "url", url)))
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = _read_limited_response_body(exc, url).decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
@@ -202,6 +203,13 @@ def _response_final_url(response: Any, fallback: str) -> str:
     if callable(geturl):
         return str(geturl())
     return fallback
+
+
+def _read_limited_response_body(response: Any, url: str) -> bytes:
+    raw = response.read(MAX_PREFLIGHT_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_PREFLIGHT_RESPONSE_BYTES:
+        raise PreflightError(f"{url} response body exceeds {MAX_PREFLIGHT_RESPONSE_BYTES} bytes.")
+    return raw
 
 
 def _validate_final_response_url(request_url: str, final_url: str) -> None:

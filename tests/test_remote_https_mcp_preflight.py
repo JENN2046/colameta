@@ -111,7 +111,8 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
+            captured["read_size"] = size
             return json.dumps({"ok": True}).encode("utf-8")
 
     def fake_open(request: object, timeout: float) -> FakeResponse:
@@ -129,6 +130,88 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
     assert captured["timeout"] == 7
     assert captured["user_agent"] == PREFLIGHT_USER_AGENT
     assert captured["accept"] == "application/json"
+    assert captured["read_size"] == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
+
+
+def test_fetch_json_rejects_oversized_success_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            assert size == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
+            return b"{" + (b" " * remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES)
+
+    def fake_open(request: object, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
+
+    with pytest.raises(PreflightError, match="response body exceeds"):
+        fetch_json("https://mcp.example.com/healthz")
+
+
+def test_fetch_json_rejects_oversized_error_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = b"{" + (b" " * remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES)
+
+    class FakeErrorBody:
+        def read(self, size: int = -1) -> bytes:
+            assert size == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
+            return body
+
+        def close(self) -> None:
+            return None
+
+    error = remote_preflight.urllib.error.HTTPError(
+        "https://mcp.example.com/.well-known/oauth-authorization-server",
+        404,
+        "not found",
+        {},
+        FakeErrorBody(),
+    )
+
+    def fake_open(request: object, timeout: float) -> object:
+        raise error
+
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
+
+    with pytest.raises(PreflightError, match="response body exceeds"):
+        fetch_json("https://mcp.example.com/.well-known/oauth-authorization-server")
+
+
+def test_fetch_json_accepts_bounded_error_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps({"error_code": "EXTERNAL_AUTH_SERVER"}).encode("utf-8")
+
+    class FakeErrorBody:
+        def read(self, size: int = -1) -> bytes:
+            assert size == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
+            return body
+
+        def close(self) -> None:
+            return None
+
+    error = remote_preflight.urllib.error.HTTPError(
+        "https://mcp.example.com/.well-known/oauth-authorization-server",
+        404,
+        "not found",
+        {},
+        FakeErrorBody(),
+    )
+
+    def fake_open(request: object, timeout: float) -> object:
+        raise error
+
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
+
+    status, payload = fetch_json("https://mcp.example.com/.well-known/oauth-authorization-server")
+
+    assert status == 404
+    assert payload == {"error_code": "EXTERNAL_AUTH_SERVER"}
 
 
 def test_fetch_json_disables_redirects_before_following_location() -> None:
@@ -179,7 +262,7 @@ def test_fetch_json_rejects_redirected_final_url(monkeypatch: pytest.MonkeyPatch
         def geturl(self) -> str:
             return "http://127.0.0.1:8766/healthz"
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
     def fake_open(request: object, timeout: float) -> FakeResponse:
@@ -204,7 +287,7 @@ def test_fetch_json_rejects_same_scheme_off_base_redirect(monkeypatch: pytest.Mo
         def geturl(self) -> str:
             return "https://other.example.com/healthz"
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
     def fake_open(request: object, timeout: float) -> FakeResponse:

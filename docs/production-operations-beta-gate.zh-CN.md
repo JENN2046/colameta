@@ -170,7 +170,9 @@ protected-resource metadata 里的 authorization server 也必须是公网 HTTPS
 不能是 loopback/private/local-only host，也不能是 MCP `public_base_url`。每个 probe 的最终
 响应 URL 必须仍是同一 public HTTPS endpoint；redirect 到 loopback、private LAN、
 其它 host、其它 path、query 或 fragment 都会 rejected。30x redirects 会在跟随
-`Location` 前直接失败，避免 operator 机器先访问内网目标再报告失败。显式传入的
+`Location` 前直接失败，避免 operator 机器先访问内网目标再报告失败。每个 metadata
+或 error response body 读取上限为 64 KiB，超过上限会 fail preflight，不会完整缓存
+异常响应。显式传入的
 `--expected-head` 必须是完整 40-character commit SHA，不能以 malformed 或
 abbreviated SHA 静默跳过 runtime provenance 校验。
 

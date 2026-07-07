@@ -204,7 +204,8 @@ Expected live checks:
 
 The preflight output intentionally reports status and JSON field names only. It
 does not read local secret files and does not print tokens, cookies, config, or
-logs.
+logs. Each probed metadata or error response body is capped at 64 KiB; larger
+responses fail the preflight instead of being fully buffered.
 
 ## ChatGPT Developer Mode Test
 
