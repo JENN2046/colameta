@@ -708,17 +708,20 @@ def _health_endpoint_ready(health: dict[str, Any], expected_service: str) -> boo
 def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str | None) -> bool:
     if not expected_head:
         return False
-    if health.get("loaded_runtime_head") == expected_head:
+    if health.get("loaded_runtime_head") == expected_head and _health_runtime_reload_verified(health):
         return True
     return (
         health.get("runtime_project_checkout_head") == expected_head
-        and health.get("runtime_loaded_code_stale") is False
-        and health.get("reload_needed_for_verification") is False
+        and _health_runtime_reload_verified(health)
         and health.get("installed_package_matches_project_checkout") is True
         and health.get("installed_package_verification_status") == "match"
         and health.get("installed_package_project_source_clean") is True
         and health.get("installed_package_source_cleanliness_status") == "clean"
     )
+
+
+def _health_runtime_reload_verified(health: dict[str, Any]) -> bool:
+    return health.get("runtime_loaded_code_stale") is False and health.get("reload_needed_for_verification") is False
 
 
 def _health_runtime_mismatches_expected(health: dict[str, Any], expected_head: str | None) -> bool:

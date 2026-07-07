@@ -38,11 +38,15 @@ class FakeCommandRunner:
             "ok": True,
             "service": "colameta-web-console",
             "loaded_runtime_head": head,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
         }
         self.mcp_health_payload = mcp_health_payload or {
             "ok": True,
             "service": "colameta-mcp",
             "loaded_runtime_head": head,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
         }
         self.cat_file_ok = cat_file_ok
         self.calls: list[list[str]] = []
@@ -291,6 +295,30 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
         assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
 
+    def test_private_https_public_base_url_is_rejected_before_remote_preflight(self) -> None:
+        from runner.production_ops import REDACTED_PUBLIC_BASE_URL, build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not probe private HTTPS: {public_base_url} {kwargs}")
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="https://192.168.1.10:8766",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=fail_if_called,
+            now=NOW,
+        )
+
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
+
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
@@ -488,6 +516,44 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["ops_check_ready"] is False
         assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"
         assert check["web_installed_package_project_source_clean"] is False
+        assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
+
+    def test_local_health_blocks_loaded_head_when_reload_verification_needed(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        web_health = {
+            "ok": True,
+            "service": "colameta-web-console",
+            "loaded_runtime_head": HEAD,
+            "runtime_loaded_code_stale": True,
+            "reload_needed_for_verification": True,
+            "reload_awareness_reason": "loaded_module_source_changed",
+        }
+        mcp_health = {
+            "ok": True,
+            "service": "colameta-mcp",
+            "loaded_runtime_head": HEAD,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+        }
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(web_health_payload=web_health, mcp_health_payload=mcp_health),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"
+        assert check["web_loaded_runtime_head"] == HEAD
+        assert check["web_runtime_loaded_code_stale"] is True
+        assert check["web_reload_needed_for_verification"] is True
         assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
 
     def test_local_health_blocks_loaded_runtime_head_mismatch(self) -> None:

@@ -44,8 +44,11 @@ def normalize_public_base_url(value: str, *, allow_local_http: bool = False) -> 
         raise PreflightError("public_base_url must not include query or fragment.")
     if parsed.path.rstrip("/").endswith("/mcp"):
         raise PreflightError("public_base_url must be the service base URL, not the /mcp connector URL.")
-    if parsed.scheme == "https" and _is_loopback_host(parsed.hostname):
-        raise PreflightError("remote MCP public_base_url must not use localhost or loopback hosts.")
+    if parsed.scheme == "https" and _is_non_public_https_host(parsed.hostname):
+        raise PreflightError(
+            "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
+            "or otherwise non-public IP hosts."
+        )
     if parsed.scheme == "http" and not allow_local_http:
         raise PreflightError("remote MCP public_base_url must use https://.")
     if parsed.scheme == "http" and allow_local_http and not _is_loopback_host(parsed.hostname):
@@ -59,6 +62,16 @@ def _is_loopback_host(hostname: str | None) -> bool:
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_non_public_https_host(hostname: str | None) -> bool:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_global
     except ValueError:
         return False
 
