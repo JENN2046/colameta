@@ -79,11 +79,24 @@ class FakeCommandRunner:
 
 def ready_preflight(public_base_url: str, **kwargs: object) -> dict[str, object]:
     no_network = bool(kwargs.get("no_network"))
+    expected_head = kwargs.get("expected_head")
+    expected_runtime_head = expected_head if isinstance(expected_head, str) else None
+    healthz_runtime = None
+    if expected_runtime_head:
+        healthz_runtime = {
+            "loaded_runtime_head": expected_runtime_head,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "installed_package_project_source_clean": True,
+            "installed_package_source_cleanliness_status": "clean",
+        }
     return {
         "ok": True,
         "public_base_url": public_base_url,
         "connector_url": f"{public_base_url}/mcp",
         "network_check": "not_run" if no_network else "run",
+        "expected_runtime_head": expected_runtime_head,
+        "healthz_runtime": healthz_runtime,
         "failures": [],
     }
 
@@ -248,6 +261,7 @@ class ProductionOpsTests(unittest.TestCase):
         assert observed["public_base_url"] == "http://localhost:8766"
         assert observed["allow_local_http"] is True
         assert observed["no_network"] is True
+        assert observed["expected_head"] == HEAD
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_NOT_RUN"
 
     def test_loopback_http_network_preflight_cannot_satisfy_beta_gate(self) -> None:
@@ -322,6 +336,47 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
         assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
+
+    def test_remote_preflight_blocks_when_public_healthz_runtime_is_stale(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        stale_head = "b" * 40
+
+        def stale_runtime_preflight(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            return {
+                "ok": True,
+                "public_base_url": public_base_url,
+                "connector_url": f"{public_base_url}/mcp",
+                "network_check": "run",
+                "expected_runtime_head": kwargs.get("expected_head"),
+                "healthz_runtime": {
+                    "loaded_runtime_head": stale_head,
+                    "runtime_loaded_code_stale": False,
+                    "reload_needed_for_verification": False,
+                    "installed_package_project_source_clean": True,
+                    "installed_package_source_cleanliness_status": "clean",
+                },
+                "failures": [],
+            }
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=stale_runtime_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["remote_https_mcp_preflight"]
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert check["reason_code"] == "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED"
+        assert check["expected_runtime_head"] == HEAD
+        assert check["healthz_runtime"]["loaded_runtime_head"] == stale_head
+        assert "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED" in packet["blocker_codes"]
 
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +18,7 @@ class PreflightError(ValueError):
 
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
+_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ def validate_remote_payloads(
     mcp: tuple[int, dict[str, Any]],
     protected_resource: tuple[int, dict[str, Any]],
     authorization_server: tuple[int, dict[str, Any]],
+    expected_head: str | None = None,
 ) -> list[str]:
     failures: list[str] = []
     health_status, health_payload = healthz
@@ -131,6 +134,8 @@ def validate_remote_payloads(
     health_auth_mode = health_payload.get("auth_mode")
     if health_auth_mode not in REMOTE_MCP_AUTH_MODES:
         failures.append("healthz auth_mode must be oauth or external-oauth for ChatGPT remote MCP.")
+    if expected_head:
+        failures.extend(_validate_health_runtime(health_payload, expected_head))
 
     mcp_status, mcp_payload = mcp
     if mcp_status != 200 or mcp_payload.get("ok") is not True:
@@ -191,8 +196,10 @@ def run_preflight(
     allow_local_http: bool = False,
     no_network: bool = False,
     timeout_seconds: float = 5.0,
+    expected_head: str | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_public_base_url(public_base_url, allow_local_http=allow_local_http)
+    expected_runtime_head = _clean_head(expected_head)
     plan = build_endpoint_plan(normalized)
     report: dict[str, Any] = {
         "ok": True,
@@ -202,6 +209,7 @@ def run_preflight(
         "protected_resource_metadata_url": plan.protected_resource_metadata_url,
         "authorization_server_metadata_url": plan.authorization_server_metadata_url,
         "network_check": "not_run" if no_network else "run",
+        "expected_runtime_head": expected_runtime_head,
         "failures": [],
     }
     if no_network:
@@ -219,14 +227,85 @@ def run_preflight(
         mcp=payloads["mcp"],
         protected_resource=payloads["protected_resource"],
         authorization_server=payloads["authorization_server"],
+        expected_head=expected_runtime_head,
     )
     report["responses"] = {
         key: {"status": status, "keys": sorted(payload.keys())}
         for key, (status, payload) in payloads.items()
     }
+    report["healthz_runtime"] = _health_runtime_evidence(payloads["healthz"][1])
     report["failures"] = failures
     report["ok"] = not failures
     return report
+
+
+def _validate_health_runtime(health_payload: dict[str, Any], expected_head: str) -> list[str]:
+    if _health_runtime_matches_expected(health_payload, expected_head):
+        return []
+    return ["healthz runtime provenance must prove the public MCP endpoint is serving expected_head."]
+
+
+def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str) -> bool:
+    if (
+        _clean_head(health.get("loaded_runtime_head")) == expected_head
+        and _health_runtime_reload_verified(health)
+        and _health_runtime_source_clean(health)
+    ):
+        return True
+    return (
+        _clean_head(health.get("runtime_project_checkout_head") or health.get("project_checkout_head")) == expected_head
+        and _health_runtime_reload_verified(health)
+        and _health_runtime_source_clean(health)
+        and health.get("installed_package_matches_project_checkout") is True
+        and health.get("installed_package_verification_status") == "match"
+    )
+
+
+def _health_runtime_reload_verified(health: dict[str, Any]) -> bool:
+    return health.get("runtime_loaded_code_stale") is False and health.get("reload_needed_for_verification") is False
+
+
+def _health_runtime_source_clean(health: dict[str, Any]) -> bool:
+    return (
+        health.get("installed_package_project_source_clean") is True
+        and health.get("installed_package_source_cleanliness_status") == "clean"
+    )
+
+
+def _health_runtime_evidence(health: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "loaded_runtime_head": _clean_head(health.get("loaded_runtime_head")),
+        "runtime_project_checkout_head": _clean_head(
+            health.get("runtime_project_checkout_head") or health.get("project_checkout_head")
+        ),
+        "runtime_loaded_code_stale": health.get("runtime_loaded_code_stale")
+        if isinstance(health.get("runtime_loaded_code_stale"), bool)
+        else None,
+        "reload_needed_for_verification": health.get("reload_needed_for_verification")
+        if isinstance(health.get("reload_needed_for_verification"), bool)
+        else None,
+        "installed_package_matches_project_checkout": health.get("installed_package_matches_project_checkout")
+        if isinstance(health.get("installed_package_matches_project_checkout"), bool)
+        else None,
+        "installed_package_verification_status": health.get("installed_package_verification_status")
+        if isinstance(health.get("installed_package_verification_status"), str)
+        else None,
+        "installed_package_project_source_clean": health.get("installed_package_project_source_clean")
+        if isinstance(health.get("installed_package_project_source_clean"), bool)
+        else None,
+        "installed_package_source_cleanliness_status": health.get("installed_package_source_cleanliness_status")
+        if isinstance(health.get("installed_package_source_cleanliness_status"), str)
+        else None,
+    }
+
+
+def _clean_head(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if _HEX_HEAD_RE.match(candidate):
+        return candidate
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-local-http", action="store_true", help="Allow http://localhost for local dry runs.")
     parser.add_argument("--no-network", action="store_true", help="Validate URL shape only; do not call endpoints.")
     parser.add_argument("--timeout", type=float, default=5.0, help="Per-request timeout in seconds.")
+    parser.add_argument("--expected-head", help="Expected runtime Git commit served by public /healthz.")
     args = parser.parse_args(argv)
 
     try:
@@ -243,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_local_http=args.allow_local_http,
             no_network=args.no_network,
             timeout_seconds=args.timeout,
+            expected_head=args.expected_head,
         )
     except Exception as exc:
         report = {"ok": False, "failures": [str(exc)]}

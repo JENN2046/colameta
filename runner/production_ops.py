@@ -90,7 +90,7 @@ def build_production_ops_packet(
         "stable_service": _systemd_service_check(stable_service_name, command_runner),
         "local_stable_health": _local_stable_health_check(command_runner, target_head),
         "remote_https_mcp_preflight": public_base_url_check
-        or _remote_preflight_check(safe_public_base_url, no_network, preflight_runner),
+        or _remote_preflight_check(safe_public_base_url, no_network, preflight_runner, target_head),
         "cloudflared_service": _systemd_service_check(cloudflared_service_name, command_runner),
         "backup_inventory": _backup_inventory_check(backup_dir),
         "rollback_rehearsal": _rollback_rehearsal_check(root, backup_dir, target_head, command_runner),
@@ -363,6 +363,7 @@ def _remote_preflight_check(
     public_base_url: str,
     no_network: bool,
     preflight_runner: Callable[..., dict[str, Any]],
+    expected_head: str | None,
 ) -> dict[str, Any]:
     if _is_loopback_http_url(public_base_url) and not no_network:
         return _check(
@@ -374,7 +375,12 @@ def _remote_preflight_check(
             failures=["loopback http is allowed only for offline shape checks"],
         )
     try:
-        report = preflight_runner(public_base_url, allow_local_http=no_network, no_network=no_network)
+        report = preflight_runner(
+            public_base_url,
+            allow_local_http=no_network,
+            no_network=no_network,
+            expected_head=expected_head,
+        )
     except Exception as exc:
         return _check(BLOCKED, "REMOTE_PREFLIGHT_ERROR", "Remote HTTPS MCP preflight raised an error.", error=str(exc))
     failures = report.get("failures") if isinstance(report, dict) else None
@@ -386,7 +392,21 @@ def _remote_preflight_check(
                 "Remote HTTPS MCP preflight was not run; offline shape check does not satisfy Beta Gate.",
                 network_check=report.get("network_check"),
                 connector_url=report.get("connector_url"),
+                expected_runtime_head=report.get("expected_runtime_head"),
                 failures=failures or [],
+            )
+        healthz_runtime = report.get("healthz_runtime") if isinstance(report.get("healthz_runtime"), dict) else {}
+        if not expected_head or not _health_runtime_matches_expected(healthz_runtime, expected_head):
+            return _check(
+                BLOCKED,
+                "REMOTE_PREFLIGHT_RUNTIME_UNVERIFIED",
+                "Remote HTTPS MCP preflight did not prove the public endpoint is serving the expected runtime.",
+                network_check=report.get("network_check"),
+                connector_url=report.get("connector_url"),
+                expected_runtime_head=report.get("expected_runtime_head"),
+                healthz_runtime=healthz_runtime,
+                failures=(failures or [])
+                + ["public healthz runtime provenance did not match expected runtime"],
             )
         return _check(
             READY,
@@ -394,6 +414,8 @@ def _remote_preflight_check(
             "Remote HTTPS MCP preflight passed.",
             network_check=report.get("network_check"),
             connector_url=report.get("connector_url"),
+            expected_runtime_head=report.get("expected_runtime_head"),
+            healthz_runtime=report.get("healthz_runtime"),
             failures=failures or [],
         )
     return _check(
@@ -401,6 +423,8 @@ def _remote_preflight_check(
         "REMOTE_PREFLIGHT_FAILED",
         "Remote HTTPS MCP preflight failed.",
         network_check=report.get("network_check") if isinstance(report, dict) else None,
+        expected_runtime_head=report.get("expected_runtime_head") if isinstance(report, dict) else None,
+        healthz_runtime=report.get("healthz_runtime") if isinstance(report, dict) else None,
         failures=failures or [],
     )
 
