@@ -409,6 +409,30 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["beta_gate_ready"] is False
         assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_STALE"
 
+    def test_invalid_connector_smoke_observed_at_is_redacted_before_stale_packet(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "not-a-timestamp"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert "not-a-timestamp" not in serialized
+        assert packet["status"] == "needs_attention"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_STALE"
+        assert packet["checks"]["connector_smoke"]["last_observed_at"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["connector_smoke"]["observed_at_valid"] is False
+        assert packet["checks"]["connector_smoke"]["redacted"] is True
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
     def test_backup_missing_needs_attention(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
@@ -495,6 +519,34 @@ class ProductionOpsTests(unittest.TestCase):
 
         serialized = json.dumps(packet)
         assert "sk-not-a-real-token-value" not in serialized
+        assert packet["status"] == "blocked"
+        assert packet["connector_smoke_ready"] is False
+        assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_REJECTED"
+        assert packet["checks"]["connector_smoke"]["last_observed_at"] == REDACTED_CONNECTOR_SMOKE_VALUE
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
+    def test_bearer_connector_smoke_observed_at_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
+
+        pasted_value = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature"
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={
+                "status": "ready",
+                "last_observed_at": pasted_value,
+            },
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert pasted_value not in serialized
+        assert "Authorization: Bearer" not in serialized
+        assert "eyJhbGciOiJIUzI1NiJ9" not in serialized
         assert packet["status"] == "blocked"
         assert packet["connector_smoke_ready"] is False
         assert packet["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_REJECTED"

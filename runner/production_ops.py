@@ -38,6 +38,9 @@ READY = "ready"
 SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{12,}"),
+    re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+"),
+    re.compile(r"(?i)\bBearer\s+eyJ[A-Za-z0-9_\-]*(?:\.[A-Za-z0-9_\-]+){1,2}"),
+    re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"),
     re.compile(r"(?i)\b(client_secret|access_token|refresh_token|id_token|cookie|password|private_key)\b"),
 )
 SENSITIVE_KEY_RE = re.compile(r"(?i)(secret|token|cookie|password|credential|private[_-]?key|authorization)")
@@ -415,7 +418,7 @@ def _connector_smoke_check(
     status = connector_smoke.get("status") or connector_smoke.get("apps_connector_closeout_status")
     observed = connector_smoke.get("last_observed_at") or connector_smoke.get("observed_at")
     safe_status, status_redacted = _redact_connector_smoke_field(status)
-    safe_observed, observed_redacted = _redact_connector_smoke_field(observed)
+    safe_observed, observed_redacted, observed_valid = _connector_smoke_observed_at_for_packet(observed)
     if status_redacted or observed_redacted:
         return _check(
             BLOCKED,
@@ -426,16 +429,45 @@ def _connector_smoke_check(
             redacted=True,
         )
     if status != "ready":
-        return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_NOT_READY", "ChatGPT connector smoke evidence is not ready.", connector_status=status, last_observed_at=observed)
-    if not _is_fresh_iso8601(str(observed or ""), fresh_hours=fresh_hours, now=now):
-        return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_STALE", "ChatGPT connector smoke evidence is stale.", connector_status=status, last_observed_at=observed)
-    return _check(READY, "CONNECTOR_SMOKE_READY", "Fresh ChatGPT connector smoke evidence is ready.", connector_status=status, last_observed_at=observed)
+        return _check(
+            NEEDS_ATTENTION,
+            "CONNECTOR_SMOKE_NOT_READY",
+            "ChatGPT connector smoke evidence is not ready.",
+            connector_status=safe_status,
+            last_observed_at=safe_observed,
+            observed_at_valid=observed_valid,
+            redacted=safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
+        )
+    if not observed_valid:
+        return _check(
+            NEEDS_ATTENTION,
+            "CONNECTOR_SMOKE_STALE",
+            "ChatGPT connector smoke evidence is stale.",
+            connector_status=safe_status,
+            last_observed_at=safe_observed,
+            observed_at_valid=False,
+            redacted=safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
+        )
+    if not _is_fresh_iso8601(str(safe_observed or ""), fresh_hours=fresh_hours, now=now):
+        return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_STALE", "ChatGPT connector smoke evidence is stale.", connector_status=safe_status, last_observed_at=safe_observed)
+    return _check(READY, "CONNECTOR_SMOKE_READY", "Fresh ChatGPT connector smoke evidence is ready.", connector_status=safe_status, last_observed_at=safe_observed)
 
 
 def _redact_connector_smoke_field(value: Any) -> tuple[Any, bool]:
     if isinstance(value, str) and _contains_sensitive_text(value):
         return REDACTED_CONNECTOR_SMOKE_VALUE, True
     return value, False
+
+
+def _connector_smoke_observed_at_for_packet(value: Any) -> tuple[Any, bool, bool]:
+    if value in (None, ""):
+        return None, False, False
+    safe_value, redacted = _redact_connector_smoke_field(value)
+    if redacted:
+        return safe_value, True, False
+    if not isinstance(value, str) or _parse_iso8601(value) is None:
+        return REDACTED_CONNECTOR_SMOKE_VALUE, False, False
+    return value, False, True
 
 
 def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, Any] | None]:
@@ -620,18 +652,25 @@ def _sha256_file(path: Path) -> str | None:
 
 
 def _is_fresh_iso8601(value: str, *, fresh_hours: int, now: datetime | None) -> bool:
-    try:
-        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+    observed = _parse_iso8601(value)
+    if observed is None:
         return False
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=timezone.utc)
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
     if observed > reference:
         return False
     return reference - observed <= timedelta(hours=max(0, fresh_hours))
+
+
+def _parse_iso8601(value: str) -> datetime | None:
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    return observed
 
 
 def _parse_systemd_properties(output: str) -> dict[str, str]:
