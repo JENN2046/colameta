@@ -219,6 +219,52 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert package["checked_file_count"] == len(files)
         assert package["mismatched_file_count"] == 0
 
+    def test_installed_package_missing_new_project_runtime_file_stays_unverified(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages-missing-runtime-file"
+        shared_path = "runner/runtime_observability.py"
+        added_path = "runner/new_runtime_gate.py"
+        project_files = {
+            shared_path: "loaded = 'runtime'\n",
+            added_path: "new_runtime_gate = True\n",
+        }
+        for relative_path, content in project_files.items():
+            project_file = project / relative_path
+            project_file.parent.mkdir(parents=True, exist_ok=True)
+            project_file.write_text(content, encoding="utf-8")
+
+        installed_file = installed_root / shared_path
+        installed_file.parent.mkdir(parents=True, exist_ok=True)
+        installed_file.write_text(project_files[shared_path], encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, [shared_path])
+        loaded_fingerprints = self.module_fingerprint(installed_file)
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head="",
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
+
+        assert status["runtime_loaded_code_stale"] is None
+        assert status["reload_needed_for_verification"] is True
+        assert status["reload_awareness_reason"] == "unknown_runtime_or_checkout_head"
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "missing_installed_runtime_files"
+        assert package["runtime_file_verification_status"] == "missing_installed_runtime_files"
+        assert package["matches_project_checkout"] is False
+        assert package["expected_runtime_file_count"] == len(project_files)
+        assert package["installed_distribution_file_count"] == 1
+        assert package["missing_installed_file_count"] == 1
+        assert package["missing_installed_files"][0]["path"] == added_path
+
     def test_installed_package_matching_dirty_project_checkout_stays_unverified(self) -> None:
         project = self.make_git_checkout(HEAD_A)
         installed_root = self.tmp_path / "site-packages-dirty"

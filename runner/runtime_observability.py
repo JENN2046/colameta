@@ -1734,37 +1734,55 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         }
 
     files = list(distribution.files or [])
-    runtime_relative_files = _runtime_distribution_source_files(files)
-    if not runtime_relative_files:
+    installed_runtime_relative_files = _runtime_distribution_source_files(files)
+    expected_runtime_relative_files, project_file_set_source, project_file_set_unavailable_reason = (
+        _runtime_project_source_files(project_root_clean)
+    )
+    if not expected_runtime_relative_files:
         return {
             **base,
             "package_version": _distribution_version(distribution),
             "distribution_root": distribution_root,
             "verification_status": "unverified",
             "matches_project_checkout": None,
-            "unavailable_reason": "no_runtime_distribution_files",
+            "unavailable_reason": project_file_set_unavailable_reason or "no_expected_runtime_project_files",
+            "project_file_set_source": project_file_set_source,
+            "installed_distribution_file_count": len(installed_runtime_relative_files),
         }
 
     checked_count = 0
     matched_count = 0
     mismatched: list[dict[str, Any]] = []
+    missing_installed: list[dict[str, Any]] = []
     unverified: list[dict[str, Any]] = []
     installed_total_size = 0
     project_total_size = 0
     installed_digest = hashlib.sha256()
     project_digest = hashlib.sha256()
 
-    for relative_path in runtime_relative_files:
+    for relative_path in expected_runtime_relative_files:
         installed_path = os.path.join(distribution_root, relative_path)
         project_path = os.path.join(project_root_clean, relative_path)
         installed_fingerprint = _fingerprint_source_file(installed_path)
         project_fingerprint = _fingerprint_source_file(project_path)
-        if not installed_fingerprint.get("fingerprint_available") or not project_fingerprint.get("fingerprint_available"):
+        installed_available = bool(installed_fingerprint.get("fingerprint_available"))
+        project_available = bool(project_fingerprint.get("fingerprint_available"))
+        if not installed_available and project_available:
+            missing_installed.append(
+                {
+                    "path": relative_path,
+                    "project_sha256": _clean_sha256(project_fingerprint.get("sha256")),
+                    "project_size_bytes": int(project_fingerprint.get("size_bytes") or 0),
+                    "installed_unavailable_reason": installed_fingerprint.get("unavailable_reason"),
+                }
+            )
+            continue
+        if not installed_available or not project_available:
             unverified.append(
                 {
                     "path": relative_path,
-                    "installed_available": bool(installed_fingerprint.get("fingerprint_available")),
-                    "project_available": bool(project_fingerprint.get("fingerprint_available")),
+                    "installed_available": installed_available,
+                    "project_available": project_available,
                     "installed_unavailable_reason": installed_fingerprint.get("unavailable_reason"),
                     "project_unavailable_reason": project_fingerprint.get("unavailable_reason"),
                 }
@@ -1792,7 +1810,12 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
                 }
             )
 
-    if mismatched:
+    if missing_installed:
+        runtime_file_verification_status = "missing_installed_runtime_files"
+        verification_status = "missing_installed_runtime_files"
+        matches_project_checkout: bool | None = False
+        matches_project_worktree: bool | None = False
+    elif mismatched:
         runtime_file_verification_status = "mismatch"
         verification_status = "mismatch"
         matches_project_checkout: bool | None = False
@@ -1826,9 +1849,13 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "runtime_file_verification_status": runtime_file_verification_status,
         "matches_project_checkout": matches_project_checkout,
         "matches_project_worktree": matches_project_worktree,
+        "project_file_set_source": project_file_set_source,
+        "expected_runtime_file_count": len(expected_runtime_relative_files),
+        "installed_distribution_file_count": len(installed_runtime_relative_files),
         "checked_file_count": checked_count,
         "matched_file_count": matched_count,
         "mismatched_file_count": len(mismatched),
+        "missing_installed_file_count": len(missing_installed),
         "unverified_file_count": len(unverified),
         "installed_total_size_bytes": installed_total_size,
         "project_total_size_bytes": project_total_size,
@@ -1836,8 +1863,11 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "project_runtime_files_sha256": project_digest.hexdigest() if checked_count else None,
         "included_roots": list(_RUNTIME_SOURCE_ROOTS),
         "mismatched_files": mismatched[:20],
+        "missing_installed_files": missing_installed[:20],
         "unverified_files": unverified[:20],
-        "truncated_mismatch_or_unverified_lists": len(mismatched) > 20 or len(unverified) > 20,
+        "truncated_mismatch_or_unverified_lists": len(mismatched) > 20
+        or len(missing_installed) > 20
+        or len(unverified) > 20,
     }
 
 
@@ -2038,6 +2068,38 @@ def _runtime_distribution_source_files(files: list[Any]) -> list[str]:
             continue
         result.append(relative_path)
     return sorted(result)
+
+
+def _runtime_project_source_files(project_root: str) -> tuple[list[str], str, str | None]:
+    result = _run_git_readonly(
+        project_root,
+        ["ls-files", "-z", "--", *_RUNTIME_SOURCE_ROOTS],
+    )
+    if result.get("code") == 0:
+        files = [entry for entry in str(result.get("stdout") or "").split("\0") if entry]
+        runtime_files = _runtime_distribution_source_files(files)
+        if runtime_files:
+            return runtime_files, "git_ls_files", None
+        return [], "git_ls_files", "no_expected_runtime_project_files"
+
+    runtime_files = _runtime_project_source_files_from_filesystem(project_root)
+    if runtime_files:
+        return runtime_files, "filesystem_fallback", "git_ls_files_failed"
+    return [], "filesystem_fallback", "git_ls_files_failed"
+
+
+def _runtime_project_source_files_from_filesystem(project_root: str) -> list[str]:
+    files: list[str] = []
+    for root in _RUNTIME_SOURCE_ROOTS:
+        root_path = os.path.join(project_root, root)
+        if not os.path.isdir(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+            for filename in filenames:
+                relative_path = os.path.relpath(os.path.join(dirpath, filename), project_root)
+                files.append(relative_path)
+    return _runtime_distribution_source_files(files)
 
 
 def _clean_source_path(value: Any) -> str | None:
