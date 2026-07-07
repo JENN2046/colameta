@@ -403,6 +403,63 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert second["installed_package_project_source_clean"] is False
         assert second["reload_needed_for_verification"] is True
 
+    def test_runtime_healthz_provenance_recomputes_when_installed_package_state_changes(self) -> None:
+        project = self.make_git_checkout(HEAD_A, branch="healthz-package-invalidate")
+        installed_root = self.tmp_path / "site-packages-cache"
+        relative_path = "runner/runtime_observability.py"
+        installed_file = installed_root / relative_path
+        installed_file.parent.mkdir(parents=True)
+        installed_file.write_text("loaded = 'first'\n", encoding="utf-8")
+        fake_distribution = self.fake_distribution(installed_root, [relative_path])
+        runtime_observability._runtime_healthz_provenance_cached.cache_clear()
+        clean_status = {
+            "loaded_runtime_head": None,
+            "project_checkout_head": HEAD_A,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+            "installed_package_verification": {
+                "matches_project_checkout": True,
+                "verification_status": "match",
+                "project_source_clean": True,
+                "source_cleanliness_status": "clean",
+            },
+        }
+        stale_status = {
+            **clean_status,
+            "runtime_loaded_code_stale": None,
+            "reload_needed_for_verification": True,
+            "reload_awareness_reason": "unknown_runtime_or_checkout_head",
+            "installed_package_verification": {
+                "matches_project_checkout": False,
+                "verification_status": "mismatch",
+                "project_source_clean": True,
+                "source_cleanliness_status": "clean",
+            },
+        }
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    with patch.object(runtime_observability.time, "time", return_value=100.0):
+                        with patch.object(
+                            runtime_observability,
+                            "get_runtime_version_status",
+                            side_effect=[clean_status, stale_status],
+                        ) as mocked_status:
+                            first = runtime_observability.runtime_healthz_provenance(str(project))
+                            installed_file.write_text("loaded = 'second package state'\n", encoding="utf-8")
+                            second = runtime_observability.runtime_healthz_provenance(str(project))
+
+        assert mocked_status.call_count == 2
+        assert first["installed_package_matches_project_checkout"] is True
+        assert second["installed_package_matches_project_checkout"] is False
+        assert second["reload_needed_for_verification"] is True
+
     def test_loaded_runtime_project_root_uses_loaded_source_checkout(self) -> None:
         runtime_project = self.make_git_checkout(HEAD_A, branch="loaded-source-root")
 

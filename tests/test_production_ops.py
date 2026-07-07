@@ -965,6 +965,35 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
 
+    def test_secret_like_public_base_url_host_is_rejected_before_dns_resolution(self) -> None:
+        from runner.production_ops import REDACTED_PUBLIC_BASE_URL, build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not receive rejected URL: {public_base_url} {kwargs}")
+
+        def fail_resolve(host: str) -> list[object]:
+            raise AssertionError(f"secret-like public_base_url should not resolve {host}")
+
+        with patch("scripts.remote_https_mcp_preflight._resolve_hostname_addresses", side_effect=fail_resolve):
+            packet = build_production_ops_packet(
+                str(self.project),
+                public_base_url="https://sk-not-a-real-token-value.mcp.example.com",
+                expected_head=HEAD,
+                stable_runtime_dir=str(self.stable),
+                backup_dir=str(self.backups),
+                connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+                command_runner=FakeCommandRunner(),
+                preflight_runner=fail_if_called,
+                now=NOW,
+            )
+
+        serialized = json.dumps(packet)
+        assert "sk-not-a-real-token-value" not in serialized
+        assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
+        assert packet["status"] == "blocked"
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
     def test_secret_like_project_root_is_redacted_before_packet_emission(self) -> None:
         from runner.production_ops import REDACTED_PROJECT_ROOT, build_production_ops_packet
 

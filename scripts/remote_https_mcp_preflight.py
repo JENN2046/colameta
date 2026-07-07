@@ -23,6 +23,14 @@ REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 _FULL_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _NUMERIC_IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[0-9]+)$")
+_SECRET_LIKE_PUBLIC_URL_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_.+/=\-]{8,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9_.+/=\-]{8,}"),
+    re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+"),
+    re.compile(r"(?i)\bBearer\s+\S+"),
+    re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"),
+    re.compile(r"(?i)\b(client_secret|access_token|refresh_token|id_token|cookie|password|private_key)\b"),
+)
 _LOCAL_ONLY_DNS_SUFFIXES = (
     ".local",
     ".localhost",
@@ -69,6 +77,8 @@ def normalize_public_base_url(
     base = value.strip().rstrip("/")
     if not base:
         raise PreflightError("public_base_url is required.")
+    if _contains_secret_like_public_url_text(base):
+        raise PreflightError("public_base_url contains secret-like content.")
 
     parsed = urlparse(base)
     if parsed.scheme not in {"https", "http"}:
@@ -102,6 +112,10 @@ def _is_loopback_host(hostname: str | None) -> bool:
     except ValueError:
         numeric_ipv4 = _parse_numeric_ipv4_host(host)
         return bool(numeric_ipv4 and numeric_ipv4.is_loopback)
+
+
+def _contains_secret_like_public_url_text(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _SECRET_LIKE_PUBLIC_URL_PATTERNS)
 
 
 def _is_non_public_https_host(hostname: str | None, *, resolve_dns: bool = True) -> bool:

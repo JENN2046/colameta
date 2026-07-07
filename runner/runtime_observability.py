@@ -4,6 +4,7 @@ import os
 import re
 import hashlib
 import sys
+import time
 import importlib.metadata
 import json
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from runner._internal_utils import run_git as _run_git_base
 PROCESS_START_TIME_ISO = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 LOADED_SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 LOADED_MODULE_FINGERPRINT_ALGORITHM = "sha256"
+RUNTIME_HEALTHZ_PROVENANCE_CACHE_TTL_SECONDS = 5
 
 _ALL_POSSIBLY_STALE_SURFACES = (
     "MCP tool results",
@@ -200,6 +202,7 @@ def _runtime_healthz_cache_key(project_root: str | None) -> tuple[Any, ...]:
     project_root_clean = project.get("project_root") if isinstance(project.get("project_root"), str) else None
     source_cleanliness = _source_checkout_cleanliness(project_root_clean)
     return (
+        _runtime_healthz_cache_bucket(),
         project_root_clean,
         _clean_head(project.get("head")),
         project.get("head_source"),
@@ -207,6 +210,62 @@ def _runtime_healthz_cache_key(project_root: str | None) -> tuple[Any, ...]:
         source_cleanliness.get("source_cleanliness_status"),
         source_cleanliness.get("dirty_entry_count"),
         source_cleanliness.get("unavailable_reason"),
+        _installed_runtime_package_state_key(),
+    )
+
+
+def _runtime_healthz_cache_bucket() -> int:
+    ttl = max(1, int(RUNTIME_HEALTHZ_PROVENANCE_CACHE_TTL_SECONDS))
+    return int(time.time() // ttl)
+
+
+def _installed_runtime_package_state_key() -> tuple[Any, ...]:
+    try:
+        distribution = importlib.metadata.distribution("colameta")
+    except importlib.metadata.PackageNotFoundError:
+        return ("distribution_not_found",)
+
+    try:
+        distribution_root = os.path.abspath(str(distribution.locate_file("")))
+        loaded_source_root = os.path.abspath(LOADED_SOURCE_ROOT)
+        root_common = os.path.commonpath([distribution_root, loaded_source_root])
+    except (OSError, ValueError):
+        return ("distribution_root_unavailable",)
+
+    if not distribution_root or root_common != distribution_root:
+        return ("not_loaded_from_installed_package", distribution_root, loaded_source_root)
+
+    runtime_relative_files = _runtime_distribution_source_files(list(distribution.files or []))
+    if not runtime_relative_files:
+        return ("no_runtime_distribution_files", distribution_root, _distribution_version(distribution))
+
+    digest = hashlib.sha256()
+    present_count = 0
+    missing_count = 0
+    for relative_path in runtime_relative_files:
+        installed_path = os.path.join(distribution_root, relative_path)
+        try:
+            stat_result = os.stat(installed_path)
+        except OSError as exc:
+            missing_count += 1
+            digest.update(f"{relative_path}\0missing\0{exc.__class__.__name__}\0".encode("utf-8"))
+            continue
+        present_count += 1
+        digest.update(
+            (
+                f"{relative_path}\0"
+                f"{stat_result.st_size}\0"
+                f"{stat_result.st_mtime_ns}\0"
+                f"{getattr(stat_result, 'st_ino', 0)}\0"
+            ).encode("utf-8")
+        )
+    return (
+        "installed_runtime_package_state",
+        distribution_root,
+        _distribution_version(distribution),
+        present_count,
+        missing_count,
+        digest.hexdigest(),
     )
 
 

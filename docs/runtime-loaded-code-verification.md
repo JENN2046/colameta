@@ -68,6 +68,8 @@ Installed package verification must not invent a Git HEAD for `site-packages`. I
 
 Changed loaded source files are classified as reload verification risk because the running process may still be using code imported before the edit.
 
+Health endpoints expose only a short-TTL cached provenance summary. The cache key includes the runtime checkout identity, source-root cleanliness, a lightweight installed runtime package file-state stamp, and the TTL bucket, so packaged-runtime readiness evidence is not reused indefinitely across package changes.
+
 ## Non-Authorization Rule
 
 The fields are observability signals only. A stale or unknown result can support an operator handoff notice, but it does not authorize an automatic restart, reload, kill, apply, service lifecycle mutation, executor workflow mutation, config mutation, or Git remote mutation.

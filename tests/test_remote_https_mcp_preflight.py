@@ -42,6 +42,16 @@ def test_normalize_public_base_url_accepts_https_service_base() -> None:
     assert plan.protected_resource_metadata_url == "https://mcp.example.com/.well-known/oauth-protected-resource"
 
 
+def test_normalize_public_base_url_rejects_secret_like_host_before_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_resolve(host: str) -> list[object]:
+        raise AssertionError(f"secret-like public_base_url should not resolve {host}")
+
+    monkeypatch.setattr(remote_preflight, "_resolve_hostname_addresses", fail_resolve)
+
+    with pytest.raises(PreflightError, match="secret-like"):
+        normalize_public_base_url("https://sk-not-a-real-token-value.mcp.example.com")
+
+
 def test_normalize_public_base_url_rejects_remote_http_and_connector_url() -> None:
     with pytest.raises(PreflightError, match="https"):
         normalize_public_base_url("http://mcp.example.com")

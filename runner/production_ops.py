@@ -589,6 +589,14 @@ def _public_base_url_for_packet(
             error="public_base_url must be a string.",
             redacted=True,
         )
+    if _contains_sensitive_text(public_base_url):
+        return REDACTED_PUBLIC_BASE_URL, _check(
+            BLOCKED,
+            "PUBLIC_BASE_URL_REJECTED",
+            "public_base_url was rejected before status emission.",
+            error="public_base_url contains secret-like content.",
+            redacted=True,
+        )
     try:
         normalized = normalize_public_base_url(
             public_base_url,
