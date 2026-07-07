@@ -9,6 +9,7 @@ from scripts.remote_https_mcp_preflight import (
     PreflightError,
     build_endpoint_plan,
     fetch_json,
+    main as preflight_main,
     normalize_public_base_url,
     run_preflight,
     validate_remote_payloads,
@@ -125,6 +126,70 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
     assert captured["timeout"] == 7
     assert captured["user_agent"] == PREFLIGHT_USER_AGENT
     assert captured["accept"] == "application/json"
+
+
+def test_fetch_json_rejects_redirected_final_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "http://127.0.0.1:8766/healthz"
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(PreflightError, match="redirected to an off-base"):
+        fetch_json("https://mcp.example.com/healthz")
+
+
+def test_fetch_json_rejects_same_scheme_off_base_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://other.example.com/healthz"
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(PreflightError, match="redirected to an off-base"):
+        fetch_json("https://mcp.example.com/healthz")
+
+
+def test_run_preflight_rejects_malformed_explicit_expected_head() -> None:
+    with pytest.raises(PreflightError, match="expected_head"):
+        run_preflight("https://mcp.example.com", no_network=True, expected_head="abc123")
+
+
+def test_main_rejects_malformed_explicit_expected_head(capsys: pytest.CaptureFixture[str]) -> None:
+    code = preflight_main(["https://mcp.example.com", "--no-network", "--expected-head", "abc123"])
+
+    output = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert output["ok"] is False
+    assert output["failures"] == ["expected_head must be a full 40-character commit SHA."]
 
 
 def test_validate_remote_payloads_accepts_oauth_metadata_contract() -> None:

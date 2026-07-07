@@ -19,6 +19,7 @@ class PreflightError(ValueError):
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
+_FULL_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _NUMERIC_IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[0-9]+)$")
 _LOCAL_ONLY_DNS_SUFFIXES = (
     ".local",
@@ -162,12 +163,14 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            _validate_final_response_url(url, getattr(response, "geturl", lambda: url)())
             raw = response.read().decode("utf-8")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise PreflightError(f"{url} did not return a JSON object.")
             return int(response.status), payload
     except urllib.error.HTTPError as exc:
+        _validate_final_response_url(url, getattr(exc, "geturl", lambda: exc.url)())
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw)
@@ -176,6 +179,22 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
         if not isinstance(payload, dict):
             payload = {"raw": str(payload)[:500]}
         return int(exc.code), payload
+
+
+def _validate_final_response_url(request_url: str, final_url: str) -> None:
+    if not final_url:
+        raise PreflightError(f"{request_url} did not report a final response URL.")
+    expected = urlparse(request_url)
+    actual = urlparse(final_url)
+    if (
+        actual.scheme != expected.scheme
+        or (actual.hostname or "").lower().rstrip(".") != (expected.hostname or "").lower().rstrip(".")
+        or actual.port != expected.port
+        or actual.path.rstrip("/") != expected.path.rstrip("/")
+        or actual.query
+        or actual.fragment
+    ):
+        raise PreflightError(f"{request_url} redirected to an off-base preflight URL.")
 
 
 def validate_remote_payloads(
@@ -261,7 +280,7 @@ def run_preflight(
     expected_head: str | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_public_base_url(public_base_url, allow_local_http=allow_local_http)
-    expected_runtime_head = _clean_head(expected_head)
+    expected_runtime_head = _clean_expected_head(expected_head)
     plan = build_endpoint_plan(normalized)
     report: dict[str, Any] = {
         "ok": True,
@@ -368,6 +387,14 @@ def _clean_head(value: Any) -> str | None:
     if _HEX_HEAD_RE.match(candidate):
         return candidate
     return None
+
+
+def _clean_expected_head(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _FULL_HEX_HEAD_RE.match(value.strip()):
+        raise PreflightError("expected_head must be a full 40-character commit SHA.")
+    return value.strip()
 
 
 def main(argv: list[str] | None = None) -> int:
