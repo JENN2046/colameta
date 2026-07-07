@@ -163,14 +163,14 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            _validate_final_response_url(url, getattr(response, "geturl", lambda: url)())
+            _validate_final_response_url(url, _response_final_url(response, url))
             raw = response.read().decode("utf-8")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise PreflightError(f"{url} did not return a JSON object.")
             return int(response.status), payload
     except urllib.error.HTTPError as exc:
-        _validate_final_response_url(url, getattr(exc, "geturl", lambda: exc.url)())
+        _validate_final_response_url(url, _response_final_url(exc, getattr(exc, "url", url)))
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw)
@@ -179,6 +179,13 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
         if not isinstance(payload, dict):
             payload = {"raw": str(payload)[:500]}
         return int(exc.code), payload
+
+
+def _response_final_url(response: Any, fallback: str) -> str:
+    geturl = getattr(response, "geturl", None)
+    if callable(geturl):
+        return str(geturl())
+    return fallback
 
 
 def _validate_final_response_url(request_url: str, final_url: str) -> None:
