@@ -26,6 +26,7 @@ DEFAULT_BACKUP_DIR = "/home/jenn/tools/colameta-stable-backups"
 LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
+REDACTED_PROJECT_ROOT = "<redacted-project-root>"
 REDACTED_CONNECTOR_SMOKE_VALUE = "<redacted-connector-smoke-value>"
 REDACTED_STATUS_WRITTEN_PATH = "<redacted-status-written-path>"
 EXPECTED_WEB_HEALTH_SERVICE = "colameta-web-console"
@@ -81,6 +82,7 @@ def build_production_ops_packet(
     preflight_runner = preflight_runner or run_preflight
     candidate_head = _git_head(root, command_runner)
     target_head, expected_head_check = _expected_head_for_packet(expected_head, candidate_head)
+    safe_project_root, project_root_check = _project_root_for_packet(root)
     safe_public_base_url, public_base_url_check = _public_base_url_for_packet(public_base_url)
 
     checks: dict[str, dict[str, Any]] = {
@@ -100,6 +102,8 @@ def build_production_ops_packet(
             now=now,
         ),
     }
+    if project_root_check is not None:
+        checks["project_root"] = project_root_check
     if expected_head_check is not None:
         checks["expected_head"] = expected_head_check
 
@@ -126,7 +130,7 @@ def build_production_ops_packet(
         "source": "production_ops_beta_gate",
         "read_only": True,
         "side_effects": False,
-        "project_root": root,
+        "project_root": safe_project_root,
         "public_base_url": safe_public_base_url,
         "observed_at": observed_at,
         "status": status,
@@ -554,6 +558,17 @@ def _connector_smoke_observed_at_for_packet(value: Any) -> tuple[Any, bool, bool
     if not isinstance(value, str) or _parse_iso8601(value) is None:
         return REDACTED_CONNECTOR_SMOKE_VALUE, False, False
     return value, False, True
+
+
+def _project_root_for_packet(project_root: str) -> tuple[str, dict[str, Any] | None]:
+    if _contains_sensitive_text(project_root):
+        return REDACTED_PROJECT_ROOT, _check(
+            BLOCKED,
+            "PROJECT_ROOT_REJECTED",
+            "project_root was rejected before status emission.",
+            redacted=True,
+        )
+    return project_root, None
 
 
 def _public_base_url_for_packet(public_base_url: str) -> tuple[str, dict[str, Any] | None]:

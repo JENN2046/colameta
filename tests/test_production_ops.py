@@ -858,6 +858,32 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
 
+    def test_secret_like_project_root_is_redacted_before_packet_emission(self) -> None:
+        from runner.production_ops import REDACTED_PROJECT_ROOT, build_production_ops_packet
+
+        secret_dir_name = "project-sk-not-a-real-token-value"
+        secret_project = self.tmp_path / secret_dir_name
+        secret_project.mkdir()
+
+        packet = build_production_ops_packet(
+            str(secret_project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        serialized = json.dumps(packet)
+        assert secret_dir_name not in serialized
+        assert "sk-not-a-real-token-value" not in serialized
+        assert packet["project_root"] == REDACTED_PROJECT_ROOT
+        assert packet["status"] == "blocked"
+        assert packet["checks"]["project_root"]["reason_code"] == "PROJECT_ROOT_REJECTED"
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+
     def test_secret_bearing_connector_smoke_observed_at_is_redacted_before_packet_emission(self) -> None:
         from runner.production_ops import REDACTED_CONNECTOR_SMOKE_VALUE, build_production_ops_packet
 

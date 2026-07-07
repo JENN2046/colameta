@@ -19,6 +19,7 @@ class PreflightError(ValueError):
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
+_NUMERIC_IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[0-9]+)$")
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,8 @@ def _is_loopback_host(hostname: str | None) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return False
+        numeric_ipv4 = _parse_numeric_ipv4_host(host)
+        return bool(numeric_ipv4 and numeric_ipv4.is_loopback)
 
 
 def _is_non_public_https_host(hostname: str | None) -> bool:
@@ -75,7 +77,49 @@ def _is_non_public_https_host(hostname: str | None) -> bool:
     try:
         return not ipaddress.ip_address(host).is_global
     except ValueError:
+        numeric_ipv4 = _parse_numeric_ipv4_host(host)
+        if numeric_ipv4 is not None:
+            return not numeric_ipv4.is_global
         return False
+
+
+def _parse_numeric_ipv4_host(host: str) -> ipaddress.IPv4Address | None:
+    parts = host.split(".")
+    if not parts or len(parts) > 4 or any(not part for part in parts):
+        return None
+    if not all(_NUMERIC_IPV4_PART_RE.match(part) for part in parts):
+        return None
+    try:
+        numbers = [_parse_numeric_ipv4_part(part) for part in parts]
+    except ValueError:
+        return None
+
+    if len(numbers) == 1:
+        value = numbers[0]
+        if value > 0xFFFFFFFF:
+            return None
+    elif len(numbers) == 2:
+        if numbers[0] > 0xFF or numbers[1] > 0xFFFFFF:
+            return None
+        value = (numbers[0] << 24) | numbers[1]
+    elif len(numbers) == 3:
+        if numbers[0] > 0xFF or numbers[1] > 0xFF or numbers[2] > 0xFFFF:
+            return None
+        value = (numbers[0] << 24) | (numbers[1] << 16) | numbers[2]
+    else:
+        if any(number > 0xFF for number in numbers):
+            return None
+        value = (numbers[0] << 24) | (numbers[1] << 16) | (numbers[2] << 8) | numbers[3]
+    return ipaddress.IPv4Address(value)
+
+
+def _parse_numeric_ipv4_part(part: str) -> int:
+    lowered = part.lower()
+    if lowered.startswith("0x"):
+        return int(lowered, 16)
+    if len(lowered) > 1 and lowered.startswith("0"):
+        return int(lowered, 8)
+    return int(lowered, 10)
 
 
 def build_endpoint_plan(public_base_url: str) -> EndpointPlan:

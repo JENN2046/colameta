@@ -42,6 +42,10 @@ def test_normalize_public_base_url_rejects_loopback_https() -> None:
     with pytest.raises(PreflightError, match="localhost"):
         normalize_public_base_url("https://localhost:8766")
 
+    for url in ("https://127.1:8766", "https://2130706433:8766", "https://0x7f000001:8766"):
+        with pytest.raises(PreflightError, match="non-public"):
+            normalize_public_base_url(url)
+
 
 def test_normalize_public_base_url_rejects_private_and_link_local_https_ip_literals() -> None:
     for url in (
@@ -49,6 +53,8 @@ def test_normalize_public_base_url_rejects_private_and_link_local_https_ip_liter
         "https://10.0.0.5",
         "https://169.254.10.20",
         "https://[fc00::1]:8766",
+        "https://192.168.1:8766",
+        "https://0300.0250.0001.0001:8766",
     ):
         with pytest.raises(PreflightError, match="non-public"):
             normalize_public_base_url(url)
