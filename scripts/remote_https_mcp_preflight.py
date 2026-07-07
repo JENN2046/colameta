@@ -33,6 +33,22 @@ _LOCAL_ONLY_DNS_SUFFIXES = (
 )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        raise PreflightError(f"{req.full_url} returned an HTTP redirect; remote preflight probes must not redirect.")
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 @dataclass(frozen=True)
 class EndpointPlan:
     public_base_url: str
@@ -162,7 +178,7 @@ def fetch_json(url: str, *, timeout_seconds: float = 5.0) -> tuple[int, dict[str
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
             _validate_final_response_url(url, _response_final_url(response, url))
             raw = response.read().decode("utf-8")
             payload = json.loads(raw)

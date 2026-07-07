@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import scripts.remote_https_mcp_preflight as remote_preflight
 from scripts.remote_https_mcp_preflight import (
     PREFLIGHT_USER_AGENT,
     PreflightError,
@@ -111,13 +114,13 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
         def read(self) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
-    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+    def fake_open(request: object, timeout: float) -> FakeResponse:
         captured["timeout"] = timeout
         captured["user_agent"] = request.get_header("User-agent")
         captured["accept"] = request.get_header("Accept")
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
 
     status, payload = fetch_json("https://mcp.example.com/healthz", timeout_seconds=7)
 
@@ -126,6 +129,41 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
     assert captured["timeout"] == 7
     assert captured["user_agent"] == PREFLIGHT_USER_AGENT
     assert captured["accept"] == "application/json"
+
+
+def test_fetch_json_disables_redirects_before_following_location() -> None:
+    paths_seen: list[str] = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            paths_seen.append(self.path)
+            if self.path == "/healthz":
+                host, port = self.server.server_address
+                self.send_response(302)
+                self.send_header("Location", f"http://{host}:{port}/private")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = httpd.server_address
+        with pytest.raises(PreflightError, match="must not redirect"):
+            fetch_json(f"http://{host}:{port}/healthz")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+    assert paths_seen == ["/healthz"]
 
 
 def test_fetch_json_rejects_redirected_final_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,10 +182,10 @@ def test_fetch_json_rejects_redirected_final_url(monkeypatch: pytest.MonkeyPatch
         def read(self) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
-    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+    def fake_open(request: object, timeout: float) -> FakeResponse:
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
 
     with pytest.raises(PreflightError, match="redirected to an off-base"):
         fetch_json("https://mcp.example.com/healthz")
@@ -169,10 +207,10 @@ def test_fetch_json_rejects_same_scheme_off_base_redirect(monkeypatch: pytest.Mo
         def read(self) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
-    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+    def fake_open(request: object, timeout: float) -> FakeResponse:
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(remote_preflight._NO_REDIRECT_OPENER, "open", fake_open)
 
     with pytest.raises(PreflightError, match="redirected to an off-base"):
         fetch_json("https://mcp.example.com/healthz")

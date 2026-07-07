@@ -165,9 +165,10 @@ loopback HTTPS URL 会直接 rejected。private / link-local IP literal，例如
 endpoint 必须证明正在服务 `expected_head`，且 reload/source-clean evidence 为 ready；
 只满足 OAuth metadata contract 但指向旧实例或错误实例时会 blocked。每个 probe 的最终
 响应 URL 必须仍是同一 public HTTPS endpoint；redirect 到 loopback、private LAN、
-其它 host、其它 path、query 或 fragment 都会 rejected。显式传入的 `--expected-head`
-必须是完整 40-character commit SHA，不能以 malformed 或 abbreviated SHA 静默跳过
-runtime provenance 校验。
+其它 host、其它 path、query 或 fragment 都会 rejected。30x redirects 会在跟随
+`Location` 前直接失败，避免 operator 机器先访问内网目标再报告失败。显式传入的
+`--expected-head` 必须是完整 40-character commit SHA，不能以 malformed 或
+abbreviated SHA 静默跳过 runtime provenance 校验。
 
 `project_root`、`public_base_url`、connector smoke 字段和 status write path 在 packet
 构造或 JSON 输出前都会先做 secret-like redaction。若 operator 误把 token-like 文本
