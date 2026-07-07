@@ -304,10 +304,22 @@ def _local_stable_health_check(
         "web_healthz_ok": web.get("ok"),
         "web_healthz_service": web.get("service"),
         "web_loaded_runtime_head": web.get("loaded_runtime_head"),
+        "web_runtime_project_checkout_head": web.get("runtime_project_checkout_head"),
+        "web_runtime_loaded_code_stale": web.get("runtime_loaded_code_stale"),
+        "web_reload_needed_for_verification": web.get("reload_needed_for_verification"),
+        "web_reload_awareness_reason": web.get("reload_awareness_reason"),
+        "web_installed_package_matches_project_checkout": web.get("installed_package_matches_project_checkout"),
+        "web_installed_package_verification_status": web.get("installed_package_verification_status"),
         "mcp_healthz_http_status": mcp.get("http_status"),
         "mcp_healthz_ok": mcp.get("ok"),
         "mcp_healthz_service": mcp.get("service"),
         "mcp_loaded_runtime_head": mcp.get("loaded_runtime_head"),
+        "mcp_runtime_project_checkout_head": mcp.get("runtime_project_checkout_head"),
+        "mcp_runtime_loaded_code_stale": mcp.get("runtime_loaded_code_stale"),
+        "mcp_reload_needed_for_verification": mcp.get("reload_needed_for_verification"),
+        "mcp_reload_awareness_reason": mcp.get("reload_awareness_reason"),
+        "mcp_installed_package_matches_project_checkout": mcp.get("installed_package_matches_project_checkout"),
+        "mcp_installed_package_verification_status": mcp.get("installed_package_verification_status"),
         "expected_head": expected_head,
     }
     if not _health_endpoint_ready(web, EXPECTED_WEB_HEALTH_SERVICE) or not _health_endpoint_ready(
@@ -319,20 +331,20 @@ def _local_stable_health_check(
             "Stable local Web or MCP health check failed.",
             **health_evidence,
         )
-    web_head = web.get("loaded_runtime_head")
-    mcp_head = mcp.get("loaded_runtime_head")
-    if not expected_head or not web_head or not mcp_head:
-        return _check(
-            BLOCKED,
-            "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED",
-            "Stable local Web and MCP health checks did not prove the running loaded runtime head.",
-            **health_evidence,
-        )
-    if web_head != expected_head or mcp_head != expected_head:
+    web_verified = _health_runtime_matches_expected(web, expected_head)
+    mcp_verified = _health_runtime_matches_expected(mcp, expected_head)
+    if _health_runtime_mismatches_expected(web, expected_head) or _health_runtime_mismatches_expected(mcp, expected_head):
         return _check(
             BLOCKED,
             "LOCAL_STABLE_RUNTIME_HEAD_MISMATCH",
             "Stable local Web or MCP service is not serving the expected loaded runtime head.",
+            **health_evidence,
+        )
+    if not expected_head or not web_verified or not mcp_verified:
+        return _check(
+            BLOCKED,
+            "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED",
+            "Stable local Web and MCP health checks did not prove the running loaded runtime head.",
             **health_evidence,
         )
     return _check(
@@ -658,11 +670,48 @@ def _curl_json_health(url: str, command_runner: Callable[[list[str]], subprocess
         "ok": payload.get("ok"),
         "service": payload.get("service") if isinstance(payload.get("service"), str) else None,
         "loaded_runtime_head": _clean_head(payload.get("loaded_runtime_head")),
+        "runtime_project_checkout_head": _clean_head(
+            payload.get("runtime_project_checkout_head") or payload.get("project_checkout_head")
+        ),
+        "runtime_loaded_code_stale": payload.get("runtime_loaded_code_stale")
+        if isinstance(payload.get("runtime_loaded_code_stale"), bool)
+        else None,
+        "reload_needed_for_verification": payload.get("reload_needed_for_verification")
+        if isinstance(payload.get("reload_needed_for_verification"), bool)
+        else None,
+        "reload_awareness_reason": payload.get("reload_awareness_reason")
+        if isinstance(payload.get("reload_awareness_reason"), str)
+        else None,
+        "installed_package_matches_project_checkout": payload.get("installed_package_matches_project_checkout")
+        if isinstance(payload.get("installed_package_matches_project_checkout"), bool)
+        else None,
+        "installed_package_verification_status": payload.get("installed_package_verification_status")
+        if isinstance(payload.get("installed_package_verification_status"), str)
+        else None,
     }
 
 
 def _health_endpoint_ready(health: dict[str, Any], expected_service: str) -> bool:
     return health.get("http_status") == "200" and health.get("ok") is True and health.get("service") == expected_service
+
+
+def _health_runtime_matches_expected(health: dict[str, Any], expected_head: str | None) -> bool:
+    if not expected_head:
+        return False
+    if health.get("loaded_runtime_head") == expected_head:
+        return True
+    return (
+        health.get("runtime_project_checkout_head") == expected_head
+        and health.get("runtime_loaded_code_stale") is False
+        and health.get("reload_needed_for_verification") is False
+        and health.get("installed_package_matches_project_checkout") is True
+        and health.get("installed_package_verification_status") == "match"
+    )
+
+
+def _health_runtime_mismatches_expected(health: dict[str, Any], expected_head: str | None) -> bool:
+    loaded_head = health.get("loaded_runtime_head")
+    return bool(expected_head and loaded_head and loaded_head != expected_head)
 
 
 def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:

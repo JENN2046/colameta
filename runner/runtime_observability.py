@@ -138,6 +138,34 @@ def get_runtime_version_status(
     return status
 
 
+def runtime_healthz_provenance(project_root: str | None) -> dict[str, Any]:
+    """Return public, non-secret runtime freshness fields for health endpoints."""
+    try:
+        status = get_runtime_version_status(project_root)
+    except Exception:
+        return {
+            "loaded_runtime_head": LOADED_RUNTIME_HEAD,
+            "runtime_project_checkout_head": None,
+            "runtime_loaded_code_stale": None,
+            "reload_needed_for_verification": True,
+            "reload_awareness_reason": "runtime_healthz_provenance_unavailable",
+            "installed_package_matches_project_checkout": None,
+            "installed_package_verification_status": "unverified",
+        }
+    package = status.get("installed_package_verification")
+    if not isinstance(package, dict):
+        package = {}
+    return {
+        "loaded_runtime_head": status.get("loaded_runtime_head"),
+        "runtime_project_checkout_head": status.get("project_checkout_head"),
+        "runtime_loaded_code_stale": status.get("runtime_loaded_code_stale"),
+        "reload_needed_for_verification": status.get("reload_needed_for_verification"),
+        "reload_awareness_reason": status.get("reload_awareness_reason"),
+        "installed_package_matches_project_checkout": package.get("matches_project_checkout"),
+        "installed_package_verification_status": package.get("verification_status"),
+    }
+
+
 def get_connector_runtime_health_status(
     *,
     runtime_status: dict[str, Any] | None = None,

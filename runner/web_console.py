@@ -70,13 +70,13 @@ from runner.web_console_presenter import (
 )
 from runner.executor_status import polling_guidance_for_profile
 from runner.runtime_observability import (
-    LOADED_RUNTIME_HEAD,
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
     build_stable_replacement_cadence,
     get_connector_runtime_health_status,
     get_runtime_version_status,
     git_checkout_metadata,
+    runtime_healthz_provenance,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 
@@ -501,7 +501,7 @@ class WebConsoleServer:
                         {
                             "ok": True,
                             "service": "colameta-web-console",
-                            "loaded_runtime_head": LOADED_RUNTIME_HEAD,
+                            **runtime_healthz_provenance(server.project_root),
                         }
                     )
                     return

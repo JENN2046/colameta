@@ -44,13 +44,13 @@ from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
-    LOADED_RUNTIME_HEAD,
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
     build_stable_replacement_cadence,
     get_connector_runtime_health_status,
     get_runtime_version_status,
     git_checkout_metadata,
+    runtime_healthz_provenance,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -4548,7 +4548,7 @@ class MCPPlanningBridgeServer:
                             "ok": True,
                             "service": "colameta-mcp",
                             "auth_mode": resolved_auth_mode,
-                            "loaded_runtime_head": LOADED_RUNTIME_HEAD,
+                            **runtime_healthz_provenance(server.project_root),
                         }
                         if server.service_mode:
                             payload["routing"] = "registry"

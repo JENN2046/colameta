@@ -31,6 +31,14 @@ def test_normalize_public_base_url_rejects_remote_http_and_connector_url() -> No
         normalize_public_base_url("https://mcp.example.com/mcp")
 
 
+def test_normalize_public_base_url_rejects_loopback_https() -> None:
+    with pytest.raises(PreflightError, match="loopback"):
+        normalize_public_base_url("https://127.0.0.1:8766")
+
+    with pytest.raises(PreflightError, match="localhost"):
+        normalize_public_base_url("https://localhost:8766")
+
+
 def test_normalize_public_base_url_allows_only_loopback_http_when_requested() -> None:
     assert normalize_public_base_url("http://127.0.0.2:8765", allow_local_http=True) == "http://127.0.0.2:8765"
     assert normalize_public_base_url("http://[::1]:8765", allow_local_http=True) == "http://[::1]:8765"

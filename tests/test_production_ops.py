@@ -267,6 +267,30 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_LOCAL_HTTP_NOT_REMOTE"
         assert "REMOTE_PREFLIGHT_LOCAL_HTTP_NOT_REMOTE" in packet["needs_attention_codes"]
 
+    def test_loopback_https_public_base_url_is_rejected_before_remote_preflight(self) -> None:
+        from runner.production_ops import REDACTED_PUBLIC_BASE_URL, build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not probe loopback HTTPS: {public_base_url} {kwargs}")
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            public_base_url="https://127.0.0.1:8766",
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=fail_if_called,
+            now=NOW,
+        )
+
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
+
     def test_systemd_keyed_output_is_order_independent(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
@@ -367,6 +391,51 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["ops_check_ready"] is False
         assert check["reason_code"] == "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"
         assert "LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED" in packet["blocker_codes"]
+
+    def test_local_health_accepts_packaged_runtime_provenance_without_loaded_head(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        web_health = {
+            "ok": True,
+            "service": "colameta-web-console",
+            "loaded_runtime_head": None,
+            "runtime_project_checkout_head": HEAD,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+            "installed_package_matches_project_checkout": True,
+            "installed_package_verification_status": "match",
+        }
+        mcp_health = {
+            "ok": True,
+            "service": "colameta-mcp",
+            "loaded_runtime_head": None,
+            "runtime_project_checkout_head": HEAD,
+            "runtime_loaded_code_stale": False,
+            "reload_needed_for_verification": False,
+            "reload_awareness_reason": "installed_package_matches_project_checkout",
+            "installed_package_matches_project_checkout": True,
+            "installed_package_verification_status": "match",
+        }
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(web_health_payload=web_health, mcp_health_payload=mcp_health),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["local_stable_health"]
+        assert packet["status"] == "ready"
+        assert packet["ops_check_ready"] is True
+        assert check["reason_code"] == "LOCAL_STABLE_HEALTH_READY"
+        assert check["web_runtime_project_checkout_head"] == HEAD
+        assert check["mcp_runtime_project_checkout_head"] == HEAD
+        assert check["web_installed_package_matches_project_checkout"] is True
+        assert check["mcp_installed_package_verification_status"] == "match"
 
     def test_local_health_blocks_loaded_runtime_head_mismatch(self) -> None:
         from runner.production_ops import build_production_ops_packet
