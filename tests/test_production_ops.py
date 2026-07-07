@@ -1170,6 +1170,16 @@ class ProductionOpsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_status_write_path(str(self.project / "last-status.json"), project_root=str(self.project))
 
+    def test_status_write_path_rejects_secret_like_path(self) -> None:
+        from runner.production_ops import validate_status_write_path
+
+        path = self.tmp_path / "state" / "sk-not-a-real-token-value" / "last-status.json"
+
+        with self.assertRaisesRegex(ValueError, "secret-like"):
+            validate_status_write_path(str(path), project_root=str(self.project))
+
+        assert not path.parent.exists()
+
 
 if __name__ == "__main__":
     unittest.main()

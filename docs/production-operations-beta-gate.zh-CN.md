@@ -180,9 +180,10 @@ protected-resource metadata 里的 authorization server 也必须是公网 HTTPS
 `--expected-head` 必须是完整 40-character commit SHA，不能以 malformed 或
 abbreviated SHA 静默跳过 runtime provenance 校验。
 
-`project_root`、`public_base_url`、connector smoke 字段和 status write path 在 packet
-构造或 JSON 输出前都会先做 secret-like redaction。若 operator 误把 token-like 文本
-粘进路径或参数，输出会使用固定占位符并 blocked，而不会回显原始值。
+`project_root`、`public_base_url` 和 connector smoke 字段在 packet 构造或 JSON
+输出前都会先做 secret-like redaction。若 operator 误把 token-like 文本粘进这些参数，
+输出会使用固定占位符并 blocked，而不会回显原始值。`--write-status` 路径如果包含
+secret-like 文本，会在创建目录或写文件前直接 rejected，避免把敏感片段落到文件系统路径。
 
 ## 5. Systemd Timer
 

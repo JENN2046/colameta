@@ -181,6 +181,8 @@ def build_production_ops_packet(
 def validate_status_write_path(path: str, *, project_root: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(path))
     root = os.path.abspath(os.path.expanduser(project_root))
+    if _contains_sensitive_text(str(path)) or _contains_sensitive_text(resolved):
+        raise ValueError("--write-status path contains secret-like content.")
     if _is_relative_to(resolved, root):
         raise ValueError("--write-status refuses repository paths; use ~/.local/state/colameta/ops/last-status.json.")
     return resolved
