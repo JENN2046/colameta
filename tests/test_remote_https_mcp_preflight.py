@@ -24,6 +24,17 @@ HEAD = "a" * 40
 STALE_HEAD = "b" * 40
 
 
+@pytest.fixture(autouse=True)
+def fake_public_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_resolve(host: str) -> list[object]:
+        normalized = host.strip().lower().rstrip(".")
+        if normalized in {"mcp.example.com", "idp.example.com", "other.example.com"}:
+            return [remote_preflight.ipaddress.ip_address("93.184.216.34")]
+        raise remote_preflight.socket.gaierror
+
+    monkeypatch.setattr(remote_preflight, "_resolve_hostname_addresses", fake_resolve)
+
+
 def test_normalize_public_base_url_accepts_https_service_base() -> None:
     assert normalize_public_base_url(" https://mcp.example.com/ ") == "https://mcp.example.com"
     plan = build_endpoint_plan("https://mcp.example.com")
@@ -79,6 +90,45 @@ def test_normalize_public_base_url_rejects_local_only_dns_names() -> None:
             normalize_public_base_url(url)
 
     assert normalize_public_base_url("https://mcp.example.com.") == "https://mcp.example.com."
+
+
+def test_normalize_public_base_url_rejects_hostname_resolving_to_private_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        remote_preflight,
+        "_resolve_hostname_addresses",
+        lambda host: [remote_preflight.ipaddress.ip_address("10.0.0.5")],
+    )
+
+    with pytest.raises(PreflightError, match="non-public"):
+        normalize_public_base_url("https://mcp.prod.example.com")
+
+
+def test_normalize_public_base_url_rejects_hostname_with_mixed_public_and_private_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        remote_preflight,
+        "_resolve_hostname_addresses",
+        lambda host: [
+            remote_preflight.ipaddress.ip_address("93.184.216.34"),
+            remote_preflight.ipaddress.ip_address("192.168.1.10"),
+        ],
+    )
+
+    with pytest.raises(PreflightError, match="non-public"):
+        normalize_public_base_url("https://mcp.prod.example.com")
+
+
+def test_normalize_public_base_url_rejects_unresolvable_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_resolve(host: str) -> list[object]:
+        raise remote_preflight.socket.gaierror
+
+    monkeypatch.setattr(remote_preflight, "_resolve_hostname_addresses", fail_resolve)
+
+    with pytest.raises(PreflightError, match="non-public"):
+        normalize_public_base_url("https://missing.prod.example.com")
 
 
 def test_normalize_public_base_url_allows_only_loopback_http_when_requested() -> None:

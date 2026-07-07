@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import subprocess
 import tarfile
@@ -121,8 +122,14 @@ class ProductionOpsTests(unittest.TestCase):
         self.backups = self.tmp_path / "backups"
         self.backups.mkdir()
         self._write_backup("stable-before-test.tar.gz")
+        self._dns_patch = patch(
+            "scripts.remote_https_mcp_preflight._resolve_hostname_addresses",
+            return_value=[ipaddress.ip_address("93.184.216.34")],
+        )
+        self._dns_patch.start()
 
     def tearDown(self) -> None:
+        self._dns_patch.stop()
         self._tmp.cleanup()
 
     def _write_backup(self, name: str) -> None:
@@ -330,6 +337,34 @@ class ProductionOpsTests(unittest.TestCase):
             preflight_runner=fail_if_called,
             now=NOW,
         )
+
+        assert packet["status"] == "blocked"
+        assert packet["ops_check_ready"] is False
+        assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
+        assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
+
+    def test_split_horizon_public_base_url_is_rejected_before_remote_preflight(self) -> None:
+        from runner.production_ops import REDACTED_PUBLIC_BASE_URL, build_production_ops_packet
+
+        def fail_if_called(public_base_url: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError(f"preflight should not probe split-horizon HTTPS: {public_base_url} {kwargs}")
+
+        with patch(
+            "scripts.remote_https_mcp_preflight._resolve_hostname_addresses",
+            return_value=[ipaddress.ip_address("10.0.0.5")],
+        ):
+            packet = build_production_ops_packet(
+                str(self.project),
+                public_base_url="https://mcp.prod.example.com",
+                expected_head=HEAD,
+                stable_runtime_dir=str(self.stable),
+                backup_dir=str(self.backups),
+                connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+                command_runner=FakeCommandRunner(),
+                preflight_runner=fail_if_called,
+                now=NOW,
+            )
 
         assert packet["status"] == "blocked"
         assert packet["ops_check_ready"] is False

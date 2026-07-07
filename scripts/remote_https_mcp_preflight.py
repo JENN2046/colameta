@@ -4,6 +4,7 @@ import argparse
 import ipaddress
 import json
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -108,7 +109,9 @@ def _is_non_public_https_host(hostname: str | None) -> bool:
         numeric_ipv4 = _parse_numeric_ipv4_host(host)
         if numeric_ipv4 is not None:
             return not numeric_ipv4.is_global
-        return _is_local_only_dns_name(host)
+        if _is_local_only_dns_name(host):
+            return True
+        return _hostname_resolves_to_non_global_addresses(host)
 
 
 def _is_local_only_dns_name(host: str) -> bool:
@@ -117,6 +120,27 @@ def _is_local_only_dns_name(host: str) -> bool:
     if "." not in host:
         return True
     return any(host.endswith(suffix) for suffix in _LOCAL_ONLY_DNS_SUFFIXES)
+
+
+def _hostname_resolves_to_non_global_addresses(host: str) -> bool:
+    try:
+        addresses = _resolve_hostname_addresses(host)
+    except OSError:
+        return True
+    return not addresses or any(not address.is_global for address in addresses)
+
+
+def _resolve_hostname_addresses(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for family, _, _, _, sockaddr in socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        raw_address = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            addresses.append(ipaddress.ip_address(raw_address))
+        except ValueError:
+            continue
+    return addresses
 
 
 def _parse_numeric_ipv4_host(host: str) -> ipaddress.IPv4Address | None:
