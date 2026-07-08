@@ -155,6 +155,8 @@ packaged fallback 的 `match` 要求 installed package 与 expected checkout 的
 package-installable runtime file set 双向一致：expected 中的新 runtime 文件不能缺失，
 installed package 中也不能残留 expected checkout 已删除的 runtime `.py` / `.pyi` /
 `runner/py.typed` 文件。残留文件会以 `extra_installed_runtime_files` 状态 fail-closed；
+检测来源包括 package metadata 和 installed runtime package roots 下的磁盘扫描，因此
+不再出现在 `RECORD` 中但仍残留在 site-packages 的 orphan `.py` 也会阻断 ready。
 不属于 Python package data 的运维脚本不会参与这个 package match 集合。
 stable checkout 磁盘 HEAD 对齐但服务未重启时，这项会 fail-closed，而不会把
 disk HEAD 当作运行中代码证据。公开 healthz 中的 packaged provenance 是进程内

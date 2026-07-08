@@ -235,9 +235,9 @@ def _installed_runtime_package_state_key() -> tuple[Any, ...]:
     if not distribution_root or root_common != distribution_root:
         return ("not_loaded_from_installed_package", distribution_root, loaded_source_root)
 
-    runtime_relative_files = _runtime_distribution_source_files(list(distribution.files or []))
+    runtime_relative_files = _installed_runtime_source_files(distribution_root, list(distribution.files or []))
     if not runtime_relative_files:
-        return ("no_runtime_distribution_files", distribution_root, _distribution_version(distribution))
+        return ("no_installed_runtime_files", distribution_root, _distribution_version(distribution))
 
     digest = hashlib.sha256()
     present_count = 0
@@ -1750,7 +1750,11 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         }
 
     files = list(distribution.files or [])
-    installed_runtime_relative_files = _runtime_distribution_source_files(files)
+    installed_distribution_relative_files = _runtime_distribution_source_files(files)
+    installed_filesystem_relative_files = _runtime_installed_source_files_from_filesystem(distribution_root)
+    installed_runtime_relative_files = sorted(
+        set(installed_distribution_relative_files).union(installed_filesystem_relative_files)
+    )
     expected_runtime_relative_files, project_file_set_source, project_file_set_unavailable_reason = (
         _runtime_project_source_files(project_root_clean)
     )
@@ -1763,7 +1767,9 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
             "matches_project_checkout": None,
             "unavailable_reason": project_file_set_unavailable_reason or "no_expected_runtime_project_files",
             "project_file_set_source": project_file_set_source,
-            "installed_distribution_file_count": len(installed_runtime_relative_files),
+            "installed_distribution_file_count": len(installed_distribution_relative_files),
+            "installed_filesystem_file_count": len(installed_filesystem_relative_files),
+            "installed_runtime_file_count": len(installed_runtime_relative_files),
         }
 
     checked_count = 0
@@ -1895,7 +1901,9 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "matches_project_worktree": matches_project_worktree,
         "project_file_set_source": project_file_set_source,
         "expected_runtime_file_count": len(expected_runtime_relative_files),
-        "installed_distribution_file_count": len(installed_runtime_relative_files),
+        "installed_distribution_file_count": len(installed_distribution_relative_files),
+        "installed_filesystem_file_count": len(installed_filesystem_relative_files),
+        "installed_runtime_file_count": len(installed_runtime_relative_files),
         "checked_file_count": checked_count,
         "matched_file_count": matched_count,
         "mismatched_file_count": len(mismatched),
@@ -2121,6 +2129,30 @@ def _runtime_distribution_source_files(files: list[Any]) -> list[str]:
             continue
         result.append(relative_path)
     return sorted(result)
+
+
+def _installed_runtime_source_files(distribution_root: str, files: list[Any]) -> list[str]:
+    return sorted(
+        set(_runtime_distribution_source_files(files)).union(
+            _runtime_installed_source_files_from_filesystem(distribution_root)
+        )
+    )
+
+
+def _runtime_installed_source_files_from_filesystem(distribution_root: str) -> list[str]:
+    if not distribution_root or not os.path.isdir(distribution_root):
+        return []
+    files: list[str] = []
+    for root in _RUNTIME_SOURCE_ROOTS:
+        root_path = os.path.join(distribution_root, root)
+        if not os.path.isdir(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+            for filename in filenames:
+                relative_path = os.path.relpath(os.path.join(dirpath, filename), distribution_root)
+                files.append(relative_path)
+    return _runtime_distribution_source_files(files)
 
 
 def _is_installable_runtime_package_file(relative_path: str) -> bool:
