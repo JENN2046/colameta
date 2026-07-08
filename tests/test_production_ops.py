@@ -111,6 +111,24 @@ def failed_preflight(public_base_url: str, **_: object) -> dict[str, object]:
     }
 
 
+def cloudflare_530_preflight(public_base_url: str, **kwargs: object) -> dict[str, object]:
+    return {
+        "ok": False,
+        "public_base_url": public_base_url,
+        "connector_url": f"{public_base_url}/mcp",
+        "network_check": "run",
+        "expected_runtime_head": kwargs.get("expected_head"),
+        "healthz_runtime": {},
+        "responses": {
+            "healthz": {"status": 530, "keys": ["error"]},
+            "mcp": {"status": 530, "keys": ["error"]},
+            "protected_resource": {"status": 530, "keys": ["error"]},
+            "authorization_server": {"status": 530, "keys": ["error"]},
+        },
+        "failures": ["healthz must return HTTP 200 with ok=true."],
+    }
+
+
 class ProductionOpsTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="colameta-production-ops-")
@@ -346,6 +364,9 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["ops_check_ready"] is False
         assert packet["public_base_url"] == REDACTED_PUBLIC_BASE_URL
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "PUBLIC_BASE_URL_REJECTED"
+        assert packet["checks"]["remote_https_mcp_preflight"]["operator_hint"]["runbook"].endswith(
+            "dns-proxy-tunnel-runbook.zh-CN.md"
+        )
         assert "PUBLIC_BASE_URL_REJECTED" in packet["blocker_codes"]
 
     def test_private_https_public_base_url_is_rejected_before_remote_preflight(self) -> None:
@@ -818,6 +839,28 @@ class ProductionOpsTests(unittest.TestCase):
 
         assert packet["status"] == "blocked"
         assert packet["checks"]["remote_https_mcp_preflight"]["reason_code"] == "REMOTE_PREFLIGHT_FAILED"
+
+    def test_remote_preflight_530_adds_dns_proxy_operator_hint(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=cloudflare_530_preflight,
+            now=NOW,
+        )
+
+        check = packet["checks"]["remote_https_mcp_preflight"]
+        assert packet["status"] == "blocked"
+        assert check["reason_code"] == "REMOTE_PREFLIGHT_FAILED"
+        assert check["responses"]["healthz"] == {"status": 530}
+        assert check["operator_hint"]["runbook"] == "docs/dns-proxy-tunnel-runbook.zh-CN.md"
+        assert "cloudflared edge DNS" in check["operator_hint"]["symptom"]
+        assert "198.18.0.0/15 fake-IP DNS answers" in check["operator_hint"]["watch_for"]
 
     def test_missing_connector_smoke_needs_attention_not_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet
