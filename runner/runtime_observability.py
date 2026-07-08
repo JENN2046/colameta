@@ -2066,8 +2066,16 @@ def _runtime_distribution_source_files(files: list[Any]) -> list[str]:
             continue
         if relative_path.endswith((".pyc", ".pyo")):
             continue
+        if not _is_installable_runtime_package_file(relative_path):
+            continue
         result.append(relative_path)
     return sorted(result)
+
+
+def _is_installable_runtime_package_file(relative_path: str) -> bool:
+    if relative_path.endswith((".py", ".pyi")):
+        return True
+    return relative_path == "runner/py.typed"
 
 
 def _runtime_project_source_files(project_root: str) -> tuple[list[str], str, str | None]:

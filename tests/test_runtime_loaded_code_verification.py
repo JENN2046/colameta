@@ -188,6 +188,8 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
             installed_file = installed_root / relative_path
             installed_file.parent.mkdir(parents=True, exist_ok=True)
             installed_file.write_text(content, encoding="utf-8")
+        non_package_script = project / "scripts/colameta_tunnel_client_service.sh"
+        non_package_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
 
         fake_distribution = self.fake_distribution(installed_root, list(files))
         loaded_fingerprints = self.module_fingerprint(
@@ -217,6 +219,8 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert package["matches_project_checkout"] is True
         assert package["project_source_clean"] is True
         assert package["checked_file_count"] == len(files)
+        assert package["expected_runtime_file_count"] == len(files)
+        assert package["missing_installed_file_count"] == 0
         assert package["mismatched_file_count"] == 0
 
     def test_installed_package_missing_new_project_runtime_file_stays_unverified(self) -> None:
