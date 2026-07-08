@@ -78,6 +78,8 @@ def test_normalize_public_base_url_rejects_private_and_link_local_https_ip_liter
         "https://192.168.1.10:8766",
         "https://10.0.0.5",
         "https://169.254.10.20",
+        "https://224.0.0.1",
+        "https://[ff02::1]",
         "https://[fc00::1]:8766",
         "https://192.168.1:8766",
         "https://0300.0250.0001.0001:8766",
@@ -126,6 +128,19 @@ def test_normalize_public_base_url_rejects_hostname_with_mixed_public_and_privat
             remote_preflight.ipaddress.ip_address("93.184.216.34"),
             remote_preflight.ipaddress.ip_address("192.168.1.10"),
         ],
+    )
+
+    with pytest.raises(PreflightError, match="non-public"):
+        normalize_public_base_url("https://mcp.prod.example.com")
+
+
+def test_normalize_public_base_url_rejects_hostname_resolving_to_multicast_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        remote_preflight,
+        "_resolve_hostname_addresses",
+        lambda host: [remote_preflight.ipaddress.ip_address("224.0.0.1")],
     )
 
     with pytest.raises(PreflightError, match="non-public"):
@@ -867,6 +882,8 @@ def test_validate_remote_payloads_accepts_external_oauth_resource_server_contrac
         "https://localhost/",
         "https://127.0.0.1/",
         "https://192.168.1.10/",
+        "https://224.0.0.1/",
+        "https://[ff02::1]/",
         "https://colameta.local/",
         "https://colameta/",
     ],

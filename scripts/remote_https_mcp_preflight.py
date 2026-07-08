@@ -156,13 +156,13 @@ def _validated_public_https_host_addresses(
         raise _non_public_https_host_error()
     try:
         address = _normalize_ip_address(ipaddress.ip_address(host))
-        if not address.is_global:
+        if not _is_public_unicast_address(address):
             raise _non_public_https_host_error()
         return (address,)
     except ValueError:
         numeric_ipv4 = _parse_numeric_ipv4_host(host)
         if numeric_ipv4 is not None:
-            if not numeric_ipv4.is_global:
+            if not _is_public_unicast_address(numeric_ipv4):
                 raise _non_public_https_host_error()
             return (numeric_ipv4,)
         if _is_local_only_dns_name(host):
@@ -173,15 +173,19 @@ def _validated_public_https_host_addresses(
             addresses = tuple(_normalize_ip_address(address) for address in _resolve_hostname_addresses(host))
         except OSError:
             raise _non_public_https_host_error() from None
-        if not addresses or any(not address.is_global for address in addresses):
+        if not addresses or any(not _is_public_unicast_address(address) for address in addresses):
             raise _non_public_https_host_error()
         return tuple(dict.fromkeys(addresses))
+
+
+def _is_public_unicast_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return address.is_global and not address.is_multicast
 
 
 def _non_public_https_host_error() -> PreflightError:
     return PreflightError(
         "remote MCP public_base_url must not use localhost, loopback, private, link-local, "
-        "local-only DNS, or otherwise non-public hosts."
+        "multicast, local-only DNS, or otherwise non-public/non-unicast hosts."
     )
 
 
