@@ -76,6 +76,8 @@ from runner.runtime_observability import (
     get_connector_runtime_health_status,
     get_runtime_version_status,
     git_checkout_metadata,
+    loaded_runtime_project_root,
+    runtime_healthz_provenance,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 
@@ -496,7 +498,16 @@ class WebConsoleServer:
                     self.end_headers()
                     return
                 if path == "/api/healthz":
-                    self._send_json({"ok": True, "service": "colameta-web-console"})
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "service": "colameta-web-console",
+                            **runtime_healthz_provenance(
+                                server.project_root,
+                                runtime_project_root=loaded_runtime_project_root(),
+                            ),
+                        }
+                    )
                     return
                 if path == "/api/v2/health":
                     self._send_json(server._api_v2_health())

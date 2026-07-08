@@ -188,6 +188,12 @@ Live endpoint check after the HTTPS service exists:
 .venv/bin/python scripts/remote_https_mcp_preflight.py https://mcp.example.com
 ```
 
+Live preflight rejects localhost, private/link-local IP literals, local-only DNS
+names, unresolved hostnames, and hostnames whose A/AAAA answers include any
+non-global address. This keeps split-horizon DNS or intranet-only endpoints from
+satisfying the public ChatGPT connector gate. Shape-only `--no-network` checks
+do not resolve hostnames.
+
 Expected live checks:
 
 - `/healthz` returns `service=colameta-mcp`, `ok=true`, and `auth_mode=oauth`
@@ -199,11 +205,13 @@ Expected live checks:
   authorization, token, registration, revocation, and PKCE S256 metadata;
 - in `external-oauth` mode, the local authorization-server endpoint returns
   `EXTERNAL_AUTH_SERVER`, and clients must use the external IdP advertised in
-  protected-resource metadata.
+  protected-resource metadata. The advertised external IdP must be a public
+  HTTPS authorization server and must not be the MCP service base URL.
 
 The preflight output intentionally reports status and JSON field names only. It
 does not read local secret files and does not print tokens, cookies, config, or
-logs.
+logs. Each probed metadata or error response body is capped at 64 KiB; larger
+responses fail the preflight instead of being fully buffered.
 
 ## ChatGPT Developer Mode Test
 

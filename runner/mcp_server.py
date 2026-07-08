@@ -50,6 +50,8 @@ from runner.runtime_observability import (
     get_connector_runtime_health_status,
     get_runtime_version_status,
     git_checkout_metadata,
+    loaded_runtime_project_root,
+    runtime_healthz_provenance,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -4547,6 +4549,10 @@ class MCPPlanningBridgeServer:
                             "ok": True,
                             "service": "colameta-mcp",
                             "auth_mode": resolved_auth_mode,
+                            **runtime_healthz_provenance(
+                                server.project_root,
+                                runtime_project_root=loaded_runtime_project_root(),
+                            ),
                         }
                         if server.service_mode:
                             payload["routing"] = "registry"

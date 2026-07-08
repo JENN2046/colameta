@@ -284,6 +284,204 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "loopback" in output
         assert "example.com" in output
 
+    def test_ops_check_json_can_fail_on_not_ready_when_explicitly_requested(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "needs_attention",
+            "ops_check_ready": True,
+            "connector_smoke_ready": False,
+            "beta_gate_ready": False,
+            "checks": {},
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--json",
+                    "--no-network",
+                    "--fail-on-not-ready",
+                ]
+            )
+
+        assert result == 2
+        payload = json.loads(stdout.getvalue())
+        assert payload["status"] == "needs_attention"
+        assert payload["beta_gate_ready"] is False
+
+    def test_ops_check_default_does_not_fail_on_not_ready(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "needs_attention",
+            "ops_check_ready": True,
+            "connector_smoke_ready": False,
+            "beta_gate_ready": False,
+            "checks": {},
+        }
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+        ):
+            result = runner_cli._run_ops_check(["ops-check", str(self.project), "--no-network"])
+
+        assert result == 0
+        assert "beta_gate_ready=False" in stderr.getvalue()
+
+    def test_ops_check_write_status_rejects_repo_path(self) -> None:
+        from scripts import runner_cli
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--write-status",
+                    str(self.project / "last-status.json"),
+                ]
+            )
+
+        assert result == 1
+        assert "refuses repository paths" in stderr.getvalue()
+
+    def test_ops_check_redacts_secret_like_missing_project_path_before_packet_build(self) -> None:
+        from runner.production_ops import REDACTED_PROJECT_ROOT
+        from scripts import runner_cli
+
+        secret_dir_name = "project-sk-not-a-real-token-value"
+        missing_project = self.tmp_path / secret_dir_name
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(
+                runner_cli,
+                "build_production_ops_packet",
+                side_effect=AssertionError("missing project path should be rejected before packet build"),
+            ),
+        ):
+            result = runner_cli._run_ops_check(["ops-check", str(missing_project), "--no-network"])
+
+        assert result == 1
+        assert stdout.getvalue() == ""
+        output = stderr.getvalue()
+        assert "项目目录不存在" in output
+        assert REDACTED_PROJECT_ROOT in output
+        assert secret_dir_name not in output
+        assert "sk-not-a-real-token-value" not in output
+
+    def test_ops_check_write_status_accepts_local_state_path(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "ready",
+            "ops_check_ready": True,
+            "connector_smoke_ready": True,
+            "beta_gate_ready": True,
+            "checks": {},
+        }
+        status_path = self.tmp_path / "state" / "last-status.json"
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--json",
+                    "--write-status",
+                    str(status_path),
+                ]
+            )
+
+        assert result == 0
+        assert status_path.exists()
+        written = json.loads(status_path.read_text(encoding="utf-8"))
+        assert written["beta_gate_ready"] is True
+        payload = json.loads(stdout.getvalue())
+        assert payload["status_written_path"] == str(status_path)
+
+    def test_ops_check_write_status_handles_io_failure(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "status": "ready",
+            "ops_check_ready": True,
+            "connector_smoke_ready": True,
+            "beta_gate_ready": True,
+            "checks": {},
+        }
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+            patch.object(runner_cli, "write_status_packet", side_effect=OSError("disk full")),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--write-status",
+                    str(self.tmp_path / "state" / "last-status.json"),
+                ]
+            )
+
+        assert result == 1
+        output = stderr.getvalue()
+        assert "ops-check 写 status 失败" in output
+        assert "disk full" in output
+
+    def test_ops_check_rejects_secret_like_status_path_before_write(self) -> None:
+        from scripts import runner_cli
+
+        status_path = self.tmp_path / "state" / "sk-not-a-real-token-value" / "last-status.json"
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(
+                runner_cli,
+                "build_production_ops_packet",
+                side_effect=AssertionError("status path should be rejected before packet build"),
+            ),
+        ):
+            result = runner_cli._run_ops_check(
+                [
+                    "ops-check",
+                    str(self.project),
+                    "--no-network",
+                    "--json",
+                    "--write-status",
+                    str(status_path),
+                ]
+            )
+
+        assert result == 1
+        assert not status_path.exists()
+        assert not status_path.parent.exists()
+        assert stdout.getvalue() == ""
+        output = stderr.getvalue()
+        assert "secret-like" in output
+        assert "sk-not-a-real-token-value" not in output
+
 
 if __name__ == "__main__":
     unittest.main()

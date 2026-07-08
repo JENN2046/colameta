@@ -574,6 +574,13 @@ class WebConsoleSecurityTests(unittest.TestCase):
         status, health = json_request(f"http://{HOST}:{self.port}/api/healthz")
         assert status == 200
         assert health["ok"] is True
+        assert "loaded_runtime_head" in health
+        assert "runtime_project_checkout_head" in health
+        assert "runtime_loaded_code_stale" in health
+        assert "reload_needed_for_verification" in health
+        assert "installed_package_matches_project_checkout" in health
+        assert "installed_package_project_source_clean" in health
+        assert "installed_package_source_cleanliness_status" in health
 
         status, v2_health = json_request(f"http://{HOST}:{self.port}/api/v2/health")
         assert status == 200
@@ -583,6 +590,34 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert status == 200
         assert str(self.project) not in body
         assert ".colameta" not in body
+
+    def test_healthz_runtime_provenance_uses_loaded_runtime_root(self) -> None:
+        runtime_root = str(self.tmp_path / "stable-runtime-root")
+        calls: list[tuple[str | None, str | None]] = []
+
+        def fake_runtime_healthz_provenance(project_root: str | None, *, runtime_project_root: str | None) -> dict[str, Any]:
+            calls.append((project_root, runtime_project_root))
+            return {
+                "loaded_runtime_head": None,
+                "runtime_project_checkout_head": "a" * 40,
+                "runtime_loaded_code_stale": False,
+                "reload_needed_for_verification": False,
+                "installed_package_matches_project_checkout": True,
+                "installed_package_project_source_clean": True,
+                "installed_package_source_cleanliness_status": "clean",
+            }
+
+        with (
+            patch("runner.web_console.loaded_runtime_project_root", return_value=runtime_root),
+            patch("runner.web_console.runtime_healthz_provenance", side_effect=fake_runtime_healthz_provenance),
+        ):
+            self.start_web()
+            status, health = json_request(f"http://{HOST}:{self.port}/api/healthz")
+
+        assert status == 200
+        assert health["runtime_project_checkout_head"] == "a" * 40
+        assert calls
+        assert all(call == (str(self.project), runtime_root) for call in calls)
 
     def test_sensitive_get_without_read_auth_is_rejected(self) -> None:
         self.start_web()
