@@ -1094,9 +1094,20 @@ def _reload_awareness(
         isinstance(installed_package_verification, dict)
         and installed_package_verification.get("matches_project_checkout") is True
     )
+    package_verification_status = (
+        str(installed_package_verification.get("verification_status"))
+        if isinstance(installed_package_verification, dict)
+        and installed_package_verification.get("verification_status") is not None
+        else None
+    )
     package_checkout_dirty = (
         isinstance(installed_package_verification, dict)
-        and installed_package_verification.get("verification_status") == "dirty_project_checkout"
+        and package_verification_status == "dirty_project_checkout"
+    )
+    package_verification_blocks_reload = (
+        isinstance(installed_package_verification, dict)
+        and installed_package_verification.get("matches_project_checkout") is False
+        and package_verification_status
     )
 
     if module_changed:
@@ -1134,6 +1145,11 @@ def _reload_awareness(
         stale = None
         reload_needed = True
         surfaces = _surfaces_from_modules(unverified_modules) or list(_ALL_POSSIBLY_STALE_SURFACES)
+    elif package_verification_blocks_reload:
+        reason = "installed_package_mismatch"
+        stale = None
+        reload_needed = True
+        surfaces = list(_ALL_POSSIBLY_STALE_SURFACES)
     else:
         reason = "loaded_code_verified_current"
         stale = False
