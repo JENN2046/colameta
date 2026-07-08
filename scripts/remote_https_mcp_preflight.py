@@ -444,6 +444,7 @@ def validate_remote_payloads(
 def _validate_external_oauth_authorization_servers(plan: EndpointPlan, authorization_servers: list[Any]) -> list[str]:
     failures: list[str] = []
     accepted = 0
+    mcp_base_key = _canonical_public_base_url_key(plan.public_base_url)
     for item in authorization_servers:
         if not isinstance(item, str):
             failures.append("external-oauth authorization servers must be HTTPS URL strings.")
@@ -453,13 +454,23 @@ def _validate_external_oauth_authorization_servers(plan: EndpointPlan, authoriza
         except PreflightError as exc:
             failures.append(f"external-oauth authorization server must be a public HTTPS URL: {exc}")
             continue
-        if normalized == plan.public_base_url:
+        if _canonical_public_base_url_key(normalized) == mcp_base_key:
             failures.append("external-oauth authorization server must not be the MCP public_base_url.")
             continue
         accepted += 1
     if accepted == 0:
         failures.append("external-oauth protected resource metadata must list a public external authorization server.")
     return failures
+
+
+def _canonical_public_base_url_key(url: str) -> tuple[str, str, int | None, str]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
+        port = None
+    path = parsed.path.rstrip("/")
+    return (scheme, (parsed.hostname or "").lower().rstrip("."), port, path)
 
 
 def run_preflight(
