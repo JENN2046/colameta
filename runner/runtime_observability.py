@@ -235,9 +235,9 @@ def _installed_runtime_package_state_key() -> tuple[Any, ...]:
     if not distribution_root or root_common != distribution_root:
         return ("not_loaded_from_installed_package", distribution_root, loaded_source_root)
 
-    runtime_relative_files = _runtime_distribution_source_files(list(distribution.files or []))
+    runtime_relative_files = _installed_runtime_source_files(distribution_root, list(distribution.files or []))
     if not runtime_relative_files:
-        return ("no_runtime_distribution_files", distribution_root, _distribution_version(distribution))
+        return ("no_installed_runtime_files", distribution_root, _distribution_version(distribution))
 
     digest = hashlib.sha256()
     present_count = 0
@@ -1750,7 +1750,11 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         }
 
     files = list(distribution.files or [])
-    installed_runtime_relative_files = _runtime_distribution_source_files(files)
+    installed_distribution_relative_files = _runtime_distribution_source_files(files)
+    installed_filesystem_relative_files = _runtime_installed_source_files_from_filesystem(distribution_root)
+    installed_runtime_relative_files = sorted(
+        set(installed_distribution_relative_files).union(installed_filesystem_relative_files)
+    )
     expected_runtime_relative_files, project_file_set_source, project_file_set_unavailable_reason = (
         _runtime_project_source_files(project_root_clean)
     )
@@ -1763,18 +1767,22 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
             "matches_project_checkout": None,
             "unavailable_reason": project_file_set_unavailable_reason or "no_expected_runtime_project_files",
             "project_file_set_source": project_file_set_source,
-            "installed_distribution_file_count": len(installed_runtime_relative_files),
+            "installed_distribution_file_count": len(installed_distribution_relative_files),
+            "installed_filesystem_file_count": len(installed_filesystem_relative_files),
+            "installed_runtime_file_count": len(installed_runtime_relative_files),
         }
 
     checked_count = 0
     matched_count = 0
     mismatched: list[dict[str, Any]] = []
     missing_installed: list[dict[str, Any]] = []
+    extra_installed: list[dict[str, Any]] = []
     unverified: list[dict[str, Any]] = []
     installed_total_size = 0
     project_total_size = 0
     installed_digest = hashlib.sha256()
     project_digest = hashlib.sha256()
+    expected_runtime_relative_file_set = set(expected_runtime_relative_files)
 
     for relative_path in expected_runtime_relative_files:
         installed_path = os.path.join(distribution_root, relative_path)
@@ -1826,11 +1834,37 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
                 }
             )
 
+    for relative_path in installed_runtime_relative_files:
+        if relative_path in expected_runtime_relative_file_set:
+            continue
+        installed_path = os.path.join(distribution_root, relative_path)
+        installed_fingerprint = _fingerprint_source_file(installed_path)
+        installed_available = bool(installed_fingerprint.get("fingerprint_available"))
+        entry: dict[str, Any] = {
+            "path": relative_path,
+            "installed_available": installed_available,
+        }
+        if installed_available:
+            entry.update(
+                {
+                    "installed_sha256": _clean_sha256(installed_fingerprint.get("sha256")),
+                    "installed_size_bytes": int(installed_fingerprint.get("size_bytes") or 0),
+                }
+            )
+        else:
+            entry["installed_unavailable_reason"] = installed_fingerprint.get("unavailable_reason")
+        extra_installed.append(entry)
+
     if missing_installed:
         runtime_file_verification_status = "missing_installed_runtime_files"
         verification_status = "missing_installed_runtime_files"
         matches_project_checkout: bool | None = False
         matches_project_worktree: bool | None = False
+    elif extra_installed:
+        runtime_file_verification_status = "extra_installed_runtime_files"
+        verification_status = "extra_installed_runtime_files"
+        matches_project_checkout = False
+        matches_project_worktree = False
     elif mismatched:
         runtime_file_verification_status = "mismatch"
         verification_status = "mismatch"
@@ -1867,11 +1901,14 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "matches_project_worktree": matches_project_worktree,
         "project_file_set_source": project_file_set_source,
         "expected_runtime_file_count": len(expected_runtime_relative_files),
-        "installed_distribution_file_count": len(installed_runtime_relative_files),
+        "installed_distribution_file_count": len(installed_distribution_relative_files),
+        "installed_filesystem_file_count": len(installed_filesystem_relative_files),
+        "installed_runtime_file_count": len(installed_runtime_relative_files),
         "checked_file_count": checked_count,
         "matched_file_count": matched_count,
         "mismatched_file_count": len(mismatched),
         "missing_installed_file_count": len(missing_installed),
+        "extra_installed_file_count": len(extra_installed),
         "unverified_file_count": len(unverified),
         "installed_total_size_bytes": installed_total_size,
         "project_total_size_bytes": project_total_size,
@@ -1880,9 +1917,15 @@ def verify_installed_package_against_project(project_root: str | None) -> dict[s
         "included_roots": list(_RUNTIME_SOURCE_ROOTS),
         "mismatched_files": mismatched[:20],
         "missing_installed_files": missing_installed[:20],
+        "extra_installed_files": extra_installed[:20],
         "unverified_files": unverified[:20],
+        "truncated_runtime_file_issue_lists": len(mismatched) > 20
+        or len(missing_installed) > 20
+        or len(extra_installed) > 20
+        or len(unverified) > 20,
         "truncated_mismatch_or_unverified_lists": len(mismatched) > 20
         or len(missing_installed) > 20
+        or len(extra_installed) > 20
         or len(unverified) > 20,
     }
 
@@ -2086,6 +2129,30 @@ def _runtime_distribution_source_files(files: list[Any]) -> list[str]:
             continue
         result.append(relative_path)
     return sorted(result)
+
+
+def _installed_runtime_source_files(distribution_root: str, files: list[Any]) -> list[str]:
+    return sorted(
+        set(_runtime_distribution_source_files(files)).union(
+            _runtime_installed_source_files_from_filesystem(distribution_root)
+        )
+    )
+
+
+def _runtime_installed_source_files_from_filesystem(distribution_root: str) -> list[str]:
+    if not distribution_root or not os.path.isdir(distribution_root):
+        return []
+    files: list[str] = []
+    for root in _RUNTIME_SOURCE_ROOTS:
+        root_path = os.path.join(distribution_root, root)
+        if not os.path.isdir(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+            for filename in filenames:
+                relative_path = os.path.relpath(os.path.join(dirpath, filename), distribution_root)
+                files.append(relative_path)
+    return _runtime_distribution_source_files(files)
 
 
 def _is_installable_runtime_package_file(relative_path: str) -> bool:

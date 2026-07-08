@@ -44,7 +44,7 @@ Important fields added to `get_runtime_version_status`:
 | --- | --- | --- | --- |
 | Loaded runtime HEAD and project checkout HEAD are known and equal; loaded module fingerprints match current source | `false` | `false` | `loaded_code_verified_current` |
 | Loaded runtime HEAD and project checkout HEAD are known and differ | `true` | `true` | `loaded_head_differs_from_project_head` |
-| Runtime HEAD is unavailable because the process is loaded from an installed package, every expected project checkout package-installable runtime file exists in the installed package and matches, runtime source roots are clean against Git HEAD, and loaded module fingerprints remain verified | `false` | `false` | `installed_package_matches_project_checkout` |
+| Runtime HEAD is unavailable because the process is loaded from an installed package, every expected project checkout package-installable runtime file exists in the installed package, no installed package runtime file exists outside the expected checkout file set, all compared files match, runtime source roots are clean against Git HEAD, and loaded module fingerprints remain verified | `false` | `false` | `installed_package_matches_project_checkout` |
 | Runtime HEAD is unavailable and installed package runtime files match dirty source-root working-tree changes | `null` | `true` | `installed_package_project_checkout_dirty` |
 | A loaded runner module source file changed after import | `true` | `true` | `loaded_module_source_changed` |
 | Loaded runtime HEAD or project checkout HEAD is unknown | `null` | `true` | `unknown_runtime_or_checkout_head` |
@@ -57,14 +57,14 @@ If multiple risks exist, the result remains fail-closed: `reload_needed_for_veri
 This verification does not claim full Git worktree cleanliness. It does not scan every tracked or untracked file, and it does not prove that files outside the checked runtime roots are clean. It only proves one of these limited facts:
 
 - The loaded runtime HEAD matches the current checkout HEAD and captured loaded module fingerprints still match their current source files.
-- Or, for an installed package without a runtime `.git` directory, the installed package contains and matches every expected project checkout package-installable runtime file, and the runtime source roots are clean against Git HEAD.
+- Or, for an installed package without a runtime `.git` directory, the installed package contains and matches every expected project checkout package-installable runtime file, contains no installed-only package-installable runtime files, and the runtime source roots are clean against Git HEAD.
 
 Readiness gates may use installed-package provenance only when
 `loaded_runtime_head` is unavailable. A reported `loaded_runtime_head` that
 differs from the expected commit is stale running-code evidence and must not be
 overridden by package or checkout fallback fields.
 
-Installed package verification must not invent a Git HEAD for `site-packages`. It can clear `reload_needed_for_verification` only by proving file equivalence between the installed package and the expected package-installable project checkout file set for runtime-relevant roots, proving those source roots are clean against Git HEAD, and keeping loaded module fingerprints verified. Missing expected package files, dirty source roots, or unverified source-root cleanliness remain fail-closed; non-package operational files such as standalone shell scripts do not make a correct non-editable Python package look incomplete. That evidence is still weaker than full deployment authority and does not prove remote traceability by itself.
+Installed package verification must not invent a Git HEAD for `site-packages`. It can clear `reload_needed_for_verification` only by proving file equivalence between the installed package and the expected package-installable project checkout file set for runtime-relevant roots, proving those source roots are clean against Git HEAD, and keeping loaded module fingerprints verified. Missing expected package files, extra installed package runtime files, dirty source roots, or unverified source-root cleanliness remain fail-closed; non-package operational files such as standalone shell scripts do not make a correct non-editable Python package look incomplete. Extra installed runtime files are detected from both package metadata and a bounded filesystem walk under installed runtime package roots, so stale `.py` residues that are no longer listed in `RECORD` remain blocking. That evidence is still weaker than full deployment authority and does not prove remote traceability by itself.
 
 Changed loaded source files are classified as reload verification risk because the running process may still be using code imported before the edit.
 
