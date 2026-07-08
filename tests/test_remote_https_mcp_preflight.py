@@ -8,6 +8,7 @@ import pytest
 
 import scripts.remote_https_mcp_preflight as remote_preflight
 from scripts.remote_https_mcp_preflight import (
+    MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS,
     PREFLIGHT_USER_AGENT,
     PreflightError,
     build_endpoint_plan,
@@ -981,6 +982,57 @@ def test_validate_remote_payloads_rejects_canonical_mcp_base_url_as_external_oau
 
     assert "external-oauth authorization server must not be the MCP public_base_url." in failures
     assert "external-oauth protected resource metadata must list a public external authorization server." in failures
+
+
+def test_validate_remote_payloads_bounds_external_oauth_authorization_server_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = build_endpoint_plan("https://mcp.example.com")
+    resolved_hosts: list[str] = []
+
+    def resolve_public(host: str) -> list[object]:
+        resolved_hosts.append(host)
+        return [remote_preflight.ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr(remote_preflight, "_resolve_hostname_addresses", resolve_public)
+
+    authorization_servers = [
+        f"https://idp-{index}.example.com/" for index in range(MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS + 20)
+    ]
+    failures = validate_remote_payloads(
+        plan,
+        healthz=(200, {"ok": True, "service": "colameta-mcp", "auth_mode": "external-oauth"}),
+        mcp=(
+            200,
+            {
+                "ok": True,
+                "auth_mode": "external-oauth",
+                "protected_resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource",
+            },
+        ),
+        protected_resource=(
+            200,
+            {
+                "resource": "https://mcp.example.com/mcp",
+                "authorization_servers": authorization_servers,
+                "bearer_methods_supported": ["header"],
+            },
+        ),
+        authorization_server=(
+            404,
+            {
+                "ok": False,
+                "error_code": "EXTERNAL_AUTH_SERVER",
+            },
+        ),
+    )
+
+    assert (
+        f"external-oauth authorization_servers must list at most {MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS} entries."
+        in failures
+    )
+    assert len(resolved_hosts) == MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS
+    assert resolved_hosts == [f"idp-{index}.example.com" for index in range(MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS)]
 
 
 def test_validate_remote_payloads_requires_oauth_for_remote_chatgpt_mcp() -> None:

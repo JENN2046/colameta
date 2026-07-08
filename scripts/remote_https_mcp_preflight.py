@@ -19,6 +19,7 @@ class PreflightError(ValueError):
 
 PREFLIGHT_USER_AGENT = "ColaMeta-Remote-MCP-Preflight/1.0"
 MAX_PREFLIGHT_RESPONSE_BYTES = 64 * 1024
+MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS = 8
 REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 _FULL_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -452,7 +453,12 @@ def _validate_external_oauth_authorization_servers(plan: EndpointPlan, authoriza
     failures: list[str] = []
     accepted = 0
     mcp_base_key = _canonical_public_base_url_key(plan.public_base_url)
-    for item in authorization_servers:
+    if len(authorization_servers) > MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS:
+        failures.append(
+            "external-oauth authorization_servers must list at most "
+            f"{MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS} entries."
+        )
+    for item in authorization_servers[:MAX_EXTERNAL_OAUTH_AUTHORIZATION_SERVERS]:
         if not isinstance(item, str):
             failures.append("external-oauth authorization servers must be HTTPS URL strings.")
             continue
