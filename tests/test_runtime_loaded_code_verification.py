@@ -190,8 +190,10 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
             installed_file.write_text(content, encoding="utf-8")
         non_package_script = project / "scripts/colameta_tunnel_client_service.sh"
         non_package_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        installed_non_package_script = installed_root / "scripts/colameta_tunnel_client_service.sh"
+        installed_non_package_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
 
-        fake_distribution = self.fake_distribution(installed_root, list(files))
+        fake_distribution = self.fake_distribution(installed_root, [*files, "scripts/colameta_tunnel_client_service.sh"])
         loaded_fingerprints = self.module_fingerprint(
             installed_root / "runner/runtime_observability.py",
             module_name="runner.runtime_observability",
@@ -221,6 +223,7 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert package["checked_file_count"] == len(files)
         assert package["expected_runtime_file_count"] == len(files)
         assert package["missing_installed_file_count"] == 0
+        assert package["extra_installed_file_count"] == 0
         assert package["mismatched_file_count"] == 0
 
     def test_installed_package_missing_new_project_runtime_file_stays_unverified(self) -> None:
@@ -268,6 +271,57 @@ class RuntimeLoadedCodeVerificationTests(unittest.TestCase):
         assert package["installed_distribution_file_count"] == 1
         assert package["missing_installed_file_count"] == 1
         assert package["missing_installed_files"][0]["path"] == added_path
+
+    def test_installed_package_extra_removed_runtime_file_blocks_current_fallback(self) -> None:
+        project = self.make_git_checkout(HEAD_A)
+        installed_root = self.tmp_path / "site-packages-extra-runtime-file"
+        shared_path = "runner/runtime_observability.py"
+        extra_path = "runner/removed_runtime_gate.py"
+        shared_content = "loaded = 'runtime'\n"
+        for root in (project, installed_root):
+            shared_file = root / shared_path
+            shared_file.parent.mkdir(parents=True, exist_ok=True)
+            shared_file.write_text(shared_content, encoding="utf-8")
+        extra_file = installed_root / extra_path
+        extra_file.parent.mkdir(parents=True, exist_ok=True)
+        extra_file.write_text("removed_runtime_gate = True\n", encoding="utf-8")
+
+        fake_distribution = self.fake_distribution(installed_root, [shared_path, extra_path])
+        loaded_fingerprints = self.module_fingerprint(installed_root / shared_path)
+
+        with patch.object(runtime_observability, "LOADED_SOURCE_ROOT", str(installed_root)):
+            with patch.object(runtime_observability.importlib.metadata, "distribution", return_value=fake_distribution):
+                with patch.object(
+                    runtime_observability,
+                    "_source_checkout_cleanliness",
+                    return_value=self.source_cleanliness(clean=True),
+                ):
+                    status = get_runtime_version_status(
+                        str(project),
+                        loaded_runtime_head=HEAD_A,
+                        loaded_module_fingerprints=loaded_fingerprints,
+                    )
+
+        assert status["loaded_runtime_head"] == HEAD_A
+        assert status["project_checkout_head"] == HEAD_A
+        assert status["loaded_module_source_changed"] is False
+        assert status["runtime_loaded_code_stale"] is None
+        assert status["reload_needed_for_verification"] is True
+        assert status["reload_awareness_reason"] == "installed_package_mismatch"
+        assert "MCP tool results" in status["possibly_stale_surfaces"]
+        package = status["installed_package_verification"]
+        assert package["verification_status"] == "extra_installed_runtime_files"
+        assert package["runtime_file_verification_status"] == "extra_installed_runtime_files"
+        assert package["matches_project_checkout"] is False
+        assert package["matches_project_worktree"] is False
+        assert package["expected_runtime_file_count"] == 1
+        assert package["installed_distribution_file_count"] == 2
+        assert package["checked_file_count"] == 1
+        assert package["matched_file_count"] == 1
+        assert package["missing_installed_file_count"] == 0
+        assert package["extra_installed_file_count"] == 1
+        assert package["extra_installed_files"][0]["path"] == extra_path
+        assert package["extra_installed_files"][0]["installed_available"] is True
 
     def test_installed_package_missing_runtime_file_blocks_current_fallback_when_heads_match(self) -> None:
         project = self.make_git_checkout(HEAD_A)
