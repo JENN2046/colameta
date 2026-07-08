@@ -176,6 +176,11 @@ loopback、private、link-local、ULA 等 non-global 地址，也会 rejected，
 split-horizon DNS 把内网 endpoint 当成 public endpoint。secret-like
 `--public-base-url` 会在 DNS 解析前 rejected/redacted；`--no-network` 离线形态检查
 不会解析 hostname。
+如果 `ops-check` 输出 `PUBLIC_BASE_URL_REJECTED`，或 remote preflight 看到
+Cloudflare HTTP 530 / 1033、external OAuth issuer 被判定为 non-public，先按
+[DNS / Proxy / Cloudflare Tunnel 运行手册](dns-proxy-tunnel-runbook.zh-CN.md)
+检查 public MCP hostname、Cloudflare tunnel edge hostname 和 external OAuth issuer
+是否被 WSL/proxy/fake-IP DNS 解析到 `198.18.0.0/15` 或其它 non-public 地址。
 联网 remote preflight 还会校验公网 `/healthz` 的 runtime provenance：public MCP
 endpoint 必须证明正在服务 `expected_head`，且 reload/source-clean evidence 为 ready；
 只满足 OAuth metadata contract 但指向旧实例或错误实例时会 blocked。`external-oauth`

@@ -23,6 +23,7 @@ DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS = 24
 DEFAULT_CLOUDFLARED_SERVICE = "cloudflared-colameta-mcp-prod.service"
 DEFAULT_STABLE_SERVICE = "colameta-stable.service"
 DEFAULT_BACKUP_DIR = "/home/jenn/tools/colameta-stable-backups"
+DNS_PROXY_RUNBOOK = "docs/dns-proxy-tunnel-runbook.zh-CN.md"
 LOCAL_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 REDACTED_PUBLIC_BASE_URL = "<redacted-public-base-url>"
@@ -441,7 +442,9 @@ def _remote_preflight_check(
         network_check=report.get("network_check") if isinstance(report, dict) else None,
         expected_runtime_head=report.get("expected_runtime_head") if isinstance(report, dict) else None,
         healthz_runtime=report.get("healthz_runtime") if isinstance(report, dict) else None,
+        responses=_sanitized_preflight_responses(report),
         failures=failures or [],
+        operator_hint=_remote_preflight_operator_hint(report, failures),
     )
 
 
@@ -617,6 +620,7 @@ def _public_base_url_for_packet(
             "public_base_url was rejected before status emission.",
             error=str(exc),
             redacted=True,
+            operator_hint=_dns_proxy_operator_hint("public_base_url rejected before remote probe"),
         )
     if _contains_sensitive_text(normalized):
         return REDACTED_PUBLIC_BASE_URL, _check(
@@ -680,6 +684,71 @@ def needs_attention_codes_for_ops(checks: dict[str, dict[str, Any]]) -> list[str
         if check.get("status") == NEEDS_ATTENTION:
             codes.extend(str(code) for code in check.get("reason_codes", []))
     return codes
+
+
+def _sanitized_preflight_responses(report: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(report, dict):
+        return None
+    responses = report.get("responses")
+    if not isinstance(responses, dict):
+        return None
+    sanitized: dict[str, dict[str, Any]] = {}
+    for name, value in responses.items():
+        if not isinstance(name, str) or not isinstance(value, dict):
+            continue
+        status = value.get("status")
+        if not isinstance(status, int):
+            continue
+        sanitized[name] = {"status": status}
+    return sanitized or None
+
+
+def _remote_preflight_operator_hint(report: Any, failures: Any) -> dict[str, Any] | None:
+    if _preflight_suggests_cloudflare_tunnel_edge_issue(report, failures):
+        return _dns_proxy_operator_hint("cloudflare 530/1033; check cloudflared edge DNS and tunnel registration")
+    if _preflight_suggests_external_oauth_dns_issue(failures):
+        return _dns_proxy_operator_hint("external OAuth issuer rejected as non-public; check issuer DNS")
+    return None
+
+
+def _preflight_suggests_cloudflare_tunnel_edge_issue(report: Any, failures: Any) -> bool:
+    responses = _sanitized_preflight_responses(report)
+    if responses and any(item.get("status") == 530 for item in responses.values()):
+        return True
+    text = " ".join(str(item) for item in failures) if isinstance(failures, list) else str(failures or "")
+    lowered = text.lower()
+    return "530" in lowered or "1033" in lowered or ("cloudflare" in lowered and "tunnel" in lowered)
+
+
+def _preflight_suggests_external_oauth_dns_issue(failures: Any) -> bool:
+    if not isinstance(failures, list):
+        return False
+    text = " ".join(str(item) for item in failures).lower()
+    return "external-oauth authorization server" in text and "public https url" in text
+
+
+def _dns_proxy_operator_hint(symptom: str) -> dict[str, Any]:
+    return {
+        "runbook": DNS_PROXY_RUNBOOK,
+        "symptom": symptom,
+        "summary": "Verify that public MCP, cloudflared edge, and external OAuth issuer hosts resolve to public globally routable addresses.",
+        "safe_checks": [
+            "getent ahosts <host>",
+            "DoH lookup through a pinned public resolver IP",
+            "systemctl --user status cloudflared-colameta-mcp-prod.service --no-pager",
+            "remote_https_mcp_preflight.py https://colameta-mcp.skmt617.top",
+        ],
+        "watch_for": [
+            "198.18.0.0/15 fake-IP DNS answers",
+            "Cloudflare HTTP 530 or error 1033",
+            "external OAuth issuer classified as non-public",
+        ],
+        "safe_remediation": [
+            "Prefer durable DNS/proxy policy that bypasses fake-IP handling for MCP, Cloudflare tunnel edge, and issuer hosts.",
+            "Use a scoped /etc/hosts override only as an operator-controlled temporary workaround.",
+            "Restart the affected local service only after DNS answers are public and documented.",
+        ],
+    }
 
 
 def _check(status: str, reason_code: str, message: str, **extra: Any) -> dict[str, Any]:
