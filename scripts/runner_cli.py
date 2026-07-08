@@ -33,6 +33,7 @@ from runner.production_ops import (
     DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     DEFAULT_PUBLIC_BASE_URL,
     build_production_ops_packet,
+    redact_project_root,
     redact_status_written_path,
     validate_status_write_path,
     write_status_packet,
@@ -2023,7 +2024,7 @@ def _parse_ops_check_options(args: list[str]) -> tuple[str, dict[str, object]] |
 
     project_path = project_path or _default_service_project_root()
     if not os.path.isdir(project_path):
-        print(f"ops-check 参数错误：项目目录不存在：{project_path}", file=sys.stderr)
+        print(f"ops-check 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
         return None
     if public_base_url.startswith("http://") and not _is_local_http_url(public_base_url):
         print("ops-check 参数错误：--public-base-url 必须是 HTTPS；http:// 仅允许 localhost/loopback。", file=sys.stderr)

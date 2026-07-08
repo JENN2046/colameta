@@ -354,6 +354,33 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert result == 1
         assert "refuses repository paths" in stderr.getvalue()
 
+    def test_ops_check_redacts_secret_like_missing_project_path_before_packet_build(self) -> None:
+        from runner.production_ops import REDACTED_PROJECT_ROOT
+        from scripts import runner_cli
+
+        secret_dir_name = "project-sk-not-a-real-token-value"
+        missing_project = self.tmp_path / secret_dir_name
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(
+                runner_cli,
+                "build_production_ops_packet",
+                side_effect=AssertionError("missing project path should be rejected before packet build"),
+            ),
+        ):
+            result = runner_cli._run_ops_check(["ops-check", str(missing_project), "--no-network"])
+
+        assert result == 1
+        assert stdout.getvalue() == ""
+        output = stderr.getvalue()
+        assert "项目目录不存在" in output
+        assert REDACTED_PROJECT_ROOT in output
+        assert secret_dir_name not in output
+        assert "sk-not-a-real-token-value" not in output
+
     def test_ops_check_write_status_accepts_local_state_path(self) -> None:
         from scripts import runner_cli
 

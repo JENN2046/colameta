@@ -207,6 +207,13 @@ def redact_status_written_path(path: str) -> str:
     return text
 
 
+def redact_project_root(project_root: str) -> str:
+    text = str(project_root)
+    if _contains_sensitive_text(text):
+        return REDACTED_PROJECT_ROOT
+    return text
+
+
 def _expected_head_for_packet(
     expected_head: str | None,
     candidate_head: str | None,
