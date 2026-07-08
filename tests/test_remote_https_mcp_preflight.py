@@ -206,6 +206,31 @@ def test_fetch_json_uses_explicit_preflight_user_agent(monkeypatch: pytest.Monke
     assert captured["read_size"] == remote_preflight.MAX_PREFLIGHT_RESPONSE_BYTES + 1
 
 
+def test_preflight_opener_disables_environment_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+    proxy_handler = object()
+    opener = object()
+
+    def fake_proxy_handler(proxies: dict[str, str]) -> object:
+        captured["proxies"] = proxies
+        return proxy_handler
+
+    def fake_redirect_handler() -> object:
+        return object()
+
+    def fake_build_opener(*handlers: object) -> object:
+        captured["handlers"] = handlers
+        return opener
+
+    monkeypatch.setattr(remote_preflight.urllib.request, "ProxyHandler", fake_proxy_handler)
+    monkeypatch.setattr(remote_preflight, "_NoRedirectHandler", fake_redirect_handler)
+    monkeypatch.setattr(remote_preflight.urllib.request, "build_opener", fake_build_opener)
+
+    assert remote_preflight._build_no_redirect_opener() is opener
+    assert captured["proxies"] == {}
+    assert captured["handlers"] == (proxy_handler, fake_redirect_handler)
+
+
 def test_fetch_json_accepts_pinned_https_peer(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeSocket:
         def getpeername(self) -> tuple[str, int]:

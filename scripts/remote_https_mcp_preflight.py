@@ -56,7 +56,14 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         raise PreflightError(f"{req.full_url} returned an HTTP redirect; remote preflight probes must not redirect.")
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+def _build_no_redirect_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler,
+    )
+
+
+_NO_REDIRECT_OPENER = _build_no_redirect_opener()
 
 
 @dataclass(frozen=True)
