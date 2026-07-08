@@ -251,3 +251,59 @@ Stage 10 运维检查不做：
 
 `beta_gate_ready=true` 只表示 Beta Gate evidence ready。是否把项目从 Alpha
 改成 Beta，必须作为后续独立产品/发布决策。
+
+## 9. Gate 设计复盘准则
+
+PR #10 暴露的核心教训是：生产 readiness gate 不能从“happy path 能跑通”出发，
+而要从威胁模型、证据边界和 fail-closed 状态机出发。后续涉及 Beta Gate、remote
+MCP、runtime provenance、package verification、OAuth metadata、CLI 运维输出或
+stable promotion 的改动，进入实现前必须先回答这些问题：
+
+```text
+要保护什么资产？
+攻击者或错误配置能控制哪些输入？
+检查对象和实际使用对象是不是同一个对象？
+哪些状态必须 blocked，而不是 needs_attention 或 ready？
+哪些证据来自运行中进程，哪些只来自磁盘 checkout？
+哪些证据可能被 stale cache、DNS、proxy、package drift 或 metadata spoofing 影响？
+未知、无法验证、超时、过大、格式异常或不一致时是否 fail closed？
+```
+
+Readiness gate 的实现应优先表达状态机，而不是依赖最后的 optimistic fallback。
+`ready` 只能由明确证据推出；`unknown`、`unverified`、`mismatch`、`missing`、
+`extra`、`dirty`、`stale`、`self_reference`、`non_public`、`secret_like`、
+`oversized` 和 `timeout` 等状态默认不能提升为 ready。
+
+后续 review 前应至少覆盖这些负面矩阵：
+
+```text
+DNS rebinding / split-horizon DNS / short TTL
+proxy 改变实际连接 peer
+loopback / private / link-local / multicast / local-only DNS
+OAuth authorization server 自引用、大小写和默认端口等 canonicalization
+oversized metadata array 或 bounded loop 缺失
+redirect 到 off-base URL
+runtime loaded head 与 checkout head 不一致
+loaded modules fingerprint stale 或 unknown
+installed package missing expected runtime file
+installed package extra removed runtime file
+installed package hash mismatch
+dirty source checkout 或 source cleanliness unknown
+secret-like 参数、路径或错误输出
+```
+
+同类改动应尽量拆成小 PR：DNS/preflight、external OAuth metadata、runtime/package
+provenance、CLI redaction、Beta Gate aggregation policy 分开审查。每个 PR 的描述
+应写明 readiness invariant，例如：
+
+```text
+beta_gate_ready=true only if:
+- public endpoint probe connected to validated public peer evidence;
+- runtime evidence proves the served process matches expected head or matching package set;
+- package runtime file set equals expected installable runtime file set;
+- OAuth metadata delegates only to bounded public external IdP origins;
+- emitted packets and early CLI errors do not echo secret-like values.
+```
+
+如果某项证据只能说明“看起来没问题”，但不能证明运行中的对象、连接到的 peer、
+安装包文件集或外部 IdP 与预期一致，则该证据不得单独让 gate ready。
