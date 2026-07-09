@@ -48,6 +48,7 @@ from runner.product_console import build_product_console_map
 from runner.release_submission_readiness import (
     RELEASE_SUBMISSION_MATERIALS_MAX_BYTES,
     build_release_submission_readiness,
+    init_submission_evidence_scaffold,
     load_submission_materials_file,
 )
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -2599,6 +2600,74 @@ def _run_release_readiness(args: list[str]) -> int:
     return 0
 
 
+def _parse_init_submission_evidence_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    options: dict[str, object] = {
+        "json_output": False,
+        "app_name": "ColaMeta",
+        "app_description": "Project console for local AI engineering workflows.",
+        "company_url": "https://example.com",
+        "privacy_policy_url": "https://example.com/privacy",
+    }
+    value_options = {
+        "--app-name": "app_name",
+        "--app-description": "app_description",
+        "--company-url": "company_url",
+        "--privacy-policy-url": "privacy_policy_url",
+    }
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            options["json_output"] = True
+        elif token in value_options:
+            if idx + 1 >= len(args):
+                print(f"init-submission-evidence 参数错误：{token} 缺少值。", file=sys.stderr)
+                return None
+            options[value_options[token]] = args[idx + 1]
+            idx += 1
+        elif token.startswith("-"):
+            print(f"init-submission-evidence 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"init-submission-evidence 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"init-submission-evidence 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, options
+
+
+def _run_init_submission_evidence(args: list[str]) -> int:
+    parsed = _parse_init_submission_evidence_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = init_submission_evidence_scaffold(
+        project_path,
+        app_name=str(options.get("app_name") or "ColaMeta"),
+        app_description=str(options.get("app_description") or "Project console for local AI engineering workflows."),
+        company_url=str(options.get("company_url") or "https://example.com"),
+        privacy_policy_url=str(options.get("privacy_policy_url") or "https://example.com/privacy"),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(
+            "Submission evidence scaffold: "
+            f"manifest={packet.get('manifest_path')} "
+            f"created={len(packet.get('created_files') or [])} "
+            f"existing={len(packet.get('existing_files') or [])}",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _read_release_submission_materials(path: str) -> dict[str, object] | None:
     resolved = _resolve_path(path)
     redacted_path = redact_status_written_path(resolved)
@@ -4843,6 +4912,8 @@ def main() -> int:
         return _run_console_map(sys.argv[1:])
     if cmd == "release-readiness":
         return _run_release_readiness(sys.argv[1:])
+    if cmd == "init-submission-evidence":
+        return _run_init_submission_evidence(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":

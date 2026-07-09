@@ -247,6 +247,49 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert build_packet.call_args.kwargs["submission_materials"]["app_name"] == "ColaMeta"
         assert build_packet.call_args.kwargs["submission_materials"]["logo_ready"] is True
 
+    def test_init_submission_evidence_json_creates_scaffold(self) -> None:
+        from scripts import runner_cli
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = runner_cli._run_init_submission_evidence(
+                [
+                    "init-submission-evidence",
+                    str(self.project),
+                    "--app-name",
+                    "Demo App",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        manifest_path = self.project / "docs/chatgpt-app-submission-materials.json"
+        assert result == 0
+        assert payload["source"] == "submission_evidence_scaffold"
+        assert payload["manifest_created"] is True
+        assert manifest_path.is_file()
+        assert (self.project / "docs/submission/logo.todo.md").is_file()
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["app_name"] == "Demo App"
+
+    def test_init_submission_evidence_preserves_existing_manifest(self) -> None:
+        from scripts import runner_cli
+
+        manifest_path = self.project / "docs/chatgpt-app-submission-materials.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text('{"app_name": "Existing"}\n', encoding="utf-8")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = runner_cli._run_init_submission_evidence(
+                ["init-submission-evidence", str(self.project), "--app-name", "New", "--json"]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["manifest_created"] is False
+        assert "docs/chatgpt-app-submission-materials.json" in payload["existing_files"]
+        assert manifest_path.read_text(encoding="utf-8") == '{"app_name": "Existing"}\n'
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:

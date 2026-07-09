@@ -11,6 +11,8 @@ from runner.product_readiness import build_product_readiness_packet
 
 RELEASE_SUBMISSION_SOURCE = "release_submission_readiness"
 RELEASE_SUBMISSION_VERSION = "release_submission_readiness.v1"
+SUBMISSION_EVIDENCE_SCAFFOLD_SOURCE = "submission_evidence_scaffold"
+SUBMISSION_EVIDENCE_SCAFFOLD_VERSION = "submission_evidence_scaffold.v1"
 DEFAULT_SUBMISSION_MATERIALS_REL_PATH = "docs/chatgpt-app-submission-materials.json"
 RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 READY = "ready"
@@ -54,6 +56,18 @@ SUBMISSION_EVIDENCE_REQUIREMENTS = {
     "security_review_ready": "security_review",
     "metadata_snapshot_reviewed": "metadata_snapshot",
     "submission_confirmations_ready": "submission_confirmations",
+}
+SUBMISSION_EVIDENCE_SCAFFOLD_REFS = {
+    "logo": "docs/submission/logo.todo.md",
+    "screenshots": ["docs/submission/screenshot-1.todo.md"],
+    "test_prompts": "docs/submission/test-prompts.todo.md",
+    "test_responses": "docs/submission/test-responses.todo.md",
+    "localization": "docs/submission/localization.todo.md",
+    "mcp_tool_info": "docs/submission/mcp-tool-info.todo.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.todo.md",
+    "security_review": "docs/submission/security-review.todo.md",
+    "metadata_snapshot": "docs/submission/metadata-snapshot.todo.md",
+    "submission_confirmations": "docs/submission/submission-confirmations.todo.md",
 }
 
 DOC_REFS = [
@@ -219,6 +233,72 @@ def build_release_submission_readiness(
             "read_provider_config",
             "release_or_deploy",
         ],
+    }
+
+
+def init_submission_evidence_scaffold(
+    project_root: str,
+    *,
+    app_name: str = "ColaMeta",
+    app_description: str = "Project console for local AI engineering workflows.",
+    company_url: str = "https://example.com",
+    privacy_policy_url: str = "https://example.com/privacy",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    root = os.path.abspath(os.path.expanduser(project_root))
+    manifest_rel_path = DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest_path = os.path.join(root, manifest_rel_path)
+    created_files: list[str] = []
+    existing_files: list[str] = []
+
+    for rel_path, content in _submission_evidence_placeholder_files().items():
+        abs_path = os.path.join(root, rel_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        if os.path.exists(abs_path):
+            existing_files.append(rel_path)
+            continue
+        with open(abs_path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        created_files.append(rel_path)
+
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    if os.path.exists(manifest_path):
+        existing_files.append(manifest_rel_path)
+        manifest_created = False
+    else:
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(
+                _submission_materials_scaffold_manifest(
+                    app_name=app_name,
+                    app_description=app_description,
+                    company_url=company_url,
+                    privacy_policy_url=privacy_policy_url,
+                ),
+                handle,
+                ensure_ascii=False,
+                indent=2,
+            )
+            handle.write("\n")
+        created_files.append(manifest_rel_path)
+        manifest_created = True
+
+    return {
+        "ok": True,
+        "source": SUBMISSION_EVIDENCE_SCAFFOLD_SOURCE,
+        "schema_version": SUBMISSION_EVIDENCE_SCAFFOLD_VERSION,
+        "project_root": root,
+        "observed_at": _iso_now(now),
+        "manifest_path": manifest_rel_path,
+        "manifest_created": manifest_created,
+        "created_files": sorted(created_files),
+        "existing_files": sorted(existing_files),
+        "ready_fields_default": False,
+        "placeholder_suffix": ".todo.md",
+        "next_step": {
+            "tool": "release-readiness",
+            "arguments": {"project_path": root, "json": True},
+            "why": "Fill real evidence, replace .todo.md refs, then mark the corresponding manifest fields true.",
+        },
     }
 
 
@@ -462,6 +542,7 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
     missing_keys: list[str] = []
     invalid_refs: list[dict[str, str]] = []
     missing_files: list[str] = []
+    placeholder_files: list[str] = []
     present_files: list[str] = []
 
     for evidence_key in required_keys:
@@ -476,11 +557,14 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
                 continue
             rel_path = str(normalized["rel_path"])
             if os.path.isfile(str(normalized["abs_path"])):
-                present_files.append(rel_path)
+                if _is_placeholder_evidence_ref(rel_path):
+                    placeholder_files.append(rel_path)
+                else:
+                    present_files.append(rel_path)
             else:
                 missing_files.append(rel_path)
 
-    if missing_keys or invalid_refs or missing_files:
+    if missing_keys or invalid_refs or missing_files or placeholder_files:
         return {
             "status": NEEDS_ATTENTION,
             "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE"],
@@ -488,6 +572,7 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
             "missing_keys": sorted(set(missing_keys)),
             "invalid_refs": invalid_refs,
             "missing_files": sorted(set(missing_files)),
+            "placeholder_files": sorted(set(placeholder_files)),
             "present_files": sorted(set(present_files)),
         }
     return {
@@ -524,6 +609,53 @@ def _normalize_evidence_ref(project_root: str, ref: str) -> dict[str, Any]:
     if common != root:
         return {"ok": False, "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT"}
     return {"ok": True, "rel_path": normalized_rel, "abs_path": abs_path}
+
+
+def _is_placeholder_evidence_ref(rel_path: str) -> bool:
+    return rel_path.endswith(".todo.md")
+
+
+def _submission_materials_scaffold_manifest(
+    *,
+    app_name: str,
+    app_description: str,
+    company_url: str,
+    privacy_policy_url: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "chatgpt_app_submission_materials.v1",
+        "app_name": app_name,
+        "app_description": app_description,
+        "company_url": company_url,
+        "privacy_policy_url": privacy_policy_url,
+        "logo_ready": False,
+        "screenshots_ready": False,
+        "test_prompts_ready": False,
+        "test_responses_ready": False,
+        "localization_ready": False,
+        "mcp_tool_info_ready": False,
+        "app_management_permissions_confirmed": False,
+        "security_review_ready": False,
+        "metadata_snapshot_reviewed": False,
+        "submission_confirmations_ready": False,
+        "evidence": dict(SUBMISSION_EVIDENCE_SCAFFOLD_REFS),
+        "notes": "Replace .todo.md placeholder refs with real evidence files before marking readiness fields true.",
+    }
+
+
+def _submission_evidence_placeholder_files() -> dict[str, str]:
+    return {
+        "docs/submission/logo.todo.md": "# Logo Evidence TODO\n\nAdd the final app logo asset path and review notes here.\n",
+        "docs/submission/screenshot-1.todo.md": "# Screenshot Evidence TODO\n\nAdd final ChatGPT App screenshots and captions here.\n",
+        "docs/submission/test-prompts.todo.md": "# Test Prompts TODO\n\nList review prompts that exercise the app's main workflows.\n",
+        "docs/submission/test-responses.todo.md": "# Test Responses TODO\n\nRecord expected tool behavior and response evidence for each test prompt.\n",
+        "docs/submission/localization.todo.md": "# Localization TODO\n\nDocument supported locales and localized metadata/screenshots.\n",
+        "docs/submission/mcp-tool-info.todo.md": "# MCP Tool Information TODO\n\nDocument exposed tools, descriptions, scopes, and safety boundaries.\n",
+        "docs/submission/app-management-permissions.todo.md": "# App Management Permissions TODO\n\nRecord who owns Dashboard submission and app management permissions.\n",
+        "docs/submission/security-review.todo.md": "# Security And Privacy Review TODO\n\nRecord least privilege, consent, redaction, and monitoring review evidence.\n",
+        "docs/submission/metadata-snapshot.todo.md": "# Metadata Snapshot TODO\n\nRecord the app name, description, URLs, screenshots, and tool metadata reviewed for submission.\n",
+        "docs/submission/submission-confirmations.todo.md": "# Submission Confirmations TODO\n\nRecord the final human confirmations required before Dashboard submission.\n",
+    }
 
 
 def default_submission_materials_path(project_root: str) -> str:

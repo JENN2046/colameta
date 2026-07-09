@@ -319,6 +319,7 @@ def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -
         "evidence_status": evidence_check.get("status") if isinstance(evidence_check, dict) else "unknown",
         "missing_evidence_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
         "missing_evidence_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
+        "placeholder_evidence_files": list(evidence_check.get("placeholder_files") or []) if isinstance(evidence_check, dict) else [],
         "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
         "error": materials.get("error"),
     }
