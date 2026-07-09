@@ -445,6 +445,8 @@ stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 面板里的 `Release Evidence` 区块可以通过 `Console` / `Submission` 读按钮刷新
 release/submission readiness，并把未完成 evidence key 的模板渲染成可扫描卡片。卡片里的
 `Copy` 只复制 `fill_submission_evidence_files.entries[]` 的结构，仍需要操作者提供真实证据文本。
+读 `Console` 时，这个区块会优先使用 `release_submission_evidence_bundle.fill_plan.draft_entries[]`；
+读 `Submission` 时，则回退到 release readiness 的 progress/template 字段。
 
 ```json
 {
