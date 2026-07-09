@@ -63,6 +63,11 @@ def build_product_console_map(
         ),
         result_state,
     )
+    action_result_state = _action_result_state_summary(result_state, recommended_actions)
+    release_evidence_bundle = _release_submission_evidence_bundle(
+        project_args={"project_name": project_name} if project_name else {},
+        release_submission=release,
+    )
     return {
         "ok": True,
         "source": PRODUCT_CONSOLE_SOURCE,
@@ -99,14 +104,19 @@ def build_product_console_map(
         ],
         "entries": entries,
         "recommended_first_actions": recommended_actions,
-        "action_result_state": _action_result_state_summary(result_state, recommended_actions),
+        "action_result_state": action_result_state,
+        "completion_surface": _completion_surface(
+            status=status,
+            readiness=readiness,
+            release_submission=release,
+            action_result_state=action_result_state,
+            release_evidence_bundle=release_evidence_bundle,
+            recommended_actions=recommended_actions,
+        ),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
-        "release_submission_evidence_bundle": _release_submission_evidence_bundle(
-            project_args={"project_name": project_name} if project_name else {},
-            release_submission=release,
-        ),
+        "release_submission_evidence_bundle": release_evidence_bundle,
         "authority_boundary": _authority_boundary(),
         "not_authorized_actions": [
             "executor_run",
@@ -739,6 +749,205 @@ def _action_result_state_summary(result_state: dict[str, Any], actions: list[dic
             "does_not_write_runtime_state": True,
             "does_not_store_raw_tool_output": True,
         },
+    }
+
+
+def _completion_surface(
+    *,
+    status: str,
+    readiness: dict[str, Any] | None,
+    release_submission: dict[str, Any] | None,
+    action_result_state: dict[str, Any],
+    release_evidence_bundle: dict[str, Any],
+    recommended_actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    readiness_status = _status_value(readiness)
+    release_status = _status_value(release_submission)
+    fill_plan = release_evidence_bundle.get("fill_plan") if isinstance(release_evidence_bundle, dict) else None
+    fill_plan_status = str(fill_plan.get("status") or "unknown") if isinstance(fill_plan, dict) else "unknown"
+    submission_activity = (
+        action_result_state.get("submission_evidence_activity")
+        if isinstance(action_result_state.get("submission_evidence_activity"), dict)
+        else {}
+    )
+    pending_refreshes = (
+        action_result_state.get("pending_refreshes")
+        if isinstance(action_result_state.get("pending_refreshes"), list)
+        else []
+    )
+    components = {
+        "product_readiness": {
+            "status": readiness_status,
+            "ready": isinstance(readiness, dict) and readiness.get("ready") is True,
+        },
+        "release_submission": {
+            "status": release_status,
+            "ready": isinstance(release_submission, dict) and release_submission.get("ready") is True,
+        },
+        "submission_evidence": {
+            "status": fill_plan_status,
+            "ready": release_evidence_bundle.get("ready") is True and fill_plan_status == "ready",
+        },
+        "submission_evidence_activity": {
+            "status": submission_activity.get("status") or "not_recorded",
+            "ready": submission_activity.get("available") is True and submission_activity.get("result_ok") is not False,
+            "available": submission_activity.get("available") is True,
+        },
+        "action_refresh": {
+            "status": "pending" if pending_refreshes else "current",
+            "ready": not pending_refreshes,
+            "pending_refresh_count": len(pending_refreshes),
+        },
+    }
+    gaps = _completion_gaps(components)
+    blocker_codes = [gap["code"] for gap in gaps if gap.get("severity") == "blocker"]
+    needs_attention_codes = [gap["code"] for gap in gaps if gap.get("severity") == "needs_attention"]
+    completion_status = "ready" if not gaps else "blocked" if blocker_codes else "needs_attention"
+    return {
+        "source": "product_console_completion_surface",
+        "schema_version": "product_console_completion_surface.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": completion_status,
+        "console_status": status,
+        "ready": completion_status == "ready",
+        "summary": _completion_summary(completion_status, gaps),
+        "components": components,
+        "gap_count": len(gaps),
+        "gaps": gaps,
+        "blocker_codes": blocker_codes,
+        "needs_attention_codes": needs_attention_codes,
+        "safe_next_action": _completion_safe_next_action(
+            readiness=readiness,
+            release_evidence_bundle=release_evidence_bundle,
+            action_result_state=action_result_state,
+            recommended_actions=recommended_actions,
+            gaps=gaps,
+        ),
+        "authority_boundary": {
+            "read_only": True,
+            "side_effects": False,
+            "does_not_execute_actions": True,
+            "does_not_write_runtime_state": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_authorize_stable_replacement": True,
+        },
+    }
+
+
+def _completion_gaps(components: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    if not components["product_readiness"]["ready"]:
+        gaps.append(
+            {
+                "code": "PRODUCT_READINESS_NOT_READY",
+                "component": "product_readiness",
+                "severity": "blocker" if components["product_readiness"]["status"] == "blocked" else "needs_attention",
+                "status": components["product_readiness"]["status"],
+            }
+        )
+    if not components["release_submission"]["ready"]:
+        gaps.append(
+            {
+                "code": "RELEASE_SUBMISSION_NOT_READY",
+                "component": "release_submission",
+                "severity": "blocker" if components["release_submission"]["status"] == "blocked" else "needs_attention",
+                "status": components["release_submission"]["status"],
+            }
+        )
+    if not components["submission_evidence"]["ready"]:
+        gaps.append(
+            {
+                "code": "SUBMISSION_EVIDENCE_NOT_READY",
+                "component": "submission_evidence",
+                "severity": "needs_attention",
+                "status": components["submission_evidence"]["status"],
+            }
+        )
+    if not components["submission_evidence_activity"]["ready"]:
+        gaps.append(
+            {
+                "code": "SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED",
+                "component": "submission_evidence_activity",
+                "severity": "needs_attention",
+                "status": components["submission_evidence_activity"]["status"],
+            }
+        )
+    if not components["action_refresh"]["ready"]:
+        gaps.append(
+            {
+                "code": "ACTION_REFRESH_PENDING",
+                "component": "action_refresh",
+                "severity": "needs_attention",
+                "status": components["action_refresh"]["status"],
+            }
+        )
+    return gaps
+
+
+def _completion_summary(status: str, gaps: list[dict[str, Any]]) -> str:
+    if status == "ready":
+        return "Product console closeout is ready: readiness, release evidence, recorded activity, and refresh state are current."
+    return f"Product console closeout needs attention: {len(gaps)} gap(s) remain."
+
+
+def _completion_safe_next_action(
+    *,
+    readiness: dict[str, Any] | None,
+    release_evidence_bundle: dict[str, Any],
+    action_result_state: dict[str, Any],
+    recommended_actions: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    first_gap = gaps[0] if gaps else None
+    if not first_gap:
+        return {
+            "action": "continue_with_public_beta_workflow",
+            "tool": "render_commander_app",
+            "authority": "read_only",
+            "why": "Closeout surface is ready; continue through Commander without granting write authority.",
+        }
+    component = first_gap.get("component")
+    if component == "product_readiness" and isinstance(readiness, dict) and isinstance(readiness.get("safe_next_action"), dict):
+        return {
+            **readiness["safe_next_action"],
+            "authority": "read_only",
+            "why": readiness["safe_next_action"].get("why") or "Resolve product readiness before claiming closeout ready.",
+        }
+    if component in {"release_submission", "submission_evidence"}:
+        fill_plan = release_evidence_bundle.get("fill_plan") if isinstance(release_evidence_bundle, dict) else None
+        if isinstance(fill_plan, dict) and isinstance(fill_plan.get("next_tool"), str):
+            return {
+                "action": fill_plan.get("status"),
+                "tool": fill_plan.get("next_tool"),
+                "arguments": dict(fill_plan.get("next_arguments") or {}),
+                "authority": "commit" if fill_plan.get("next_tool") in {"fill_submission_evidence_files", "mark_submission_evidence_ready_fields", "init_submission_evidence"} else "read_only",
+                "why": fill_plan.get("why") or "Complete release submission evidence before claiming closeout ready.",
+            }
+    if component == "submission_evidence_activity":
+        return {
+            "action": "record_submission_evidence_activity",
+            "tool": "record_product_console_action_result",
+            "authority": "commit",
+            "why": "Record the latest submission evidence activity summary after review/refresh actions complete.",
+        }
+    if component == "action_refresh":
+        pending = action_result_state.get("pending_refreshes") if isinstance(action_result_state.get("pending_refreshes"), list) else []
+        first = pending[0] if pending and isinstance(pending[0], dict) else {}
+        return {
+            "action": "refresh_after_recorded_action",
+            "tool": first.get("tool") or "get_product_console_map",
+            "arguments": dict(first.get("arguments") or {}),
+            "authority": "read_only",
+            "why": first.get("why") or "Refresh the read surface after a recorded action result.",
+        }
+    first_action = recommended_actions[0] if recommended_actions else {}
+    return {
+        "action": first_action.get("action_id") or "inspect_product_console",
+        "tool": first_action.get("tool") or "get_product_console_map",
+        "arguments": dict(first_action.get("arguments") or {}),
+        "authority": first_action.get("required_scope") or "mcp:read",
+        "why": first_action.get("why") or "Inspect the next recommended product console action.",
     }
 
 
