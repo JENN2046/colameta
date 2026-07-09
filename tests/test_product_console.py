@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from runner.product_console import build_product_console_map
+from runner.product_console import build_product_console_map, build_submission_evidence_fill_preview
 from runner.release_submission_readiness import DEFAULT_SUBMISSION_MATERIALS_REL_PATH
 
 
@@ -303,3 +303,70 @@ def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) ->
     assert "app_name" in packet["release_submission_snapshot"]["submission_materials"]["effective_fields"]
     assert packet["release_submission_snapshot"]["submission_materials"]["evidence_status"] == "ready"
     assert "screenshots" in packet["release_submission_snapshot"]["submission_materials"]["evidence_keys"]
+
+
+def test_submission_evidence_fill_preview_packages_bundle_draft_entries() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        release_submission_readiness=_release_with_materials(),
+    )
+
+    assert packet["source"] == "submission_evidence_fill_preview"
+    assert packet["read_only"] is True
+    assert packet["side_effects"] is False
+    assert packet["status"] == "preview_ready"
+    assert packet["fill_plan_status"] == "evidence_needs_fill"
+    assert packet["copyable_tool_call"]["tool"] == "fill_submission_evidence_files"
+    assert packet["copyable_tool_call"]["required_scope"] == "mcp:commit"
+    assert packet["copyable_tool_call"]["arguments"] == {
+        "project_name": "demo-project",
+        "entries": [
+            {
+                "key": "logo",
+                "filename": "logo.md",
+                "content": "<operator-confirmed evidence text>",
+            }
+        ],
+        "mark_ready": False,
+    }
+    assert packet["authority_boundary"]["does_not_write_files"] is True
+    assert packet["authority_boundary"]["does_not_mark_ready_fields"] is True
+
+
+def test_submission_evidence_fill_preview_filters_selected_keys() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        selected_keys=["mcp_tool_info"],
+        release_submission_readiness=_release_with_materials(),
+    )
+
+    assert packet["status"] == "selected_keys_not_available"
+    assert packet["selected_keys"] == ["mcp_tool_info"]
+    assert packet["ignored_selected_keys"] == ["mcp_tool_info"]
+    assert packet["copyable_tool_call"]["arguments"]["entries"] == []
+
+
+def test_submission_evidence_fill_preview_reports_manifest_missing() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        release_submission_readiness=_release_with_materials(source="parameters_only"),
+    )
+
+    assert packet["status"] == "manifest_missing"
+    assert packet["fill_plan_status"] == "manifest_missing"
+    assert packet["copyable_tool_call"]["arguments"]["entries"] == []
+    assert packet["evidence_bundle"]["fill_plan"]["next_tool"] == "init_submission_evidence"
+
+
+def test_submission_evidence_fill_preview_noops_when_ready() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    assert packet["status"] == "no_fill_needed"
+    assert packet["copyable_tool_call"]["arguments"] == {"entries": [], "mark_ready": False}
+    assert packet["operator_instructions"][0].startswith("Review every entry")

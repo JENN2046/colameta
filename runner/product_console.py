@@ -11,6 +11,8 @@ from runner.release_submission_readiness import build_release_submission_readine
 
 PRODUCT_CONSOLE_SOURCE = "product_console_map"
 PRODUCT_CONSOLE_VERSION = "product_console.v1"
+SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
+SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
 
 
 def build_product_console_map(
@@ -93,6 +95,89 @@ def build_product_console_map(
             "read_tokens_or_cookies",
             "read_provider_config",
         ],
+    }
+
+
+def build_submission_evidence_fill_preview(
+    project_root: str,
+    *,
+    project_name: str | None = None,
+    selected_keys: list[str] | None = None,
+    release_submission_readiness: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    release = release_submission_readiness if isinstance(release_submission_readiness, dict) else None
+    if release is None:
+        release = build_release_submission_readiness(
+            project_root,
+            project_name=project_name,
+            no_network=True,
+            now=now,
+        )
+    project_args = {"project_name": project_name} if project_name else {}
+    bundle = _release_submission_evidence_bundle(project_args=project_args, release_submission=release)
+    selected = _normalized_selected_evidence_keys(selected_keys)
+    fill_plan = bundle.get("fill_plan") if isinstance(bundle.get("fill_plan"), dict) else {}
+    draft_entries = fill_plan.get("draft_entries") if isinstance(fill_plan, dict) else []
+    if not isinstance(draft_entries, list):
+        draft_entries = []
+    filtered_entries = _filter_draft_entries(draft_entries, selected)
+    fill_entries = [
+        dict(entry.get("copyable_entry_shape") or {})
+        for entry in filtered_entries
+        if isinstance(entry, dict) and isinstance(entry.get("copyable_entry_shape"), dict)
+    ]
+    fill_entries = [
+        {
+            "key": str(entry.get("key") or ""),
+            "filename": str(entry.get("filename") or ""),
+            "content": str(entry.get("content") or "<operator-confirmed evidence text>"),
+        }
+        for entry in fill_entries
+        if entry.get("key")
+    ]
+    ignored_selected_keys = sorted(selected - {str(entry.get("key")) for entry in filtered_entries if isinstance(entry, dict)})
+    status = _submission_evidence_fill_preview_status(bundle, fill_plan, fill_entries, selected)
+    copyable_arguments: dict[str, Any] = {**project_args, "entries": fill_entries, "mark_ready": False}
+    return {
+        "ok": True,
+        "source": SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE,
+        "schema_version": SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION,
+        "read_only": True,
+        "side_effects": False,
+        "project_root": os.path.abspath(os.path.expanduser(project_root)),
+        "project_name": project_name,
+        "observed_at": _iso_now(now),
+        "status": status,
+        "summary": _submission_evidence_fill_preview_summary(status, fill_entries),
+        "selected_keys": sorted(selected),
+        "ignored_selected_keys": ignored_selected_keys,
+        "release_submission_status": _status_value(release),
+        "evidence_bundle_status": bundle.get("status"),
+        "fill_plan_status": fill_plan.get("status"),
+        "draft_entry_count": len(filtered_entries),
+        "copyable_tool_call": {
+            "tool": "fill_submission_evidence_files",
+            "arguments": copyable_arguments,
+            "required_scope": "mcp:commit",
+            "requires_explicit_operator_review": True,
+        },
+        "operator_instructions": [
+            "Review every entry and replace <operator-confirmed evidence text> with real evidence before running the write tool.",
+            "Keep mark_ready=false until a human reviewer confirms the referenced evidence is final.",
+            "Run get_release_submission_readiness again after filling files.",
+        ],
+        "evidence_bundle": bundle,
+        "authority_boundary": {
+            "read_only": True,
+            "side_effects": False,
+            "does_not_write_files": True,
+            "does_not_mark_ready_fields": True,
+            "does_not_create_openai_app_draft": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_publish_app": True,
+            "does_not_read_tokens_or_cookies": True,
+        },
     }
 
 
@@ -604,6 +689,57 @@ def _release_submission_evidence_bundle_summary(
     total = progress_summary.get("total_count") or 0
     complete = progress_summary.get("complete_count") or 0
     return f"Release submission evidence needs attention: {complete}/{total} evidence items are ready."
+
+
+def _normalized_selected_evidence_keys(selected_keys: list[str] | None) -> set[str]:
+    if not isinstance(selected_keys, list):
+        return set()
+    return {str(item).strip() for item in selected_keys if isinstance(item, str) and str(item).strip()}
+
+
+def _filter_draft_entries(draft_entries: list[Any], selected_keys: set[str]) -> list[dict[str, Any]]:
+    entries = [entry for entry in draft_entries if isinstance(entry, dict)]
+    if not selected_keys:
+        return entries
+    return [entry for entry in entries if str(entry.get("key") or "") in selected_keys]
+
+
+def _submission_evidence_fill_preview_status(
+    bundle: dict[str, Any],
+    fill_plan: dict[str, Any],
+    fill_entries: list[dict[str, Any]],
+    selected_keys: set[str],
+) -> str:
+    fill_plan_status = str(fill_plan.get("status") or "unknown")
+    if fill_plan_status == "ready":
+        return "no_fill_needed"
+    if fill_plan_status == "manifest_missing":
+        return "manifest_missing"
+    if fill_plan_status == "manifest_needs_attention":
+        return "manifest_needs_attention"
+    if fill_plan_status == "needs_release_readiness":
+        return "needs_release_readiness"
+    if selected_keys and not fill_entries:
+        return "selected_keys_not_available"
+    if fill_entries:
+        return "preview_ready"
+    if bundle.get("ready") is True:
+        return "no_fill_needed"
+    return "no_preview_entries"
+
+
+def _submission_evidence_fill_preview_summary(status: str, fill_entries: list[dict[str, Any]]) -> str:
+    if status == "preview_ready":
+        return f"Prepared a read-only fill payload preview with {len(fill_entries)} evidence entries."
+    if status == "no_fill_needed":
+        return "Submission evidence is already ready; no fill payload is needed."
+    if status == "manifest_missing":
+        return "Submission manifest is missing; initialize the evidence scaffold before filling files."
+    if status == "manifest_needs_attention":
+        return "Submission manifest needs attention before a fill payload can be prepared."
+    if status == "selected_keys_not_available":
+        return "No draft evidence entries matched the selected keys."
+    return "No submission evidence fill payload is ready yet."
 
 
 def _submission_evidence_bundle_authority_boundary() -> dict[str, bool]:
