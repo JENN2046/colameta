@@ -43,6 +43,18 @@ SUBMISSION_MATERIAL_METADATA_FIELDS = {
 SUBMISSION_MATERIAL_FIELDS = (
     SUBMISSION_MATERIAL_TEXT_FIELDS | SUBMISSION_MATERIAL_BOOL_FIELDS | SUBMISSION_MATERIAL_METADATA_FIELDS
 )
+SUBMISSION_EVIDENCE_REQUIREMENTS = {
+    "logo_ready": "logo",
+    "screenshots_ready": "screenshots",
+    "test_prompts_ready": "test_prompts",
+    "test_responses_ready": "test_responses",
+    "localization_ready": "localization",
+    "mcp_tool_info_ready": "mcp_tool_info",
+    "app_management_permissions_confirmed": "app_management_permissions",
+    "security_review_ready": "security_review",
+    "metadata_snapshot_reviewed": "metadata_snapshot",
+    "submission_confirmations_ready": "submission_confirmations",
+}
 
 DOC_REFS = [
     {
@@ -142,6 +154,7 @@ def build_release_submission_readiness(
         manifest_error=manifest_error,
     )
     materials_manifest = materials["manifest"]
+    evidence_references = _evidence_references_check(project_root, materials, materials_manifest)
     checks = _checks(
         readiness=readiness,
         app_name=materials["app_name"],
@@ -159,6 +172,7 @@ def build_release_submission_readiness(
         metadata_snapshot_reviewed=materials["metadata_snapshot_reviewed"],
         submission_confirmations_ready=materials["submission_confirmations_ready"],
         submission_materials=materials_manifest,
+        evidence_references=evidence_references,
     )
     blocker_codes, needs_attention_codes = _reason_codes(checks)
     status = BLOCKED if blocker_codes else NEEDS_ATTENTION if needs_attention_codes else READY
@@ -226,6 +240,7 @@ def _checks(
     metadata_snapshot_reviewed: bool,
     submission_confirmations_ready: bool,
     submission_materials: dict[str, Any],
+    evidence_references: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     ops_check = readiness.get("ops_check") if isinstance(readiness.get("ops_check"), dict) else {}
     return {
@@ -286,6 +301,7 @@ def _checks(
             "SUBMISSION_CONFIRMATIONS_READY" if submission_confirmations_ready else "SUBMISSION_CONFIRMATIONS_MISSING",
         ),
         "submission_materials_manifest": _manifest_check(submission_materials),
+        "submission_evidence_references": evidence_references,
     }
 
 
@@ -420,8 +436,94 @@ def _merge_submission_materials(
         manifest_summary["source_detail"] = dict(manifest_source)
     if manifest_error:
         manifest_summary["error"] = dict(manifest_error)
+    evidence = manifest.get("evidence")
+    if isinstance(evidence, Mapping):
+        manifest_summary["evidence_keys"] = sorted(str(key) for key in evidence)
+        effective["_evidence"] = evidence
+    else:
+        manifest_summary["evidence_keys"] = []
+        effective["_evidence"] = {}
     effective["manifest"] = manifest_summary
     return effective
+
+
+def _evidence_references_check(project_root: str, materials: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(manifest.get("error"), dict):
+        return _status_check(READY, "SUBMISSION_EVIDENCE_SKIPPED_MANIFEST_INVALID")
+    if manifest.get("source") == "parameters_only":
+        return _status_check(READY, "SUBMISSION_EVIDENCE_FROM_OPERATOR_PARAMETERS")
+
+    evidence = materials.get("_evidence")
+    if not isinstance(evidence, Mapping):
+        evidence = {}
+    required_keys = [
+        evidence_key for ready_field, evidence_key in sorted(SUBMISSION_EVIDENCE_REQUIREMENTS.items()) if materials.get(ready_field) is True
+    ]
+    missing_keys: list[str] = []
+    invalid_refs: list[dict[str, str]] = []
+    missing_files: list[str] = []
+    present_files: list[str] = []
+
+    for evidence_key in required_keys:
+        refs = _coerce_evidence_refs(evidence.get(evidence_key))
+        if not refs:
+            missing_keys.append(evidence_key)
+            continue
+        for ref in refs:
+            normalized = _normalize_evidence_ref(project_root, ref)
+            if normalized.get("ok") is not True:
+                invalid_refs.append({"key": evidence_key, "ref": ref, "error_code": str(normalized.get("error_code"))})
+                continue
+            rel_path = str(normalized["rel_path"])
+            if os.path.isfile(str(normalized["abs_path"])):
+                present_files.append(rel_path)
+            else:
+                missing_files.append(rel_path)
+
+    if missing_keys or invalid_refs or missing_files:
+        return {
+            "status": NEEDS_ATTENTION,
+            "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE"],
+            "required_keys": required_keys,
+            "missing_keys": sorted(set(missing_keys)),
+            "invalid_refs": invalid_refs,
+            "missing_files": sorted(set(missing_files)),
+            "present_files": sorted(set(present_files)),
+        }
+    return {
+        "status": READY,
+        "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_READY"],
+        "required_keys": required_keys,
+        "present_files": sorted(set(present_files)),
+    }
+
+
+def _coerce_evidence_refs(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, list):
+        refs = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        return refs
+    return []
+
+
+def _normalize_evidence_ref(project_root: str, ref: str) -> dict[str, Any]:
+    if ref.startswith(("http://", "https://")):
+        return {"ok": False, "error_code": "EXTERNAL_EVIDENCE_URL_NOT_ACCEPTED"}
+    if os.path.isabs(ref):
+        return {"ok": False, "error_code": "ABSOLUTE_EVIDENCE_PATH_NOT_ACCEPTED"}
+    normalized_rel = os.path.normpath(ref)
+    if normalized_rel == "." or normalized_rel.startswith("..") or os.path.isabs(normalized_rel):
+        return {"ok": False, "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT"}
+    root = os.path.abspath(os.path.expanduser(project_root))
+    abs_path = os.path.abspath(os.path.join(root, normalized_rel))
+    try:
+        common = os.path.commonpath([root, abs_path])
+    except ValueError:
+        return {"ok": False, "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT"}
+    if common != root:
+        return {"ok": False, "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT"}
+    return {"ok": True, "rel_path": normalized_rel, "abs_path": abs_path}
 
 
 def default_submission_materials_path(project_root: str) -> str:

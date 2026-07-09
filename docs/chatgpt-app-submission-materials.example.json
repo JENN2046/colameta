@@ -21,7 +21,12 @@
     ],
     "test_prompts": "docs/submission/test-prompts.md",
     "test_responses": "docs/submission/test-responses.md",
-    "security_review": "docs/submission/security-review.md"
+    "localization": "docs/submission/localization.md",
+    "mcp_tool_info": "docs/submission/mcp-tool-info.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.md",
+    "security_review": "docs/submission/security-review.md",
+    "metadata_snapshot": "docs/submission/metadata-snapshot.md",
+    "submission_confirmations": "docs/submission/submission-confirmations.md"
   },
   "notes": "This example is a local readiness manifest. It is not submitted automatically."
 }
