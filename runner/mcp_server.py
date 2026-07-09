@@ -8474,6 +8474,16 @@ class MCPPlanningBridgeServer:
             project_name=project_name,
             connector_health=connector_health,
         )
+        release_submission_evidence = self._apps_connector_release_submission_evidence(
+            project_root=project_root,
+            project_name=project_name,
+            connector_health=connector_health,
+            apps_connector_closeout=apps_connector_closeout,
+        )
+        apps_connector_closeout = {
+            **apps_connector_closeout,
+            "release_submission_evidence": release_submission_evidence,
+        }
         return {
             "ok": True,
             "source": "apps_connector_smoke_packet",
@@ -8482,6 +8492,7 @@ class MCPPlanningBridgeServer:
             "side_effects": False,
             "project_name": project_name,
             "apps_connector_closeout": apps_connector_closeout,
+            "release_submission_evidence": release_submission_evidence,
             "connector_runtime_health": connector_health,
             "runtime": {
                 "project_checkout_head": runtime_status.get("project_checkout_head"),
@@ -8558,6 +8569,17 @@ class MCPPlanningBridgeServer:
             project_name=project_name,
             connector_health=connector_health,
         )
+        release_submission_evidence = self._apps_connector_release_submission_evidence(
+            project_root=project_root,
+            project_name=project_name,
+            connector_health=connector_health,
+            apps_connector_closeout=apps_connector_closeout,
+            compact_progress=True,
+        )
+        apps_connector_closeout = {
+            **apps_connector_closeout,
+            "release_submission_evidence": release_submission_evidence,
+        }
         app_status = str(connector_summary.get("overall_status") or "unknown")
         readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
@@ -8772,7 +8794,7 @@ class MCPPlanningBridgeServer:
                     "provide sanitized tunnel_client/control_plane evidence when available",
                     "if Apps connector returns token_expired, reconnect the Apps connector session",
                 ],
-                "apps_connector_closeout": apps_connector_closeout,
+                "apps_connector_closeout": self._apps_connector_recovery_closeout_summary(apps_connector_closeout),
                 "accepted_external_evidence_fields": ["status", "reason_code", "evidence_source", "last_observed_at"],
                 "forbidden_evidence": ["token", "cookie", "credential", "raw_log", "provider_raw_response", "browser_login_state"],
             },
@@ -8834,6 +8856,110 @@ class MCPPlanningBridgeServer:
             stable_runtime_dir=DEFAULT_STABLE_RUNTIME_DIR,
             stable_runtime_head=stable_head if isinstance(stable_head, str) else None,
         )
+
+    def _apps_connector_release_submission_evidence(
+        self,
+        *,
+        project_root: str,
+        project_name: str,
+        connector_health: dict[str, Any],
+        apps_connector_closeout: dict[str, Any],
+        compact_progress: bool = False,
+    ) -> dict[str, Any]:
+        connector_ready = apps_connector_closeout.get("status") == "ready"
+        overall_status = str(connector_health.get("overall_status") or "unknown")
+        ready = connector_ready and overall_status == "healthy"
+        readiness_packet: dict[str, Any] = {
+            "ready": ready,
+            "status": "ready" if ready else "needs_attention",
+            "public_base_url": None,
+            "connector_url": None,
+            "primary_blocker": None
+            if ready
+            else {
+                "component": "apps_connector_closeout",
+                "reason_code": "APPS_CONNECTOR_CLOSEOUT_NOT_READY",
+                "status": apps_connector_closeout.get("status"),
+                "overall_status": overall_status,
+            },
+            "ops_check": {
+                "ops_check_ready": ready,
+                "connector_smoke_ready": connector_ready,
+                "beta_gate_ready": ready,
+            },
+        }
+        release_submission = build_release_submission_readiness(
+            project_root,
+            project_name=project_name,
+            readiness_packet=readiness_packet,
+        )
+        evidence_progress = release_submission.get("submission_evidence_progress")
+        if compact_progress:
+            evidence_progress = self._compact_submission_evidence_progress(evidence_progress)
+        return {
+            "ok": True,
+            "source": "release_submission_evidence_closeout",
+            "schema_version": "release_submission_evidence_closeout.v1",
+            "tool": "get_release_submission_readiness",
+            "arguments": {"project_name": project_name},
+            "read_only": True,
+            "side_effects": False,
+            "status": release_submission.get("status"),
+            "ready": release_submission.get("ready") is True,
+            "evidence_progress": evidence_progress,
+            "safe_next_action": release_submission.get("safe_next_action"),
+            "blocker_codes": release_submission.get("blocker_codes") or [],
+            "needs_attention_codes": release_submission.get("needs_attention_codes") or [],
+            "authority_boundary": {
+                "read_only": True,
+                "does_not_submit_app_for_review": True,
+                "does_not_publish_app": True,
+                "does_not_call_openai_dashboard_or_api": True,
+                "does_not_read_tokens_or_cookies": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_or_push": True,
+                "does_not_authorize_stable_replacement": True,
+            },
+        }
+
+    def _apps_connector_recovery_closeout_summary(self, apps_connector_closeout: dict[str, Any]) -> dict[str, Any]:
+        recovery_summary = dict(apps_connector_closeout)
+        recovery_summary.pop("release_submission_evidence", None)
+        return recovery_summary
+
+    def _compact_submission_evidence_progress(self, progress: Any) -> dict[str, Any] | None:
+        if not isinstance(progress, dict):
+            return None
+        rows = progress.get("rows")
+        compact_rows: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                compact_rows.append(
+                    {
+                        "key": row.get("key"),
+                        "ready_field": row.get("ready_field"),
+                        "ready": row.get("ready") is True,
+                        "status": row.get("status"),
+                        "refs": row.get("refs") if isinstance(row.get("refs"), list) else [],
+                        "default_path": row.get("default_path"),
+                        "next_action": row.get("next_action") if isinstance(row.get("next_action"), dict) else None,
+                    }
+                )
+        return {
+            "source": progress.get("source"),
+            "schema_version": progress.get("schema_version"),
+            "status": progress.get("status"),
+            "complete_count": progress.get("complete_count"),
+            "total_count": progress.get("total_count"),
+            "counts": progress.get("counts") if isinstance(progress.get("counts"), dict) else {},
+            "rows": compact_rows,
+            "manifest_available": progress.get("manifest_available"),
+            "read_only": progress.get("read_only") is True,
+            "side_effects": progress.get("side_effects") is True,
+            "compact": True,
+        }
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)

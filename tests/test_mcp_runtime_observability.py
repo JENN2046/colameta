@@ -857,6 +857,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["side_effects"] is False
         assert data["apps_connector_closeout"]["status"] == "ready"
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
+        closeout_evidence = data["apps_connector_closeout"]["release_submission_evidence"]
+        assert closeout_evidence["source"] == "release_submission_evidence_closeout"
+        assert closeout_evidence["tool"] == "get_release_submission_readiness"
+        assert closeout_evidence["read_only"] is True
+        assert closeout_evidence["side_effects"] is False
+        assert closeout_evidence["evidence_progress"]["source"] == "submission_evidence_progress"
+        assert closeout_evidence["evidence_progress"]["total_count"] == 10
+        assert data["release_submission_evidence"] == closeout_evidence
         assert data["metadata_refresh_guidance"]["expected_tool"] == "get_apps_connector_smoke_packet"
         assert data["operator_sequence"][1]["tool"] == "get_apps_connector_smoke_packet"
         assert data["connector_runtime_health"]["overall_status"] == "healthy"
@@ -1382,6 +1390,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["apps_connector_closeout"]["status"] in {"ready", "needs_attention"}
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert data["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
+        release_evidence = data["apps_connector_closeout"]["release_submission_evidence"]
+        assert release_evidence["source"] == "release_submission_evidence_closeout"
+        assert release_evidence["evidence_progress"]["source"] == "submission_evidence_progress"
+        assert release_evidence["evidence_progress"]["total_count"] == 10
+        assert release_evidence["authority_boundary"]["does_not_submit_app_for_review"] is True
         assert "apps_connector_closeout" in data["commander_panel"]["primary_sections"]
         assert "release_submission_evidence" in data["commander_panel"]["primary_sections"]
         assert "agent_operator_flow" in data["commander_panel"]["primary_sections"]
