@@ -1748,6 +1748,9 @@ function evidenceActivityRecordButton() {{
 function evidenceActivityRecordStatus() {{
   return byId("submission-activity-record-status").textContent;
 }}
+function closeoutGroupText() {{
+  return byId("closeout-action-groups").textContent;
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1821,7 +1824,21 @@ vm.runInThisContext({json.dumps(widget_script)});
         action: "record_submission_evidence_activity",
         tool: "record_product_console_action_result",
         authority: "commit"
-      }}
+      }},
+      action_groups: [{{
+        group_id: "submission_evidence_activity",
+        label: "Evidence Activity",
+        status: "needs_attention",
+        component: "submission_evidence_activity",
+        gap_codes: ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
+        primary_action: {{
+          action: "record_submission_evidence_activity",
+          tool: "record_product_console_action_result",
+          authority: "commit"
+        }},
+        action_refs: [],
+        empty_state: "Record the latest submission evidence activity after refresh/recovery actions."
+      }}]
     }},
     action_result_state: {{
       submission_evidence_activity: {{
@@ -1842,6 +1859,10 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(byId("closeout-status").textContent.includes("needs_attention"), byId("closeout-status").textContent);
   assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);
   assert.strictEqual(byId("closeout-next").textContent, "record_submission_evidence_activity | record_product_console_action_result | commit");
+  assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());
+  assert(closeoutGroupText().includes("gaps 1"), closeoutGroupText());
+  assert(closeoutGroupText().includes("record_submission_evidence_activity | record_product_console_action_result | commit"), closeoutGroupText());
+  assert(closeoutGroupText().includes("Record the latest submission evidence activity"), closeoutGroupText());
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
@@ -1908,6 +1929,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   }});
   assert.strictEqual(byId("submission-blockers").textContent, "plan draft_ready | ready 0/2 | attention 1 | placeholder 1");
   assert.strictEqual(byId("closeout-status").textContent, "-");
+  assert(closeoutGroupText().includes("Read Product Console to load closeout action groups."), closeoutGroupText());
   assert.strictEqual(evidenceCards().length, 1, "fill plan should replace progress-row cards");
   assert(evidenceText("evidence-title").includes("submission_summary | draft"), evidenceText("evidence-title"));
   assert(evidenceText("evidence-path").includes("docs/submission/summary.md"), evidenceText("evidence-path"));
