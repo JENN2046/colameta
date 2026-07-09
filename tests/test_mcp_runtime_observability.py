@@ -1112,6 +1112,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Recommended Actions" in widget_html
         assert "Evidence blockers" in widget_html
         assert "recommendedActions" in widget_html
+        assert "callToolWithArgs" in widget_html
+        assert "action-run" in widget_html
+        assert "Confirm outside" in widget_html
+        assert "Preview first" in widget_html
         assert "recommended_first_actions" in widget_html
         assert "requires_explicit_confirmation" in widget_html
         assert "does_not_authorize_stable_replacement" in widget_html
