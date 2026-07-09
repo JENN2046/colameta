@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -19,7 +20,8 @@ PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE = "product_console_action_results"
 PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v1"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
-ACTION_RESULT_STATUSES = frozenset({"not_recorded", "pending", "updated", "requested", "blocked", "failed"})
+ACTION_RESULT_STATUSES = frozenset({"not_recorded", "pending", "updated", "requested", "blocked", "failed", "stale"})
+RECORDABLE_ACTION_RESULT_STATUSES = ACTION_RESULT_STATUSES - {"not_recorded", "stale"}
 REFRESH_RECOMMENDED_RESULT_STATUSES = frozenset({"updated", "requested"})
 MAX_ACTION_RESULT_MESSAGE_CHARS = 240
 MAX_STORED_ACTION_RESULTS = 50
@@ -149,10 +151,11 @@ def record_product_console_action_result(
     message: str | None = None,
     project_name: str | None = None,
     result_ok: bool | None = None,
+    action_fingerprint: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     normalized_mode = mode if mode in {"read", "preview", "commit"} else "read"
-    normalized_status = status if status in ACTION_RESULT_STATUSES - {"not_recorded"} else "failed"
+    normalized_status = status if status in RECORDABLE_ACTION_RESULT_STATUSES else "failed"
     observed_at = _iso_now(now)
     entry = {
         "action_key": _action_key_from_fields(action_id=action_id, tool=tool, mode=normalized_mode),
@@ -168,6 +171,9 @@ def record_product_console_action_result(
         entry["project_name"] = clean_project_name
     if result_ok is not None:
         entry["result_ok"] = bool(result_ok)
+    clean_action_fingerprint = _clean_optional_text(action_fingerprint)
+    if clean_action_fingerprint:
+        entry["action_fingerprint"] = clean_action_fingerprint
 
     existing = load_product_console_action_results(project_root)
     entries = [item for item in _action_result_entries(existing) if item.get("action_key") != entry["action_key"]]
@@ -651,7 +657,7 @@ def _result_contract_for_action(mode: str, tool: str | None) -> dict[str, Any]:
         "success_indicators": ["tool call returned without transport error", "result.ok is not false"],
         "failure_summary_source": "transport error, tool error, or result.error.message",
         "last_action_result_shape": {
-            "status": "not_recorded|pending|updated|requested|blocked|failed",
+            "status": "not_recorded|pending|updated|requested|blocked|failed|stale",
             "message": "<short operator-readable summary>",
             "observed_at": "<ISO-8601 timestamp>",
         },
@@ -686,8 +692,10 @@ def _attach_action_results(actions: list[dict[str, Any]], result_state: dict[str
     for action in actions:
         item = dict(action)
         action_key = _action_key_for_model(item)
+        action_fingerprint = _action_fingerprint_for_model(item)
         item["action_key"] = action_key
-        item["last_action_result"] = index.get(action_key) or _not_recorded_action_result()
+        item["action_fingerprint"] = action_fingerprint
+        item["last_action_result"] = _action_result_for_current_action(index.get(action_key), action_fingerprint)
         item["next_refresh_actions"] = _next_refresh_actions_for_action(item)
         attached.append(item)
     return attached
@@ -703,6 +711,12 @@ def _action_result_state_summary(result_state: dict[str, Any], actions: list[dic
         "status": str(result_state.get("status") or "empty") if isinstance(result_state, dict) else "empty",
         "available": bool(entries),
         "stored_result_count": len(entries),
+        "stale_result_count": sum(
+            1
+            for action in actions
+            if isinstance(action.get("last_action_result"), dict)
+            and action["last_action_result"].get("status") == "stale"
+        ),
         "latest": latest,
         "pending_refresh_count": len(pending_refreshes),
         "pending_refreshes": pending_refreshes,
@@ -789,6 +803,9 @@ def _normalize_action_result_entry(value: dict[str, Any]) -> dict[str, Any] | No
         entry["project_name"] = project_name
     if isinstance(value.get("result_ok"), bool):
         entry["result_ok"] = value["result_ok"]
+    action_fingerprint = _clean_optional_text(value.get("action_fingerprint"))
+    if action_fingerprint:
+        entry["action_fingerprint"] = action_fingerprint
     return entry
 
 
@@ -806,8 +823,30 @@ def _not_recorded_action_result() -> dict[str, Any]:
         "status": "not_recorded",
         "message": "No action result recorded yet.",
         "observed_at": None,
+        "stale": False,
         "refresh_recommended": False,
     }
+
+
+def _action_result_for_current_action(entry: dict[str, Any] | None, current_fingerprint: str) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return _not_recorded_action_result()
+    result = dict(entry)
+    recorded_fingerprint = _clean_optional_text(result.get("action_fingerprint"))
+    if recorded_fingerprint and recorded_fingerprint != current_fingerprint:
+        previous_status = _clean_optional_text(result.get("status")) or "failed"
+        result["previous_status"] = previous_status
+        result["status"] = "stale"
+        result["message"] = "Recorded result is stale because the recommended action changed."
+        result["stale"] = True
+        result["stale_reason"] = "action_fingerprint_changed"
+        result["current_action_fingerprint"] = current_fingerprint
+        result["refresh_recommended"] = False
+        return result
+    result["stale"] = False
+    if recorded_fingerprint:
+        result["fingerprint_verified"] = True
+    return result
 
 
 def _next_refresh_actions_for_action(action: dict[str, Any]) -> list[dict[str, Any]]:
@@ -886,6 +925,23 @@ def _action_key_for_model(action: dict[str, Any]) -> str:
         tool=_clean_optional_text(action.get("tool")),
         mode=_clean_optional_text(action.get("mode")) or "read",
     )
+
+
+def _action_fingerprint_for_model(action: dict[str, Any]) -> str:
+    surface = {
+        "action": _clean_optional_text(action.get("action")),
+        "action_id": _clean_optional_text(action.get("action_id")),
+        "arguments": action.get("arguments") if isinstance(action.get("arguments"), dict) else {},
+        "mode": _clean_optional_text(action.get("mode")) or "read",
+        "required_scope": _clean_optional_text(action.get("required_scope")),
+        "requires_explicit_confirmation": bool(action.get("requires_explicit_confirmation")),
+        "result_contract": action.get("result_contract") if isinstance(action.get("result_contract"), dict) else {},
+        "runbook": _clean_optional_text(action.get("runbook")),
+        "side_effects": bool(action.get("side_effects")),
+        "tool": _clean_optional_text(action.get("tool")),
+    }
+    encoded = json.dumps(surface, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
 def _action_key_from_fields(*, action_id: str | None, tool: str | None, mode: str | None) -> str:
