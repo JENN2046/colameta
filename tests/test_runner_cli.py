@@ -290,6 +290,63 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert "docs/chatgpt-app-submission-materials.json" in payload["existing_files"]
         assert manifest_path.read_text(encoding="utf-8") == '{"app_name": "Existing"}\n'
 
+    def test_mark_submission_evidence_ready_json_marks_reviewed_fields(self) -> None:
+        from runner.release_submission_readiness import init_submission_evidence_scaffold
+        from scripts import runner_cli
+
+        init_submission_evidence_scaffold(str(self.project))
+        evidence_path = self.project / "docs/submission/logo.md"
+        evidence_path.write_text("# Logo\n\nReviewed.\n", encoding="utf-8")
+        manifest_path = self.project / "docs/chatgpt-app-submission-materials.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["evidence"]["logo"] = "docs/submission/logo.md"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = runner_cli._run_mark_submission_evidence_ready(
+                [
+                    "mark-submission-evidence-ready",
+                    str(self.project),
+                    "--keys",
+                    "logo",
+                    "--review-confirmation",
+                    "human_reviewed",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "submission_evidence_mark_ready"
+        assert payload["ready_fields_marked"] == ["logo_ready"]
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["logo_ready"] is True
+
+    def test_mark_submission_evidence_ready_requires_confirmation_without_write(self) -> None:
+        from runner.release_submission_readiness import init_submission_evidence_scaffold
+        from scripts import runner_cli
+
+        init_submission_evidence_scaffold(str(self.project))
+        manifest_path = self.project / "docs/chatgpt-app-submission-materials.json"
+        before = manifest_path.read_text(encoding="utf-8")
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            result = runner_cli._run_mark_submission_evidence_ready(
+                [
+                    "mark-submission-evidence-ready",
+                    str(self.project),
+                    "--keys",
+                    "logo",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 1
+        assert payload["error_code"] == "SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION_REQUIRED"
+        assert manifest_path.read_text(encoding="utf-8") == before
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:

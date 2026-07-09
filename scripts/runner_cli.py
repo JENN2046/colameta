@@ -50,6 +50,7 @@ from runner.release_submission_readiness import (
     build_release_submission_readiness,
     init_submission_evidence_scaffold,
     load_submission_materials_file,
+    mark_submission_evidence_ready_fields,
 )
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
@@ -2668,6 +2669,83 @@ def _run_init_submission_evidence(args: list[str]) -> int:
     return 0
 
 
+def _parse_mark_submission_evidence_ready_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    options: dict[str, object] = {
+        "json_output": False,
+        "keys": [],
+        "review_confirmation": "",
+    }
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            options["json_output"] = True
+        elif token == "--keys":
+            if idx + 1 >= len(args):
+                print("mark-submission-evidence-ready 参数错误：--keys 缺少值。", file=sys.stderr)
+                return None
+            options["keys"] = _parse_submission_evidence_keys(args[idx + 1])
+            idx += 1
+        elif token == "--review-confirmation":
+            if idx + 1 >= len(args):
+                print("mark-submission-evidence-ready 参数错误：--review-confirmation 缺少值。", file=sys.stderr)
+                return None
+            options["review_confirmation"] = args[idx + 1]
+            idx += 1
+        elif token.startswith("-"):
+            print(f"mark-submission-evidence-ready 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(
+                    f"mark-submission-evidence-ready 参数错误：只能提供一个 project_path，收到额外参数 {token}",
+                    file=sys.stderr,
+                )
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"mark-submission-evidence-ready 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, options
+
+
+def _run_mark_submission_evidence_ready(args: list[str]) -> int:
+    parsed = _parse_mark_submission_evidence_ready_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = mark_submission_evidence_ready_fields(
+        project_path,
+        keys=list(options.get("keys") or []),
+        review_confirmation=str(options.get("review_confirmation") or ""),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        if packet.get("ok") is True:
+            print(
+                "Submission evidence ready fields: "
+                f"marked={','.join(str(item) for item in packet.get('ready_fields_marked') or []) or '-'} "
+                f"already_ready={','.join(str(item) for item in packet.get('already_ready_fields') or []) or '-'}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "mark-submission-evidence-ready 失败："
+                f"{packet.get('error_code') or 'SUBMISSION_EVIDENCE_MARK_READY_FAILED'}",
+                file=sys.stderr,
+            )
+    return 0 if packet.get("ok") is True else 1
+
+
+def _parse_submission_evidence_keys(raw: str) -> list[str]:
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
 def _read_release_submission_materials(path: str) -> dict[str, object] | None:
     resolved = _resolve_path(path)
     redacted_path = redact_status_written_path(resolved)
@@ -4914,6 +4992,8 @@ def main() -> int:
         return _run_release_readiness(sys.argv[1:])
     if cmd == "init-submission-evidence":
         return _run_init_submission_evidence(sys.argv[1:])
+    if cmd == "mark-submission-evidence-ready":
+        return _run_mark_submission_evidence_ready(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":
