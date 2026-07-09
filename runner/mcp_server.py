@@ -5678,6 +5678,35 @@ class MCPPlanningBridgeServer:
         }
         return [];
       }
+      function completionFollowupItems(completion) {
+        var queue = completion && completion.followup_queue && typeof completion.followup_queue === "object"
+          ? completion.followup_queue
+          : {};
+        if (Array.isArray(queue.items) && queue.items.length) return queue.items;
+        if (queue.next_item && typeof queue.next_item === "object") return [queue.next_item];
+        return [];
+      }
+      function closeoutFollowupAction(item) {
+        var primary = item && item.primary_action && typeof item.primary_action === "object" ? Object.assign({}, item.primary_action) : {};
+        if (!primary.action_id && item && item.item_id) primary.action_id = item.item_id;
+        if (!primary.mode && item && item.required_scope === "mcp:read") primary.mode = "read";
+        if (!primary.mode && item && item.required_scope === "mcp:preview") primary.mode = "preview";
+        if (!primary.mode && item && item.required_scope === "mcp:commit") primary.mode = "commit";
+        if (!primary.required_scope && item && item.required_scope) primary.required_scope = item.required_scope;
+        return primary;
+      }
+      function closeoutFollowupKey(item, action) {
+        return ["closeout", item && item.item_id, actionKey(action)].filter(Boolean).join("|");
+      }
+      function closeoutRefreshArgs(action) {
+        var args = {};
+        if (action && action.arguments && action.arguments.project_name) args.project_name = action.arguments.project_name;
+        if (!args.project_name && activeProjectName) args.project_name = activeProjectName;
+        return args;
+      }
+      function closeoutRecordArgs(action) {
+        return action && action.arguments && typeof action.arguments === "object" ? Object.assign({}, action.arguments) : {};
+      }
       function releaseSnapshot(data) {
         if (!data || typeof data !== "object") return {};
         if (data.source === "release_submission_readiness") return data;
@@ -6166,8 +6195,102 @@ class MCPPlanningBridgeServer:
           card.appendChild(meta);
           card.appendChild(action);
           card.appendChild(refs);
+          renderCloseoutFollowupControls(card, completion, group);
           target.appendChild(card);
         });
+      }
+      function renderCloseoutFollowupControls(card, completion, group) {
+        var items = completionFollowupItems(completion).filter(function (item) {
+          return item && typeof item === "object" && (
+            item.item_id === group.group_id ||
+            item.component === group.component ||
+            item.component === group.group_id
+          );
+        });
+        if (!items.length) return;
+        var item = items[0];
+        var action = closeoutFollowupAction(item);
+        var key = closeoutFollowupKey(item, action);
+        var controls = document.createElement("div");
+        controls.className = "action-refresh-queue closeout-followup-controls";
+        var copy = document.createElement("button");
+        copy.className = "action-copy secondary closeout-followup-copy";
+        copy.type = "button";
+        copy.textContent = "Copy";
+        copy.addEventListener("click", function () {
+          copyText(JSON.stringify({
+            item_id: item.item_id,
+            tool: action.tool,
+            arguments: action.arguments || {},
+            action: action.action,
+            action_id: action.action_id,
+            required_scope: item.required_scope || action.required_scope,
+            gate_level: item.gate_level
+          }, null, 2), "Copied closeout follow-up.");
+        });
+        controls.appendChild(copy);
+        var canRun = item.required_scope === "mcp:read" && typeof action.tool === "string" && action.tool;
+        var run = document.createElement("button");
+        run.className = "action-run closeout-followup-run";
+        run.type = "button";
+        run.textContent = canRun ? "Run" : (item.required_scope === "mcp:commit" ? "Confirm required" : "Preview first");
+        run.disabled = !canRun;
+        var runStatus = document.createElement("span");
+        runStatus.className = "action-run-status closeout-followup-status";
+        renderActionRunStatus(runStatus, key, action);
+        run.addEventListener("click", async function () {
+          if (!canRun) return;
+          rememberActionRunStatus(key, "pending", action.tool);
+          renderActionRunStatus(runStatus, key, action);
+          var result = await callToolWithArgs(action.tool, action.arguments || {}, "closeout follow-up", key);
+          if (result && result.status) renderActionRunStatus(runStatus, key, action);
+        });
+        controls.appendChild(run);
+        var recordStatusKey = recordKey(action);
+        if (action.tool === "record_product_console_action_result") {
+          var record = document.createElement("button");
+          record.className = "action-record secondary closeout-followup-record";
+          record.type = "button";
+          record.textContent = "Record";
+          record.title = "Record this closeout follow-up result";
+          var recordStatus = document.createElement("span");
+          recordStatus.className = "action-run-status closeout-followup-record-status";
+          renderRefreshStatus(recordStatus, recordStatusKey);
+          record.addEventListener("click", async function () {
+            rememberActionRunStatus(recordStatusKey, "pending", "record_product_console_action_result");
+            renderRefreshStatus(recordStatus, recordStatusKey);
+            var recordResult = await callToolWithArgs("record_product_console_action_result", closeoutRecordArgs(action), "closeout follow-up record", recordStatusKey);
+            renderRefreshStatus(recordStatus, recordStatusKey);
+            if (recordActionResultSucceeded(recordResult)) {
+              var refreshResult = await callToolWithArgs("get_product_console_map", closeoutRefreshArgs(action), "closeout follow-up refresh", "closeout-refresh|" + key);
+              if (refreshResult && refreshResult.status) {
+                rememberActionRunStatus(recordStatusKey, "recorded", "refresh current");
+                renderRefreshStatus(recordStatus, recordStatusKey);
+                render(viewState);
+              }
+            }
+          });
+          controls.appendChild(record);
+          controls.appendChild(recordStatus);
+        }
+        var refresh = document.createElement("button");
+        refresh.className = "action-refresh secondary closeout-followup-refresh";
+        refresh.type = "button";
+        refresh.textContent = "Refresh";
+        var refreshStatusKey = "closeout-refresh|" + key;
+        var refreshStatus = document.createElement("span");
+        refreshStatus.className = "action-refresh-label closeout-followup-refresh-status";
+        renderRefreshStatus(refreshStatus, refreshStatusKey);
+        refresh.addEventListener("click", async function () {
+          rememberActionRunStatus(refreshStatusKey, "pending", "get_product_console_map");
+          renderRefreshStatus(refreshStatus, refreshStatusKey);
+          var result = await callToolWithArgs("get_product_console_map", closeoutRefreshArgs(action), "closeout follow-up refresh", refreshStatusKey);
+          if (result && result.status) renderRefreshStatus(refreshStatus, refreshStatusKey);
+        });
+        controls.appendChild(refresh);
+        controls.appendChild(refreshStatus);
+        controls.appendChild(runStatus);
+        card.appendChild(controls);
       }
       function recommendedActions(data) {
         if (!data || typeof data !== "object") return [];
