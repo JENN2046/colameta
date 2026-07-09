@@ -313,7 +313,9 @@ a copyable tool call shape for operators. Read-mode action cards can run their
 tool directly from the widget. Preview or commit-mode cards remain non-running
 inside the widget; operators must copy the call and use the explicit preview or
 confirmation flow. Each runnable card records its latest request state on the
-card, such as pending, updated, requested, or blocked.
+card, such as pending, updated, requested, or blocked. If a direct ChatGPT Apps
+tool call fails and the widget falls back to the MCP bridge, the card keeps a
+short error summary with the fallback request state.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
