@@ -67,6 +67,7 @@ TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS = 2.0
 SERVICE_METADATA_FILENAME = "service.json"
 SERVICE_PID_FILENAME = "service.pid"
 SERVICE_LOG_FILENAME = "service.log"
+RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 
 def _resolve_path(path: str) -> str:
     return cli_env.resolve_path(path)
@@ -2477,6 +2478,7 @@ def _parse_release_readiness_options(args: list[str]) -> tuple[str, dict[str, ob
         "json_output": False,
         "project_name": None,
         "public_base_url": DEFAULT_PUBLIC_BASE_URL,
+        "submission_materials_path": None,
         "no_network": False,
         "app_name": None,
         "app_description": None,
@@ -2500,6 +2502,7 @@ def _parse_release_readiness_options(args: list[str]) -> tuple[str, dict[str, ob
         "--app-description": "app_description",
         "--company-url": "company_url",
         "--privacy-policy-url": "privacy_policy_url",
+        "--submission-materials": "submission_materials_path",
     }
     bool_options = {
         "--no-network": "no_network",
@@ -2549,6 +2552,12 @@ def _run_release_readiness(args: list[str]) -> int:
     if parsed is None:
         return 1
     project_path, options = parsed
+    submission_materials = None
+    submission_materials_path = options.get("submission_materials_path")
+    if isinstance(submission_materials_path, str) and submission_materials_path.strip():
+        submission_materials = _read_release_submission_materials(submission_materials_path)
+        if submission_materials is None:
+            return 1
     packet = build_release_submission_readiness(
         project_path,
         project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
@@ -2568,6 +2577,7 @@ def _run_release_readiness(args: list[str]) -> int:
         security_review_ready=bool(options.get("security_review_ready")),
         metadata_snapshot_reviewed=bool(options.get("metadata_snapshot_reviewed")),
         submission_confirmations_ready=bool(options.get("submission_confirmations_ready")),
+        submission_materials=submission_materials,
     )
     if bool(options.get("json_output")):
         print(json_dumps(packet))
@@ -2584,6 +2594,51 @@ def _run_release_readiness(args: list[str]) -> int:
         if isinstance(missing, list) and missing:
             print(f"  needs_attention={','.join(str(item) for item in missing)}", file=sys.stderr)
     return 0
+
+
+def _read_release_submission_materials(path: str) -> dict[str, object] | None:
+    resolved = _resolve_path(path)
+    redacted_path = redact_status_written_path(resolved)
+    if not os.path.isfile(resolved):
+        print(f"release-readiness 参数错误：submission materials 文件不存在：{redacted_path}", file=sys.stderr)
+        return None
+    try:
+        size = os.path.getsize(resolved)
+    except OSError as exc:
+        print(
+            "release-readiness 参数错误：无法读取 submission materials 文件："
+            f"{redacted_path}: {exc.__class__.__name__}",
+            file=sys.stderr,
+        )
+        return None
+    if size > RELEASE_SUBMISSION_MATERIALS_MAX_BYTES:
+        print(
+            "release-readiness 参数错误：submission materials 文件过大："
+            f"{redacted_path} > {RELEASE_SUBMISSION_MATERIALS_MAX_BYTES} bytes",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        with open(resolved, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        print(
+            "release-readiness 参数错误：submission materials JSON 无法解析："
+            f"{redacted_path}: line {exc.lineno} column {exc.colno}",
+            file=sys.stderr,
+        )
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        print(
+            "release-readiness 参数错误：submission materials JSON 无法解析："
+            f"{redacted_path}: {exc.__class__.__name__}",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(payload, dict):
+        print(f"release-readiness 参数错误：submission materials 顶层必须是 JSON object：{redacted_path}", file=sys.stderr)
+        return None
+    return payload
 
 
 def _run_service_stop(args: list[str]) -> int:

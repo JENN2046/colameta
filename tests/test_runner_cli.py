@@ -203,6 +203,50 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert build_packet.call_args.kwargs["app_name"] == "ColaMeta"
         assert build_packet.call_args.kwargs["logo_ready"] is True
 
+    def test_release_readiness_reads_submission_materials_manifest(self) -> None:
+        from scripts import runner_cli
+
+        materials_path = self.project / "submission-materials.json"
+        materials_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "chatgpt_app_submission_materials.v1",
+                    "app_name": "ColaMeta",
+                    "logo_ready": True,
+                    "screenshots_ready": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        packet = {
+            "ok": True,
+            "source": "release_submission_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "needs_attention",
+            "ready": False,
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_release_submission_readiness", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_release_readiness(
+                [
+                    "release-readiness",
+                    str(self.project),
+                    "--submission-materials",
+                    str(materials_path),
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "release_submission_readiness"
+        assert build_packet.call_args.kwargs["submission_materials"]["app_name"] == "ColaMeta"
+        assert build_packet.call_args.kwargs["submission_materials"]["logo_ready"] is True
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:

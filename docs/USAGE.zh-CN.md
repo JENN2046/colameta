@@ -171,6 +171,7 @@ Release / ChatGPT App submission 的只读准备状态入口是：
 
 ```text
 colameta release-readiness --json
+colameta release-readiness --submission-materials docs/chatgpt-app-submission-materials.example.json --json
 get_release_submission_readiness(project_name="colameta-self-dev")
 ```
 
@@ -190,6 +191,37 @@ security/privacy review
 metadata snapshot review
 submission confirmations
 ```
+
+这些材料可以通过命令行 flag 临时声明，也可以放进一个可复用的 JSON manifest：
+
+```json
+{
+  "schema_version": "chatgpt_app_submission_materials.v1",
+  "app_name": "ColaMeta",
+  "app_description": "Project console for local AI engineering workflows.",
+  "company_url": "https://example.com",
+  "privacy_policy_url": "https://example.com/privacy",
+  "logo_ready": true,
+  "screenshots_ready": true,
+  "test_prompts_ready": true,
+  "test_responses_ready": true,
+  "localization_ready": true,
+  "mcp_tool_info_ready": true,
+  "app_management_permissions_confirmed": true,
+  "security_review_ready": true,
+  "metadata_snapshot_reviewed": true,
+  "submission_confirmations_ready": true,
+  "evidence": {
+    "screenshots": ["docs/submission/screenshot-1.png"],
+    "test_prompts": ["docs/submission/test-prompts.md"]
+  }
+}
+```
+
+CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小上限 64 KiB；
+显式命令行 flag 会覆盖 manifest 中的同名 ready 状态。MCP 工具只接受结构化
+`submission_materials` object，不接受本机文件路径。manifest 里的未知字段会被标为
+`SUBMISSION_MATERIALS_MANIFEST_HAS_UNKNOWN_FIELDS`，防止拼写错误被静默忽略。
 
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission

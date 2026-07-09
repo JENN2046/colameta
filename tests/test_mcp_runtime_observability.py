@@ -1521,6 +1521,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
                     "app_name": "ColaMeta",
                     "logo_ready": True,
                     "screenshots_ready": True,
+                    "submission_materials": {
+                        "schema_version": "chatgpt_app_submission_materials.v1",
+                        "app_description": "Project console for AI engineering workflows.",
+                    },
                 },
             )
 
@@ -1531,6 +1535,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert release.call_args.kwargs["project_name"] == "demo-project"
         assert release.call_args.kwargs["app_name"] == "ColaMeta"
         assert release.call_args.kwargs["logo_ready"] is True
+        assert release.call_args.kwargs["submission_materials"]["schema_version"] == "chatgpt_app_submission_materials.v1"
+        assert release.call_args.kwargs["submission_materials"]["app_description"].startswith("Project console")
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()

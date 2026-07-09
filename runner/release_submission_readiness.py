@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from runner.production_ops import DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS, DEFAULT_PUBLIC_BASE_URL
 from runner.product_readiness import build_product_readiness_packet
@@ -13,6 +13,33 @@ RELEASE_SUBMISSION_VERSION = "release_submission_readiness.v1"
 READY = "ready"
 NEEDS_ATTENTION = "needs_attention"
 BLOCKED = "blocked"
+
+SUBMISSION_MATERIAL_TEXT_FIELDS = {
+    "app_name",
+    "app_description",
+    "company_url",
+    "privacy_policy_url",
+}
+SUBMISSION_MATERIAL_BOOL_FIELDS = {
+    "logo_ready",
+    "screenshots_ready",
+    "test_prompts_ready",
+    "test_responses_ready",
+    "localization_ready",
+    "mcp_tool_info_ready",
+    "app_management_permissions_confirmed",
+    "security_review_ready",
+    "metadata_snapshot_reviewed",
+    "submission_confirmations_ready",
+}
+SUBMISSION_MATERIAL_METADATA_FIELDS = {
+    "schema_version",
+    "evidence",
+    "notes",
+}
+SUBMISSION_MATERIAL_FIELDS = (
+    SUBMISSION_MATERIAL_TEXT_FIELDS | SUBMISSION_MATERIAL_BOOL_FIELDS | SUBMISSION_MATERIAL_METADATA_FIELDS
+)
 
 DOC_REFS = [
     {
@@ -58,6 +85,7 @@ def build_release_submission_readiness(
     security_review_ready: bool = False,
     metadata_snapshot_reviewed: bool = False,
     submission_confirmations_ready: bool = False,
+    submission_materials: Mapping[str, Any] | None = None,
     readiness_packet: dict[str, Any] | None = None,
     now: datetime | None = None,
     readiness_builder: Callable[..., dict[str, Any]] | None = None,
@@ -72,8 +100,8 @@ def build_release_submission_readiness(
             connector_smoke_fresh_hours=DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
             now=now,
         )
-    checks = _checks(
-        readiness=readiness,
+    materials = _merge_submission_materials(
+        submission_materials,
         app_name=app_name,
         app_description=app_description,
         company_url=company_url,
@@ -88,6 +116,25 @@ def build_release_submission_readiness(
         security_review_ready=security_review_ready,
         metadata_snapshot_reviewed=metadata_snapshot_reviewed,
         submission_confirmations_ready=submission_confirmations_ready,
+    )
+    materials_manifest = materials["manifest"]
+    checks = _checks(
+        readiness=readiness,
+        app_name=materials["app_name"],
+        app_description=materials["app_description"],
+        company_url=materials["company_url"],
+        privacy_policy_url=materials["privacy_policy_url"],
+        logo_ready=materials["logo_ready"],
+        screenshots_ready=materials["screenshots_ready"],
+        test_prompts_ready=materials["test_prompts_ready"],
+        test_responses_ready=materials["test_responses_ready"],
+        localization_ready=materials["localization_ready"],
+        mcp_tool_info_ready=materials["mcp_tool_info_ready"],
+        app_management_permissions_confirmed=materials["app_management_permissions_confirmed"],
+        security_review_ready=materials["security_review_ready"],
+        metadata_snapshot_reviewed=materials["metadata_snapshot_reviewed"],
+        submission_confirmations_ready=materials["submission_confirmations_ready"],
+        submission_materials=materials_manifest,
     )
     blocker_codes, needs_attention_codes = _reason_codes(checks)
     status = BLOCKED if blocker_codes else NEEDS_ATTENTION if needs_attention_codes else READY
@@ -108,6 +155,7 @@ def build_release_submission_readiness(
         "checks": checks,
         "blocker_codes": blocker_codes,
         "needs_attention_codes": needs_attention_codes,
+        "submission_materials": materials_manifest,
         "required_submission_materials": [
             "app_name",
             "logo",
@@ -153,6 +201,7 @@ def _checks(
     security_review_ready: bool,
     metadata_snapshot_reviewed: bool,
     submission_confirmations_ready: bool,
+    submission_materials: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     ops_check = readiness.get("ops_check") if isinstance(readiness.get("ops_check"), dict) else {}
     return {
@@ -212,6 +261,7 @@ def _checks(
             READY if submission_confirmations_ready else NEEDS_ATTENTION,
             "SUBMISSION_CONFIRMATIONS_READY" if submission_confirmations_ready else "SUBMISSION_CONFIRMATIONS_MISSING",
         ),
+        "submission_materials_manifest": _manifest_check(submission_materials),
     }
 
 
@@ -230,6 +280,124 @@ def _status_check(status: str, reason_code: str, *, evidence: dict[str, Any] | N
     if evidence is not None:
         payload["evidence"] = evidence
     return payload
+
+
+def _manifest_check(submission_materials: dict[str, Any]) -> dict[str, Any]:
+    ignored = submission_materials.get("ignored_manifest_fields")
+    if isinstance(ignored, list) and ignored:
+        return {
+            "status": NEEDS_ATTENTION,
+            "reason_codes": ["SUBMISSION_MATERIALS_MANIFEST_HAS_UNKNOWN_FIELDS"],
+            "ignored_fields": ignored,
+        }
+    if submission_materials.get("source") == "parameters_only":
+        return _status_check(
+            READY,
+            "SUBMISSION_MATERIALS_FROM_PARAMETERS",
+            evidence={"source": "parameters_only"},
+        )
+    return _status_check(
+        READY,
+        "SUBMISSION_MATERIALS_MANIFEST_ACCEPTED",
+        evidence={
+            "schema_version": submission_materials.get("schema_version"),
+            "manifest_fields": submission_materials.get("manifest_fields"),
+        },
+    )
+
+
+def _merge_submission_materials(
+    submission_materials: Mapping[str, Any] | None,
+    *,
+    app_name: str | None,
+    app_description: str | None,
+    company_url: str | None,
+    privacy_policy_url: str | None,
+    logo_ready: bool,
+    screenshots_ready: bool,
+    test_prompts_ready: bool,
+    test_responses_ready: bool,
+    localization_ready: bool,
+    mcp_tool_info_ready: bool,
+    app_management_permissions_confirmed: bool,
+    security_review_ready: bool,
+    metadata_snapshot_reviewed: bool,
+    submission_confirmations_ready: bool,
+) -> dict[str, Any]:
+    manifest = submission_materials if isinstance(submission_materials, Mapping) else {}
+    parameter_values = {
+        "app_name": app_name,
+        "app_description": app_description,
+        "company_url": company_url,
+        "privacy_policy_url": privacy_policy_url,
+        "logo_ready": logo_ready,
+        "screenshots_ready": screenshots_ready,
+        "test_prompts_ready": test_prompts_ready,
+        "test_responses_ready": test_responses_ready,
+        "localization_ready": localization_ready,
+        "mcp_tool_info_ready": mcp_tool_info_ready,
+        "app_management_permissions_confirmed": app_management_permissions_confirmed,
+        "security_review_ready": security_review_ready,
+        "metadata_snapshot_reviewed": metadata_snapshot_reviewed,
+        "submission_confirmations_ready": submission_confirmations_ready,
+    }
+    effective: dict[str, Any] = {}
+    parameter_fields: list[str] = []
+
+    for field in sorted(SUBMISSION_MATERIAL_TEXT_FIELDS):
+        parameter_value = parameter_values[field]
+        if _has_text(parameter_value if isinstance(parameter_value, str) else None):
+            effective[field] = parameter_value
+            parameter_fields.append(field)
+        else:
+            effective[field] = _text_from_manifest(manifest, field)
+
+    for field in sorted(SUBMISSION_MATERIAL_BOOL_FIELDS):
+        parameter_value = bool(parameter_values[field])
+        if parameter_value:
+            effective[field] = True
+            parameter_fields.append(field)
+        else:
+            effective[field] = _bool_from_manifest(manifest, field)
+
+    manifest_fields = sorted(str(key) for key in manifest if str(key) in SUBMISSION_MATERIAL_FIELDS)
+    ignored_manifest_fields = sorted(str(key) for key in manifest if str(key) not in SUBMISSION_MATERIAL_FIELDS)
+    effective_fields = sorted(
+        field
+        for field in sorted(SUBMISSION_MATERIAL_TEXT_FIELDS | SUBMISSION_MATERIAL_BOOL_FIELDS)
+        if _material_field_present(field, effective.get(field))
+    )
+    manifest_summary = {
+        "source": "manifest_and_parameters"
+        if manifest and parameter_fields
+        else "manifest"
+        if manifest
+        else "parameters_only",
+        "schema_version": _text_from_manifest(manifest, "schema_version"),
+        "manifest_fields": manifest_fields,
+        "parameter_fields": sorted(parameter_fields),
+        "effective_fields": effective_fields,
+        "ignored_manifest_fields": ignored_manifest_fields,
+    }
+    effective["manifest"] = manifest_summary
+    return effective
+
+
+def _text_from_manifest(manifest: Mapping[str, Any], field: str) -> str | None:
+    value = manifest.get(field)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _bool_from_manifest(manifest: Mapping[str, Any], field: str) -> bool:
+    return manifest.get(field) is True
+
+
+def _material_field_present(field: str, value: Any) -> bool:
+    if field in SUBMISSION_MATERIAL_TEXT_FIELDS:
+        return _has_text(value if isinstance(value, str) else None)
+    return value is True
 
 
 def _reason_codes(checks: dict[str, dict[str, Any]]) -> tuple[list[str], list[str]]:

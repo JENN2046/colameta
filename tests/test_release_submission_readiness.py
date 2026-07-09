@@ -51,6 +51,7 @@ def test_release_submission_readiness_ready_when_all_local_evidence_present() ->
     assert packet["checks"]["submission_form_assets"]["status"] == "ready"
     assert packet["authority_boundary"]["does_not_submit_app_for_review"] is True
     assert packet["safe_next_action"]["action"] == "open_openai_dashboard_submission_form"
+    assert packet["checks"]["submission_materials_manifest"]["status"] == "ready"
 
 
 def test_release_submission_blocks_when_product_readiness_is_not_ready() -> None:
@@ -79,3 +80,37 @@ def test_release_submission_needs_materials_before_ready() -> None:
     assert "app_description" in packet["checks"]["submission_form_assets"]["missing"]
     assert packet["checks"]["security_privacy"]["status"] == "needs_attention"
     assert packet["safe_next_action"]["action"] == "complete_submission_materials"
+
+
+def test_release_submission_accepts_structured_materials_manifest() -> None:
+    packet = build_release_submission_readiness(
+        "/tmp/project",
+        readiness_packet=_readiness(),
+        submission_materials={
+            "schema_version": "chatgpt_app_submission_materials.v1",
+            **_ready_kwargs(),
+            "evidence": {"screenshots": ["docs/submission/screenshot-1.png"]},
+        },
+    )
+
+    assert packet["status"] == "ready"
+    assert packet["submission_materials"]["source"] == "manifest"
+    assert packet["submission_materials"]["schema_version"] == "chatgpt_app_submission_materials.v1"
+    assert "app_name" in packet["submission_materials"]["manifest_fields"]
+    assert "screenshots_ready" in packet["submission_materials"]["effective_fields"]
+    assert packet["checks"]["submission_materials_manifest"]["reason_codes"] == [
+        "SUBMISSION_MATERIALS_MANIFEST_ACCEPTED"
+    ]
+
+
+def test_release_submission_flags_unknown_manifest_fields() -> None:
+    packet = build_release_submission_readiness(
+        "/tmp/project",
+        readiness_packet=_readiness(),
+        submission_materials={**_ready_kwargs(), "screenhots_ready": True},
+    )
+
+    assert packet["status"] == "needs_attention"
+    assert "SUBMISSION_MATERIALS_MANIFEST_HAS_UNKNOWN_FIELDS" in packet["needs_attention_codes"]
+    assert packet["submission_materials"]["ignored_manifest_fields"] == ["screenhots_ready"]
+    assert packet["checks"]["submission_materials_manifest"]["ignored_fields"] == ["screenhots_ready"]
