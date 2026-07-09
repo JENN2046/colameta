@@ -1131,6 +1131,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "pendingBridgeCalls" in widget_html
         assert "bridgeMessageId" in widget_html
         assert "rememberBridgeToolResult" in widget_html
+        assert "bridgeTimeoutMs" in widget_html
+        assert "markBridgeToolTimeout" in widget_html
+        assert "via bridge timeout" in widget_html
         assert "resultFailed" in widget_html
         assert "via bridge" in widget_html
         assert "refreshKey" in widget_html
@@ -1387,6 +1390,171 @@ vm.runInThisContext({json.dumps(widget_script)});
   const statusText = actionStatusText();
   assert(statusText.includes("updated"), statusText);
   assert(statusText.includes("get_product_readiness_status via bridge | ready"), statusText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    def test_commander_widget_js_marks_unanswered_bridge_calls_failed(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-bridge-timeout-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function recommendedActionCount() {{
+  return findByClass(byId("recommended-actions"), "recommended-action").length;
+}}
+function actionStatusText() {{
+  return findByClass(byId("recommended-actions"), "action-run-status")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+
+const listeners = {{}};
+const parentMessages = [];
+const timers = [];
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  __colametaBridgeTimeoutMs: 5,
+  parent: {{
+    postMessage: function (message) {{ parentMessages.push(message); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }},
+  setTimeout: function (fn, ms) {{
+    timers.push({{ fn: fn, ms: ms, cleared: false }});
+    return timers.length;
+  }},
+  clearTimeout: function (id) {{
+    if (timers[id - 1]) timers[id - 1].cleared = true;
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "readiness_check",
+            label: "Read readiness",
+            mode: "read",
+            tool: "get_product_readiness_status",
+            arguments: {{ project_name: "demo-project" }},
+            required_scope: "mcp:read",
+            action_fingerprint: "abc123",
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: []
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert.strictEqual(recommendedActionCount(), 1, "console map should render one action");
+  const runButton = findByClass(byId("recommended-actions"), "action-run")[0];
+  assert(runButton, "run button should exist");
+
+  await runButton.listeners.click[0]();
+  assert.strictEqual(parentMessages.length, 1, "bridge fallback should post one request");
+  assert.strictEqual(timers.length, 1, "bridge fallback should arm one timeout");
+  assert.strictEqual(timers[0].ms, 5);
+  assert(actionStatusText().includes("requested"), "action should show requested before timeout");
+
+  timers[0].fn();
+  assert.strictEqual(recommendedActionCount(), 1, "timeout render must preserve console actions");
+  let statusText = actionStatusText();
+  assert(statusText.includes("failed"), statusText);
+  assert(statusText.includes("get_product_readiness_status via bridge timeout"), statusText);
+
+  dispatch("message", {{
+    data: {{
+      id: parentMessages[0].id,
+      result: {{
+        structuredContent: {{ source: "product_readiness", status: "ready", ready: true }}
+      }}
+    }}
+  }});
+  statusText = actionStatusText();
+  assert(statusText.includes("failed"), statusText);
+  assert(statusText.includes("bridge timeout"), statusText);
+  assert(!statusText.includes("via bridge | ready"), statusText);
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
