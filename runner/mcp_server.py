@@ -5365,6 +5365,13 @@ class MCPPlanningBridgeServer:
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
+    .action-run-status {
+      color: #5d6670;
+      font-size: 11px;
+      line-height: 1.3;
+      min-height: 15px;
+      overflow-wrap: anywhere;
+    }
     .action-copy {
       min-height: 28px;
       padding: 4px 8px;
@@ -5508,6 +5515,7 @@ class MCPPlanningBridgeServer:
       var manifest = null;
       var seq = 1;
       var activeProjectName = "";
+      var actionRunStatus = {};
       function byId(id) { return document.getElementById(id); }
       function text(id, value) { byId(id).textContent = value || "-"; }
       function normalize(payload) {
@@ -5738,6 +5746,22 @@ class MCPPlanningBridgeServer:
         if (!action || typeof action !== "object") return "-";
         return action.tool || action.runbook || action.action || action.action_id || "-";
       }
+      function actionKey(action) {
+        if (!action || typeof action !== "object") return "unknown";
+        return [action.action_id, action.tool, action.runbook, action.mode].filter(Boolean).join("|") || actionText(action);
+      }
+      function rememberActionRunStatus(key, status, message) {
+        if (!key) return;
+        actionRunStatus[key] = {
+          status: status || "unknown",
+          message: message || "",
+          at: new Date().toISOString()
+        };
+      }
+      function renderActionRunStatus(node, key) {
+        var item = actionRunStatus[key];
+        node.textContent = item ? ["Last run", item.status, item.message].filter(Boolean).join(" | ") : "";
+      }
       function appendChip(parent, value, className) {
         if (value === undefined || value === null || value === "" || value === false) return;
         var chip = document.createElement("span");
@@ -5758,6 +5782,7 @@ class MCPPlanningBridgeServer:
         }
         actions.slice(0, 6).forEach(function (action) {
           if (!action || typeof action !== "object") return;
+          var key = actionKey(action);
           var card = document.createElement("div");
           card.className = "recommended-action";
           var head = document.createElement("div");
@@ -5788,9 +5813,17 @@ class MCPPlanningBridgeServer:
           var runnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
           run.textContent = runnable ? "Run" : (action.mode === "commit" ? "Confirm outside" : "Preview first");
           run.disabled = !runnable;
-          run.addEventListener("click", function () {
+          var runStatus = document.createElement("div");
+          runStatus.className = "action-run-status";
+          renderActionRunStatus(runStatus, key);
+          run.addEventListener("click", async function () {
             if (!runnable) return;
-            callToolWithArgs(action.tool, action.arguments || {}, "recommended action");
+            rememberActionRunStatus(key, "pending", action.tool);
+            renderActionRunStatus(runStatus, key);
+            var result = await callToolWithArgs(action.tool, action.arguments || {}, "recommended action", key);
+            if (result && result.status) {
+              renderActionRunStatus(runStatus, key);
+            }
           });
           head.appendChild(run);
           var meta = document.createElement("div");
@@ -5813,6 +5846,7 @@ class MCPPlanningBridgeServer:
           appendChip(boundary, auth.does_not_publish_app === true ? "no publish" : "");
           card.appendChild(head);
           card.appendChild(meta);
+          card.appendChild(runStatus);
           if (why.textContent) card.appendChild(why);
           card.appendChild(boundary);
           target.appendChild(card);
@@ -5898,29 +5932,32 @@ class MCPPlanningBridgeServer:
           button.disabled = !projectName;
         });
       }
-      async function callToolWithArgs(name, args, sourceLabel) {
+      async function callToolWithArgs(name, args, sourceLabel, statusKey) {
         var callArgs = args && typeof args === "object" ? Object.assign({}, args) : {};
         if (!callArgs.project_name && activeProjectName) {
           callArgs.project_name = activeProjectName;
         }
         if (!name) {
           text("log", "Recommended action has no tool.");
-          return;
+          rememberActionRunStatus(statusKey, "blocked", "missing tool");
+          return { status: "blocked", message: "missing tool" };
         }
         if (!callArgs.project_name) {
           text("log", "Project name unavailable.");
-          return;
+          rememberActionRunStatus(statusKey, "blocked", "missing project name");
+          return { status: "blocked", message: "missing project name" };
         }
         if (window.openai && typeof window.openai.callTool === "function") {
           try {
             var next = await window.openai.callTool(name, callArgs);
+            rememberActionRunStatus(statusKey, "updated", name);
             if (next && next.structuredContent) {
               render(next.structuredContent);
             } else if (next) {
               render(next);
             }
             text("log", "Updated from " + (sourceLabel || name) + ".");
-            return;
+            return { status: "updated", message: name };
           } catch (err) {
             text("log", "Direct call failed; using bridge for " + name + ".");
           }
@@ -5931,7 +5968,9 @@ class MCPPlanningBridgeServer:
           method: "tools/call",
           params: { name: name, arguments: callArgs }
         }, "*");
+        rememberActionRunStatus(statusKey, "requested", name);
         text("log", "Requested " + name + ".");
+        return { status: "requested", message: name };
       }
       async function callTool(name) {
         var projectName = activeProjectName || (manifest && manifest.project_name);

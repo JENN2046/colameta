@@ -1114,6 +1114,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "recommendedActions" in widget_html
         assert "callToolWithArgs" in widget_html
         assert "action-run" in widget_html
+        assert "action-run-status" in widget_html
+        assert "rememberActionRunStatus" in widget_html
+        assert "Last run" in widget_html
         assert "Confirm outside" in widget_html
         assert "Preview first" in widget_html
         assert "recommended_first_actions" in widget_html
