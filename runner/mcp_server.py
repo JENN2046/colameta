@@ -5417,7 +5417,8 @@ class MCPPlanningBridgeServer:
       flex: 0 0 auto;
     }
     .action-run,
-    .action-refresh {
+    .action-refresh,
+    .action-record {
       min-height: 28px;
       padding: 4px 8px;
       font-size: 12px;
@@ -5818,6 +5819,20 @@ class MCPPlanningBridgeServer:
         var item = actionRunStatus[key];
         node.textContent = item ? [item.status, item.message].filter(Boolean).join(" | ") : "";
       }
+      function recordKey(action) {
+        return ["record", actionKey(action)].filter(Boolean).join("|");
+      }
+      function resultOkForRecord(status) {
+        if (status === "updated") return true;
+        if (status === "blocked" || status === "failed") return false;
+        return undefined;
+      }
+      function renderRecordButton(button, statusNode, action, key) {
+        var current = actionRunStatus[key];
+        var recordStatus = actionRunStatus[recordKey(action)];
+        button.disabled = !current || current.status === "pending";
+        statusNode.textContent = recordStatus ? [recordStatus.status, recordStatus.message].filter(Boolean).join(" | ") : "";
+      }
       function renderActionRefreshQueue(node, action) {
         node.innerHTML = "";
         var refreshes = action && Array.isArray(action.next_refresh_actions) ? action.next_refresh_actions : [];
@@ -5903,6 +5918,14 @@ class MCPPlanningBridgeServer:
           var runStatus = document.createElement("div");
           runStatus.className = "action-run-status";
           renderActionRunStatus(runStatus, key, action);
+          var record = document.createElement("button");
+          record.className = "action-record secondary";
+          record.type = "button";
+          record.textContent = "Record";
+          record.title = "Record this action result summary";
+          var recordStatus = document.createElement("div");
+          recordStatus.className = "action-run-status";
+          renderRecordButton(record, recordStatus, action, key);
           var refreshQueue = document.createElement("div");
           refreshQueue.className = "action-refresh-queue";
           renderActionRefreshQueue(refreshQueue, action);
@@ -5910,12 +5933,36 @@ class MCPPlanningBridgeServer:
             if (!runnable) return;
             rememberActionRunStatus(key, "pending", action.tool);
             renderActionRunStatus(runStatus, key, action);
+            renderRecordButton(record, recordStatus, action, key);
             var result = await callToolWithArgs(action.tool, action.arguments || {}, "recommended action", key);
             if (result && result.status) {
               renderActionRunStatus(runStatus, key, action);
+              renderRecordButton(record, recordStatus, action, key);
+            }
+          });
+          record.addEventListener("click", async function () {
+            var current = actionRunStatus[key];
+            if (!current || current.status === "pending") return;
+            var args = {
+              action_id: action.action_id,
+              tool: action.tool,
+              mode: action.mode || "read",
+              status: current.status,
+              message: current.message || current.status
+            };
+            var resultOk = resultOkForRecord(current.status);
+            if (resultOk !== undefined) args.result_ok = resultOk;
+            var recKey = recordKey(action);
+            rememberActionRunStatus(recKey, "pending", "record_product_console_action_result");
+            renderRecordButton(record, recordStatus, action, key);
+            var recordResult = await callToolWithArgs("record_product_console_action_result", args, "record action result", recKey);
+            renderRecordButton(record, recordStatus, action, key);
+            if (recordResult && recordResult.status === "updated") {
+              await callToolWithArgs("get_product_console_map", action.arguments || {}, "recorded result refresh", "record-refresh|" + key);
             }
           });
           head.appendChild(run);
+          head.appendChild(record);
           var meta = document.createElement("div");
           meta.className = "recommended-action-meta";
           appendChip(meta, action.mode || "read", action.mode === "commit" ? "commit" : "read");

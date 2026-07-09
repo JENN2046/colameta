@@ -1121,10 +1121,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "action-run-status" in widget_html
         assert "action-refresh-queue" in widget_html
         assert "action-refresh" in widget_html
+        assert "action-record" in widget_html
         assert "rememberActionRunStatus" in widget_html
         assert "refreshKey" in widget_html
+        assert "recordKey" in widget_html
         assert "renderActionRefreshQueue" in widget_html
         assert "refresh queue" in widget_html
+        assert "record_product_console_action_result" in widget_html
+        assert "record action result" in widget_html
+        assert "recorded result refresh" in widget_html
         assert "next_refresh_actions" in widget_html
         assert "last_action_result" in widget_html
         assert "errorSummary" in widget_html
