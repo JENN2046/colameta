@@ -428,6 +428,9 @@ Apps 客户端可通过 `resources/list` 和 `resources/read` 发现并读取 wi
 resource。这个面板只展示服务事实、profile-aware 入口、connector health、
 preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
 stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
+面板里的 `Release Evidence` 区块可以通过 `Console` / `Submission` 读按钮刷新
+release/submission readiness，并把未完成 evidence key 的模板渲染成可扫描卡片。卡片里的
+`Copy` 只复制 `fill_submission_evidence_files.entries[]` 的结构，仍需要操作者提供真实证据文本。
 
 ```json
 {

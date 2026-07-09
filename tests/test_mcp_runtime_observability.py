@@ -1084,7 +1084,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Flow persona" in widget_html
         assert "Primary blocker" in widget_html
         assert "Safe next action" in widget_html
+        assert "Release Evidence" in widget_html
+        assert "Evidence blockers" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
+        assert "get_product_console_map" in widget_html
+        assert "get_release_submission_readiness" in widget_html
         assert "get_apps_connector_smoke_packet" in widget_html
         assert "get_stable_replacement_cadence" in widget_html
 
@@ -1377,6 +1381,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert data["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
         assert "apps_connector_closeout" in data["commander_panel"]["primary_sections"]
+        assert "release_submission_evidence" in data["commander_panel"]["primary_sections"]
         assert "agent_operator_flow" in data["commander_panel"]["primary_sections"]
         assert any(
             item["tool"] == "get_agent_operator_flow_packet"
@@ -1391,6 +1396,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert any(
             item["tool"] == "get_connector_runtime_health_status"
             and "tunnel_client" in item.get("arguments", {})
+            for item in data["commander_panel"]["read_actions"]
+        )
+        assert any(
+            item["tool"] == "get_product_console_map" and item["arguments"]["project_name"] == "demo-project"
+            for item in data["commander_panel"]["read_actions"]
+        )
+        assert any(
+            item["tool"] == "get_release_submission_readiness" and item["arguments"]["project_name"] == "demo-project"
             for item in data["commander_panel"]["read_actions"]
         )
         assert "service_readiness" in data["commander_panel"]["primary_sections"]
