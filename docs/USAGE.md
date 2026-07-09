@@ -332,6 +332,10 @@ After an `updated` or bridge `requested` result, each action's
 `next_refresh_actions` and `action_result_state.pending_refreshes` expose the
 read surfaces that should be refreshed next. Failed, blocked, pending, or
 explicitly `result_ok=false` records do not generate refresh suggestions.
+Commander renders those `next_refresh_actions` as read-only refresh buttons on
+the action card. They call the listed read surface and update the widget; they
+do not re-run the original action, confirm preview/commit work, or grant write
+authority.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it

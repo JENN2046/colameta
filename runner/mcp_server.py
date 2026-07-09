@@ -5398,13 +5398,26 @@ class MCPPlanningBridgeServer:
       min-height: 15px;
       overflow-wrap: anywhere;
     }
+    .action-refresh-queue {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+      min-height: 22px;
+    }
+    .action-refresh-label {
+      color: #5d6670;
+      font-size: 11px;
+      line-height: 1.3;
+    }
     .action-copy {
       min-height: 28px;
       padding: 4px 8px;
       font-size: 12px;
       flex: 0 0 auto;
     }
-    .action-run {
+    .action-run,
+    .action-refresh {
       min-height: 28px;
       padding: 4px 8px;
       font-size: 12px;
@@ -5798,15 +5811,43 @@ class MCPPlanningBridgeServer:
         var observed = item.at || item.observed_at;
         node.textContent = ["Last run", item.status, item.message, observed].filter(Boolean).join(" | ");
       }
+      function refreshKey(action, refresh, index) {
+        return ["refresh", actionKey(action), refresh && refresh.tool, index].filter(Boolean).join("|");
+      }
+      function renderRefreshStatus(node, key) {
+        var item = actionRunStatus[key];
+        node.textContent = item ? [item.status, item.message].filter(Boolean).join(" | ") : "";
+      }
       function renderActionRefreshQueue(node, action) {
+        node.innerHTML = "";
         var refreshes = action && Array.isArray(action.next_refresh_actions) ? action.next_refresh_actions : [];
         if (!refreshes.length) {
-          node.textContent = "";
           return;
         }
-        node.textContent = "Refresh | " + refreshes.slice(0, 3).map(function (item) {
-          return item && item.tool ? item.tool : "";
-        }).filter(Boolean).join(" -> ");
+        var label = document.createElement("span");
+        label.className = "action-refresh-label";
+        label.textContent = "Refresh";
+        node.appendChild(label);
+        refreshes.slice(0, 3).forEach(function (item, index) {
+          if (!item || typeof item.tool !== "string" || !item.tool) return;
+          var key = refreshKey(action, item, index);
+          var button = document.createElement("button");
+          button.className = "action-refresh secondary";
+          button.type = "button";
+          button.textContent = item.tool;
+          button.title = item.why || "Refresh read surface";
+          var status = document.createElement("span");
+          status.className = "action-refresh-label";
+          renderRefreshStatus(status, key);
+          button.addEventListener("click", async function () {
+            rememberActionRunStatus(key, "pending", item.tool);
+            renderRefreshStatus(status, key);
+            var result = await callToolWithArgs(item.tool, item.arguments || {}, "refresh queue", key);
+            if (result && result.status) renderRefreshStatus(status, key);
+          });
+          node.appendChild(button);
+          node.appendChild(status);
+        });
       }
       function appendChip(parent, value, className) {
         if (value === undefined || value === null || value === "" || value === false) return;
@@ -5863,7 +5904,7 @@ class MCPPlanningBridgeServer:
           runStatus.className = "action-run-status";
           renderActionRunStatus(runStatus, key, action);
           var refreshQueue = document.createElement("div");
-          refreshQueue.className = "action-run-status";
+          refreshQueue.className = "action-refresh-queue";
           renderActionRefreshQueue(refreshQueue, action);
           run.addEventListener("click", async function () {
             if (!runnable) return;
