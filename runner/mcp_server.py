@@ -5758,6 +5758,11 @@ class MCPPlanningBridgeServer:
           at: new Date().toISOString()
         };
       }
+      function errorSummary(err) {
+        if (!err) return "unknown error";
+        var message = err && err.message ? String(err.message) : String(err);
+        return message.length > 120 ? message.slice(0, 117) + "..." : message;
+      }
       function renderActionRunStatus(node, key) {
         var item = actionRunStatus[key];
         node.textContent = item ? ["Last run", item.status, item.message].filter(Boolean).join(" | ") : "";
@@ -5950,16 +5955,18 @@ class MCPPlanningBridgeServer:
         if (window.openai && typeof window.openai.callTool === "function") {
           try {
             var next = await window.openai.callTool(name, callArgs);
-            rememberActionRunStatus(statusKey, "updated", name);
+            rememberActionRunStatus(statusKey, "updated", name + " via direct call");
             if (next && next.structuredContent) {
               render(next.structuredContent);
             } else if (next) {
               render(next);
             }
             text("log", "Updated from " + (sourceLabel || name) + ".");
-            return { status: "updated", message: name };
+            return { status: "updated", message: name + " via direct call" };
           } catch (err) {
-            text("log", "Direct call failed; using bridge for " + name + ".");
+            var summary = errorSummary(err);
+            rememberActionRunStatus(statusKey, "requested", "bridge fallback after direct failure: " + summary);
+            text("log", "Direct call failed; using bridge for " + name + ": " + summary);
           }
         }
         window.parent.postMessage({
@@ -5968,9 +5975,12 @@ class MCPPlanningBridgeServer:
           method: "tools/call",
           params: { name: name, arguments: callArgs }
         }, "*");
-        rememberActionRunStatus(statusKey, "requested", name);
+        var requestedMessage = actionRunStatus[statusKey] && actionRunStatus[statusKey].message
+          ? actionRunStatus[statusKey].message
+          : name;
+        rememberActionRunStatus(statusKey, "requested", requestedMessage);
         text("log", "Requested " + name + ".");
-        return { status: "requested", message: name };
+        return { status: "requested", message: requestedMessage };
       }
       async function callTool(name) {
         var projectName = activeProjectName || (manifest && manifest.project_name);
