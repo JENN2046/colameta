@@ -315,9 +315,13 @@ a copyable tool call shape for operators. Read-mode action cards can run their
 tool directly from the widget. Preview or commit-mode cards remain non-running
 inside the widget; operators must copy the call and use the explicit preview or
 confirmation flow. Each runnable card records its latest request state on the
-card, such as pending, updated, requested, or blocked. If a direct ChatGPT Apps
-tool call fails and the widget falls back to the MCP bridge, the card keeps a
-short error summary with the fallback request state.
+card, such as pending, updated, requested, or blocked. The widget keeps a
+persistent merged view state, so Product Console actions, release evidence, and
+later action-result payloads remain visible together across reads. If a direct
+ChatGPT Apps tool call fails and the widget falls back to the MCP bridge, the
+card first keeps a short error summary with the fallback request state, then
+updates the matching action or refresh status when the bridge tool result
+arrives.
 `result_contract` tells UIs and agents how to interpret action results, where to
 find failure summaries, and which read surfaces to refresh after a successful
 call.
@@ -332,7 +336,7 @@ Recorded results are bound to the current action fingerprint. If the action
 arguments, authority shape, or result contract changes while the `action_key`
 stays the same, `last_action_result.status` becomes `stale`; stale records are
 kept as history but are not treated as current successful evidence.
-After an `updated` or bridge `requested` result, each action's
+After an `updated` or bridge-completed result, each action's
 `next_refresh_actions` and `action_result_state.pending_refreshes` expose the
 read surfaces that should be refreshed next. Failed, blocked, pending, or
 stale, or explicitly `result_ok=false` records do not generate refresh
@@ -344,11 +348,12 @@ authority.
 Commander also shows a `Record` button after an in-widget read action has a
 local result. Pressing it explicitly calls
 `record_product_console_action_result` with the short result summary and then
-refreshes `get_product_console_map` when the direct record call succeeds. This
-is a runtime-summary write only; it is not automatic and it does not authorize
-the original action. After the record write and console refresh both complete,
-the card reports `recorded | refresh current` and disables the Record button
-until another local action result is produced.
+refreshes `get_product_console_map` when the record call succeeds through
+either direct ChatGPT Apps calls or the bridge result path. This is a
+runtime-summary write only; it is not automatic and it does not authorize the
+original action. After the record write and console refresh both complete, the
+card reports `recorded | refresh current` and disables the Record button until
+another local action result is produced.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
