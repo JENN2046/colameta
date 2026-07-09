@@ -294,6 +294,12 @@ an OpenAI App draft, submit review, publish, or read tokens/cookies.
 In the Commander widget, the Release Evidence panel prefers these bundle draft
 entries after a `Console` read and falls back to release-readiness progress and
 templates after a `Submission` read.
+Use `get_submission_evidence_fill_preview` to review the generated
+`fill_submission_evidence_files` payload before any write. The preview returns a
+copyable tool call with `mark_ready=false` and placeholder evidence content; it
+does not write files, mark ready fields, create an OpenAI App draft, submit
+review, or publish. The Commander widget `Fill Preview` button calls this
+read-only preview.
 
 ```json
 {

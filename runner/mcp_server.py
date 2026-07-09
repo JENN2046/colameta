@@ -58,7 +58,7 @@ from runner.product_readiness import (
     build_product_readiness_packet,
 )
 from runner.full_loop_authority import build_full_loop_authority_status
-from runner.product_console import build_product_console_map
+from runner.product_console import build_product_console_map, build_submission_evidence_fill_preview
 from runner.release_submission_readiness import (
     build_release_submission_readiness,
     fill_submission_evidence_files,
@@ -158,6 +158,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_full_loop_authority_status",
     "get_product_console_map",
     "get_release_submission_readiness",
+    "get_submission_evidence_fill_preview",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "get_commander_app_manifest",
@@ -518,6 +519,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_full_loop_authority_status",
     "get_product_console_map",
     "get_release_submission_readiness",
+    "get_submission_evidence_fill_preview",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "get_commander_app_manifest",
@@ -814,6 +816,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_full_loop_authority_status",
         "get_product_console_map",
         "get_release_submission_readiness",
+        "get_submission_evidence_fill_preview",
         "get_commander_app_manifest",
         "render_commander_app",
         "get_apps_connector_smoke_packet",
@@ -1080,6 +1083,7 @@ class MCPPlanningBridgeServer:
         commander_app_input_schema = self._commander_app_input_schema()
         full_loop_authority_input_schema = self._full_loop_authority_input_schema()
         release_submission_input_schema = self._release_submission_input_schema()
+        submission_evidence_fill_preview_input_schema = self._submission_evidence_fill_preview_input_schema()
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
         self.tools = {
@@ -1093,6 +1097,7 @@ class MCPPlanningBridgeServer:
             "get_full_loop_authority_status": self._tool_get_full_loop_authority_status,
             "get_product_console_map": self._tool_get_product_console_map,
             "get_release_submission_readiness": self._tool_get_release_submission_readiness,
+            "get_submission_evidence_fill_preview": self._tool_get_submission_evidence_fill_preview,
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
@@ -1347,6 +1352,23 @@ class MCPPlanningBridgeServer:
                     "不创建 OpenAI app draft、不提交 review、不发布、不读取 token/cookie/provider config。scope=mcp:read。"
                 ),
                 input_schema=release_submission_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_submission_evidence_fill_preview",
+                title="Get Submission Evidence Fill Preview",
+                description=(
+                    f"[{self.project_hint}] 只读生成 ChatGPT App submission evidence 填写 payload 预览。"
+                    "从当前 release/submission evidence bundle 生成 fill_submission_evidence_files 的 copyable arguments；"
+                    "不写文件、不标 ready、不创建 OpenAI app draft、不提交 review、不发布。scope=mcp:read。"
+                ),
+                input_schema=submission_evidence_fill_preview_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -5345,6 +5367,7 @@ class MCPPlanningBridgeServer:
         <button class="secondary" data-tool="get_agent_operator_flow_packet">Flow</button>
         <button class="secondary" data-tool="get_product_console_map">Console</button>
         <button class="secondary" data-tool="get_release_submission_readiness">Submission</button>
+        <button class="secondary" data-tool="get_submission_evidence_fill_preview">Fill Preview</button>
         <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
         <button class="secondary" data-tool="get_stable_replacement_cadence">Cadence</button>
         <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
@@ -6443,6 +6466,36 @@ class MCPPlanningBridgeServer:
                         "notes": {"type": "string"},
                     },
                     "additionalProperties": True,
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
+
+    def _submission_evidence_fill_preview_input_schema(self) -> dict[str, Any]:
+        evidence_keys = [
+            "logo",
+            "screenshots",
+            "test_prompts",
+            "test_responses",
+            "localization",
+            "mcp_tool_info",
+            "app_management_permissions",
+            "security_review",
+            "metadata_snapshot",
+            "submission_confirmations",
+        ]
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "selected_keys": {
+                    "type": "array",
+                    "description": "可选。只为选中的 evidence key 生成 fill payload 预览；不写文件。",
+                    "items": {"type": "string", "enum": evidence_keys},
                 },
             },
             "required": [],
@@ -8436,6 +8489,16 @@ class MCPPlanningBridgeServer:
         project_name = self._project_name_for_context(project_root, project_record, params)
         return build_product_console_map(project_root, project_name=project_name)
 
+    def _tool_get_submission_evidence_fill_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        selected_keys = params.get("selected_keys")
+        return build_submission_evidence_fill_preview(
+            project_root,
+            project_name=project_name,
+            selected_keys=selected_keys if isinstance(selected_keys, list) else None,
+        )
+
     def _tool_get_release_submission_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
@@ -8710,6 +8773,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "manage_stage_parallel_merges", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
+                {"tool": "get_submission_evidence_fill_preview", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
             ],
@@ -8731,6 +8795,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": flow_profile_id}},
                     {"tool": "get_product_console_map", "arguments": project_args},
                     {"tool": "get_release_submission_readiness", "arguments": project_args},
+                    {"tool": "get_submission_evidence_fill_preview", "arguments": project_args},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},

@@ -945,6 +945,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_full_loop_authority_status" in tool_defs
         assert "get_product_console_map" in tool_defs
         assert "get_release_submission_readiness" in tool_defs
+        assert "get_submission_evidence_fill_preview" in tool_defs
         assert "init_submission_evidence" in tool_defs
         assert "fill_submission_evidence_files" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
@@ -976,6 +977,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_full_loop_authority_status"].title == "Get Full Loop Authority Status"
         assert tool_defs["get_product_console_map"].title == "Get Product Console Map"
         assert tool_defs["get_release_submission_readiness"].title == "Get Release Submission Readiness"
+        assert tool_defs["get_submission_evidence_fill_preview"].title == "Get Submission Evidence Fill Preview"
+        assert tool_defs["get_submission_evidence_fill_preview"].annotations["readOnlyHint"] is True
         assert tool_defs["init_submission_evidence"].title == "Initialize Submission Evidence"
         assert tool_defs["init_submission_evidence"].annotations["readOnlyHint"] is False
         assert tool_defs["init_submission_evidence"].annotations["destructiveHint"] is False
@@ -1018,6 +1021,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_full_loop_authority_status" in server._visible_tool_names()
         assert "get_product_console_map" in server._visible_tool_names()
         assert "get_release_submission_readiness" in server._visible_tool_names()
+        assert "get_submission_evidence_fill_preview" in server._visible_tool_names()
         assert "init_submission_evidence" in server._visible_tool_names()
         assert "fill_submission_evidence_files" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
@@ -1049,6 +1053,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_full_loop_authority_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_product_console_map", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_release_submission_readiness", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_submission_evidence_fill_preview", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("init_submission_evidence", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("fill_submission_evidence_files", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
@@ -1102,6 +1107,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_agent_operator_flow_packet" in widget_html
         assert "get_product_console_map" in widget_html
         assert "get_release_submission_readiness" in widget_html
+        assert "get_submission_evidence_fill_preview" in widget_html
         assert "get_apps_connector_smoke_packet" in widget_html
         assert "get_stable_replacement_cadence" in widget_html
 
@@ -1580,6 +1586,38 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert release.call_args.kwargs["logo_ready"] is True
         assert release.call_args.kwargs["submission_materials"]["schema_version"] == "chatgpt_app_submission_materials.v1"
         assert release.call_args.kwargs["submission_materials"]["app_description"].startswith("Project console")
+
+    def test_submission_evidence_fill_preview_tool_is_read_only_and_project_routed(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        preview_packet = {
+            "ok": True,
+            "source": "submission_evidence_fill_preview",
+            "read_only": True,
+            "side_effects": False,
+            "status": "preview_ready",
+            "copyable_tool_call": {
+                "tool": "fill_submission_evidence_files",
+                "arguments": {"project_name": "demo-project", "entries": [], "mark_ready": False},
+            },
+        }
+
+        with patch("runner.mcp_server.build_submission_evidence_fill_preview", return_value=preview_packet) as preview:
+            result = server.call_tool_for_agent(
+                "get_submission_evidence_fill_preview",
+                {
+                    "project_name": "demo-project",
+                    "selected_keys": ["logo"],
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_submission_evidence_fill_preview"
+        assert result["data"]["source"] == "submission_evidence_fill_preview"
+        assert result["data"]["read_only"] is True
+        preview.assert_called_once_with(str(project), project_name="demo-project", selected_keys=["logo"])
 
     def test_init_submission_evidence_tool_is_commit_scoped_and_project_routed(self) -> None:
         project = self.make_git_checkout(managed=True)
