@@ -305,8 +305,14 @@ manifest ready fields are still false, the same preview returns
 human reviewer confirms the referenced evidence is final. The Commander widget
 `Fill Preview` button calls this read-only preview.
 
-For the same local workflow outside the connector, use the CLI after reviewing
-the referenced evidence files:
+For the same local workflow outside the connector, use the read-only CLI
+preview first. It returns the same copyable next tool without writing files:
+
+```bash
+colameta submission-evidence-preview --project-name colameta-self-dev --json
+```
+
+After reviewing the referenced evidence files, use the CLI mark-ready command:
 
 ```bash
 colameta mark-submission-evidence-ready \

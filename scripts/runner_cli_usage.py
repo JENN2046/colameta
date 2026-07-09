@@ -11,6 +11,7 @@ USAGE_MESSAGE = """用法：
   colameta app-smoke [project_path] [--public-base-url URL] [--project-name NAME] [--json]
   colameta full-loop-status [project_path] [--json] [--enable-full-loop] [--confirmation-mode preview-confirm]
   colameta console-map [project_path] [--project-name NAME] [--json]
+  colameta submission-evidence-preview [project_path] [--project-name NAME] [--selected-keys KEY[,KEY...]] [--json]
   colameta release-readiness [project_path] [--project-name NAME] [--json] [--submission-materials PATH] [submission material flags]
   colameta init-submission-evidence [project_path] [--json] [--app-name NAME]
   colameta mark-submission-evidence-ready [project_path] --keys KEY[,KEY...] --review-confirmation human_reviewed [--json]

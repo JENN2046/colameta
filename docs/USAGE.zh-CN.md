@@ -316,7 +316,14 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 `review_confirmation=human_reviewed`。只有人工确认这些 evidence 已经是最终版之后，才调用这个
 commit-scoped 工具标 ready。
 
-如果不走 connector，也可以在本地 CLI 里做同一个人工审核后的标记：
+如果不走 connector，先用本地 CLI 做同一个只读 preview。它只返回下一步 copyable tool，
+不写文件：
+
+```bash
+colameta submission-evidence-preview --project-name colameta-self-dev --json
+```
+
+人工审核 referenced evidence 文件之后，再用本地 CLI 标 ready：
 
 ```bash
 colameta mark-submission-evidence-ready \
