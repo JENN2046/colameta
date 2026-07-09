@@ -1120,6 +1120,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "action-run" in widget_html
         assert "action-run-status" in widget_html
         assert "rememberActionRunStatus" in widget_html
+        assert "renderActionRefreshQueue" in widget_html
+        assert "next_refresh_actions" in widget_html
         assert "last_action_result" in widget_html
         assert "errorSummary" in widget_html
         assert "bridge fallback after direct failure" in widget_html

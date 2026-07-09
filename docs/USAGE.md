@@ -290,14 +290,14 @@ points without invoking them. When product readiness is `blocked` or
 `safe_next_action` from the readiness packet, such as the read-only stable
 cadence check, Apps connector smoke, or a bounded runbook; it does not treat
 another generic readiness read as the main repair action.
-Each recommended action uses a stable action shape with `action_id`, `label`,
+Each recommended action uses a stable action shape with `action_id`,
 `action_key`, `label`, `mode`, `status`, `tool` or `runbook`, `arguments`,
 `required_scope`, `requires_preview_confirm`,
 `requires_explicit_confirmation`, `side_effects`, `authority_boundary`,
-`result_contract`, and `last_action_result`. A `mode=commit` action means
-invoking that tool can write local project state and needs explicit
-confirmation; the console map itself remains read-only and does not invoke the
-action. Its
+`result_contract`, `last_action_result`, and `next_refresh_actions`. A
+`mode=commit` action means invoking that tool can write local project state and
+needs explicit confirmation; the console map itself remains read-only and does
+not invoke the action. Its
 `release_submission_evidence_bundle` field
 summarizes the local ChatGPT App submission manifest, the 10-item evidence
 progress table, remaining gaps, and the next safe tool. When evidence still
@@ -328,6 +328,10 @@ agent call has a bounded summary to record; it writes only
 `.colameta/runtime/product-console-action-results.json`, redacts and truncates
 the message, stores no raw tool output, and does not execute the action or
 replace the required follow-up readiness reads.
+After an `updated` or bridge `requested` result, each action's
+`next_refresh_actions` and `action_result_state.pending_refreshes` expose the
+read surfaces that should be refreshed next. Failed, blocked, pending, or
+explicitly `result_ok=false` records do not generate refresh suggestions.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
