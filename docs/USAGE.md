@@ -280,6 +280,18 @@ profile-aware entries, connector health, preview-first routes, and explicit
 authorization gates. It does not authorize executor runs, commits, pushes,
 stable service replacement, ReviewDecision, GateEvent, or Delivery accepted.
 
+For a compact product surface map, call `get_product_console_map` or
+`colameta console-map --json`. The map is read-only: it groups the available
+connect/readiness, plan/review, controlled full-loop, and stable/release entry
+points without invoking them. Its `release_submission_evidence_bundle` field
+summarizes the local ChatGPT App submission manifest, the 10-item evidence
+progress table, remaining gaps, and the next safe tool. When evidence still
+needs work, `fill_plan.draft_entries[]` contains copyable
+`fill_submission_evidence_files.entries[]` shapes; the operator must replace
+the placeholder content with real reviewed evidence before writing files or
+marking ready fields. The bundle does not write files, mark ready fields, create
+an OpenAI App draft, submit review, publish, or read tokens/cookies.
+
 ```json
 {
   "name": "get_runtime_version_status",

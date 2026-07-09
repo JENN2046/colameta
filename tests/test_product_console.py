@@ -163,6 +163,11 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert entries["git_remote_push"]["required_scope"] == "mcp:commit"
     assert entries["release_submission_readiness"]["tool"] == "get_release_submission_readiness"
     assert entries["release_submission_readiness"]["status"] == "needs_attention"
+    evidence_bundle = packet["release_submission_evidence_bundle"]
+    assert evidence_bundle["source"] == "release_submission_evidence_bundle"
+    assert evidence_bundle["read_only"] is True
+    assert evidence_bundle["fill_plan"]["status"] == "manifest_missing"
+    assert evidence_bundle["fill_plan"]["next_tool"] == "init_submission_evidence"
     assert packet["authority_boundary"]["does_not_push"] is True
 
 
@@ -199,6 +204,21 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
     progress = packet["release_submission_snapshot"]["submission_materials"]["evidence_progress"]
     assert progress["rows"][0]["key"] == "logo"
     assert progress["counts"]["needs_attention"] == 1
+    evidence_bundle = packet["release_submission_evidence_bundle"]
+    assert evidence_bundle["progress_summary"]["counts"]["needs_attention"] == 1
+    assert evidence_bundle["gap_summary"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
+    assert evidence_bundle["fill_plan"]["status"] == "evidence_needs_fill"
+    assert evidence_bundle["fill_plan"]["next_tool"] == "fill_submission_evidence_files"
+    assert evidence_bundle["fill_plan"]["human_review_required"] is True
+    draft_entry = evidence_bundle["fill_plan"]["draft_entries"][0]
+    assert draft_entry["key"] == "logo"
+    assert draft_entry["copyable_entry_shape"] == {
+        "key": "logo",
+        "filename": "logo.md",
+        "content": "<operator-confirmed evidence text>",
+    }
+    assert evidence_bundle["authority_boundary"]["does_not_write_files"] is True
+    assert evidence_bundle["authority_boundary"]["does_not_submit_app_for_review"] is True
 
 
 def test_console_map_does_not_recommend_release_work_when_submission_ready() -> None:
@@ -210,6 +230,8 @@ def test_console_map_does_not_recommend_release_work_when_submission_ready() -> 
     )
 
     assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
+    assert packet["release_submission_evidence_bundle"]["fill_plan"]["status"] == "ready"
+    assert packet["release_submission_evidence_bundle"]["fill_plan"]["human_review_required"] is False
 
 
 def test_console_map_marks_full_loop_entries_preview_required_when_controls_ready() -> None:

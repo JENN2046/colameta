@@ -174,6 +174,10 @@ stable_and_release: stable promotion readiness、release/submission readiness
 `.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐
 submission evidence 文件，并在 `evidence_context.entry_templates` 中给出每个 evidence key
 的推荐文件名、必填章节和内容提示。
+同一个 map 还会返回只读的 `release_submission_evidence_bundle`。这个 bundle 把 manifest
+状态、10 项 evidence 完成度、缺口摘要、下一步工具和可复制的 `draft_entries` 放在一起，
+方便操作者先审查再调用 `fill_submission_evidence_files`；它不写文件、不标 ready 字段、
+不创建 OpenAI App draft、不提交审核、不发布。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 
@@ -292,6 +296,9 @@ fill_submission_evidence_files(
 evidence key 的 `ready`、`needs_attention`、`filled_not_marked_ready`、`placeholder`
 或 `not_started` 状态、manifest 引用和文件状态集中列出来；Product Console snapshot 会
 把这张表转发到 `release_submission_snapshot.submission_materials.evidence_progress`。
+Product Console 还会把它压缩成 `release_submission_evidence_bundle.progress_summary`，
+并在 `fill_plan.draft_entries[]` 里给出每个未完成 key 的 `copyable_entry_shape`。
+这些 entry shape 仍是人工确认文本的容器，不是真实证据本身。
 
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission
