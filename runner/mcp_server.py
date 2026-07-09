@@ -5827,6 +5827,10 @@ class MCPPlanningBridgeServer:
         if (status === "blocked" || status === "failed") return false;
         return undefined;
       }
+      function recordActionResultSucceeded(result) {
+        if (!result || typeof result !== "object") return false;
+        return result.status === "updated" || result.status === "recorded" || result.result_status === "recorded";
+      }
       function renderRecordButton(button, statusNode, action, key) {
         var current = actionRunStatus[key];
         var recordStatus = actionRunStatus[recordKey(action)];
@@ -5960,7 +5964,7 @@ class MCPPlanningBridgeServer:
             renderRecordButton(record, recordStatus, action, key);
             var recordResult = await callToolWithArgs("record_product_console_action_result", args, "record action result", recKey);
             renderRecordButton(record, recordStatus, action, key);
-            if (recordResult && recordResult.status === "recorded") {
+            if (recordActionResultSucceeded(recordResult)) {
               var refreshResult = await callToolWithArgs("get_product_console_map", action.arguments || {}, "recorded result refresh", "record-refresh|" + key);
               if (refreshResult && refreshResult.status) {
                 rememberActionRunStatus(recKey, "recorded", "refresh current");
@@ -6096,13 +6100,20 @@ class MCPPlanningBridgeServer:
           try {
             var next = await window.openai.callTool(name, callArgs);
             rememberActionRunStatus(statusKey, "updated", name + " via direct call");
+            var normalized = null;
             if (next && next.structuredContent) {
+              normalized = normalize(next.structuredContent);
               render(next.structuredContent);
             } else if (next) {
+              normalized = normalize(next);
               render(next);
             }
             text("log", "Updated from " + (sourceLabel || name) + ".");
-            return { status: "updated", message: name + " via direct call" };
+            return {
+              status: "updated",
+              result_status: normalized && normalized.status,
+              message: name + " via direct call"
+            };
           } catch (err) {
             var summary = errorSummary(err);
             rememberActionRunStatus(statusKey, "requested", "bridge fallback after direct failure: " + summary);

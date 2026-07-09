@@ -1132,7 +1132,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "record action result" in widget_html
         assert "action_fingerprint: action.action_fingerprint" in widget_html
         assert "recorded result refresh" in widget_html
-        assert "recordResult.status === \"recorded\"" in widget_html
+        assert "recordActionResultSucceeded" in widget_html
+        assert "result.status === \"updated\"" in widget_html
+        assert "result.result_status === \"recorded\"" in widget_html
+        assert "result_status: normalized && normalized.status" in widget_html
         assert "recordStatus.status === \"recorded\"" in widget_html
         assert "refresh current" in widget_html
         assert "next_refresh_actions" in widget_html
