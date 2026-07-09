@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
-from runner.product_console import build_product_console_map, build_submission_evidence_fill_preview
+from runner.product_console import (
+    build_product_console_map,
+    build_submission_evidence_fill_preview,
+    load_product_console_action_results,
+    record_product_console_action_result,
+)
 from runner.release_submission_readiness import DEFAULT_SUBMISSION_MATERIALS_REL_PATH
 
 
@@ -170,8 +176,9 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert init_action["requires_explicit_confirmation"] is True
     assert init_action["authority_boundary"]["does_not_execute_now"] is True
     assert init_action["result_contract"]["expected_result_kind"] == "commit_scoped_result"
-    assert init_action["result_contract"]["last_action_result_shape"]["status"] == "pending|updated|requested|blocked|failed"
+    assert init_action["result_contract"]["last_action_result_shape"]["status"] == "not_recorded|pending|updated|requested|blocked|failed"
     assert init_action["result_contract"]["refresh_after"][0]["tool"] == "get_release_submission_readiness"
+    assert init_action["last_action_result"]["status"] == "not_recorded"
     commander_action = _action_by_tool(packet, "render_commander_app")
     assert commander_action["arguments"] == {"project_name": "demo-project"}
     assert commander_action["source"] == "readiness_safe_next_action"
@@ -181,6 +188,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert commander_action["action"] == "continue_with_public_beta_workflow"
     assert commander_action["result_contract"]["expected_result_kind"] == "read_packet"
     assert commander_action["result_contract"]["refresh_after"][0]["tool"] == "get_product_console_map"
+    assert commander_action["action_key"] == "continue_with_public_beta_workflow|render_commander_app|read"
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
@@ -193,6 +201,42 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert evidence_bundle["fill_plan"]["status"] == "manifest_missing"
     assert evidence_bundle["fill_plan"]["next_tool"] == "init_submission_evidence"
     assert packet["authority_boundary"]["does_not_push"] is True
+
+
+def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
+    result = record_product_console_action_result(
+        str(tmp_path),
+        action_id="continue_with_public_beta_workflow",
+        tool="render_commander_app",
+        mode="read",
+        status="updated",
+        message="rendered with token=secret-value",
+        project_name="demo-project",
+        result_ok=True,
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "recorded"
+    assert result["recorded_result"]["result_ok"] is True
+    assert "secret-value" not in result["recorded_result"]["message"]
+
+    loaded = load_product_console_action_results(str(tmp_path))
+    assert loaded["results"][0]["status"] == "updated"
+    assert "secret-value" not in loaded["results"][0]["message"]
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    commander_action = _action_by_tool(packet, "render_commander_app")
+    assert packet["action_result_state"]["available"] is True
+    assert packet["action_result_state"]["stored_result_count"] == 1
+    assert commander_action["last_action_result"]["status"] == "updated"
+    assert commander_action["last_action_result"]["result_ok"] is True
 
 
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:

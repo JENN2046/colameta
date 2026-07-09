@@ -1015,6 +1015,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_commander_app_manifest"].annotations["idempotentHint"] is True
         assert tool_defs["render_commander_app"].annotations["readOnlyHint"] is True
         assert tool_defs["render_commander_app"].annotations["idempotentHint"] is True
+        assert tool_defs["record_product_console_action_result"].annotations["readOnlyHint"] is False
+        assert tool_defs["record_product_console_action_result"].annotations["idempotentHint"] is True
         connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
         assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert connector_schema["properties"]["control_plane"]["additionalProperties"] is False
@@ -1033,6 +1035,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "init_submission_evidence" in server._visible_tool_names()
         assert "fill_submission_evidence_files" in server._visible_tool_names()
         assert "mark_submission_evidence_ready_fields" in server._visible_tool_names()
+        assert "record_product_console_action_result" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
         assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
@@ -1067,6 +1070,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("init_submission_evidence", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("fill_submission_evidence_files", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("mark_submission_evidence_ready_fields", {}) == "mcp:commit"
+        assert server.get_required_scope_for_tool("record_product_console_action_result", {"status": "updated"}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
@@ -1116,6 +1120,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "action-run" in widget_html
         assert "action-run-status" in widget_html
         assert "rememberActionRunStatus" in widget_html
+        assert "last_action_result" in widget_html
         assert "errorSummary" in widget_html
         assert "bridge fallback after direct failure" in widget_html
         assert "Last run" in widget_html

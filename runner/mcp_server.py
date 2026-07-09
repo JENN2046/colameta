@@ -58,7 +58,11 @@ from runner.product_readiness import (
     build_product_readiness_packet,
 )
 from runner.full_loop_authority import build_full_loop_authority_status
-from runner.product_console import build_product_console_map, build_submission_evidence_fill_preview
+from runner.product_console import (
+    build_product_console_map,
+    build_submission_evidence_fill_preview,
+    record_product_console_action_result,
+)
 from runner.release_submission_readiness import (
     build_release_submission_readiness,
     fill_submission_evidence_files,
@@ -164,6 +168,7 @@ NORMAL_EXPOSED_TOOLS = (
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
+    "record_product_console_action_result",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -527,6 +532,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
+    "record_product_console_action_result",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -878,6 +884,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "init_submission_evidence",
         "fill_submission_evidence_files",
         "mark_submission_evidence_ready_fields",
+        "record_product_console_action_result",
         "todo_add",
         "todo_update",
         "todo_delete",
@@ -1095,6 +1102,7 @@ class MCPPlanningBridgeServer:
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
         mark_submission_evidence_ready_input_schema = self._mark_submission_evidence_ready_input_schema()
+        product_console_action_result_input_schema = self._product_console_action_result_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
@@ -1111,6 +1119,7 @@ class MCPPlanningBridgeServer:
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "mark_submission_evidence_ready_fields": self._tool_mark_submission_evidence_ready_fields,
+            "record_product_console_action_result": self._tool_record_product_console_action_result,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1448,6 +1457,23 @@ class MCPPlanningBridgeServer:
                     "要求 review_confirmation=human_reviewed；不写 evidence 正文、不提交 OpenAI review、不发布。scope=mcp:commit。"
                 ),
                 input_schema=mark_submission_evidence_ready_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="record_product_console_action_result",
+                title="Record Product Console Action Result",
+                description=(
+                    f"[{self.project_hint}] 记录 Product Console 推荐动作的短结果摘要，供后续 console map 和 Commander 卡片读取。"
+                    "只写 .colameta/runtime/product-console-action-results.json；不保存 raw tool output、不执行动作、"
+                    "不提交 OpenAI review、不发布、不替换 stable。scope=mcp:commit。"
+                ),
+                input_schema=product_console_action_result_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -5763,9 +5789,14 @@ class MCPPlanningBridgeServer:
         var message = err && err.message ? String(err.message) : String(err);
         return message.length > 120 ? message.slice(0, 117) + "..." : message;
       }
-      function renderActionRunStatus(node, key) {
-        var item = actionRunStatus[key];
-        node.textContent = item ? ["Last run", item.status, item.message].filter(Boolean).join(" | ") : "";
+      function renderActionRunStatus(node, key, action) {
+        var item = actionRunStatus[key] || (action && action.last_action_result);
+        if (!item || item.status === "not_recorded") {
+          node.textContent = "";
+          return;
+        }
+        var observed = item.at || item.observed_at;
+        node.textContent = ["Last run", item.status, item.message, observed].filter(Boolean).join(" | ");
       }
       function appendChip(parent, value, className) {
         if (value === undefined || value === null || value === "" || value === false) return;
@@ -5820,14 +5851,14 @@ class MCPPlanningBridgeServer:
           run.disabled = !runnable;
           var runStatus = document.createElement("div");
           runStatus.className = "action-run-status";
-          renderActionRunStatus(runStatus, key);
+          renderActionRunStatus(runStatus, key, action);
           run.addEventListener("click", async function () {
             if (!runnable) return;
             rememberActionRunStatus(key, "pending", action.tool);
-            renderActionRunStatus(runStatus, key);
+            renderActionRunStatus(runStatus, key, action);
             var result = await callToolWithArgs(action.tool, action.arguments || {}, "recommended action", key);
             if (result && result.status) {
-              renderActionRunStatus(runStatus, key);
+              renderActionRunStatus(runStatus, key, action);
             }
           });
           head.appendChild(run);
@@ -6905,6 +6936,45 @@ class MCPPlanningBridgeServer:
                 },
             },
             "required": ["keys", "review_confirmation"],
+            "additionalProperties": False,
+        }
+
+    def _product_console_action_result_input_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 managed project_name。",
+                },
+                "action_id": {
+                    "type": "string",
+                    "description": "推荐动作的 action_id；用于把结果重新附着到 Product Console action card。",
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "被调用的 MCP tool 名称。",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["read", "preview", "commit"],
+                    "description": "动作模式；默认 read。",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "updated", "requested", "blocked", "failed"],
+                    "description": "最近一次动作结果状态。",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "短操作摘要；服务端会 redaction 和截断，不应传 raw tool output。",
+                },
+                "result_ok": {
+                    "type": "boolean",
+                    "description": "可选。原始工具结果是否成功；不存储 raw result。",
+                },
+            },
+            "required": ["status"],
             "additionalProperties": False,
         }
 
@@ -8831,6 +8901,22 @@ class MCPPlanningBridgeServer:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
         return build_product_console_map(project_root, project_name=project_name)
+
+    def _tool_record_product_console_action_result(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("record_product_console_action_result", params, require_managed=True)
+        status = params.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise MCPToolInputError("ACTION_RESULT_STATUS_REQUIRED", "status is required.")
+        return record_product_console_action_result(
+            self.project_root,
+            action_id=params.get("action_id") if isinstance(params.get("action_id"), str) else None,
+            tool=params.get("tool") if isinstance(params.get("tool"), str) else None,
+            mode=params.get("mode") if isinstance(params.get("mode"), str) else None,
+            status=status.strip(),
+            message=params.get("message") if isinstance(params.get("message"), str) else None,
+            result_ok=params.get("result_ok") if isinstance(params.get("result_ok"), bool) else None,
+        )
 
     def _tool_get_submission_evidence_fill_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)

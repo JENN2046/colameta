@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from runner._internal_utils import write_json_atomic
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_readiness import build_product_readiness_packet
 from runner.release_submission_readiness import build_release_submission_readiness
+from runner.sensitive_redaction import redact_sensitive_text
 
 
 PRODUCT_CONSOLE_SOURCE = "product_console_map"
 PRODUCT_CONSOLE_VERSION = "product_console.v1"
+PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE = "product_console_action_results"
+PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v1"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
+ACTION_RESULT_STATUSES = frozenset({"not_recorded", "pending", "updated", "requested", "blocked", "failed"})
+MAX_ACTION_RESULT_MESSAGE_CHARS = 240
+MAX_STORED_ACTION_RESULTS = 50
 
 
 def build_product_console_map(
@@ -25,6 +34,7 @@ def build_product_console_map(
     readiness_packet: dict[str, Any] | None = None,
     full_loop_authority: dict[str, Any] | None = None,
     release_submission_readiness: dict[str, Any] | None = None,
+    action_results: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     readiness = readiness_packet if isinstance(readiness_packet, dict) else None
@@ -38,6 +48,16 @@ def build_product_console_map(
         release = build_release_submission_readiness(project_root, project_name=project_name, readiness_packet=readiness, now=now)
     status = _console_status(readiness, full_loop)
     entries = _console_entries(project_name=project_name, readiness=readiness, full_loop=full_loop, release_submission=release)
+    result_state = action_results if isinstance(action_results, dict) else load_product_console_action_results(project_root)
+    recommended_actions = _attach_action_results(
+        _recommended_first_actions(
+            project_name=project_name,
+            status=status,
+            readiness=readiness,
+            release_submission=release,
+        ),
+        result_state,
+    )
     return {
         "ok": True,
         "source": PRODUCT_CONSOLE_SOURCE,
@@ -73,12 +93,8 @@ def build_product_console_map(
             },
         ],
         "entries": entries,
-        "recommended_first_actions": _recommended_first_actions(
-            project_name=project_name,
-            status=status,
-            readiness=readiness,
-            release_submission=release,
-        ),
+        "recommended_first_actions": recommended_actions,
+        "action_result_state": _action_result_state_summary(result_state),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
@@ -96,6 +112,98 @@ def build_product_console_map(
             "read_tokens_or_cookies",
             "read_provider_config",
         ],
+    }
+
+
+def product_console_action_results_path(project_root: str) -> str:
+    return str(Path(os.path.abspath(os.path.expanduser(project_root))) / ".colameta" / "runtime" / "product-console-action-results.json")
+
+
+def load_product_console_action_results(project_root: str) -> dict[str, Any]:
+    path = product_console_action_results_path(project_root)
+    if not os.path.isfile(path):
+        return _empty_action_results(project_root, status="empty")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        return {
+            **_empty_action_results(project_root, status="unreadable"),
+            "ok": False,
+            "error_code": "ACTION_RESULTS_UNREADABLE",
+            "message": _safe_action_result_message(str(exc)),
+        }
+    if not isinstance(payload, dict):
+        return _empty_action_results(project_root, status="invalid")
+    return _normalize_action_results_packet(project_root, payload)
+
+
+def record_product_console_action_result(
+    project_root: str,
+    *,
+    action_id: str | None = None,
+    tool: str | None = None,
+    mode: str | None = None,
+    status: str,
+    message: str | None = None,
+    project_name: str | None = None,
+    result_ok: bool | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    normalized_mode = mode if mode in {"read", "preview", "commit"} else "read"
+    normalized_status = status if status in ACTION_RESULT_STATUSES - {"not_recorded"} else "failed"
+    observed_at = _iso_now(now)
+    entry = {
+        "action_key": _action_key_from_fields(action_id=action_id, tool=tool, mode=normalized_mode),
+        "action_id": _clean_optional_text(action_id),
+        "tool": _clean_optional_text(tool),
+        "mode": normalized_mode,
+        "status": normalized_status,
+        "message": _safe_action_result_message(message or normalized_status),
+        "observed_at": observed_at,
+    }
+    clean_project_name = _clean_optional_text(project_name)
+    if clean_project_name:
+        entry["project_name"] = clean_project_name
+    if result_ok is not None:
+        entry["result_ok"] = bool(result_ok)
+
+    existing = load_product_console_action_results(project_root)
+    entries = [item for item in _action_result_entries(existing) if item.get("action_key") != entry["action_key"]]
+    entries.insert(0, entry)
+    entries = entries[:MAX_STORED_ACTION_RESULTS]
+    packet = {
+        "ok": True,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": False,
+        "side_effects": True,
+        "project_root": os.path.abspath(os.path.expanduser(project_root)),
+        "project_name": clean_project_name,
+        "status": "recorded",
+        "updated_at": observed_at,
+        "results": entries,
+        "authority_boundary": {
+            "writes_runtime_state_only": True,
+            "does_not_store_raw_tool_output": True,
+            "does_not_execute_action": True,
+            "does_not_authorize_stable_replacement": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_publish_app": True,
+        },
+    }
+    write_json_atomic(product_console_action_results_path(project_root), packet)
+    return {
+        "ok": True,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": False,
+        "side_effects": True,
+        "status": "recorded",
+        "updated_at": observed_at,
+        "recorded_result": entry,
+        "stored_result_count": len(entries),
+        "authority_boundary": packet["authority_boundary"],
     }
 
 
@@ -542,7 +650,7 @@ def _result_contract_for_action(mode: str, tool: str | None) -> dict[str, Any]:
         "success_indicators": ["tool call returned without transport error", "result.ok is not false"],
         "failure_summary_source": "transport error, tool error, or result.error.message",
         "last_action_result_shape": {
-            "status": "pending|updated|requested|blocked|failed",
+            "status": "not_recorded|pending|updated|requested|blocked|failed",
             "message": "<short operator-readable summary>",
             "observed_at": "<ISO-8601 timestamp>",
         },
@@ -569,6 +677,155 @@ def _refresh_after_for_tool(tool: str | None) -> list[dict[str, Any]]:
     if tool == "render_commander_app":
         return [{"tool": "get_product_console_map", "why": "Refresh console action cards after entering Commander."}]
     return []
+
+
+def _attach_action_results(actions: list[dict[str, Any]], result_state: dict[str, Any]) -> list[dict[str, Any]]:
+    index = _action_result_index(result_state)
+    attached: list[dict[str, Any]] = []
+    for action in actions:
+        item = dict(action)
+        action_key = _action_key_for_model(item)
+        item["action_key"] = action_key
+        item["last_action_result"] = index.get(action_key) or _not_recorded_action_result()
+        attached.append(item)
+    return attached
+
+
+def _action_result_state_summary(result_state: dict[str, Any]) -> dict[str, Any]:
+    entries = _action_result_entries(result_state)
+    latest = entries[0] if entries else None
+    return {
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "status": str(result_state.get("status") or "empty") if isinstance(result_state, dict) else "empty",
+        "available": bool(entries),
+        "stored_result_count": len(entries),
+        "latest": latest,
+        "authority_boundary": {
+            "read_only": True,
+            "does_not_write_runtime_state": True,
+            "does_not_store_raw_tool_output": True,
+        },
+    }
+
+
+def _empty_action_results(project_root: str, *, status: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": True,
+        "side_effects": False,
+        "project_root": os.path.abspath(os.path.expanduser(project_root)),
+        "status": status,
+        "results": [],
+    }
+
+
+def _normalize_action_results_packet(project_root: str, packet: dict[str, Any]) -> dict[str, Any]:
+    entries = _action_result_entries(packet)
+    return {
+        "ok": bool(packet.get("ok", True)),
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": bool(packet.get("read_only", True)),
+        "side_effects": bool(packet.get("side_effects", False)),
+        "project_root": os.path.abspath(os.path.expanduser(project_root)),
+        "project_name": _clean_optional_text(packet.get("project_name")),
+        "status": _clean_optional_text(packet.get("status")) or ("loaded" if entries else "empty"),
+        "updated_at": _clean_optional_text(packet.get("updated_at")),
+        "results": entries[:MAX_STORED_ACTION_RESULTS],
+    }
+
+
+def _action_result_entries(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = packet.get("results") if isinstance(packet, dict) else []
+    values = raw.values() if isinstance(raw, dict) else raw
+    if not isinstance(values, list) and not hasattr(values, "__iter__"):
+        return []
+    entries: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        entry = _normalize_action_result_entry(value)
+        if entry is not None:
+            entries.append(entry)
+    entries.sort(key=lambda item: item.get("observed_at") or "", reverse=True)
+    return entries
+
+
+def _normalize_action_result_entry(value: dict[str, Any]) -> dict[str, Any] | None:
+    action_id = _clean_optional_text(value.get("action_id"))
+    tool = _clean_optional_text(value.get("tool"))
+    mode = _clean_optional_text(value.get("mode")) or "read"
+    if mode not in {"read", "preview", "commit"}:
+        mode = "read"
+    action_key = _clean_optional_text(value.get("action_key")) or _action_key_from_fields(
+        action_id=action_id,
+        tool=tool,
+        mode=mode,
+    )
+    if not action_key:
+        return None
+    status = _clean_optional_text(value.get("status")) or "failed"
+    if status not in ACTION_RESULT_STATUSES:
+        status = "failed"
+    entry = {
+        "action_key": action_key,
+        "action_id": action_id,
+        "tool": tool,
+        "mode": mode,
+        "status": status,
+        "message": _safe_action_result_message(value.get("message") or status),
+        "observed_at": _clean_optional_text(value.get("observed_at")),
+    }
+    project_name = _clean_optional_text(value.get("project_name"))
+    if project_name:
+        entry["project_name"] = project_name
+    if isinstance(value.get("result_ok"), bool):
+        entry["result_ok"] = value["result_ok"]
+    return entry
+
+
+def _action_result_index(result_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for entry in _action_result_entries(result_state):
+        key = entry.get("action_key")
+        if isinstance(key, str) and key and key not in index:
+            index[key] = entry
+    return index
+
+
+def _not_recorded_action_result() -> dict[str, Any]:
+    return {"status": "not_recorded", "message": "No action result recorded yet.", "observed_at": None}
+
+
+def _action_key_for_model(action: dict[str, Any]) -> str:
+    return _action_key_from_fields(
+        action_id=_clean_optional_text(action.get("action_id")),
+        tool=_clean_optional_text(action.get("tool")),
+        mode=_clean_optional_text(action.get("mode")) or "read",
+    )
+
+
+def _action_key_from_fields(*, action_id: str | None, tool: str | None, mode: str | None) -> str:
+    parts = [_clean_optional_text(action_id), _clean_optional_text(tool), _clean_optional_text(mode) or "read"]
+    return "|".join(part for part in parts if part)
+
+
+def _clean_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.strip().split())
+    return cleaned or None
+
+
+def _safe_action_result_message(value: Any) -> str:
+    redacted = redact_sensitive_text(str(value), replacement_token="<redacted>", preserve_token_prefix=True)
+    cleaned = " ".join(redacted.strip().split())
+    if len(cleaned) > MAX_ACTION_RESULT_MESSAGE_CHARS:
+        return cleaned[: MAX_ACTION_RESULT_MESSAGE_CHARS - 3] + "..."
+    return cleaned
 
 
 def _required_scope_for_mode(mode: str) -> str:
