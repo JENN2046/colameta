@@ -350,6 +350,12 @@ def test_fill_submission_evidence_files_rejects_unsafe_target_without_partial_wr
     assert packet["ok"] is False
     assert packet["error_code"] == "SUBMISSION_EVIDENCE_INPUT_INVALID"
     assert packet["validation_errors"][0]["error_code"] == "EVIDENCE_PATH_OUTSIDE_PROJECT"
+    assert [item["tool"] for item in packet["safe_recovery_actions"]] == [
+        "get_release_submission_readiness",
+        "get_submission_evidence_fill_preview",
+    ]
+    assert packet["safe_recovery_actions"][1]["arguments"] == {"selected_keys": ["security_review"]}
+    assert packet["safe_recovery_actions"][1]["authority_boundary"]["does_not_write_files"] is True
     assert manifest_path.read_text(encoding="utf-8") == before
     assert not (tmp_path / "security-review.md").exists()
 
@@ -366,6 +372,7 @@ def test_fill_submission_evidence_files_rejects_existing_file_conflict(tmp_path)
 
     assert packet["ok"] is False
     assert packet["validation_errors"][0]["error_code"] == "SUBMISSION_EVIDENCE_FILE_EXISTS"
+    assert packet["safe_recovery_actions"][1]["arguments"] == {"selected_keys": ["logo"]}
     assert existing_path.read_text(encoding="utf-8") == "existing\n"
 
 
@@ -407,6 +414,12 @@ def test_mark_submission_evidence_ready_fields_requires_confirmation_without_wri
 
     assert packet["ok"] is False
     assert packet["error_code"] == "SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION_REQUIRED"
+    assert [item["tool"] for item in packet["safe_recovery_actions"]] == [
+        "get_release_submission_readiness",
+        "get_submission_evidence_fill_preview",
+    ]
+    assert packet["safe_recovery_actions"][1]["arguments"] == {"selected_keys": ["logo"]}
+    assert packet["safe_recovery_actions"][1]["required_scope"] == "mcp:read"
     assert manifest_path.read_text(encoding="utf-8") == before
 
 
@@ -430,4 +443,6 @@ def test_mark_submission_evidence_ready_fields_rejects_placeholder_refs_without_
             "error_code": "SUBMISSION_EVIDENCE_PLACEHOLDER_REF",
         }
     ]
+    assert packet["safe_recovery_actions"][0]["authority_boundary"]["does_not_mark_ready_fields"] is True
+    assert packet["safe_recovery_actions"][1]["arguments"] == {"selected_keys": ["logo"]}
     assert manifest_path.read_text(encoding="utf-8") == before

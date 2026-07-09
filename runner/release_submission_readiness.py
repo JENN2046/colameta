@@ -379,6 +379,58 @@ def init_submission_evidence_scaffold(
     }
 
 
+def _submission_evidence_keys_from_entries(entries: Any) -> list[str]:
+    if not isinstance(entries, list):
+        return []
+    keys: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        normalized = key.strip() if isinstance(key, str) else ""
+        if normalized not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY or normalized in seen:
+            continue
+        seen.add(normalized)
+        keys.append(normalized)
+    return keys
+
+
+def _submission_evidence_safe_recovery_actions(*, selected_keys: Any = None) -> list[dict[str, Any]]:
+    keys = [
+        key
+        for key in (selected_keys if isinstance(selected_keys, list) else [])
+        if isinstance(key, str) and key in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY
+    ]
+    preview_arguments: dict[str, Any] = {}
+    if keys:
+        preview_arguments["selected_keys"] = sorted(set(keys))
+    boundary = {
+        "read_only": True,
+        "side_effects": False,
+        "does_not_write_files": True,
+        "does_not_mark_ready_fields": True,
+    }
+    return [
+        {
+            "tool": "get_release_submission_readiness",
+            "arguments": {},
+            "required_scope": "mcp:read",
+            "side_effects": False,
+            "authority_boundary": boundary,
+            "why": "Refresh current submission evidence status before trying another commit-scoped evidence action.",
+        },
+        {
+            "tool": "get_submission_evidence_fill_preview",
+            "arguments": preview_arguments,
+            "required_scope": "mcp:read",
+            "side_effects": False,
+            "authority_boundary": boundary,
+            "why": "Regenerate the bounded fill or mark-ready payload instead of editing a failed commit call by hand.",
+        },
+    ]
+
+
 def fill_submission_evidence_files(
     project_root: str,
     *,
@@ -400,6 +452,7 @@ def fill_submission_evidence_files(
             "error_code": str((load_error or {}).get("error_code") or "SUBMISSION_MATERIALS_FILE_NOT_FOUND"),
             "message": "Submission materials manifest must exist and be valid before evidence files can be filled.",
             "details": {"manifest_path": manifest_rel_path, **(load_error or {})},
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(),
         }
 
     planned, validation_errors = _plan_submission_evidence_file_writes(root, entries)
@@ -413,6 +466,9 @@ def fill_submission_evidence_files(
             "error_code": "SUBMISSION_EVIDENCE_INPUT_INVALID",
             "message": "Submission evidence input is invalid; no files were written.",
             "validation_errors": validation_errors,
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(
+                selected_keys=_submission_evidence_keys_from_entries(entries),
+            ),
         }
 
     evidence = manifest.get("evidence")
@@ -509,6 +565,7 @@ def mark_submission_evidence_ready_fields(
             "error_code": str((load_error or {}).get("error_code") or "SUBMISSION_MATERIALS_FILE_NOT_FOUND"),
             "message": "Submission materials manifest must exist and be valid before evidence can be marked ready.",
             "details": {"manifest_path": manifest_rel_path, **(load_error or {})},
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(),
         }
     if review_confirmation != SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION:
         return {
@@ -519,6 +576,7 @@ def mark_submission_evidence_ready_fields(
             "observed_at": _iso_now(now),
             "error_code": "SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION_REQUIRED",
             "message": f"Set review_confirmation to {SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION!r} after human review.",
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=keys),
         }
     normalized_keys, validation_errors = _validate_submission_evidence_ready_keys(keys)
     if validation_errors:
@@ -531,6 +589,7 @@ def mark_submission_evidence_ready_fields(
             "error_code": "SUBMISSION_EVIDENCE_READY_KEYS_INVALID",
             "message": "Submission evidence ready keys are invalid; no ready fields were changed.",
             "validation_errors": validation_errors,
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=keys),
         }
 
     evidence = manifest.get("evidence")
@@ -564,6 +623,7 @@ def mark_submission_evidence_ready_fields(
             "error_code": "SUBMISSION_EVIDENCE_READY_PROOF_INVALID",
             "message": "Every selected evidence key must reference present non-placeholder files before it can be marked ready.",
             "validation_errors": proof_errors,
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=normalized_keys),
         }
 
     manifest["notes"] = (
