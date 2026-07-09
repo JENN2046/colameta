@@ -370,17 +370,57 @@ def _recommended_first_actions(
     release_actions = _release_submission_recommended_actions(project_args, release_submission)
     if status == "blocked":
         return readiness_actions + release_actions + [
-            {"tool": "get_full_loop_authority_status", "arguments": project_args},
+            _recommended_action(
+                "full_loop_authority",
+                label="Full Loop Authority",
+                mode="read",
+                source="console_default",
+                tool="get_full_loop_authority_status",
+                arguments=project_args,
+                why="Read whether controlled full-loop authority is enabled; this does not grant new authority.",
+            ),
         ]
     if status == "needs_attention":
         return readiness_actions + release_actions + [
-            {"tool": "get_agent_operator_flow_packet", "arguments": project_args},
-            {"tool": "get_full_loop_authority_status", "arguments": project_args},
+            _recommended_action(
+                "operator_flow",
+                label="Operator Flow",
+                mode="read",
+                source="console_default",
+                tool="get_agent_operator_flow_packet",
+                arguments=project_args,
+                why="Read the profile-aware operator flow before choosing lower-level tools.",
+            ),
+            _recommended_action(
+                "full_loop_authority",
+                label="Full Loop Authority",
+                mode="read",
+                source="console_default",
+                tool="get_full_loop_authority_status",
+                arguments=project_args,
+                why="Read whether controlled full-loop authority is enabled; this does not grant new authority.",
+            ),
         ]
     return release_actions + [
         *readiness_actions,
-        {"tool": "get_agent_operator_flow_packet", "arguments": project_args},
-        {"tool": "get_full_loop_authority_status", "arguments": project_args},
+        _recommended_action(
+            "operator_flow",
+            label="Operator Flow",
+            mode="read",
+            source="console_default",
+            tool="get_agent_operator_flow_packet",
+            arguments=project_args,
+            why="Read the profile-aware operator flow before choosing lower-level tools.",
+        ),
+        _recommended_action(
+            "full_loop_authority",
+            label="Full Loop Authority",
+            mode="read",
+            source="console_default",
+            tool="get_full_loop_authority_status",
+            arguments=project_args,
+            why="Read whether controlled full-loop authority is enabled; this does not grant new authority.",
+        ),
     ]
 
 
@@ -388,7 +428,15 @@ def _readiness_recommended_actions(
     project_args: dict[str, Any],
     readiness: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    fallback = {"tool": "get_product_readiness_status", "arguments": project_args}
+    fallback = _recommended_action(
+        "inspect_product_readiness",
+        label="Product Readiness",
+        mode="read",
+        source="console_fallback",
+        tool="get_product_readiness_status",
+        arguments=project_args,
+        why="Read product readiness and inspect the primary blocker.",
+    )
     if not isinstance(readiness, dict):
         return [fallback]
     safe_next = readiness.get("safe_next_action")
@@ -399,23 +447,103 @@ def _readiness_recommended_actions(
     runbook = safe_next.get("runbook")
     why = safe_next.get("why")
     arguments = safe_next.get("arguments") if isinstance(safe_next.get("arguments"), dict) else {}
-    recommended = {
-        "arguments": {**project_args, **arguments},
-        "source": "readiness_safe_next_action",
-        "required_scope": "mcp:read",
-        "side_effects": False,
-    }
-    if isinstance(action, str) and action:
-        recommended["action"] = action
-    if isinstance(why, str) and why:
-        recommended["why"] = why
     if isinstance(tool, str) and tool:
-        recommended["tool"] = tool
-        return [recommended]
+        return [
+            _recommended_action(
+                _action_id_from(action, tool, "readiness_safe_next_action"),
+                label=_label_from_action(action, tool),
+                mode="read",
+                source="readiness_safe_next_action",
+                tool=tool,
+                action=action if isinstance(action, str) else None,
+                arguments={**project_args, **arguments},
+                why=why if isinstance(why, str) else "",
+            )
+        ]
     if isinstance(runbook, str) and runbook:
-        recommended["runbook"] = runbook
-        return [recommended]
+        return [
+            _recommended_action(
+                _action_id_from(action, None, "readiness_runbook"),
+                label=_label_from_action(action, None),
+                mode="read",
+                source="readiness_safe_next_action",
+                action=action if isinstance(action, str) else None,
+                arguments={**project_args, **arguments},
+                runbook=runbook,
+                why=why if isinstance(why, str) else "",
+            )
+        ]
     return [fallback]
+
+
+def _recommended_action(
+    action_id: str,
+    *,
+    label: str,
+    mode: str,
+    source: str,
+    tool: str | None = None,
+    arguments: dict[str, Any] | None = None,
+    action: str | None = None,
+    runbook: str | None = None,
+    why: str = "",
+    evidence_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_mode = mode if mode in {"read", "preview", "commit"} else "read"
+    requires_confirmation = normalized_mode != "read"
+    side_effects = normalized_mode == "commit"
+    item: dict[str, Any] = {
+        "action_id": action_id,
+        "label": label,
+        "mode": normalized_mode,
+        "status": "available",
+        "arguments": dict(arguments or {}),
+        "source": source,
+        "required_scope": _required_scope_for_mode(normalized_mode),
+        "requires_preview_confirm": normalized_mode != "read",
+        "requires_explicit_confirmation": requires_confirmation,
+        "side_effects": side_effects,
+        "authority_boundary": {
+            "does_not_execute_now": True,
+            "read_only": normalized_mode == "read",
+            "side_effects_if_invoked": side_effects,
+            "requires_explicit_operator_action": True,
+            "requires_explicit_confirmation": requires_confirmation,
+            "does_not_authorize_stable_replacement": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_publish_app": True,
+        },
+    }
+    if isinstance(tool, str) and tool:
+        item["tool"] = tool
+    if isinstance(action, str) and action:
+        item["action"] = action
+    if isinstance(runbook, str) and runbook:
+        item["runbook"] = runbook
+    if why:
+        item["why"] = why
+    if isinstance(evidence_context, dict):
+        item["evidence_context"] = evidence_context
+    return item
+
+
+def _required_scope_for_mode(mode: str) -> str:
+    if mode == "preview":
+        return "mcp:preview"
+    if mode == "commit":
+        return "mcp:commit"
+    return "mcp:read"
+
+
+def _action_id_from(action: Any, tool: Any, fallback: str) -> str:
+    raw = action if isinstance(action, str) and action else tool if isinstance(tool, str) and tool else fallback
+    normalized = "".join(char.lower() if char.isalnum() else "_" for char in raw)
+    return "_".join(part for part in normalized.split("_") if part) or fallback
+
+
+def _label_from_action(action: Any, tool: Any) -> str:
+    raw = action if isinstance(action, str) and action else tool if isinstance(tool, str) and tool else "Recommended Action"
+    return " ".join(part.capitalize() for part in raw.replace("-", "_").split("_") if part) or "Recommended Action"
 
 
 def _release_submission_recommended_actions(
@@ -433,30 +561,42 @@ def _release_submission_recommended_actions(
     review_keys = _filled_not_marked_ready_keys(progress)
     if source in {"unknown", "parameters_only"}:
         return [
-            {
-                "tool": "init_submission_evidence",
-                "arguments": project_args,
-                "why": "Create the real submission manifest and local evidence scaffold before release/App submission.",
-            }
+            _recommended_action(
+                "init_submission_evidence",
+                label="Init Submission Evidence",
+                mode="commit",
+                source="release_submission_readiness",
+                tool="init_submission_evidence",
+                arguments=project_args,
+                why="Create the real submission manifest and local evidence scaffold before release/App submission.",
+            )
         ]
     if isinstance(manifest_check, dict) and manifest_check.get("status") == "needs_attention":
         return [
-            {
-                "tool": "get_release_submission_readiness",
-                "arguments": project_args,
-                "why": "Fix submission manifest schema or unknown fields before collecting final evidence.",
-            }
+            _recommended_action(
+                "release_submission_readiness",
+                label="Release Submission Readiness",
+                mode="read",
+                source="release_submission_readiness",
+                tool="get_release_submission_readiness",
+                arguments=project_args,
+                why="Fix submission manifest schema or unknown fields before collecting final evidence.",
+            )
         ]
     if isinstance(evidence_check, dict) and evidence_check.get("status") == "needs_attention":
         entry_templates = list(evidence_check.get("fill_entry_templates") or [])
         return [
-            {
-                "tool": "fill_submission_evidence_files",
-                "arguments": {
+            _recommended_action(
+                "fill_submission_evidence_files",
+                label="Fill Submission Evidence",
+                mode="commit",
+                source="release_submission_readiness",
+                tool="fill_submission_evidence_files",
+                arguments={
                     **project_args,
                     "entries": [],
                 },
-                "evidence_context": {
+                evidence_context={
                     "missing_keys": list(evidence_check.get("missing_keys") or []),
                     "missing_files": list(evidence_check.get("missing_files") or []),
                     "missing_files_by_key": list(evidence_check.get("missing_files_by_key") or []),
@@ -465,32 +605,40 @@ def _release_submission_recommended_actions(
                     "incomplete_keys": list(evidence_check.get("incomplete_keys") or []),
                     "entry_templates": entry_templates,
                 },
-                "why": "Replace placeholder submission evidence and add missing files before marking release/App submission ready.",
-            }
+                why="Replace placeholder submission evidence and add missing files before marking release/App submission ready.",
+            )
         ]
     if review_keys:
         return [
-            {
-                "tool": "mark_submission_evidence_ready_fields",
-                "arguments": {
+            _recommended_action(
+                "mark_submission_evidence_ready_fields",
+                label="Mark Submission Evidence Ready",
+                mode="commit",
+                source="release_submission_readiness",
+                tool="mark_submission_evidence_ready_fields",
+                arguments={
                     **project_args,
                     "keys": review_keys,
                     "review_confirmation": "human_reviewed",
                 },
-                "evidence_context": {
+                evidence_context={
                     "keys": review_keys,
                     "ready_fields": _ready_fields_for_keys(progress, review_keys),
                     "refs_by_key": _refs_by_key(progress, review_keys),
                 },
-                "why": "All selected evidence files are present; review them and mark the corresponding ready fields true.",
-            }
+                why="All selected evidence files are present; review them and mark the corresponding ready fields true.",
+            )
         ]
     return [
-        {
-            "tool": "get_release_submission_readiness",
-            "arguments": project_args,
-            "why": "Review release/App submission readiness details and complete remaining materials.",
-        }
+        _recommended_action(
+            "release_submission_readiness",
+            label="Release Submission Readiness",
+            mode="read",
+            source="release_submission_readiness",
+            tool="get_release_submission_readiness",
+            arguments=project_args,
+            why="Review release/App submission readiness details and complete remaining materials.",
+        )
     ]
 
 

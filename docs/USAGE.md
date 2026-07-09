@@ -289,7 +289,13 @@ points without invoking them. When product readiness is `blocked` or
 `needs_attention`, `recommended_first_actions` promotes the concrete
 `safe_next_action` from the readiness packet, such as the read-only stable
 cadence check, Apps connector smoke, or a bounded runbook; it does not treat
-another generic readiness read as the main repair action. Its
+another generic readiness read as the main repair action.
+Each recommended action uses a stable action shape with `action_id`, `label`,
+`mode`, `status`, `tool` or `runbook`, `arguments`, `required_scope`,
+`requires_preview_confirm`, `requires_explicit_confirmation`, `side_effects`,
+and `authority_boundary`. A `mode=commit` action means invoking that tool can
+write local project state and needs explicit confirmation; the console map
+itself remains read-only and does not invoke the action. Its
 `release_submission_evidence_bundle` field
 summarizes the local ChatGPT App submission manifest, the 10-item evidence
 progress table, remaining gaps, and the next safe tool. When evidence still
