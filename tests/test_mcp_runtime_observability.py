@@ -1189,10 +1189,17 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["service_profile"]["project_name_required_for_project_tools"] is True
         assert "demo-project" in [item["project_name"] for item in data["registered_projects"]]
         profiles = {item["profile_id"]: item for item in data["service_entry_profiles"]}
-        assert "web_gpt_commander" in profiles
+        assert set(profiles) == {
+            "web_gpt_commander",
+            "local_codex_commander",
+            "reviewer_agent",
+            "planner_agent",
+            "source_observer",
+        }
         assert profiles["web_gpt_commander"]["first_reads"][1]["tool"] == "get_agent_consumer_contract"
         assert profiles["web_gpt_commander"]["first_reads"][2]["tool"] == "get_agent_operator_flow_packet"
         assert profiles["web_gpt_commander"]["first_reads"][4]["tool"] == "render_commander_app"
+        assert profiles["reviewer_agent"]["default_authority"] == "review_only"
         entry_tools = [item["tool"] for item in data["entry_sequence"]]
         assert entry_tools[:5] == [
             "list_registered_projects",
@@ -1201,11 +1208,37 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "get_agent_operator_flow_packet",
             "render_commander_app",
         ]
-        assert "get_stable_promotion_readiness" in entry_tools
-        assert "get_apps_connector_smoke_packet" in entry_tools
+        assert data["entry_sequence"][4]["arguments"]["profile_id"] == "web_gpt_commander"
+        for tool in {
+            "get_stable_replacement_cadence",
+            "get_stage_parallel_plan_preview",
+            "get_stage_parallel_run_preview",
+            "get_stage_parallel_worktree_assignment_preview",
+            "get_stage_parallel_next_action_packet",
+            "manage_stage_parallel_shard_inputs",
+            "get_stage_parallel_executor_group_preview",
+            "manage_stage_parallel_executor_runs",
+            "get_stage_parallel_executor_results_packet",
+            "get_stage_parallel_group_status",
+            "get_stage_parallel_merge_preview",
+            "manage_stage_parallel_merges",
+            "get_stage_parallel_closeout_packet",
+            "get_stable_promotion_readiness",
+            "get_apps_connector_smoke_packet",
+            "get_connector_runtime_health_status",
+            "analyze_project_state",
+        }:
+            assert tool in entry_tools
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
+        assert thin_flow["draft_arguments"]["draft_seed"]["task_tier"] == "M0-M2"
+        assert thin_flow["direct_codex_packet_field"] == "result.codex_execution_packet"
+        assert "result.codex_execution_packet.packet_status=ready" in thin_flow["next_step"]
+        assert "result.codex_execution_packet.copy_paste_codex_prompt" in thin_flow["next_step"]
+        assert "result.next_request_payload" in thin_flow["next_step"]
+        assert thin_flow["provided_arguments"]["input_mode"] == "provided"
+        assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
 
