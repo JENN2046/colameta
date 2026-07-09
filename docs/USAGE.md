@@ -336,6 +336,12 @@ Commander renders those `next_refresh_actions` as read-only refresh buttons on
 the action card. They call the listed read surface and update the widget; they
 do not re-run the original action, confirm preview/commit work, or grant write
 authority.
+Commander also shows a `Record` button after an in-widget read action has a
+local result. Pressing it explicitly calls
+`record_product_console_action_result` with the short result summary and then
+refreshes `get_product_console_map` when the direct record call succeeds. This
+is a runtime-summary write only; it is not automatic and it does not authorize
+the original action.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
