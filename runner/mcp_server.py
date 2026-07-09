@@ -59,7 +59,7 @@ from runner.product_readiness import (
 )
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_console import build_product_console_map
-from runner.release_submission_readiness import build_release_submission_readiness
+from runner.release_submission_readiness import build_release_submission_readiness, init_submission_evidence_scaffold
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
@@ -154,6 +154,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_full_loop_authority_status",
     "get_product_console_map",
     "get_release_submission_readiness",
+    "init_submission_evidence",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -512,6 +513,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_full_loop_authority_status",
     "get_product_console_map",
     "get_release_submission_readiness",
+    "init_submission_evidence",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -857,7 +859,15 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
     policies = {name: _static_policy(name, "mcp:read") for name in read_tools}
     for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
         policies[name] = _static_policy(name, "mcp:preview")
-    for name in ("todo_add", "todo_update", "todo_delete", "decision_add", "decision_update", "decision_delete"):
+    for name in (
+        "init_submission_evidence",
+        "todo_add",
+        "todo_update",
+        "todo_delete",
+        "decision_add",
+        "decision_update",
+        "decision_delete",
+    ):
         policies[name] = _static_policy(name, "mcp:commit")
     policies.update(
         {
@@ -1063,6 +1073,7 @@ class MCPPlanningBridgeServer:
         commander_app_input_schema = self._commander_app_input_schema()
         full_loop_authority_input_schema = self._full_loop_authority_input_schema()
         release_submission_input_schema = self._release_submission_input_schema()
+        init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
@@ -1074,6 +1085,7 @@ class MCPPlanningBridgeServer:
             "get_full_loop_authority_status": self._tool_get_full_loop_authority_status,
             "get_product_console_map": self._tool_get_product_console_map,
             "get_release_submission_readiness": self._tool_get_release_submission_readiness,
+            "init_submission_evidence": self._tool_init_submission_evidence,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1329,6 +1341,23 @@ class MCPPlanningBridgeServer:
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="init_submission_evidence",
+                title="Initialize Submission Evidence",
+                description=(
+                    f"[{self.project_hint}] 初始化 ChatGPT App release/submission 的本地 evidence scaffold。"
+                    "创建 docs/chatgpt-app-submission-materials.json 和 docs/submission/*.todo.md 占位文件；"
+                    "不覆盖已有文件、不提交 OpenAI review、不发布、不读取 token/cookie/provider config。scope=mcp:commit。"
+                ),
+                input_schema=init_submission_evidence_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
                     "destructiveHint": False,
                     "openWorldHint": False,
                     "idempotentHint": True,
@@ -6136,6 +6165,23 @@ class MCPPlanningBridgeServer:
             "additionalProperties": False,
         }
 
+    def _init_submission_evidence_input_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "app_name": {"type": "string"},
+                "app_description": {"type": "string"},
+                "company_url": {"type": "string"},
+                "privacy_policy_url": {"type": "string"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
+
     def _agent_operator_flow_input_schema(self) -> dict[str, Any]:
         stage_schema = _stage_parallel_preview_input_schema()
         properties = {
@@ -8084,6 +8130,19 @@ class MCPPlanningBridgeServer:
             if isinstance(params.get("submission_materials"), dict)
             else None,
         )
+
+    def _tool_init_submission_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("init_submission_evidence", params, require_managed=True)
+        result = init_submission_evidence_scaffold(
+            self.project_root,
+            app_name=str(params.get("app_name") or "ColaMeta"),
+            app_description=str(params.get("app_description") or "Project console for local AI engineering workflows."),
+            company_url=str(params.get("company_url") or "https://example.com"),
+            privacy_policy_url=str(params.get("privacy_policy_url") or "https://example.com/privacy"),
+        )
+        self._record_workflow_if_needed("init_submission_evidence", "apply", params, result)
+        return result
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
         manifest = self._commander_app_manifest(params)
