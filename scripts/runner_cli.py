@@ -45,6 +45,7 @@ from runner.product_readiness import (
 )
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_console import build_product_console_map
+from runner.release_submission_readiness import build_release_submission_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -2470,6 +2471,121 @@ def _run_console_map(args: list[str]) -> int:
     return 0
 
 
+def _parse_release_readiness_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    options: dict[str, object] = {
+        "json_output": False,
+        "project_name": None,
+        "public_base_url": DEFAULT_PUBLIC_BASE_URL,
+        "no_network": False,
+        "app_name": None,
+        "app_description": None,
+        "company_url": None,
+        "privacy_policy_url": None,
+        "logo_ready": False,
+        "screenshots_ready": False,
+        "test_prompts_ready": False,
+        "test_responses_ready": False,
+        "localization_ready": False,
+        "mcp_tool_info_ready": False,
+        "app_management_permissions_confirmed": False,
+        "security_review_ready": False,
+        "metadata_snapshot_reviewed": False,
+        "submission_confirmations_ready": False,
+    }
+    value_options = {
+        "--project-name": "project_name",
+        "--public-base-url": "public_base_url",
+        "--app-name": "app_name",
+        "--app-description": "app_description",
+        "--company-url": "company_url",
+        "--privacy-policy-url": "privacy_policy_url",
+    }
+    bool_options = {
+        "--no-network": "no_network",
+        "--logo-ready": "logo_ready",
+        "--screenshots-ready": "screenshots_ready",
+        "--test-prompts-ready": "test_prompts_ready",
+        "--test-responses-ready": "test_responses_ready",
+        "--localization-ready": "localization_ready",
+        "--mcp-tool-info-ready": "mcp_tool_info_ready",
+        "--app-management-permissions-confirmed": "app_management_permissions_confirmed",
+        "--security-review-ready": "security_review_ready",
+        "--metadata-snapshot-reviewed": "metadata_snapshot_reviewed",
+        "--submission-confirmations-ready": "submission_confirmations_ready",
+    }
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            options["json_output"] = True
+        elif token in bool_options:
+            options[bool_options[token]] = True
+        elif token in value_options:
+            if idx + 1 >= len(args):
+                print(f"release-readiness 参数错误：{token} 缺少值。", file=sys.stderr)
+                return None
+            options[value_options[token]] = args[idx + 1]
+            idx += 1
+        elif token.startswith("-"):
+            print(f"release-readiness 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"release-readiness 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"release-readiness 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, options
+
+
+def _run_release_readiness(args: list[str]) -> int:
+    parsed = _parse_release_readiness_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_release_submission_readiness(
+        project_path,
+        project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
+        public_base_url=str(options.get("public_base_url") or DEFAULT_PUBLIC_BASE_URL),
+        no_network=bool(options.get("no_network")),
+        app_name=options.get("app_name") if isinstance(options.get("app_name"), str) else None,
+        app_description=options.get("app_description") if isinstance(options.get("app_description"), str) else None,
+        company_url=options.get("company_url") if isinstance(options.get("company_url"), str) else None,
+        privacy_policy_url=options.get("privacy_policy_url") if isinstance(options.get("privacy_policy_url"), str) else None,
+        logo_ready=bool(options.get("logo_ready")),
+        screenshots_ready=bool(options.get("screenshots_ready")),
+        test_prompts_ready=bool(options.get("test_prompts_ready")),
+        test_responses_ready=bool(options.get("test_responses_ready")),
+        localization_ready=bool(options.get("localization_ready")),
+        mcp_tool_info_ready=bool(options.get("mcp_tool_info_ready")),
+        app_management_permissions_confirmed=bool(options.get("app_management_permissions_confirmed")),
+        security_review_ready=bool(options.get("security_review_ready")),
+        metadata_snapshot_reviewed=bool(options.get("metadata_snapshot_reviewed")),
+        submission_confirmations_ready=bool(options.get("submission_confirmations_ready")),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(
+            "Release submission readiness: "
+            f"status={packet.get('status')} ready={packet.get('ready')}",
+            file=sys.stderr,
+        )
+        missing = packet.get("needs_attention_codes")
+        blockers = packet.get("blocker_codes")
+        if isinstance(blockers, list) and blockers:
+            print(f"  blockers={','.join(str(item) for item in blockers)}", file=sys.stderr)
+        if isinstance(missing, list) and missing:
+            print(f"  needs_attention={','.join(str(item) for item in missing)}", file=sys.stderr)
+    return 0
+
+
 def _run_service_stop(args: list[str]) -> int:
     if len(args) >= 2 and not args[1].startswith("-"):
         project_path = _resolve_path(args[1])
@@ -4665,6 +4781,8 @@ def main() -> int:
         return _run_full_loop_status(sys.argv[1:])
     if cmd == "console-map":
         return _run_console_map(sys.argv[1:])
+    if cmd == "release-readiness":
+        return _run_release_readiness(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":
