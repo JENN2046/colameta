@@ -93,6 +93,45 @@ def test_product_readiness_routes_missing_connector_smoke_to_apps_tool() -> None
     assert packet["safe_next_action"]["tool"] == "get_apps_connector_smoke_packet"
 
 
+def test_product_readiness_routes_stable_runtime_blocker_to_cadence_tool() -> None:
+    ops = _ops_packet(status="blocked")
+    ops["checks"]["stable_runtime"] = {
+        "status": "blocked",
+        "reason_codes": ["STABLE_RUNTIME_HEAD_MISMATCH"],
+    }
+    ops["blocker_codes"] = ["STABLE_RUNTIME_HEAD_MISMATCH"]
+
+    packet = build_product_readiness_packet(
+        "/tmp/project",
+        ops_packet_builder=lambda *args, **kwargs: ops,
+    )
+
+    assert packet["status"] == "blocked"
+    assert packet["primary_blocker"]["check"] == "stable_runtime"
+    assert packet["safe_next_action"]["action"] == "inspect_stable_replacement_cadence"
+    assert packet["safe_next_action"]["tool"] == "get_stable_replacement_cadence"
+    assert packet["chatgpt_app"]["stable_replacement_cadence_tool"] == "get_stable_replacement_cadence"
+    assert packet["authority_boundary"]["does_not_authorize_stable_replacement"] is True
+
+
+def test_product_readiness_routes_local_stable_health_blocker_to_cadence_tool() -> None:
+    ops = _ops_packet(status="blocked")
+    ops["checks"]["local_stable_health"] = {
+        "status": "blocked",
+        "reason_codes": ["LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"],
+    }
+    ops["blocker_codes"] = ["LOCAL_STABLE_RUNTIME_HEAD_UNVERIFIED"]
+
+    packet = build_product_readiness_packet(
+        "/tmp/project",
+        ops_packet_builder=lambda *args, **kwargs: ops,
+    )
+
+    assert packet["status"] == "blocked"
+    assert packet["primary_blocker"]["check"] == "local_stable_health"
+    assert packet["safe_next_action"]["tool"] == "get_stable_replacement_cadence"
+
+
 def test_chatgpt_connection_packet_is_a_read_only_handoff() -> None:
     packet = build_chatgpt_connection_packet(
         "/tmp/project",

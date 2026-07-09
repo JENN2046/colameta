@@ -22,6 +22,7 @@ COMMANDER_RENDER_TOOL = "render_commander_app"
 READINESS_TOOL = "get_product_readiness_status"
 CHATGPT_APP_READINESS_TOOL = "get_chatgpt_app_readiness"
 APPS_SMOKE_TOOL = "get_apps_connector_smoke_packet"
+STABLE_REPLACEMENT_CADENCE_TOOL = "get_stable_replacement_cadence"
 
 
 def build_product_readiness_packet(
@@ -76,6 +77,7 @@ def build_product_readiness_packet(
             "readiness_tool": READINESS_TOOL,
             "chatgpt_app_readiness_tool": CHATGPT_APP_READINESS_TOOL,
             "smoke_tool": APPS_SMOKE_TOOL,
+            "stable_replacement_cadence_tool": STABLE_REPLACEMENT_CADENCE_TOOL,
             "default_visible_authority": ["read", "preview"],
             "write_tools_default": "blocked_until_local_config_and_explicit_confirmation",
             "full_loop_authority_tool": "get_full_loop_authority_status",
@@ -256,6 +258,16 @@ def _safe_next_action(status: str, primary_blocker: dict[str, Any] | None) -> di
             "tool": APPS_SMOKE_TOOL,
             "arguments": {},
             "why": "External connector smoke is the remaining product closeout evidence.",
+        }
+    if primary_blocker and primary_blocker.get("check") in {"stable_runtime", "local_stable_health"}:
+        return {
+            "action": "inspect_stable_replacement_cadence",
+            "tool": STABLE_REPLACEMENT_CADENCE_TOOL,
+            "arguments": {},
+            "why": (
+                "Stable runtime evidence is blocking product readiness; inspect the read-only "
+                "cadence packet before deciding whether any stable replacement should be requested."
+            ),
         }
     hint = primary_blocker.get("operator_hint") if isinstance(primary_blocker, dict) else None
     runbook = hint.get("runbook") if isinstance(hint, dict) else None
