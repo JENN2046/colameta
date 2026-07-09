@@ -5306,6 +5306,71 @@ class MCPPlanningBridgeServer:
       flex-wrap: wrap;
       gap: 8px;
     }
+    .recommended-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .recommended-action {
+      min-height: 112px;
+      border: 1px solid #d8e0e6;
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 9px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .recommended-action-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .recommended-action-title {
+      font-weight: 700;
+      font-size: 12px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .recommended-action-meta,
+    .recommended-action-boundary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .action-chip {
+      border: 1px solid #d8e0e6;
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: #f6f8f8;
+      color: #4d5961;
+      font-size: 11px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .action-chip.commit {
+      border-color: #dbc7a2;
+      background: #fff8e8;
+      color: #4d3d1f;
+    }
+    .action-chip.read {
+      border-color: #b9d3cf;
+      background: #eef8f6;
+      color: #244f51;
+    }
+    .recommended-action-why {
+      color: #68727a;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .action-copy {
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
     button {
       min-height: 34px;
       border: 1px solid #2f6f73;
@@ -5355,6 +5420,7 @@ class MCPPlanningBridgeServer:
       .top { grid-template-columns: minmax(0, 1fr); }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .readiness { grid-template-columns: minmax(0, 1fr); }
+      .recommended-actions { grid-template-columns: minmax(0, 1fr); }
       .evidence-grid { grid-template-columns: minmax(0, 1fr); }
       .profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .boundary { grid-template-columns: minmax(0, 1fr); }
@@ -5385,6 +5451,10 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Primary blocker</strong><span id="primary-blocker">-</span></div>
         <div class="note"><strong>Safe next action</strong><span id="safe-next-action">-</span></div>
       </div>
+    </section>
+    <section class="section">
+      <h2>Recommended Actions</h2>
+      <div class="recommended-actions" id="recommended-actions"></div>
     </section>
     <section class="section">
       <h2>Profiles</h2>
@@ -5580,10 +5650,10 @@ class MCPPlanningBridgeServer:
         var missing = Array.isArray(materials.missing_evidence_files) ? materials.missing_evidence_files : [];
         return keys.concat(placeholders).concat(missing).slice(0, 6).join(" | ") || "none";
       }
-      function copyText(textValue) {
+      function copyText(textValue, message) {
         if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
           navigator.clipboard.writeText(textValue).then(function () {
-            text("log", "Copied evidence entry shape.");
+            text("log", message || "Copied.");
           }).catch(function () {
             text("log", textValue);
           });
@@ -5628,7 +5698,7 @@ class MCPPlanningBridgeServer:
               key: template.key,
               filename: template.default_filename,
               content: "<operator-confirmed evidence text>"
-            }, null, 2));
+            }, null, 2), "Copied evidence entry shape.");
           });
           head.appendChild(titleWrap);
           head.appendChild(copy);
@@ -5646,6 +5716,87 @@ class MCPPlanningBridgeServer:
           card.appendChild(head);
           card.appendChild(purpose);
           card.appendChild(tags);
+          target.appendChild(card);
+        });
+      }
+      function recommendedActions(data) {
+        if (!data || typeof data !== "object") return [];
+        if (Array.isArray(data.recommended_first_actions)) return data.recommended_first_actions;
+        if (data.product_console_map && Array.isArray(data.product_console_map.recommended_first_actions)) {
+          return data.product_console_map.recommended_first_actions;
+        }
+        return [];
+      }
+      function actionText(action) {
+        if (!action || typeof action !== "object") return "-";
+        return action.tool || action.runbook || action.action || action.action_id || "-";
+      }
+      function appendChip(parent, value, className) {
+        if (value === undefined || value === null || value === "" || value === false) return;
+        var chip = document.createElement("span");
+        chip.className = ["action-chip", className || ""].filter(Boolean).join(" ");
+        chip.textContent = String(value);
+        parent.appendChild(chip);
+      }
+      function renderRecommendedActions(data) {
+        var target = byId("recommended-actions");
+        target.innerHTML = "";
+        var actions = recommendedActions(data);
+        if (!actions.length) {
+          var empty = document.createElement("div");
+          empty.className = "note";
+          empty.textContent = "Read Product Console to load recommended action models.";
+          target.appendChild(empty);
+          return;
+        }
+        actions.slice(0, 6).forEach(function (action) {
+          if (!action || typeof action !== "object") return;
+          var card = document.createElement("div");
+          card.className = "recommended-action";
+          var head = document.createElement("div");
+          head.className = "recommended-action-head";
+          var title = document.createElement("div");
+          title.className = "recommended-action-title";
+          title.textContent = action.label || action.action_id || actionText(action);
+          var copy = document.createElement("button");
+          copy.className = "action-copy secondary";
+          copy.type = "button";
+          copy.textContent = "Copy";
+          copy.addEventListener("click", function () {
+            copyText(JSON.stringify({
+              tool: action.tool,
+              arguments: action.arguments || {},
+              runbook: action.runbook,
+              action_id: action.action_id,
+              mode: action.mode,
+              required_scope: action.required_scope,
+              requires_explicit_confirmation: action.requires_explicit_confirmation === true
+            }, null, 2), "Copied recommended action.");
+          });
+          head.appendChild(title);
+          head.appendChild(copy);
+          var meta = document.createElement("div");
+          meta.className = "recommended-action-meta";
+          appendChip(meta, action.mode || "read", action.mode === "commit" ? "commit" : "read");
+          appendChip(meta, action.status || "available");
+          appendChip(meta, action.required_scope || "mcp:read");
+          appendChip(meta, action.requires_explicit_confirmation === true ? "confirm" : "no confirm");
+          appendChip(meta, action.side_effects === true ? "writes if invoked" : "read-only");
+          appendChip(meta, actionText(action));
+          var why = document.createElement("div");
+          why.className = "recommended-action-why";
+          why.textContent = action.why || "";
+          var boundary = document.createElement("div");
+          boundary.className = "recommended-action-boundary";
+          var auth = action.authority_boundary || {};
+          appendChip(boundary, auth.does_not_execute_now === true ? "does not execute now" : "");
+          appendChip(boundary, auth.does_not_authorize_stable_replacement === true ? "no stable replacement" : "");
+          appendChip(boundary, auth.does_not_submit_app_for_review === true ? "no app submission" : "");
+          appendChip(boundary, auth.does_not_publish_app === true ? "no publish" : "");
+          card.appendChild(head);
+          card.appendChild(meta);
+          if (why.textContent) card.appendChild(why);
+          card.appendChild(boundary);
           target.appendChild(card);
         });
       }
@@ -5670,6 +5821,13 @@ class MCPPlanningBridgeServer:
         if (!data || typeof data !== "object") return;
         if (data.app_manifest_version) manifest = data;
         var current = manifest || data;
+        if (data && typeof data === "object" && (
+          data.source === "product_console_map" ||
+          Array.isArray(data.recommended_first_actions) ||
+          data.release_submission_evidence_bundle
+        )) {
+          current = Object.assign({}, manifest || {}, data);
+        }
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
         var readiness = current.readiness || current.service_readiness_summary || {};
         var flow = current.agent_operator_flow || (current.source === "agent_operator_flow_packet" ? current : {});
@@ -5698,6 +5856,7 @@ class MCPPlanningBridgeServer:
           statusValue(apps, ["connector_closeout_check", "current_operator_closeout"]),
           statusValue(apps, ["connector_closeout_check", "current_decision"])
         ].filter(function (item) { return item && item !== "-"; }).join(" | "));
+        renderRecommendedActions(current);
         renderEvidence(current);
         var profiles = byId("profiles");
         profiles.innerHTML = "";

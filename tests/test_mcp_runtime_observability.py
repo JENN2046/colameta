@@ -1109,7 +1109,12 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Primary blocker" in widget_html
         assert "Safe next action" in widget_html
         assert "Release Evidence" in widget_html
+        assert "Recommended Actions" in widget_html
         assert "Evidence blockers" in widget_html
+        assert "recommendedActions" in widget_html
+        assert "recommended_first_actions" in widget_html
+        assert "requires_explicit_confirmation" in widget_html
+        assert "does_not_authorize_stable_replacement" in widget_html
         assert "evidenceProgress" in widget_html
         assert "evidenceBundle" in widget_html
         assert "release_submission_evidence_bundle" in widget_html

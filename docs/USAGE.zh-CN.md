@@ -188,6 +188,8 @@ submission evidence 文件，并在 `evidence_context.entry_templates` 中给出
 状态、10 项 evidence 完成度、缺口摘要、下一步工具和可复制的 `draft_entries` 放在一起，
 方便操作者先审查再调用 `fill_submission_evidence_files`；它不写文件、不标 ready 字段、
 不创建 OpenAI App draft、不提交审核、不发布。
+Commander widget 会把 `recommended_first_actions` 渲染成动作卡片，显示 mode、scope、
+确认要求、副作用和 authority-boundary，并提供可复制的工具调用形状。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 
