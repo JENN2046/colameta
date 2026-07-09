@@ -161,6 +161,51 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert payload["read_only"] is True
         assert build_packet.call_args.kwargs["project_name"] == "demo-project"
 
+    def test_submission_evidence_preview_json_outputs_read_only_preview(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "submission_evidence_fill_preview",
+            "read_only": True,
+            "side_effects": False,
+            "status": "review_ready",
+            "fill_plan_status": "evidence_ready_for_review",
+            "copyable_tool_call": {
+                "tool": "mark_submission_evidence_ready_fields",
+                "arguments": {
+                    "project_name": "demo-project",
+                    "keys": ["logo"],
+                    "review_confirmation": "human_reviewed",
+                },
+            },
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_submission_evidence_fill_preview", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_submission_evidence_preview(
+                [
+                    "submission-evidence-preview",
+                    str(self.project),
+                    "--project-name",
+                    "demo-project",
+                    "--selected-keys",
+                    "logo,screenshots",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "submission_evidence_fill_preview"
+        assert payload["read_only"] is True
+        assert payload["copyable_tool_call"]["tool"] == "mark_submission_evidence_ready_fields"
+        assert build_packet.call_args.args == (str(self.project),)
+        assert build_packet.call_args.kwargs["project_name"] == "demo-project"
+        assert build_packet.call_args.kwargs["selected_keys"] == ["logo", "screenshots"]
+
     def test_release_readiness_json_outputs_submission_packet(self) -> None:
         from scripts import runner_cli
 

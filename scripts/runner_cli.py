@@ -44,7 +44,7 @@ from runner.product_readiness import (
     build_product_readiness_packet,
 )
 from runner.full_loop_authority import build_full_loop_authority_status
-from runner.product_console import build_product_console_map
+from runner.product_console import build_product_console_map, build_submission_evidence_fill_preview
 from runner.release_submission_readiness import (
     RELEASE_SUBMISSION_MATERIALS_MAX_BYTES,
     build_release_submission_readiness,
@@ -2474,6 +2474,74 @@ def _run_console_map(args: list[str]) -> int:
                     f"mode={entry.get('mode')} tool={entry.get('tool')}",
                     file=sys.stderr,
                 )
+    return 0
+
+
+def _parse_submission_evidence_preview_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    options: dict[str, object] = {
+        "json_output": False,
+        "project_name": None,
+        "selected_keys": None,
+    }
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            options["json_output"] = True
+        elif token == "--project-name":
+            if idx + 1 >= len(args):
+                print("submission-evidence-preview 参数错误：--project-name 缺少值。", file=sys.stderr)
+                return None
+            options["project_name"] = args[idx + 1]
+            idx += 1
+        elif token == "--selected-keys":
+            if idx + 1 >= len(args):
+                print("submission-evidence-preview 参数错误：--selected-keys 缺少值。", file=sys.stderr)
+                return None
+            options["selected_keys"] = _parse_submission_evidence_keys(args[idx + 1])
+            idx += 1
+        elif token.startswith("-"):
+            print(f"submission-evidence-preview 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(
+                    f"submission-evidence-preview 参数错误：只能提供一个 project_path，收到额外参数 {token}",
+                    file=sys.stderr,
+                )
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"submission-evidence-preview 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, options
+
+
+def _run_submission_evidence_preview(args: list[str]) -> int:
+    parsed = _parse_submission_evidence_preview_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_submission_evidence_fill_preview(
+        project_path,
+        project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
+        selected_keys=options.get("selected_keys") if isinstance(options.get("selected_keys"), list) else None,
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        copyable = packet.get("copyable_tool_call") if isinstance(packet.get("copyable_tool_call"), dict) else {}
+        print(
+            "Submission evidence preview: "
+            f"status={packet.get('status')} "
+            f"tool={copyable.get('tool') or '-'} "
+            f"fill_plan={packet.get('fill_plan_status') or '-'}",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -4988,6 +5056,8 @@ def main() -> int:
         return _run_full_loop_status(sys.argv[1:])
     if cmd == "console-map":
         return _run_console_map(sys.argv[1:])
+    if cmd == "submission-evidence-preview":
+        return _run_submission_evidence_preview(sys.argv[1:])
     if cmd == "release-readiness":
         return _run_release_readiness(sys.argv[1:])
     if cmd == "init-submission-evidence":
