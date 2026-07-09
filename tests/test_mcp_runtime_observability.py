@@ -1766,6 +1766,205 @@ vm.runInThisContext({json.dumps(widget_script)});
         completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr
 
+    def test_commander_widget_js_records_failed_action_and_recovers_record_failure(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-record-failure-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function statusText() {{
+  return findByClass(byId("recommended-actions"), "action-run-status")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+function runButton() {{
+  return findByClass(byId("recommended-actions"), "action-run")[0];
+}}
+function recordButton() {{
+  return findByClass(byId("recommended-actions"), "action-record")[0];
+}}
+
+const listeners = {{}};
+const calls = [];
+let recordAttempts = 0;
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("direct path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }},
+  openai: {{
+    callTool: async function (name, args) {{
+      calls.push({{ name, args }});
+      if (name === "get_connector_runtime_health_status") {{
+        return {{ structuredContent: {{ source: "connector_runtime_health", status: "failed", ok: false, error: "probe failed" }} }};
+      }}
+      if (name === "record_product_console_action_result") {{
+        recordAttempts += 1;
+        assert.strictEqual(args.action_fingerprint, "failed123");
+        assert.strictEqual(args.status, "failed");
+        assert.strictEqual(args.result_ok, false);
+        assert(args.message.includes("get_connector_runtime_health_status via direct call | failed"), args.message);
+        if (recordAttempts === 1) {{
+          return {{ structuredContent: {{ source: "product_console_action_results", status: "failed", ok: false, error: "write failed" }} }};
+        }}
+        return {{ structuredContent: {{ source: "product_console_action_results", status: "recorded" }} }};
+      }}
+      if (name === "get_product_console_map") {{
+        return {{
+          structuredContent: {{
+            source: "product_console_map",
+            project_name: "demo-project",
+            recommended_first_actions: [{{
+              action_id: "connector_health",
+              label: "Read connector health",
+              mode: "read",
+              tool: "get_connector_runtime_health_status",
+              arguments: {{ project_name: "demo-project" }},
+              required_scope: "mcp:read",
+              action_fingerprint: "failed123",
+              last_action_result: {{ status: "failed", message: "recorded failure", observed_at: "2026-01-01T00:00:00Z" }},
+              next_refresh_actions: []
+            }}]
+          }}
+        }};
+      }}
+      throw new Error("unexpected tool " + name);
+    }}
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "connector_health",
+            label: "Read connector health",
+            mode: "read",
+            tool: "get_connector_runtime_health_status",
+            arguments: {{ project_name: "demo-project" }},
+            required_scope: "mcp:read",
+            action_fingerprint: "failed123",
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: []
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert(runButton(), "run button should exist");
+  assert(recordButton(), "record button should exist");
+  assert.strictEqual(recordButton().disabled, true, "record starts disabled");
+
+  await runButton().listeners.click[0]();
+  let text = statusText();
+  assert(text.includes("Last run | failed"), text);
+  assert(text.includes("get_connector_runtime_health_status via direct call | failed"), text);
+  assert.strictEqual(recordButton().disabled, false, "failed run can be recorded");
+
+  await recordButton().listeners.click[0]();
+  text = statusText();
+  assert(text.includes("failed"), text);
+  assert(text.includes("record_product_console_action_result via direct call | failed"), text);
+  assert.strictEqual(recordButton().disabled, false, "record failure should remain retryable");
+
+  await recordButton().listeners.click[0]();
+  assert.strictEqual(recordAttempts, 2);
+  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
+    "get_connector_runtime_health_status",
+    "record_product_console_action_result",
+    "record_product_console_action_result",
+    "get_product_console_map"
+  ]);
+  assert.strictEqual(recordButton().disabled, true, "record disables after failed run evidence is recorded");
+  text = statusText();
+  assert(text.includes("recorded"), text);
+  assert(text.includes("refresh current"), text);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
     def test_commander_widget_js_records_direct_action_and_refreshes_console(self) -> None:
         if shutil.which("node") is None:
             self.skipTest("node is required for commander widget behavior smoke")
