@@ -121,7 +121,11 @@ def build_submission_evidence_fill_preview(
     draft_entries = fill_plan.get("draft_entries") if isinstance(fill_plan, dict) else []
     if not isinstance(draft_entries, list):
         draft_entries = []
+    review_entries = fill_plan.get("review_entries") if isinstance(fill_plan, dict) else []
+    if not isinstance(review_entries, list):
+        review_entries = []
     filtered_entries = _filter_draft_entries(draft_entries, selected)
+    filtered_review_entries = _filter_review_entries(review_entries, selected)
     fill_entries = [
         dict(entry.get("copyable_entry_shape") or {})
         for entry in filtered_entries
@@ -136,11 +140,23 @@ def build_submission_evidence_fill_preview(
         for entry in fill_entries
         if entry.get("key")
     ]
-    ignored_selected_keys = sorted(selected - {str(entry.get("key")) for entry in filtered_entries if isinstance(entry, dict)})
-    status = _submission_evidence_fill_preview_status(bundle, fill_plan, fill_entries, selected)
+    available_keys = {
+        str(entry.get("key"))
+        for entry in [*filtered_entries, *filtered_review_entries]
+        if isinstance(entry, dict) and entry.get("key")
+    }
+    ignored_selected_keys = sorted(selected - available_keys)
+    status = _submission_evidence_fill_preview_status(
+        bundle,
+        fill_plan,
+        fill_entries,
+        filtered_review_entries,
+        selected,
+    )
     if status == "review_ready":
         copyable_tool = "mark_submission_evidence_ready_fields"
-        copyable_arguments = dict(fill_plan.get("next_arguments") or project_args)
+        review_keys = [str(entry.get("key")) for entry in filtered_review_entries if isinstance(entry, dict) and entry.get("key")]
+        copyable_arguments = {**dict(fill_plan.get("next_arguments") or project_args), "keys": review_keys}
     else:
         copyable_tool = "fill_submission_evidence_files"
         copyable_arguments = {**project_args, "entries": fill_entries, "mark_ready": False}
@@ -162,6 +178,7 @@ def build_submission_evidence_fill_preview(
         "evidence_bundle_status": bundle.get("status"),
         "fill_plan_status": fill_plan.get("status"),
         "draft_entry_count": len(filtered_entries),
+        "review_entry_count": len(filtered_review_entries),
         "copyable_tool_call": {
             "tool": copyable_tool,
             "arguments": copyable_arguments,
@@ -799,10 +816,18 @@ def _filter_draft_entries(draft_entries: list[Any], selected_keys: set[str]) -> 
     return [entry for entry in entries if str(entry.get("key") or "") in selected_keys]
 
 
+def _filter_review_entries(review_entries: list[Any], selected_keys: set[str]) -> list[dict[str, Any]]:
+    entries = [entry for entry in review_entries if isinstance(entry, dict)]
+    if not selected_keys:
+        return entries
+    return [entry for entry in entries if str(entry.get("key") or "") in selected_keys]
+
+
 def _submission_evidence_fill_preview_status(
     bundle: dict[str, Any],
     fill_plan: dict[str, Any],
     fill_entries: list[dict[str, Any]],
+    review_entries: list[dict[str, Any]],
     selected_keys: set[str],
 ) -> str:
     fill_plan_status = str(fill_plan.get("status") or "unknown")
@@ -815,7 +840,11 @@ def _submission_evidence_fill_preview_status(
     if fill_plan_status == "needs_release_readiness":
         return "needs_release_readiness"
     if fill_plan_status == "evidence_ready_for_review":
-        return "review_ready"
+        if review_entries:
+            return "review_ready"
+        if selected_keys:
+            return "selected_keys_not_available"
+        return "no_preview_entries"
     if selected_keys and not fill_entries:
         return "selected_keys_not_available"
     if fill_entries:
