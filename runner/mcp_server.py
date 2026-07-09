@@ -5845,10 +5845,29 @@ class MCPPlanningBridgeServer:
       function resultFailed(data) {
         return data && typeof data === "object" && (data.ok === false || data.error || data.status === "failed");
       }
+      function bridgeTimeoutMs() {
+        var value = window.__colametaBridgeTimeoutMs;
+        var parsed = value === undefined || value === null ? 30000 : Number(value);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
+      }
+      function clearBridgeTimeout(pending) {
+        if (!pending || !pending.timeoutId) return;
+        var clearFn = window.clearTimeout || (typeof clearTimeout === "function" ? clearTimeout : null);
+        if (clearFn) clearFn(pending.timeoutId);
+      }
+      function markBridgeToolTimeout(id) {
+        var pending = id && pendingBridgeCalls[id];
+        if (!pending || !pending.statusKey) return;
+        rememberActionRunStatus(pending.statusKey, "failed", pending.name + " via bridge timeout");
+        delete pendingBridgeCalls[id];
+        text("log", "Bridge request timed out for " + pending.name + ".");
+        render(viewState);
+      }
       function rememberBridgeToolResult(message, data) {
         var id = bridgeMessageId(message);
         var pending = id && pendingBridgeCalls[id];
         if (!pending || !pending.statusKey) return;
+        clearBridgeTimeout(pending);
         var normalized = normalize(data) || {};
         var status = resultFailed(normalized) ? "failed" : "updated";
         var payloadStatus = normalized && normalized.status ? " | " + normalized.status : "";
@@ -6144,7 +6163,13 @@ class MCPPlanningBridgeServer:
           }
         }
         var requestId = "colameta-commander-" + (seq++);
-        pendingBridgeCalls[requestId] = { name: name, statusKey: statusKey };
+        pendingBridgeCalls[requestId] = { name: name, statusKey: statusKey, timeoutId: null };
+        var timerFn = window.setTimeout || (typeof setTimeout === "function" ? setTimeout : null);
+        if (timerFn) {
+          pendingBridgeCalls[requestId].timeoutId = timerFn(function () {
+            markBridgeToolTimeout(requestId);
+          }, bridgeTimeoutMs());
+        }
         window.parent.postMessage({
           jsonrpc: "2.0",
           id: requestId,
