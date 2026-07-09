@@ -5858,7 +5858,7 @@ class MCPPlanningBridgeServer:
       function renderRecordButton(button, statusNode, action, key) {
         var current = actionRunStatus[key];
         var recordStatus = actionRunStatus[recordKey(action)];
-        var recorded = recordStatus && recordStatus.status === "recorded";
+        var recorded = !!(recordStatus && recordStatus.status === "recorded");
         button.disabled = !current || current.status === "pending" || recorded;
         statusNode.textContent = recordStatus ? [recordStatus.status, recordStatus.message].filter(Boolean).join(" | ") : "";
       }
@@ -5993,6 +5993,7 @@ class MCPPlanningBridgeServer:
               if (refreshResult && refreshResult.status) {
                 rememberActionRunStatus(recKey, "recorded", "refresh current");
                 renderRecordButton(record, recordStatus, action, key);
+                render(viewState);
               }
             }
           });
@@ -6019,6 +6020,7 @@ class MCPPlanningBridgeServer:
           card.appendChild(head);
           card.appendChild(meta);
           card.appendChild(runStatus);
+          card.appendChild(recordStatus);
           if (refreshQueue.textContent) card.appendChild(refreshQueue);
           if (why.textContent) card.appendChild(why);
           card.appendChild(boundary);
