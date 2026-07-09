@@ -1396,6 +1396,188 @@ vm.runInThisContext({json.dumps(widget_script)});
         completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr
 
+    def test_commander_widget_js_records_direct_action_and_refreshes_console(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-record-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function recordStatusText() {{
+  return findByClass(byId("recommended-actions"), "action-run-status")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+function runButton() {{
+  return findByClass(byId("recommended-actions"), "action-run")[0];
+}}
+function recordButton() {{
+  return findByClass(byId("recommended-actions"), "action-record")[0];
+}}
+
+const listeners = {{}};
+const calls = [];
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("direct path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }},
+  openai: {{
+    callTool: async function (name, args) {{
+      calls.push({{ name, args }});
+      if (name === "get_product_readiness_status") {{
+        return {{ structuredContent: {{ source: "product_readiness", status: "ready", ready: true }} }};
+      }}
+      if (name === "record_product_console_action_result") {{
+        assert.strictEqual(args.action_fingerprint, "abc123");
+        assert.strictEqual(args.status, "updated");
+        assert.strictEqual(args.result_ok, true);
+        return {{ structuredContent: {{ source: "product_console_action_results", status: "recorded" }} }};
+      }}
+      if (name === "get_product_console_map") {{
+        return {{
+          structuredContent: {{
+            source: "product_console_map",
+            project_name: "demo-project",
+            recommended_first_actions: [{{
+              action_id: "readiness_check",
+              label: "Read readiness",
+              mode: "read",
+              tool: "get_product_readiness_status",
+              arguments: {{ project_name: "demo-project" }},
+              required_scope: "mcp:read",
+              action_fingerprint: "abc123",
+              last_action_result: {{ status: "updated", message: "recorded run", observed_at: "2026-01-01T00:00:00Z" }},
+              next_refresh_actions: []
+            }}]
+          }}
+        }};
+      }}
+      throw new Error("unexpected tool " + name);
+    }}
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "readiness_check",
+            label: "Read readiness",
+            mode: "read",
+            tool: "get_product_readiness_status",
+            arguments: {{ project_name: "demo-project" }},
+            required_scope: "mcp:read",
+            action_fingerprint: "abc123",
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: []
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert(runButton(), "run button should exist");
+  assert(recordButton(), "record button should exist");
+  assert.strictEqual(recordButton().disabled, true, "record starts disabled");
+
+  await runButton().listeners.click[0]();
+  assert.strictEqual(recordButton().disabled, false, "record enables after read action result");
+
+  await recordButton().listeners.click[0]();
+  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
+    "get_product_readiness_status",
+    "record_product_console_action_result",
+    "get_product_console_map"
+  ]);
+  assert.strictEqual(recordButton().disabled, true, "record disables after successful record and refresh");
+  const statusText = recordStatusText();
+  assert(statusText.includes("recorded"), statusText);
+  assert(statusText.includes("refresh current"), statusText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
     def test_stage_parallel_plan_preview_tool_is_read_only_and_project_routed(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
