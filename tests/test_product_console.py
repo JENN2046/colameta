@@ -58,16 +58,18 @@ def _release_with_materials(
             "content_prompt": "Record final logo evidence.",
         }
     ] if evidence_status == "needs_attention" else []
+    ready = evidence_status == "ready"
+    filled_not_marked_ready = evidence_status == "filled_not_marked_ready"
     evidence_progress = {
         "source": "submission_evidence_progress",
         "schema_version": "submission_evidence_progress.v1",
         "status": evidence_status,
-        "complete_count": 0 if evidence_status == "needs_attention" else 1,
+        "complete_count": 1 if ready else 0,
         "total_count": 1,
         "counts": {
-            "ready": 0 if evidence_status == "needs_attention" else 1,
+            "ready": 1 if ready else 0,
             "needs_attention": 1 if evidence_status == "needs_attention" else 0,
-            "filled_not_marked_ready": 0,
+            "filled_not_marked_ready": 1 if filled_not_marked_ready else 0,
             "placeholder": 0,
             "not_started": 0,
         },
@@ -75,7 +77,7 @@ def _release_with_materials(
             {
                 "key": "logo",
                 "ready_field": "logo_ready",
-                "ready": evidence_status == "ready",
+                "ready": ready,
                 "status": evidence_status,
                 "refs": ["docs/submission/logo.todo.md"] if evidence_status == "needs_attention" else ["docs/submission/logo.md"],
                 "file_states": [{"ref": "docs/submission/logo.todo.md", "status": "placeholder"}]
@@ -234,6 +236,29 @@ def test_console_map_does_not_recommend_release_work_when_submission_ready() -> 
     assert packet["release_submission_evidence_bundle"]["fill_plan"]["human_review_required"] is False
 
 
+def test_console_map_recommends_mark_ready_when_evidence_is_filled() -> None:
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(evidence_status="filled_not_marked_ready"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["tool"] == "mark_submission_evidence_ready_fields"
+    assert first["arguments"] == {
+        "project_name": "demo-project",
+        "keys": ["logo"],
+        "review_confirmation": "human_reviewed",
+    }
+    assert first["evidence_context"]["ready_fields"] == ["logo_ready"]
+    evidence_bundle = packet["release_submission_evidence_bundle"]
+    assert evidence_bundle["fill_plan"]["status"] == "evidence_ready_for_review"
+    assert evidence_bundle["fill_plan"]["next_tool"] == "mark_submission_evidence_ready_fields"
+    assert evidence_bundle["fill_plan"]["review_entries"][0]["refs"] == ["docs/submission/logo.md"]
+
+
 def test_console_map_marks_full_loop_entries_preview_required_when_controls_ready() -> None:
     packet = build_product_console_map(
         "/tmp/project",
@@ -370,3 +395,21 @@ def test_submission_evidence_fill_preview_noops_when_ready() -> None:
     assert packet["status"] == "no_fill_needed"
     assert packet["copyable_tool_call"]["arguments"] == {"entries": [], "mark_ready": False}
     assert packet["operator_instructions"][0].startswith("Review every entry")
+
+
+def test_submission_evidence_fill_preview_returns_mark_ready_call_when_filled() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        release_submission_readiness=_release_with_materials(evidence_status="filled_not_marked_ready"),
+    )
+
+    assert packet["status"] == "review_ready"
+    assert packet["summary"].startswith("Prepared a read-only ready-field marking payload")
+    assert packet["copyable_tool_call"]["tool"] == "mark_submission_evidence_ready_fields"
+    assert packet["copyable_tool_call"]["arguments"] == {
+        "project_name": "demo-project",
+        "keys": ["logo"],
+        "review_confirmation": "human_reviewed",
+    }
+    assert packet["operator_instructions"][0].startswith("Review every referenced evidence file")

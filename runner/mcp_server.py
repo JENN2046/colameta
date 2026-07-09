@@ -63,6 +63,7 @@ from runner.release_submission_readiness import (
     build_release_submission_readiness,
     fill_submission_evidence_files,
     init_submission_evidence_scaffold,
+    mark_submission_evidence_ready_fields,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -162,6 +163,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_submission_evidence_auto_draft",
     "init_submission_evidence",
     "fill_submission_evidence_files",
+    "mark_submission_evidence_ready_fields",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -524,6 +526,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_submission_evidence_auto_draft",
     "init_submission_evidence",
     "fill_submission_evidence_files",
+    "mark_submission_evidence_ready_fields",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -874,6 +877,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
     for name in (
         "init_submission_evidence",
         "fill_submission_evidence_files",
+        "mark_submission_evidence_ready_fields",
         "todo_add",
         "todo_update",
         "todo_delete",
@@ -1090,6 +1094,7 @@ class MCPPlanningBridgeServer:
         submission_evidence_auto_draft_input_schema = self._submission_evidence_auto_draft_input_schema()
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
+        mark_submission_evidence_ready_input_schema = self._mark_submission_evidence_ready_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
@@ -1105,6 +1110,7 @@ class MCPPlanningBridgeServer:
             "get_submission_evidence_auto_draft": self._tool_get_submission_evidence_auto_draft,
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
+            "mark_submission_evidence_ready_fields": self._tool_mark_submission_evidence_ready_fields,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1425,6 +1431,23 @@ class MCPPlanningBridgeServer:
                     "默认不标 ready，不覆盖已有真实文件，不读取 token/cookie/provider config。scope=mcp:commit。"
                 ),
                 input_schema=fill_submission_evidence_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="mark_submission_evidence_ready_fields",
+                title="Mark Submission Evidence Ready Fields",
+                description=(
+                    f"[{self.project_hint}] 在人工审查后标记 ChatGPT App submission evidence ready 字段。"
+                    "只更新 docs/chatgpt-app-submission-materials.json 中已存在、非 .todo evidence 对应的 ready flag；"
+                    "要求 review_confirmation=human_reviewed；不写 evidence 正文、不提交 OpenAI review、不发布。scope=mcp:commit。"
+                ),
+                input_schema=mark_submission_evidence_ready_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -6607,6 +6630,42 @@ class MCPPlanningBridgeServer:
             "additionalProperties": False,
         }
 
+    def _mark_submission_evidence_ready_input_schema(self) -> dict[str, Any]:
+        evidence_keys = [
+            "logo",
+            "screenshots",
+            "test_prompts",
+            "test_responses",
+            "localization",
+            "mcp_tool_info",
+            "app_management_permissions",
+            "security_review",
+            "metadata_snapshot",
+            "submission_confirmations",
+        ]
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "keys": {
+                    "type": "array",
+                    "description": "已由人工审查、且 evidence 引用存在非 .todo 文件的 key。",
+                    "items": {"type": "string", "enum": evidence_keys},
+                    "minItems": 1,
+                },
+                "review_confirmation": {
+                    "type": "string",
+                    "description": "必须为 human_reviewed，表示操作者已人工确认这些 evidence 可标 ready。",
+                    "enum": ["human_reviewed"],
+                },
+            },
+            "required": ["keys", "review_confirmation"],
+            "additionalProperties": False,
+        }
+
     def _agent_operator_flow_input_schema(self) -> dict[str, Any]:
         stage_schema = _stage_parallel_preview_input_schema()
         properties = {
@@ -8823,6 +8882,18 @@ class MCPPlanningBridgeServer:
             mark_ready=bool(params.get("mark_ready")),
         )
         self._record_workflow_if_needed("fill_submission_evidence_files", "apply", params, result)
+        return result
+
+    def _tool_mark_submission_evidence_ready_fields(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("mark_submission_evidence_ready_fields", params, require_managed=True)
+        keys = params.get("keys")
+        result = mark_submission_evidence_ready_fields(
+            self.project_root,
+            keys=keys if isinstance(keys, list) else [],
+            review_confirmation=str(params.get("review_confirmation") or ""),
+        )
+        self._record_workflow_if_needed("mark_submission_evidence_ready_fields", "apply", params, result)
         return result
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:

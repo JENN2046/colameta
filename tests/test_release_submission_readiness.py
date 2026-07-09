@@ -7,6 +7,7 @@ from runner.release_submission_readiness import (
     build_release_submission_readiness,
     fill_submission_evidence_files,
     init_submission_evidence_scaffold,
+    mark_submission_evidence_ready_fields,
 )
 
 
@@ -366,3 +367,67 @@ def test_fill_submission_evidence_files_rejects_existing_file_conflict(tmp_path)
     assert packet["ok"] is False
     assert packet["validation_errors"][0]["error_code"] == "SUBMISSION_EVIDENCE_FILE_EXISTS"
     assert existing_path.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_mark_submission_evidence_ready_fields_marks_existing_reviewed_refs(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    logo_path = tmp_path / "docs/submission/logo.md"
+    logo_path.write_text("# Logo\n\nReviewed.\n", encoding="utf-8")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = "docs/submission/logo.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+
+    assert packet["ok"] is True
+    assert packet["source"] == "submission_evidence_mark_ready"
+    assert packet["changed_files"] == [DEFAULT_SUBMISSION_MATERIALS_REL_PATH]
+    assert packet["ready_fields_marked"] == ["logo_ready"]
+    assert packet["reviewed_refs_by_key"] == [{"key": "logo", "refs": ["docs/submission/logo.md"]}]
+    updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated["logo_ready"] is True
+    assert logo_path.read_text(encoding="utf-8") == "# Logo\n\nReviewed.\n"
+
+
+def test_mark_submission_evidence_ready_fields_requires_confirmation_without_write(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="",
+    )
+
+    assert packet["ok"] is False
+    assert packet["error_code"] == "SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION_REQUIRED"
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+
+def test_mark_submission_evidence_ready_fields_rejects_placeholder_refs_without_write(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+
+    assert packet["ok"] is False
+    assert packet["error_code"] == "SUBMISSION_EVIDENCE_READY_PROOF_INVALID"
+    assert packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo.todo.md",
+            "error_code": "SUBMISSION_EVIDENCE_PLACEHOLDER_REF",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before

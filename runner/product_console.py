@@ -138,7 +138,13 @@ def build_submission_evidence_fill_preview(
     ]
     ignored_selected_keys = sorted(selected - {str(entry.get("key")) for entry in filtered_entries if isinstance(entry, dict)})
     status = _submission_evidence_fill_preview_status(bundle, fill_plan, fill_entries, selected)
-    copyable_arguments: dict[str, Any] = {**project_args, "entries": fill_entries, "mark_ready": False}
+    if status == "review_ready":
+        copyable_tool = "mark_submission_evidence_ready_fields"
+        copyable_arguments = dict(fill_plan.get("next_arguments") or project_args)
+    else:
+        copyable_tool = "fill_submission_evidence_files"
+        copyable_arguments = {**project_args, "entries": fill_entries, "mark_ready": False}
+    operator_instructions = _submission_evidence_preview_operator_instructions(status)
     return {
         "ok": True,
         "source": SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE,
@@ -157,16 +163,12 @@ def build_submission_evidence_fill_preview(
         "fill_plan_status": fill_plan.get("status"),
         "draft_entry_count": len(filtered_entries),
         "copyable_tool_call": {
-            "tool": "fill_submission_evidence_files",
+            "tool": copyable_tool,
             "arguments": copyable_arguments,
             "required_scope": "mcp:commit",
             "requires_explicit_operator_review": True,
         },
-        "operator_instructions": [
-            "Review every entry and replace <operator-confirmed evidence text> with real evidence before running the write tool.",
-            "Keep mark_ready=false until a human reviewer confirms the referenced evidence is final.",
-            "Run get_release_submission_readiness again after filling files.",
-        ],
+        "operator_instructions": operator_instructions,
         "evidence_bundle": bundle,
         "authority_boundary": {
             "read_only": True,
@@ -369,6 +371,8 @@ def _release_submission_recommended_actions(
     checks = release_submission.get("checks")
     evidence_check = checks.get("submission_evidence_references") if isinstance(checks, dict) else None
     manifest_check = checks.get("submission_materials_manifest") if isinstance(checks, dict) else None
+    progress = release_submission.get("submission_evidence_progress")
+    review_keys = _filled_not_marked_ready_keys(progress)
     if source in {"unknown", "parameters_only"}:
         return [
             {
@@ -404,6 +408,23 @@ def _release_submission_recommended_actions(
                     "entry_templates": entry_templates,
                 },
                 "why": "Replace placeholder submission evidence and add missing files before marking release/App submission ready.",
+            }
+        ]
+    if review_keys:
+        return [
+            {
+                "tool": "mark_submission_evidence_ready_fields",
+                "arguments": {
+                    **project_args,
+                    "keys": review_keys,
+                    "review_confirmation": "human_reviewed",
+                },
+                "evidence_context": {
+                    "keys": review_keys,
+                    "ready_fields": _ready_fields_for_keys(progress, review_keys),
+                    "refs_by_key": _refs_by_key(progress, review_keys),
+                },
+                "why": "All selected evidence files are present; review them and mark the corresponding ready fields true.",
             }
         ]
     return [
@@ -631,6 +652,21 @@ def _release_submission_fill_plan(
             "human_review_required": False,
             "why": "Submission evidence is already marked ready by the local manifest and readiness checks.",
         }
+    review_keys = _filled_not_marked_ready_keys(progress)
+    if review_keys:
+        return {
+            "status": "evidence_ready_for_review",
+            "next_tool": "mark_submission_evidence_ready_fields",
+            "next_arguments": {
+                **project_args,
+                "keys": review_keys,
+                "review_confirmation": "human_reviewed",
+            },
+            "draft_entries": [],
+            "review_entries": _review_entries_for_keys(progress, review_keys),
+            "human_review_required": True,
+            "why": "Evidence files are present; human review is required before setting manifest ready fields true.",
+        }
     draft_entries = _release_submission_draft_entries(release_submission, progress)
     return {
         "status": "evidence_needs_fill",
@@ -680,6 +716,65 @@ def _release_submission_draft_entries(release_submission: dict[str, Any], progre
     return entries
 
 
+def _filled_not_marked_ready_keys(progress: Any) -> list[str]:
+    if not isinstance(progress, dict):
+        return []
+    counts = progress.get("counts")
+    if not isinstance(counts, dict):
+        return []
+    if any(_count_value(counts.get(key)) > 0 for key in ("needs_attention", "placeholder", "not_started")):
+        return []
+    rows = progress.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [
+        str(row.get("key"))
+        for row in rows
+        if isinstance(row, dict) and row.get("status") == "filled_not_marked_ready" and row.get("key")
+    ]
+
+
+def _count_value(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _review_entries_for_keys(progress: Any, keys: list[str]) -> list[dict[str, Any]]:
+    key_set = set(keys)
+    rows = progress.get("rows") if isinstance(progress, dict) else []
+    if not isinstance(rows, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("key") or "") not in key_set:
+            continue
+        entries.append(
+            {
+                "key": row.get("key"),
+                "ready_field": row.get("ready_field"),
+                "refs": list(row.get("refs") or []) if isinstance(row.get("refs"), list) else [],
+                "current_status": row.get("status"),
+                "next_action": row.get("next_action"),
+            }
+        )
+    return entries
+
+
+def _ready_fields_for_keys(progress: Any, keys: list[str]) -> list[str]:
+    return [
+        str(item.get("ready_field"))
+        for item in _review_entries_for_keys(progress, keys)
+        if item.get("ready_field")
+    ]
+
+
+def _refs_by_key(progress: Any, keys: list[str]) -> list[dict[str, Any]]:
+    return [
+        {"key": item["key"], "refs": item["refs"]}
+        for item in _review_entries_for_keys(progress, keys)
+        if item.get("key")
+    ]
+
+
 def _release_submission_evidence_bundle_summary(
     release_submission: dict[str, Any],
     progress_summary: dict[str, Any],
@@ -719,6 +814,8 @@ def _submission_evidence_fill_preview_status(
         return "manifest_needs_attention"
     if fill_plan_status == "needs_release_readiness":
         return "needs_release_readiness"
+    if fill_plan_status == "evidence_ready_for_review":
+        return "review_ready"
     if selected_keys and not fill_entries:
         return "selected_keys_not_available"
     if fill_entries:
@@ -731,6 +828,8 @@ def _submission_evidence_fill_preview_status(
 def _submission_evidence_fill_preview_summary(status: str, fill_entries: list[dict[str, Any]]) -> str:
     if status == "preview_ready":
         return f"Prepared a read-only fill payload preview with {len(fill_entries)} evidence entries."
+    if status == "review_ready":
+        return "Prepared a read-only ready-field marking payload for human-reviewed evidence."
     if status == "no_fill_needed":
         return "Submission evidence is already ready; no fill payload is needed."
     if status == "manifest_missing":
@@ -740,6 +839,20 @@ def _submission_evidence_fill_preview_summary(status: str, fill_entries: list[di
     if status == "selected_keys_not_available":
         return "No draft evidence entries matched the selected keys."
     return "No submission evidence fill payload is ready yet."
+
+
+def _submission_evidence_preview_operator_instructions(status: str) -> list[str]:
+    if status == "review_ready":
+        return [
+            "Review every referenced evidence file before running the mark-ready tool.",
+            "Use review_confirmation=human_reviewed only after a human reviewer confirms the evidence is final.",
+            "Run get_release_submission_readiness again after marking ready fields.",
+        ]
+    return [
+        "Review every entry and replace <operator-confirmed evidence text> with real evidence before running the write tool.",
+        "Keep mark_ready=false until a human reviewer confirms the referenced evidence is final.",
+        "Run get_release_submission_readiness again after filling files.",
+    ]
 
 
 def _submission_evidence_bundle_authority_boundary() -> dict[str, bool]:
