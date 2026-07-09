@@ -159,6 +159,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_product_console_map",
     "get_release_submission_readiness",
     "get_submission_evidence_fill_preview",
+    "get_submission_evidence_auto_draft",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "get_commander_app_manifest",
@@ -520,6 +521,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_product_console_map",
     "get_release_submission_readiness",
     "get_submission_evidence_fill_preview",
+    "get_submission_evidence_auto_draft",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "get_commander_app_manifest",
@@ -817,6 +819,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_product_console_map",
         "get_release_submission_readiness",
         "get_submission_evidence_fill_preview",
+        "get_submission_evidence_auto_draft",
         "get_commander_app_manifest",
         "render_commander_app",
         "get_apps_connector_smoke_packet",
@@ -1084,6 +1087,7 @@ class MCPPlanningBridgeServer:
         full_loop_authority_input_schema = self._full_loop_authority_input_schema()
         release_submission_input_schema = self._release_submission_input_schema()
         submission_evidence_fill_preview_input_schema = self._submission_evidence_fill_preview_input_schema()
+        submission_evidence_auto_draft_input_schema = self._submission_evidence_auto_draft_input_schema()
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
         self.tools = {
@@ -1098,6 +1102,7 @@ class MCPPlanningBridgeServer:
             "get_product_console_map": self._tool_get_product_console_map,
             "get_release_submission_readiness": self._tool_get_release_submission_readiness,
             "get_submission_evidence_fill_preview": self._tool_get_submission_evidence_fill_preview,
+            "get_submission_evidence_auto_draft": self._tool_get_submission_evidence_auto_draft,
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
@@ -1369,6 +1374,23 @@ class MCPPlanningBridgeServer:
                     "不写文件、不标 ready、不创建 OpenAI app draft、不提交 review、不发布。scope=mcp:read。"
                 ),
                 input_schema=submission_evidence_fill_preview_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_submission_evidence_auto_draft",
+                title="Get Submission Evidence Auto Draft",
+                description=(
+                    f"[{self.project_hint}] 只读生成可由当前 MCP/Commander 事实预填的 submission evidence 草稿。"
+                    "覆盖 mcp_tool_info、security_review、metadata_snapshot；返回 fill_submission_evidence_files 的 copyable arguments；"
+                    "不写文件、不标 ready、不创建 OpenAI app draft、不提交 review、不发布。scope=mcp:read。"
+                ),
+                input_schema=submission_evidence_auto_draft_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -5367,6 +5389,7 @@ class MCPPlanningBridgeServer:
         <button class="secondary" data-tool="get_agent_operator_flow_packet">Flow</button>
         <button class="secondary" data-tool="get_product_console_map">Console</button>
         <button class="secondary" data-tool="get_release_submission_readiness">Submission</button>
+        <button class="secondary" data-tool="get_submission_evidence_auto_draft">Auto Draft</button>
         <button class="secondary" data-tool="get_submission_evidence_fill_preview">Fill Preview</button>
         <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
         <button class="secondary" data-tool="get_stable_replacement_cadence">Cadence</button>
@@ -6496,6 +6519,25 @@ class MCPPlanningBridgeServer:
                     "type": "array",
                     "description": "可选。只为选中的 evidence key 生成 fill payload 预览；不写文件。",
                     "items": {"type": "string", "enum": evidence_keys},
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
+
+    def _submission_evidence_auto_draft_input_schema(self) -> dict[str, Any]:
+        auto_keys = ["mcp_tool_info", "security_review", "metadata_snapshot"]
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "selected_keys": {
+                    "type": "array",
+                    "description": "可选。只为可自动预填的 evidence key 生成草稿；不写文件。",
+                    "items": {"type": "string", "enum": auto_keys},
                 },
             },
             "required": [],
@@ -8499,6 +8541,218 @@ class MCPPlanningBridgeServer:
             selected_keys=selected_keys if isinstance(selected_keys, list) else None,
         )
 
+    def _tool_get_submission_evidence_auto_draft(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        selected_keys = self._selected_auto_submission_evidence_keys(params.get("selected_keys"))
+        local_service = self._connector_runtime_local_service_evidence(project_root)
+        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        connector_health = get_connector_runtime_health_status(
+            runtime_status=runtime_status,
+            local_service=local_service,
+        )
+        visible_tool_defs = self._filter_tools_by_exposure_profile(self.tool_defs)
+        tool_scope_map = {
+            tool.name: self.get_required_scope_for_tool(tool.name, {}) or "unknown"
+            for tool in visible_tool_defs
+        }
+        context = {
+            "project_name": project_name,
+            "project_root": project_root,
+            "runtime_status": runtime_status,
+            "connector_health": connector_health,
+            "visible_tool_defs": visible_tool_defs,
+            "tool_scope_map": tool_scope_map,
+            "mcp_exposure_profile": self.mcp_exposure_profile,
+            "service_mode": self.service_mode,
+        }
+        entries = [
+            self._submission_evidence_auto_entry(key, context)
+            for key in selected_keys
+        ]
+        entries = [entry for entry in entries if isinstance(entry, dict)]
+        return {
+            "ok": True,
+            "source": "submission_evidence_auto_draft",
+            "schema_version": "submission_evidence_auto_draft.v1",
+            "read_only": True,
+            "side_effects": False,
+            "project_root": project_root,
+            "project_name": project_name,
+            "status": "draft_ready" if entries else "no_supported_keys",
+            "selected_keys": selected_keys,
+            "generated_keys": [entry["key"] for entry in entries],
+            "unsupported_keys": [],
+            "draft_entries": entries,
+            "copyable_tool_call": {
+                "tool": "fill_submission_evidence_files",
+                "arguments": {
+                    "project_name": project_name,
+                    "entries": [entry["copyable_entry_shape"] for entry in entries],
+                    "mark_ready": False,
+                },
+                "required_scope": "mcp:commit",
+                "requires_explicit_operator_review": True,
+            },
+            "operator_instructions": [
+                "Review and edit every generated evidence draft before writing files.",
+                "Keep mark_ready=false until a human reviewer confirms the evidence is final.",
+                "Run get_release_submission_readiness after filling files.",
+            ],
+            "authority_boundary": {
+                "read_only": True,
+                "side_effects": False,
+                "does_not_write_files": True,
+                "does_not_mark_ready_fields": True,
+                "does_not_create_openai_app_draft": True,
+                "does_not_submit_app_for_review": True,
+                "does_not_publish_app": True,
+                "does_not_read_tokens_or_cookies": True,
+                "does_not_read_raw_logs": True,
+            },
+        }
+
+    def _selected_auto_submission_evidence_keys(self, raw_selected: Any) -> list[str]:
+        supported = ["mcp_tool_info", "security_review", "metadata_snapshot"]
+        if not isinstance(raw_selected, list):
+            return supported
+        selected = [
+            str(item).strip()
+            for item in raw_selected
+            if isinstance(item, str) and str(item).strip() in supported
+        ]
+        return selected or supported
+
+    def _submission_evidence_auto_entry(self, key: str, context: dict[str, Any]) -> dict[str, Any] | None:
+        filename_by_key = {
+            "mcp_tool_info": "mcp-tool-info.md",
+            "security_review": "security-review.md",
+            "metadata_snapshot": "metadata-snapshot.md",
+        }
+        content_builders = {
+            "mcp_tool_info": self._auto_mcp_tool_info_evidence,
+            "security_review": self._auto_security_review_evidence,
+            "metadata_snapshot": self._auto_metadata_snapshot_evidence,
+        }
+        builder = content_builders.get(key)
+        if builder is None:
+            return None
+        filename = filename_by_key[key]
+        content = builder(context)
+        return {
+            "key": key,
+            "filename": filename,
+            "content_length": len(content),
+            "copyable_entry_shape": {
+                "key": key,
+                "filename": filename,
+                "content": content,
+            },
+        }
+
+    def _auto_mcp_tool_info_evidence(self, context: dict[str, Any]) -> str:
+        visible_tool_defs = context.get("visible_tool_defs") if isinstance(context.get("visible_tool_defs"), list) else []
+        tool_scope_map = context.get("tool_scope_map") if isinstance(context.get("tool_scope_map"), dict) else {}
+        lines = [
+            "# MCP Tool Information Evidence",
+            "",
+            "## tool_inventory",
+            f"Project name: {context.get('project_name') or '-'}",
+            f"MCP exposure profile: {context.get('mcp_exposure_profile') or '-'}",
+            f"Visible tool count: {len(visible_tool_defs)}",
+            "",
+            "| Tool | Scope | Title |",
+            "|---|---|---|",
+        ]
+        for tool in visible_tool_defs:
+            if not isinstance(tool, MCPToolDef):
+                continue
+            lines.append(f"| `{tool.name}` | `{tool_scope_map.get(tool.name, 'unknown')}` | {tool.title} |")
+        lines.extend(
+            [
+                "",
+                "## scope_map",
+                "Tools marked `mcp:read` are evidence-only reads. Tools marked `mcp:preview` prepare bounded previews. Tools marked `mcp:commit` require explicit operator authorization and are not invoked by this evidence draft.",
+                "",
+                "## side_effects",
+                "This evidence draft is generated by a read-only MCP tool. It does not start executors, run validation, write files, commit, push, replace stable service, create OpenAI App drafts, submit review, publish, or read tokens/cookies/raw logs.",
+                "",
+                "## safety_boundaries",
+                "Submission write actions remain separated behind `fill_submission_evidence_files` with `mcp:commit` scope. Ready fields remain false until a human reviewer confirms final evidence.",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+    def _auto_security_review_evidence(self, context: dict[str, Any]) -> str:
+        connector_health = context.get("connector_health") if isinstance(context.get("connector_health"), dict) else {}
+        runtime_status = context.get("runtime_status") if isinstance(context.get("runtime_status"), dict) else {}
+        return "\n".join(
+            [
+                "# Security And Privacy Review Evidence",
+                "",
+                "## least_privilege",
+                "The Commander and release-evidence draft paths are read-only. Write tools remain separate and require `mcp:commit` scope. Remote/public MCP policy denies commit/plan scopes unless explicitly authorized by the configured service policy.",
+                "",
+                "## consent",
+                "The generated submission evidence payload is a preview only. Operators must review and replace any draft text before calling `fill_submission_evidence_files`. The preview keeps `mark_ready=false` by default.",
+                "",
+                "## redaction",
+                "This draft is built from sanitized service facts: tool names, scopes, runtime freshness, and connector summary statuses. It does not read token values, cookies, browser login state, provider config, raw logs, tunnel-client config, or proxy config.",
+                "",
+                "## monitoring",
+                f"Runtime reload awareness: {runtime_status.get('reload_awareness_reason') or 'unknown'}",
+                f"Reload needed for verification: {runtime_status.get('reload_needed_for_verification')}",
+                f"Connector overall status: {connector_health.get('overall_status') or 'unknown'}",
+                f"Operator closeout status: {((connector_health.get('operator_closeout') or {}) if isinstance(connector_health.get('operator_closeout'), dict) else {}).get('status') or 'unknown'}",
+                "",
+                "## review_status",
+                "Human security/privacy review is still required before marking `security_review_ready=true`.",
+            ]
+        ) + "\n"
+
+    def _auto_metadata_snapshot_evidence(self, context: dict[str, Any]) -> str:
+        runtime_status = context.get("runtime_status") if isinstance(context.get("runtime_status"), dict) else {}
+        connector_health = context.get("connector_health") if isinstance(context.get("connector_health"), dict) else {}
+        local_service = connector_health.get("local_service") if isinstance(connector_health.get("local_service"), dict) else {}
+        external_connector = connector_health.get("external_connector") if isinstance(connector_health.get("external_connector"), dict) else {}
+        visible_tool_defs = context.get("visible_tool_defs") if isinstance(context.get("visible_tool_defs"), list) else []
+        return "\n".join(
+            [
+                "# Metadata Snapshot Evidence",
+                "",
+                "## app_metadata",
+                "App name: ColaMeta",
+                "Description: Project console for local AI engineering workflows.",
+                f"Project name: {context.get('project_name') or '-'}",
+                f"Service mode: {context.get('service_mode')}",
+                f"MCP exposure profile: {context.get('mcp_exposure_profile') or '-'}",
+                "",
+                "## urls",
+                "Public MCP URL and privacy/company URLs must be confirmed by the human submitter before Dashboard submission.",
+                "",
+                "## assets",
+                "Logo and screenshots are not generated by this auto draft and must be provided separately.",
+                "",
+                "## runtime_snapshot",
+                f"Project checkout head: {runtime_status.get('project_checkout_head') or '-'}",
+                f"Loaded runtime head: {runtime_status.get('loaded_runtime_head') or '-'}",
+                f"Runtime stale: {runtime_status.get('runtime_loaded_code_stale')}",
+                f"Reload needed for verification: {runtime_status.get('reload_needed_for_verification')}",
+                "",
+                "## connector_snapshot",
+                f"Local service status: {local_service.get('status') or local_service.get('state') or 'unknown'}",
+                f"External connector status: {external_connector.get('status') or 'unknown'}",
+                f"Connector overall status: {connector_health.get('overall_status') or 'unknown'}",
+                "",
+                "## tool_metadata",
+                f"Visible tool count: {len(visible_tool_defs)}",
+                "Review the MCP tool information evidence for the full tool inventory and scope map.",
+                "",
+                "## reviewer",
+                "Human reviewer must confirm final Dashboard metadata, URLs, logo, screenshots, and policy text before marking `metadata_snapshot_reviewed=true`.",
+            ]
+        ) + "\n"
+
     def _tool_get_release_submission_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
@@ -8773,6 +9027,7 @@ class MCPPlanningBridgeServer:
                 {"tool": "manage_stage_parallel_merges", "arguments": {**project_args, "action": "preview"}},
                 {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args},
                 {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
+                {"tool": "get_submission_evidence_auto_draft", "arguments": project_args},
                 {"tool": "get_submission_evidence_fill_preview", "arguments": project_args},
                 {"tool": "get_connector_runtime_health_status", "arguments": project_args},
                 {"tool": "analyze_project_state", "arguments": project_args},
@@ -8795,6 +9050,7 @@ class MCPPlanningBridgeServer:
                     {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": flow_profile_id}},
                     {"tool": "get_product_console_map", "arguments": project_args},
                     {"tool": "get_release_submission_readiness", "arguments": project_args},
+                    {"tool": "get_submission_evidence_auto_draft", "arguments": project_args},
                     {"tool": "get_submission_evidence_fill_preview", "arguments": project_args},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
