@@ -932,6 +932,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_service_entry_profile" in tool_defs
         assert "get_agent_operator_flow_packet" in tool_defs
         assert "get_web_gpt_service_entrypoint" in tool_defs
+        assert "get_product_readiness_status" in tool_defs
+        assert "get_chatgpt_app_readiness" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
         assert "render_commander_app" in tool_defs
         assert "get_apps_connector_smoke_packet" in tool_defs
@@ -956,6 +958,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert commander_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert commander_schema["properties"]["control_plane"]["additionalProperties"] is False
         assert tool_defs["get_agent_operator_flow_packet"].title == "Get Agent Operator Flow Packet"
+        assert tool_defs["get_product_readiness_status"].title == "Get Product Readiness Status"
+        assert tool_defs["get_chatgpt_app_readiness"].title == "Get ChatGPT App Readiness"
         assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
         assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["get_apps_connector_smoke_packet"].title == "Get Apps Connector Smoke Packet"
@@ -987,6 +991,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_service_entry_profile" in server._visible_tool_names()
         assert "get_agent_operator_flow_packet" in server._visible_tool_names()
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
+        assert "get_product_readiness_status" in server._visible_tool_names()
+        assert "get_chatgpt_app_readiness" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
         assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
@@ -1011,6 +1017,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_service_entry_profile", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_agent_operator_flow_packet", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_product_readiness_status", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_chatgpt_app_readiness", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
@@ -1389,6 +1397,44 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         serialized = json.dumps(rejected, ensure_ascii=False)
         assert "must-not-return" not in serialized
         assert "raw_token" not in serialized
+
+    def test_product_readiness_tools_are_read_only_and_use_product_packet(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        readiness_packet = {
+            "ok": True,
+            "source": "product_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "ready",
+            "ready": True,
+        }
+        chatgpt_packet = {
+            "ok": True,
+            "source": "chatgpt_connection_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "ready",
+            "ready": True,
+            "recommended_sequence": [{"tool": "list_registered_projects", "arguments": {}}],
+        }
+
+        with (
+            patch("runner.mcp_server.build_product_readiness_packet", return_value=readiness_packet) as readiness,
+            patch("runner.mcp_server.build_chatgpt_connection_packet", return_value=chatgpt_packet) as chatgpt,
+        ):
+            result = server.call_tool_for_agent("get_product_readiness_status", {})
+            chatgpt_result = server.call_tool_for_agent("get_chatgpt_app_readiness", {})
+
+        assert result["tool"] == "get_product_readiness_status"
+        assert result["data"]["source"] == "product_readiness"
+        assert result["data"]["read_only"] is True
+        assert result["data"]["side_effects"] is False
+        assert chatgpt_result["tool"] == "get_chatgpt_app_readiness"
+        assert chatgpt_result["data"]["source"] == "chatgpt_connection_readiness"
+        assert chatgpt_result["data"]["read_only"] is True
+        readiness.assert_called_once_with(str(project))
+        chatgpt.assert_called_once()
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()

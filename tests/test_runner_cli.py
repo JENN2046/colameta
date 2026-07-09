@@ -9,6 +9,92 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+class RunnerCliProductReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="colameta-runner-cli-product-")
+        self.tmp_path = Path(self._tmp.name)
+        self.project = self.tmp_path / "managed-project"
+        self.project.mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_doctor_json_outputs_product_readiness_packet(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "product_readiness",
+            "status": "ready",
+            "ready": True,
+            "ops_check": {"beta_gate_ready": True},
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(runner_cli, "build_product_readiness_packet", return_value=packet),
+        ):
+            result = runner_cli._run_product_doctor(["doctor", str(self.project), "--json"])
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert stderr.getvalue() == ""
+        assert payload["source"] == "product_readiness"
+        assert payload["ready"] is True
+
+    def test_connect_chatgpt_json_outputs_read_only_connection_packet(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "chatgpt_connection_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "connector_url": "https://example.test/mcp",
+            "status": "ready",
+            "ready": True,
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_chatgpt_connection_packet", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_connect_chatgpt(
+                ["connect-chatgpt", str(self.project), "--project-name", "demo-project", "--json"]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["read_only"] is True
+        assert payload["connector_url"] == "https://example.test/mcp"
+        assert build_packet.call_args.kwargs["project_name"] == "demo-project"
+
+    def test_app_smoke_json_outputs_external_handoff_packet(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "apps_connector_smoke_handoff",
+            "read_only": True,
+            "side_effects": False,
+            "status": "needs_attention",
+            "safe_next_action": {"tool": "get_apps_connector_smoke_packet"},
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_apps_connector_smoke_handoff_packet", return_value=packet),
+        ):
+            result = runner_cli._run_app_smoke(["app-smoke", str(self.project), "--json"])
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "apps_connector_smoke_handoff"
+        assert payload["safe_next_action"]["tool"] == "get_apps_connector_smoke_packet"
+
+
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="colameta-runner-cli-health-")
