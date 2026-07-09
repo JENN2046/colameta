@@ -5556,6 +5556,7 @@ class MCPPlanningBridgeServer:
       var seq = 1;
       var activeProjectName = "";
       var actionRunStatus = {};
+      var pendingBridgeCalls = {};
       function byId(id) { return document.getElementById(id); }
       function text(id, value) { byId(id).textContent = value || "-"; }
       function normalize(payload) {
@@ -5830,6 +5831,28 @@ class MCPPlanningBridgeServer:
       function recordActionResultSucceeded(result) {
         if (!result || typeof result !== "object") return false;
         return result.status === "updated" || result.status === "recorded" || result.result_status === "recorded";
+      }
+      function bridgeMessageId(message) {
+        if (!message || typeof message !== "object") return "";
+        if (message.id) return String(message.id);
+        var params = message.params || {};
+        if (params.id) return String(params.id);
+        if (params.request_id) return String(params.request_id);
+        if (params.requestId) return String(params.requestId);
+        return "";
+      }
+      function resultFailed(data) {
+        return data && typeof data === "object" && (data.ok === false || data.error || data.status === "failed");
+      }
+      function rememberBridgeToolResult(message, data) {
+        var id = bridgeMessageId(message);
+        var pending = id && pendingBridgeCalls[id];
+        if (!pending || !pending.statusKey) return;
+        var normalized = normalize(data) || {};
+        var status = resultFailed(normalized) ? "failed" : "updated";
+        var payloadStatus = normalized && normalized.status ? " | " + normalized.status : "";
+        rememberActionRunStatus(pending.statusKey, status, pending.name + " via bridge" + payloadStatus);
+        delete pendingBridgeCalls[id];
       }
       function renderRecordButton(button, statusNode, action, key) {
         var current = actionRunStatus[key];
@@ -6120,9 +6143,11 @@ class MCPPlanningBridgeServer:
             text("log", "Direct call failed; using bridge for " + name + ": " + summary);
           }
         }
+        var requestId = "colameta-commander-" + (seq++);
+        pendingBridgeCalls[requestId] = { name: name, statusKey: statusKey };
         window.parent.postMessage({
           jsonrpc: "2.0",
-          id: "colameta-commander-" + (seq++),
+          id: requestId,
           method: "tools/call",
           params: { name: name, arguments: callArgs }
         }, "*");
@@ -6159,10 +6184,13 @@ class MCPPlanningBridgeServer:
       window.addEventListener("message", function (event) {
         var message = event.data || {};
         if (message.method === "ui/notifications/tool-result") {
-          render(message.params && (message.params.structuredContent || message.params.result));
+          var notificationResult = message.params && (message.params.structuredContent || message.params.result);
+          rememberBridgeToolResult(message, notificationResult);
+          render(notificationResult);
           return;
         }
         if (message.result && message.result.structuredContent) {
+          rememberBridgeToolResult(message, message.result.structuredContent);
           render(message.result.structuredContent);
         }
       });
