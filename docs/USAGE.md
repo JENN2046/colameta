@@ -305,6 +305,16 @@ manifest ready fields are still false, the same preview returns
 human reviewer confirms the referenced evidence is final. The Commander widget
 `Fill Preview` button calls this read-only preview.
 
+For the same local workflow outside the connector, use the CLI after reviewing
+the referenced evidence files:
+
+```bash
+colameta mark-submission-evidence-ready \
+  --keys logo,screenshots,test_prompts,test_responses,localization,mcp_tool_info,app_management_permissions,security_review,metadata_snapshot,submission_confirmations \
+  --review-confirmation human_reviewed \
+  --json
+```
+
 Use `get_submission_evidence_auto_draft` when you want read-only draft text for
 submission evidence that can be derived from current MCP/Commander facts. It
 currently supports `mcp_tool_info`, `security_review`, and `metadata_snapshot`.

@@ -13,6 +13,7 @@ USAGE_MESSAGE = """用法：
   colameta console-map [project_path] [--project-name NAME] [--json]
   colameta release-readiness [project_path] [--project-name NAME] [--json] [--submission-materials PATH] [submission material flags]
   colameta init-submission-evidence [project_path] [--json] [--app-name NAME]
+  colameta mark-submission-evidence-ready [project_path] --keys KEY[,KEY...] --review-confirmation human_reviewed [--json]
   colameta logs [project_path] [--lines N]
   colameta models [project_path] [--refresh]
   colameta serve <project_path> [options]

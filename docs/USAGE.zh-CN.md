@@ -316,6 +316,15 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 `review_confirmation=human_reviewed`。只有人工确认这些 evidence 已经是最终版之后，才调用这个
 commit-scoped 工具标 ready。
 
+如果不走 connector，也可以在本地 CLI 里做同一个人工审核后的标记：
+
+```bash
+colameta mark-submission-evidence-ready \
+  --keys logo,screenshots,test_prompts,test_responses,localization,mcp_tool_info,app_management_permissions,security_review,metadata_snapshot,submission_confirmations \
+  --review-confirmation human_reviewed \
+  --json
+```
+
 如果要让 MCP 根据当前服务事实先生成可审查草稿，可以调用只读 auto draft：
 
 ```text
