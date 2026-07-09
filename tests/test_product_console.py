@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from runner.product_console import build_product_console_map
+from runner.release_submission_readiness import DEFAULT_SUBMISSION_MATERIALS_REL_PATH
 
 
 def _readiness(status: str = "ready") -> dict[str, object]:
@@ -14,6 +17,10 @@ def _readiness(status: str = "ready") -> dict[str, object]:
                 "status": "ready",
                 "reason_codes": ["CONNECTOR_SMOKE_READY"],
             }
+        },
+        "ops_check": {
+            "ops_check_ready": status == "ready",
+            "connector_smoke_ready": status == "ready",
         },
     }
 
@@ -88,3 +95,40 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
     assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
     assert packet["release_submission_snapshot"]["status"] == "blocked"
+
+
+def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "chatgpt_app_submission_materials.v1",
+                "app_name": "ColaMeta",
+                "app_description": "Project console for local AI engineering workflows.",
+                "company_url": "https://example.test",
+                "privacy_policy_url": "https://example.test/privacy",
+                "logo_ready": True,
+                "screenshots_ready": True,
+                "test_prompts_ready": True,
+                "test_responses_ready": True,
+                "localization_ready": True,
+                "mcp_tool_info_ready": True,
+                "app_management_permissions_confirmed": True,
+                "security_review_ready": True,
+                "metadata_snapshot_reviewed": True,
+                "submission_confirmations_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+    )
+
+    assert packet["release_submission_snapshot"]["status"] == "ready"
+    assert packet["release_submission_snapshot"]["submission_materials"]["source"] == "default_manifest_file"
+    assert "app_name" in packet["release_submission_snapshot"]["submission_materials"]["effective_fields"]

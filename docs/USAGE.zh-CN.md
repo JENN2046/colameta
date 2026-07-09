@@ -223,6 +223,17 @@ CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小
 `submission_materials` object，不接受本机文件路径。manifest 里的未知字段会被标为
 `SUBMISSION_MATERIALS_MANIFEST_HAS_UNKNOWN_FIELDS`，防止拼写错误被静默忽略。
 
+约定的真实 manifest 路径是：
+
+```text
+docs/chatgpt-app-submission-materials.json
+```
+
+当这个文件存在时，`colameta release-readiness --json`、`colameta console-map --json`
+和 `get_product_console_map` 会自动把它纳入 release/submission readiness；文件不存在时，
+状态仍可通过显式 flag 或 MCP 的结构化 `submission_materials` object 提供。仓库里的
+`docs/chatgpt-app-submission-materials.example.json` 只是模板，不会被自动当作真实证据。
+
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission
 证据齐了；真正提交仍由人到 OpenAI Dashboard 手动完成。

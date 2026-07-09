@@ -45,7 +45,11 @@ from runner.product_readiness import (
 )
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_console import build_product_console_map
-from runner.release_submission_readiness import build_release_submission_readiness
+from runner.release_submission_readiness import (
+    RELEASE_SUBMISSION_MATERIALS_MAX_BYTES,
+    build_release_submission_readiness,
+    load_submission_materials_file,
+)
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -67,7 +71,6 @@ TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS = 2.0
 SERVICE_METADATA_FILENAME = "service.json"
 SERVICE_PID_FILENAME = "service.pid"
 SERVICE_LOG_FILENAME = "service.log"
-RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 
 def _resolve_path(path: str) -> str:
     return cli_env.resolve_path(path)
@@ -2599,39 +2602,41 @@ def _run_release_readiness(args: list[str]) -> int:
 def _read_release_submission_materials(path: str) -> dict[str, object] | None:
     resolved = _resolve_path(path)
     redacted_path = redact_status_written_path(resolved)
-    if not os.path.isfile(resolved):
+    payload, error = load_submission_materials_file(resolved)
+    if payload is not None:
+        return payload
+    error = error or {"error_code": "SUBMISSION_MATERIALS_READ_FAILED"}
+    error_code = str(error.get("error_code") or "SUBMISSION_MATERIALS_READ_FAILED")
+    if error_code == "SUBMISSION_MATERIALS_FILE_NOT_FOUND":
         print(f"release-readiness 参数错误：submission materials 文件不存在：{redacted_path}", file=sys.stderr)
         return None
-    try:
-        size = os.path.getsize(resolved)
-    except OSError as exc:
+    if error_code == "SUBMISSION_MATERIALS_STAT_FAILED":
+        error_type = str(error.get("error_type") or "OSError")
         print(
             "release-readiness 参数错误：无法读取 submission materials 文件："
-            f"{redacted_path}: {exc.__class__.__name__}",
+            f"{redacted_path}: {error_type}",
             file=sys.stderr,
         )
         return None
-    if size > RELEASE_SUBMISSION_MATERIALS_MAX_BYTES:
+    if error_code == "SUBMISSION_MATERIALS_FILE_TOO_LARGE":
         print(
             "release-readiness 参数错误：submission materials 文件过大："
             f"{redacted_path} > {RELEASE_SUBMISSION_MATERIALS_MAX_BYTES} bytes",
             file=sys.stderr,
         )
         return None
-    try:
-        with open(resolved, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except json.JSONDecodeError as exc:
+    if error_code == "SUBMISSION_MATERIALS_JSON_INVALID":
         print(
             "release-readiness 参数错误：submission materials JSON 无法解析："
-            f"{redacted_path}: line {exc.lineno} column {exc.colno}",
+            f"{redacted_path}: line {error.get('line')} column {error.get('column')}",
             file=sys.stderr,
         )
         return None
-    except (OSError, UnicodeDecodeError) as exc:
+    if error_code == "SUBMISSION_MATERIALS_READ_FAILED":
+        error_type = str(error.get("error_type") or "OSError")
         print(
             "release-readiness 参数错误：submission materials JSON 无法解析："
-            f"{redacted_path}: {exc.__class__.__name__}",
+            f"{redacted_path}: {error_type}",
             file=sys.stderr,
         )
         return None

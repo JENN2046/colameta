@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -10,6 +11,8 @@ from runner.product_readiness import build_product_readiness_packet
 
 RELEASE_SUBMISSION_SOURCE = "release_submission_readiness"
 RELEASE_SUBMISSION_VERSION = "release_submission_readiness.v1"
+DEFAULT_SUBMISSION_MATERIALS_REL_PATH = "docs/chatgpt-app-submission-materials.json"
+RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 READY = "ready"
 NEEDS_ATTENTION = "needs_attention"
 BLOCKED = "blocked"
@@ -86,6 +89,7 @@ def build_release_submission_readiness(
     metadata_snapshot_reviewed: bool = False,
     submission_confirmations_ready: bool = False,
     submission_materials: Mapping[str, Any] | None = None,
+    auto_load_submission_materials: bool = True,
     readiness_packet: dict[str, Any] | None = None,
     now: datetime | None = None,
     readiness_builder: Callable[..., dict[str, Any]] | None = None,
@@ -100,6 +104,24 @@ def build_release_submission_readiness(
             connector_smoke_fresh_hours=DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
             now=now,
         )
+    manifest_source: dict[str, Any] | None = None
+    manifest_error: dict[str, Any] | None = None
+    if submission_materials is None and auto_load_submission_materials:
+        default_materials_path = default_submission_materials_path(project_root)
+        if os.path.isfile(default_materials_path):
+            loaded_materials, load_error = load_submission_materials_file(default_materials_path)
+            if loaded_materials is not None:
+                submission_materials = loaded_materials
+                manifest_source = {
+                    "source": "default_manifest_file",
+                    "path": DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
+                }
+            else:
+                manifest_error = {
+                    "source": "default_manifest_file",
+                    "path": DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
+                    **(load_error or {"error_code": "SUBMISSION_MATERIALS_READ_FAILED"}),
+                }
     materials = _merge_submission_materials(
         submission_materials,
         app_name=app_name,
@@ -116,6 +138,8 @@ def build_release_submission_readiness(
         security_review_ready=security_review_ready,
         metadata_snapshot_reviewed=metadata_snapshot_reviewed,
         submission_confirmations_ready=submission_confirmations_ready,
+        manifest_source=manifest_source,
+        manifest_error=manifest_error,
     )
     materials_manifest = materials["manifest"]
     checks = _checks(
@@ -283,6 +307,13 @@ def _status_check(status: str, reason_code: str, *, evidence: dict[str, Any] | N
 
 
 def _manifest_check(submission_materials: dict[str, Any]) -> dict[str, Any]:
+    error = submission_materials.get("error")
+    if isinstance(error, dict):
+        return {
+            "status": NEEDS_ATTENTION,
+            "reason_codes": ["SUBMISSION_MATERIALS_MANIFEST_INVALID"],
+            "error": error,
+        }
     ignored = submission_materials.get("ignored_manifest_fields")
     if isinstance(ignored, list) and ignored:
         return {
@@ -323,6 +354,8 @@ def _merge_submission_materials(
     security_review_ready: bool,
     metadata_snapshot_reviewed: bool,
     submission_confirmations_ready: bool,
+    manifest_source: dict[str, Any] | None = None,
+    manifest_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest = submission_materials if isinstance(submission_materials, Mapping) else {}
     parameter_values = {
@@ -367,20 +400,61 @@ def _merge_submission_materials(
         for field in sorted(SUBMISSION_MATERIAL_TEXT_FIELDS | SUBMISSION_MATERIAL_BOOL_FIELDS)
         if _material_field_present(field, effective.get(field))
     )
-    manifest_summary = {
-        "source": "manifest_and_parameters"
+    source_base = str((manifest_source or {}).get("source") or "manifest")
+    source = (
+        f"{source_base}_and_parameters"
         if manifest and parameter_fields
-        else "manifest"
+        else source_base
         if manifest
-        else "parameters_only",
+        else "parameters_only"
+    )
+    manifest_summary = {
+        "source": source,
         "schema_version": _text_from_manifest(manifest, "schema_version"),
         "manifest_fields": manifest_fields,
         "parameter_fields": sorted(parameter_fields),
         "effective_fields": effective_fields,
         "ignored_manifest_fields": ignored_manifest_fields,
     }
+    if manifest_source:
+        manifest_summary["source_detail"] = dict(manifest_source)
+    if manifest_error:
+        manifest_summary["error"] = dict(manifest_error)
     effective["manifest"] = manifest_summary
     return effective
+
+
+def default_submission_materials_path(project_root: str) -> str:
+    return os.path.join(os.path.abspath(os.path.expanduser(project_root)), DEFAULT_SUBMISSION_MATERIALS_REL_PATH)
+
+
+def load_submission_materials_file(path: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    resolved = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(resolved):
+        return None, {"error_code": "SUBMISSION_MATERIALS_FILE_NOT_FOUND"}
+    try:
+        size = os.path.getsize(resolved)
+    except OSError as exc:
+        return None, {"error_code": "SUBMISSION_MATERIALS_STAT_FAILED", "error_type": exc.__class__.__name__}
+    if size > RELEASE_SUBMISSION_MATERIALS_MAX_BYTES:
+        return None, {
+            "error_code": "SUBMISSION_MATERIALS_FILE_TOO_LARGE",
+            "max_bytes": RELEASE_SUBMISSION_MATERIALS_MAX_BYTES,
+        }
+    try:
+        with open(resolved, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        return None, {
+            "error_code": "SUBMISSION_MATERIALS_JSON_INVALID",
+            "line": exc.lineno,
+            "column": exc.colno,
+        }
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, {"error_code": "SUBMISSION_MATERIALS_READ_FAILED", "error_type": exc.__class__.__name__}
+    if not isinstance(payload, dict):
+        return None, {"error_code": "SUBMISSION_MATERIALS_SCHEMA_INVALID"}
+    return payload, None
 
 
 def _text_from_manifest(manifest: Mapping[str, Any], field: str) -> str | None:
