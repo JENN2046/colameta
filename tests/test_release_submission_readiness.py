@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from runner.release_submission_readiness import build_release_submission_readiness
+import json
+
+from runner.release_submission_readiness import (
+    DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
+    build_release_submission_readiness,
+)
 
 
 def _readiness(*, ready: bool = True, ops_ready: bool = True, connector_ready: bool = True) -> dict[str, object]:
@@ -101,6 +106,35 @@ def test_release_submission_accepts_structured_materials_manifest() -> None:
     assert packet["checks"]["submission_materials_manifest"]["reason_codes"] == [
         "SUBMISSION_MATERIALS_MANIFEST_ACCEPTED"
     ]
+
+
+def test_release_submission_auto_loads_default_materials_manifest(tmp_path) -> None:
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps({"schema_version": "chatgpt_app_submission_materials.v1", **_ready_kwargs()}),
+        encoding="utf-8",
+    )
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    assert packet["status"] == "ready"
+    assert packet["submission_materials"]["source"] == "default_manifest_file"
+    assert packet["submission_materials"]["source_detail"]["path"] == DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    assert packet["checks"]["submission_materials_manifest"]["status"] == "ready"
+
+
+def test_release_submission_reports_invalid_default_materials_manifest(tmp_path) -> None:
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{", encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    assert packet["status"] == "needs_attention"
+    assert "SUBMISSION_MATERIALS_MANIFEST_INVALID" in packet["needs_attention_codes"]
+    assert packet["submission_materials"]["error"]["path"] == DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    assert packet["submission_materials"]["error"]["error_code"] == "SUBMISSION_MATERIALS_JSON_INVALID"
 
 
 def test_release_submission_flags_unknown_manifest_fields() -> None:

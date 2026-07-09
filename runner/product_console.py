@@ -300,7 +300,21 @@ def _release_submission_snapshot(release_submission: dict[str, Any] | None) -> d
         "ready": release_submission.get("ready") is True,
         "blocker_codes": list(release_submission.get("blocker_codes") or []),
         "needs_attention_codes": list(release_submission.get("needs_attention_codes") or []),
+        "submission_materials": _release_submission_materials_snapshot(release_submission),
         "safe_next_action": release_submission.get("safe_next_action"),
+    }
+
+
+def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -> dict[str, Any]:
+    materials = release_submission.get("submission_materials")
+    if not isinstance(materials, dict):
+        return {"source": "unknown", "effective_fields": []}
+    return {
+        "source": materials.get("source") or "unknown",
+        "source_detail": materials.get("source_detail"),
+        "effective_fields": list(materials.get("effective_fields") or []),
+        "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
+        "error": materials.get("error"),
     }
 
 
