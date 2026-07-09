@@ -1130,6 +1130,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "record_product_console_action_result" in widget_html
         assert "record action result" in widget_html
         assert "recorded result refresh" in widget_html
+        assert "recordStatus.status === \"recorded\"" in widget_html
+        assert "refresh current" in widget_html
         assert "next_refresh_actions" in widget_html
         assert "last_action_result" in widget_html
         assert "errorSummary" in widget_html

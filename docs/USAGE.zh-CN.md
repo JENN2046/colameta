@@ -212,6 +212,8 @@ preview/commit 工作，也不会授予写权限。
 Commander 也会在 widget 内 read action 有本地结果后显示 `Record` 按钮。点击它会显式调用
 `record_product_console_action_result` 记录短摘要；如果 direct record call 成功，再刷新
 `get_product_console_map`。这只是 runtime summary 写入，不是自动记录，也不授权原 action。
+当记录写入和 console refresh 都完成后，卡片会显示 `recorded | refresh current`，并禁用
+Record 按钮，直到产生下一次本地 action result。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 

@@ -5830,7 +5830,8 @@ class MCPPlanningBridgeServer:
       function renderRecordButton(button, statusNode, action, key) {
         var current = actionRunStatus[key];
         var recordStatus = actionRunStatus[recordKey(action)];
-        button.disabled = !current || current.status === "pending";
+        var recorded = recordStatus && recordStatus.status === "recorded";
+        button.disabled = !current || current.status === "pending" || recorded;
         statusNode.textContent = recordStatus ? [recordStatus.status, recordStatus.message].filter(Boolean).join(" | ") : "";
       }
       function renderActionRefreshQueue(node, action) {
@@ -5958,7 +5959,11 @@ class MCPPlanningBridgeServer:
             var recordResult = await callToolWithArgs("record_product_console_action_result", args, "record action result", recKey);
             renderRecordButton(record, recordStatus, action, key);
             if (recordResult && recordResult.status === "updated") {
-              await callToolWithArgs("get_product_console_map", action.arguments || {}, "recorded result refresh", "record-refresh|" + key);
+              var refreshResult = await callToolWithArgs("get_product_console_map", action.arguments || {}, "recorded result refresh", "record-refresh|" + key);
+              if (refreshResult && refreshResult.status) {
+                rememberActionRunStatus(recKey, "recorded", "refresh current");
+                renderRecordButton(record, recordStatus, action, key);
+              }
             }
           });
           head.appendChild(run);
