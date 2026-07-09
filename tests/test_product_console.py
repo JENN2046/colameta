@@ -338,6 +338,61 @@ def test_console_map_does_not_offer_refresh_after_failed_action_result(tmp_path)
     assert commander_action["next_refresh_actions"] == []
 
 
+def test_console_map_surfaces_recorded_submission_evidence_activity(tmp_path) -> None:
+    result = record_product_console_action_result(
+        str(tmp_path),
+        action_id="submission_evidence_activity",
+        tool="submission_evidence_activity_summary",
+        mode="read",
+        status="updated",
+        message="Submission evidence activity | token=secret-value | recovery refreshed",
+        project_name="demo-project",
+        result_ok=True,
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "recorded"
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    activity = packet["action_result_state"]["submission_evidence_activity"]
+    assert activity["available"] is True
+    assert activity["action_id"] == "submission_evidence_activity"
+    assert activity["tool"] == "submission_evidence_activity_summary"
+    assert activity["mode"] == "read"
+    assert activity["status"] == "updated"
+    assert activity["result_ok"] is True
+    assert activity["project_name"] == "demo-project"
+    assert activity["observed_at"] == "2026-01-02T03:04:05Z"
+    assert "secret-value" not in activity["message"]
+    assert activity["read_only_summary"] is True
+    assert activity["authority_boundary"]["does_not_write_runtime_state"] is True
+
+
+def test_console_map_reports_missing_submission_evidence_activity_result(tmp_path) -> None:
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    activity = packet["action_result_state"]["submission_evidence_activity"]
+    assert activity == {
+        "available": False,
+        "status": "not_recorded",
+        "message": "No submission evidence activity result recorded yet.",
+        "read_only_summary": True,
+    }
+
+
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:
     packet = build_product_console_map(
         "/tmp/project",

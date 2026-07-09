@@ -1788,15 +1788,23 @@ vm.runInThisContext({json.dumps(widget_script)});
   dispatchToolOutput({{
     source: "product_console_map",
     project_name: "demo-project",
-    recommended_first_actions: []
+    recommended_first_actions: [],
+    action_result_state: {{
+      submission_evidence_activity: {{
+        available: true,
+        status: "updated",
+        message: "Recorded recovery refreshed",
+        observed_at: "2026-01-02T03:04:05Z"
+      }}
+    }}
   }});
   assert.strictEqual(evidenceCards().length, 0, "empty state should not render evidence cards");
   assert.strictEqual(notes().length, 1, "empty state should render one note");
   assert(notes()[0].textContent.includes("No evidence progress yet"), notes()[0].textContent);
   assert.strictEqual(byId("submission-status").textContent, "-");
   assert.strictEqual(byId("submission-blockers").textContent, "none");
-  assert.strictEqual(evidenceActivityText(), "No evidence activity yet.");
-  assert.strictEqual(evidenceActivityRecordButton().disabled, true);
+  assert(evidenceActivityText().includes("recorded | updated | Recorded recovery refreshed | 2026-01-02T03:04:05Z"), evidenceActivityText());
+  assert.strictEqual(evidenceActivityRecordButton().disabled, false);
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
