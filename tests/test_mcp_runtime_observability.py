@@ -1124,6 +1124,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "action-refresh" in widget_html
         assert "action-record" in widget_html
         assert "rememberActionRunStatus" in widget_html
+        assert "pendingBridgeCalls" in widget_html
+        assert "bridgeMessageId" in widget_html
+        assert "rememberBridgeToolResult" in widget_html
+        assert "resultFailed" in widget_html
+        assert "via bridge" in widget_html
         assert "refreshKey" in widget_html
         assert "recordKey" in widget_html
         assert "renderActionRefreshQueue" in widget_html
@@ -1142,6 +1147,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "last_action_result" in widget_html
         assert "errorSummary" in widget_html
         assert "bridge fallback after direct failure" in widget_html
+        assert "colameta-commander-" in widget_html
         assert "Last run" in widget_html
         assert "Confirm outside" in widget_html
         assert "Preview first" in widget_html
