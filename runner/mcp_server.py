@@ -5553,6 +5553,7 @@ class MCPPlanningBridgeServer:
   <script>
     (function () {
       var manifest = null;
+      var viewState = {};
       var seq = 1;
       var activeProjectName = "";
       var actionRunStatus = {};
@@ -6044,14 +6045,8 @@ class MCPPlanningBridgeServer:
         var data = normalize(payload);
         if (!data || typeof data !== "object") return;
         if (data.app_manifest_version) manifest = data;
-        var current = manifest || data;
-        if (data && typeof data === "object" && (
-          data.source === "product_console_map" ||
-          Array.isArray(data.recommended_first_actions) ||
-          data.release_submission_evidence_bundle
-        )) {
-          current = Object.assign({}, manifest || {}, data);
-        }
+        viewState = Object.assign({}, viewState, manifest || {}, data);
+        var current = viewState;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
         activeProjectName = projectName && projectName !== "-" ? projectName : activeProjectName;
         var readiness = current.readiness || current.service_readiness_summary || {};
