@@ -1413,6 +1413,172 @@ vm.runInThisContext({json.dumps(widget_script)});
         completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr
 
+    def test_commander_widget_js_copy_evidence_reports_success_and_fallbacks(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-evidence-copy-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function evidenceCopyButton() {{
+  return findByClass(byId("submission-evidence"), "evidence-copy")[0];
+}}
+function evidenceCardCount() {{
+  return findByClass(byId("submission-evidence"), "evidence-card").length;
+}}
+async function flushPromises() {{
+  await Promise.resolve();
+  await Promise.resolve();
+}}
+
+const listeners = {{}};
+let copiedText = "";
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("evidence copy path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "release_submission_readiness",
+          project_name: "demo-project",
+          status: "needs_evidence",
+          submission_evidence_entry_templates: [{{
+            key: "connector_closeout",
+            title: "Connector closeout",
+            status: "missing",
+            default_filename: "connector-closeout.md",
+            default_path: "docs/submission/connector-closeout.md",
+            content_prompt: "Summarize connector evidence.",
+            required_sections: ["result", "evidence"],
+            copyable_entry_shape: {{
+              key: "connector_closeout",
+              filename: "connector-closeout.md",
+              content: "Operator-confirmed connector closeout evidence"
+            }}
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert.strictEqual(evidenceCardCount(), 1, "one evidence card should render");
+  assert(evidenceCopyButton(), "evidence copy button should exist");
+
+  await evidenceCopyButton().listeners.click[0]();
+  let logText = byId("log").textContent;
+  assert(logText.includes("Copy unavailable; payload below:"), logText);
+  assert(logText.includes('"key": "connector_closeout"'), logText);
+  assert(logText.includes('"filename": "connector-closeout.md"'), logText);
+
+  navigator.clipboard = {{
+    writeText: async function (value) {{
+      copiedText = value;
+    }}
+  }};
+  await evidenceCopyButton().listeners.click[0]();
+  await flushPromises();
+  assert.strictEqual(byId("log").textContent, "Copied evidence entry shape.");
+  const copied = JSON.parse(copiedText);
+  assert.strictEqual(copied.key, "connector_closeout");
+  assert.strictEqual(copied.filename, "connector-closeout.md");
+  assert.strictEqual(copied.content, "Operator-confirmed connector closeout evidence");
+
+  navigator.clipboard = {{
+    writeText: async function () {{
+      throw new Error("clipboard denied");
+    }}
+  }};
+  await evidenceCopyButton().listeners.click[0]();
+  await flushPromises();
+  logText = byId("log").textContent;
+  assert(logText.includes("Copy failed; payload below:"), logText);
+  assert(logText.includes('"key": "connector_closeout"'), logText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
     def test_commander_widget_js_preserves_actions_and_updates_bridge_status(self) -> None:
         if shutil.which("node") is None:
             self.skipTest("node is required for commander widget behavior smoke")
