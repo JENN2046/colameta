@@ -1579,6 +1579,196 @@ vm.runInThisContext({json.dumps(widget_script)});
         completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr
 
+    def test_commander_widget_js_renders_evidence_empty_progress_and_fill_plan(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-evidence-states-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatchToolOutput(toolOutput) {{
+  (listeners["openai:set_globals"] || []).forEach(function (fn) {{
+    fn({{ detail: {{ globals: {{ toolOutput: toolOutput }} }} }});
+  }});
+}}
+function evidenceCards() {{
+  return findByClass(byId("submission-evidence"), "evidence-card");
+}}
+function notes() {{
+  return findByClass(byId("submission-evidence"), "note");
+}}
+function evidenceText(className) {{
+  return findByClass(byId("submission-evidence"), className)
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+
+const listeners = {{}};
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("evidence render path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatchToolOutput({{
+    source: "product_console_map",
+    project_name: "demo-project",
+    recommended_first_actions: []
+  }});
+  assert.strictEqual(evidenceCards().length, 0, "empty state should not render evidence cards");
+  assert.strictEqual(notes().length, 1, "empty state should render one note");
+  assert(notes()[0].textContent.includes("No evidence progress yet"), notes()[0].textContent);
+  assert.strictEqual(byId("submission-status").textContent, "-");
+  assert.strictEqual(byId("submission-blockers").textContent, "none");
+
+  dispatchToolOutput({{
+    source: "release_submission_readiness",
+    project_name: "demo-project",
+    status: "needs_evidence",
+    submission_materials: {{
+      evidence_progress: {{
+        complete_count: 1,
+        total_count: 3,
+        counts: {{ needs_attention: 2, placeholder: 1 }},
+        rows: [{{
+          key: "connector_closeout",
+          status: "needs_attention",
+          default_path: "docs/submission/connector-closeout.md",
+          template: {{
+            title: "Connector closeout",
+            content_prompt: "Summarize connector evidence.",
+            required_sections: ["result", "evidence"],
+            copyable_entry_shape: {{
+              key: "connector_closeout",
+              filename: "connector-closeout.md",
+              content: "operator evidence"
+            }}
+          }}
+        }}]
+      }}
+    }}
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "needs_evidence");
+  assert.strictEqual(byId("submission-blockers").textContent, "ready 1/3 | attention 2 | placeholder 1");
+  assert.strictEqual(evidenceCards().length, 1, "progress row should render one evidence card");
+  assert(evidenceText("evidence-title").includes("Connector closeout | needs_attention"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/connector-closeout.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-purpose").includes("Summarize connector evidence."), evidenceText("evidence-purpose"));
+  assert(evidenceText("evidence-tag").includes("result"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "product_console_map",
+    project_name: "demo-project",
+    release_submission_evidence_bundle: {{
+      progress_summary: {{
+        complete_count: 0,
+        total_count: 2,
+        counts: {{ needs_attention: 1, placeholder: 1 }}
+      }},
+      fill_plan: {{
+        status: "draft_ready",
+        why: "prepare evidence draft",
+        draft_entries: [{{
+          key: "submission_summary",
+          current_status: "draft",
+          default_path: "docs/submission/summary.md",
+          filename: "summary.md",
+          purpose: "Explain submission status.",
+          required_sections: ["status"],
+          copyable_entry_shape: {{
+            key: "submission_summary",
+            filename: "summary.md",
+            content: "draft submission summary"
+          }}
+        }}]
+      }}
+    }}
+  }});
+  assert.strictEqual(byId("submission-blockers").textContent, "plan draft_ready | ready 0/2 | attention 1 | placeholder 1");
+  assert.strictEqual(evidenceCards().length, 1, "fill plan should replace progress-row cards");
+  assert(evidenceText("evidence-title").includes("submission_summary | draft"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/summary.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-purpose").includes("Explain submission status."), evidenceText("evidence-purpose"));
+  assert(evidenceText("evidence-tag").includes("status"), evidenceText("evidence-tag"));
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
     def test_commander_widget_js_preserves_actions_and_updates_bridge_status(self) -> None:
         if shutil.which("node") is None:
             self.skipTest("node is required for commander widget behavior smoke")
