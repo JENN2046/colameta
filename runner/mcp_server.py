@@ -5371,6 +5371,12 @@ class MCPPlanningBridgeServer:
       font-size: 12px;
       flex: 0 0 auto;
     }
+    .action-run {
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
     button {
       min-height: 34px;
       border: 1px solid #2f6f73;
@@ -5501,6 +5507,7 @@ class MCPPlanningBridgeServer:
     (function () {
       var manifest = null;
       var seq = 1;
+      var activeProjectName = "";
       function byId(id) { return document.getElementById(id); }
       function text(id, value) { byId(id).textContent = value || "-"; }
       function normalize(payload) {
@@ -5775,6 +5782,17 @@ class MCPPlanningBridgeServer:
           });
           head.appendChild(title);
           head.appendChild(copy);
+          var run = document.createElement("button");
+          run.className = "action-run";
+          run.type = "button";
+          var runnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
+          run.textContent = runnable ? "Run" : (action.mode === "commit" ? "Confirm outside" : "Preview first");
+          run.disabled = !runnable;
+          run.addEventListener("click", function () {
+            if (!runnable) return;
+            callToolWithArgs(action.tool, action.arguments || {}, "recommended action");
+          });
+          head.appendChild(run);
           var meta = document.createElement("div");
           meta.className = "recommended-action-meta";
           appendChip(meta, action.mode || "read", action.mode === "commit" ? "commit" : "read");
@@ -5829,6 +5847,7 @@ class MCPPlanningBridgeServer:
           current = Object.assign({}, manifest || {}, data);
         }
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
+        activeProjectName = projectName && projectName !== "-" ? projectName : activeProjectName;
         var readiness = current.readiness || current.service_readiness_summary || {};
         var flow = current.agent_operator_flow || (current.source === "agent_operator_flow_packet" ? current : {});
         var flowProfile = current.agent_operator_flow_profile || {};
@@ -5879,8 +5898,43 @@ class MCPPlanningBridgeServer:
           button.disabled = !projectName;
         });
       }
+      async function callToolWithArgs(name, args, sourceLabel) {
+        var callArgs = args && typeof args === "object" ? Object.assign({}, args) : {};
+        if (!callArgs.project_name && activeProjectName) {
+          callArgs.project_name = activeProjectName;
+        }
+        if (!name) {
+          text("log", "Recommended action has no tool.");
+          return;
+        }
+        if (!callArgs.project_name) {
+          text("log", "Project name unavailable.");
+          return;
+        }
+        if (window.openai && typeof window.openai.callTool === "function") {
+          try {
+            var next = await window.openai.callTool(name, callArgs);
+            if (next && next.structuredContent) {
+              render(next.structuredContent);
+            } else if (next) {
+              render(next);
+            }
+            text("log", "Updated from " + (sourceLabel || name) + ".");
+            return;
+          } catch (err) {
+            text("log", "Direct call failed; using bridge for " + name + ".");
+          }
+        }
+        window.parent.postMessage({
+          jsonrpc: "2.0",
+          id: "colameta-commander-" + (seq++),
+          method: "tools/call",
+          params: { name: name, arguments: callArgs }
+        }, "*");
+        text("log", "Requested " + name + ".");
+      }
       async function callTool(name) {
-        var projectName = manifest && manifest.project_name;
+        var projectName = activeProjectName || (manifest && manifest.project_name);
         if (!projectName) {
           text("log", "Project name unavailable.");
           return;
@@ -5896,27 +5950,7 @@ class MCPPlanningBridgeServer:
         ].indexOf(name) >= 0) {
           args.profile_id = profileId;
         }
-        if (window.openai && typeof window.openai.callTool === "function") {
-          try {
-            var next = await window.openai.callTool(name, args);
-            if (next && next.structuredContent) {
-              render(next.structuredContent);
-            } else if (next) {
-              render(next);
-            }
-            text("log", "Updated from " + name + ".");
-            return;
-          } catch (err) {
-            text("log", "Direct call failed; using bridge for " + name + ".");
-          }
-        }
-        window.parent.postMessage({
-          jsonrpc: "2.0",
-          id: "colameta-commander-" + (seq++),
-          method: "tools/call",
-          params: { name: name, arguments: args }
-        }, "*");
-        text("log", "Requested " + name + ".");
+        callToolWithArgs(name, args, name);
       }
       window.addEventListener("openai:set_globals", function (event) {
         var globals = event.detail && event.detail.globals;
