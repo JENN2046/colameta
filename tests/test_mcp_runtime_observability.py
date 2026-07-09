@@ -1751,6 +1751,18 @@ function evidenceActivityRecordStatus() {{
 function closeoutGroupText() {{
   return byId("closeout-action-groups").textContent;
 }}
+function closeoutFollowupRecordButton() {{
+  return findByClass(byId("closeout-action-groups"), "closeout-followup-record")[0];
+}}
+function closeoutFollowupRefreshButton() {{
+  return findByClass(byId("closeout-action-groups"), "closeout-followup-refresh")[0];
+}}
+function closeoutFollowupCopyButton() {{
+  return findByClass(byId("closeout-action-groups"), "closeout-followup-copy")[0];
+}}
+function closeoutFollowupRunButton() {{
+  return findByClass(byId("closeout-action-groups"), "closeout-followup-run")[0];
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1838,7 +1850,58 @@ vm.runInThisContext({json.dumps(widget_script)});
         }},
         action_refs: [],
         empty_state: "Record the latest submission evidence activity after refresh/recovery actions."
-      }}]
+      }}],
+      followup_queue: {{
+        source: "product_console_closeout_followup_queue",
+        status: "needs_attention",
+        total_count: 1,
+        next_item: {{
+          item_id: "submission_evidence_activity",
+          label: "Evidence Activity",
+          status: "needs_attention",
+          component: "submission_evidence_activity",
+          gap_codes: ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
+          primary_tool: "record_product_console_action_result",
+          required_scope: "mcp:commit",
+          gate_level: "explicit_apply_or_run_required",
+          primary_action: {{
+            action: "record_submission_evidence_activity",
+            tool: "record_product_console_action_result",
+            arguments: {{
+              action_id: "submission_evidence_activity",
+              tool: "submission_evidence_activity_summary",
+              mode: "read",
+              status: "updated",
+              message: "Submission evidence activity | get_submission_evidence_fill_preview via direct call | refreshed",
+              result_ok: true
+            }},
+            authority: "commit"
+          }}
+        }},
+        items: [{{
+          item_id: "submission_evidence_activity",
+          label: "Evidence Activity",
+          status: "needs_attention",
+          component: "submission_evidence_activity",
+          gap_codes: ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
+          primary_tool: "record_product_console_action_result",
+          required_scope: "mcp:commit",
+          gate_level: "explicit_apply_or_run_required",
+          primary_action: {{
+            action: "record_submission_evidence_activity",
+            tool: "record_product_console_action_result",
+            arguments: {{
+              action_id: "submission_evidence_activity",
+              tool: "submission_evidence_activity_summary",
+              mode: "read",
+              status: "updated",
+              message: "Submission evidence activity | get_submission_evidence_fill_preview via direct call | refreshed",
+              result_ok: true
+            }},
+            authority: "commit"
+          }}
+        }}]
+      }}
     }},
     action_result_state: {{
       submission_evidence_activity: {{
@@ -1863,6 +1926,87 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(closeoutGroupText().includes("gaps 1"), closeoutGroupText());
   assert(closeoutGroupText().includes("record_submission_evidence_activity | record_product_console_action_result | commit"), closeoutGroupText());
   assert(closeoutGroupText().includes("Record the latest submission evidence activity"), closeoutGroupText());
+  assert(closeoutGroupText().includes("Confirm required"), closeoutGroupText());
+  assert(closeoutGroupText().includes("Record"), closeoutGroupText());
+  assert(closeoutFollowupCopyButton(), "closeout follow-up copy should render");
+  assert(closeoutFollowupRecordButton(), "closeout follow-up record should render");
+  assert(closeoutFollowupRefreshButton(), "closeout follow-up refresh should render");
+
+  closeoutFollowupCopyButton().listeners.click[0]();
+  await flushPromises();
+  const closeoutCopyPayload = copiedText || byId("log").textContent;
+  assert(closeoutCopyPayload.includes('"item_id": "submission_evidence_activity"'), closeoutCopyPayload);
+  assert(closeoutCopyPayload.includes('"tool": "record_product_console_action_result"'), closeoutCopyPayload);
+
+  await closeoutFollowupRecordButton().listeners.click[0]();
+  assert.deepStrictEqual(toolCalls.map(function (call) {{ return call.name; }}), [
+    "record_product_console_action_result",
+    "get_product_console_map"
+  ]);
+  toolCalls.length = 0;
+
+  dispatchToolOutput({{
+    source: "product_console_map",
+    project_name: "demo-project",
+    completion_surface: {{
+      status: "blocked",
+      ready: false,
+      summary: "Product console closeout needs attention: 1 gap(s) remain.",
+      gaps: [{{
+        component: "product_readiness",
+        status: "blocked",
+        code: "PRODUCT_READINESS_NOT_READY"
+      }}],
+      safe_next_action: {{
+        action: "read_product_readiness",
+        tool: "get_product_readiness_status",
+        authority: "read_only"
+      }},
+      action_groups: [{{
+        group_id: "product_readiness",
+        label: "Product Readiness",
+        status: "blocked",
+        component: "product_readiness",
+        gap_codes: ["PRODUCT_READINESS_NOT_READY"],
+        primary_action: {{
+          action: "read_product_readiness",
+          tool: "get_product_readiness_status",
+          authority: "read_only"
+        }},
+        action_refs: [],
+        empty_state: "Read product readiness before continuing."
+      }}],
+      followup_queue: {{
+        source: "product_console_closeout_followup_queue",
+        status: "blocked",
+        total_count: 1,
+        next_item: {{
+          item_id: "product_readiness",
+          label: "Product Readiness",
+          status: "blocked",
+          component: "product_readiness",
+          gap_codes: ["PRODUCT_READINESS_NOT_READY"],
+          primary_tool: "get_product_readiness_status",
+          required_scope: "mcp:read",
+          gate_level: "read_only",
+          primary_action: {{
+            action: "read_product_readiness",
+            tool: "get_product_readiness_status",
+            arguments: {{ project_name: "demo-project" }},
+            authority: "read_only"
+          }}
+        }}
+      }}
+    }}
+  }});
+  assert(closeoutFollowupRunButton(), "read-only closeout follow-up run should render");
+  assert.strictEqual(closeoutFollowupRunButton().disabled, false);
+  await closeoutFollowupRunButton().listeners.click[0]();
+  assert.deepStrictEqual(toolCalls.map(function (call) {{ return call.name; }}), [
+    "get_product_readiness_status"
+  ]);
+  assert.deepStrictEqual(toolCalls[0].args, {{ project_name: "demo-project" }});
+  toolCalls.length = 0;
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
