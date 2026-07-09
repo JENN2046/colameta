@@ -17,6 +17,7 @@ from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
 from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES, _MCPRateLimiter
 from runner.project_registry import ProjectRegistry
+from runner.product_console import record_product_console_action_result
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
     build_service_readiness_summary,
@@ -826,6 +827,16 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "mcp_state": "healthy",
             "project_root": str(project),
         }
+        record_product_console_action_result(
+            str(project),
+            action_id="submission_evidence_activity",
+            tool="submission_evidence_activity_summary",
+            mode="read",
+            status="updated",
+            message="Submission evidence activity | recovery refreshed",
+            project_name="demo-project",
+            result_ok=True,
+        )
 
         with (
             patch("runner.mcp_server.DEFAULT_STABLE_RUNTIME_DIR", str(stable)),
@@ -865,6 +876,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert closeout_evidence["side_effects"] is False
         assert closeout_evidence["evidence_progress"]["source"] == "submission_evidence_progress"
         assert closeout_evidence["evidence_progress"]["total_count"] == 10
+        activity = closeout_evidence["submission_evidence_activity"]
+        assert activity["available"] is True
+        assert activity["action_id"] == "submission_evidence_activity"
+        assert activity["tool"] == "submission_evidence_activity_summary"
+        assert activity["status"] == "updated"
+        assert activity["result_ok"] is True
+        assert activity["read_only_summary"] is True
+        assert activity["authority_boundary"]["does_not_write_runtime_state"] is True
         assert data["release_submission_evidence"] == closeout_evidence
         assert data["metadata_refresh_guidance"]["expected_tool"] == "get_apps_connector_smoke_packet"
         assert data["operator_sequence"][1]["tool"] == "get_apps_connector_smoke_packet"
@@ -3140,6 +3159,16 @@ vm.runInThisContext({json.dumps(widget_script)});
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
         server.project_registry = self.temp_registry()
         self.register_demo_project(server.project_registry, project)
+        record_product_console_action_result(
+            str(project),
+            action_id="submission_evidence_activity",
+            tool="submission_evidence_activity_summary",
+            mode="read",
+            status="updated",
+            message="Submission evidence activity | commander manifest recovery refreshed",
+            project_name="demo-project",
+            result_ok=True,
+        )
 
         result = server.call_tool_for_agent(
             "get_commander_app_manifest",
@@ -3193,6 +3222,9 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert release_evidence["source"] == "release_submission_evidence_closeout"
         assert release_evidence["evidence_progress"]["source"] == "submission_evidence_progress"
         assert release_evidence["evidence_progress"]["total_count"] == 10
+        assert release_evidence["submission_evidence_activity"]["available"] is True
+        assert release_evidence["submission_evidence_activity"]["status"] == "updated"
+        assert release_evidence["submission_evidence_activity"]["read_only_summary"] is True
         assert release_evidence["authority_boundary"]["does_not_submit_app_for_review"] is True
         assert "apps_connector_closeout" in data["commander_panel"]["primary_sections"]
         assert "release_submission_evidence" in data["commander_panel"]["primary_sections"]
