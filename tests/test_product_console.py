@@ -58,6 +58,32 @@ def _release_with_materials(
             "content_prompt": "Record final logo evidence.",
         }
     ] if evidence_status == "needs_attention" else []
+    evidence_progress = {
+        "source": "submission_evidence_progress",
+        "schema_version": "submission_evidence_progress.v1",
+        "status": evidence_status,
+        "complete_count": 0 if evidence_status == "needs_attention" else 1,
+        "total_count": 1,
+        "counts": {
+            "ready": 0 if evidence_status == "needs_attention" else 1,
+            "needs_attention": 1 if evidence_status == "needs_attention" else 0,
+            "filled_not_marked_ready": 0,
+            "placeholder": 0,
+            "not_started": 0,
+        },
+        "rows": [
+            {
+                "key": "logo",
+                "ready_field": "logo_ready",
+                "ready": evidence_status == "ready",
+                "status": evidence_status,
+                "refs": ["docs/submission/logo.todo.md"] if evidence_status == "needs_attention" else ["docs/submission/logo.md"],
+                "file_states": [{"ref": "docs/submission/logo.todo.md", "status": "placeholder"}]
+                if evidence_status == "needs_attention"
+                else [{"ref": "docs/submission/logo.md", "status": "present"}],
+            }
+        ],
+    }
     return {
         "status": status,
         "ready": status == "ready",
@@ -84,6 +110,7 @@ def _release_with_materials(
             },
         },
         "submission_evidence_entry_templates": entry_templates,
+        "submission_evidence_progress": evidence_progress,
         "safe_next_action": {"action": "complete_submission_materials"},
     }
 
@@ -169,6 +196,9 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
     assert first["evidence_context"]["incomplete_keys"] == ["logo"]
     assert first["evidence_context"]["entry_templates"][0]["default_filename"] == "logo.md"
     assert packet["release_submission_snapshot"]["submission_materials"]["evidence_entry_templates"][0]["key"] == "logo"
+    progress = packet["release_submission_snapshot"]["submission_materials"]["evidence_progress"]
+    assert progress["rows"][0]["key"] == "logo"
+    assert progress["counts"]["needs_attention"] == 1
 
 
 def test_console_map_does_not_recommend_release_work_when_submission_ready() -> None:

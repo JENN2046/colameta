@@ -1086,6 +1086,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Safe next action" in widget_html
         assert "Release Evidence" in widget_html
         assert "Evidence blockers" in widget_html
+        assert "evidenceProgress" in widget_html
+        assert "ready \" + (progress.complete_count || 0)" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
         assert "get_product_console_map" in widget_html
         assert "get_release_submission_readiness" in widget_html

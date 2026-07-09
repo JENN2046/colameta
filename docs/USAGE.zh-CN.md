@@ -285,6 +285,10 @@ fill_submission_evidence_files(
 `get_release_submission_readiness` 会在 `submission_evidence_entry_templates` 中列出当前
 未完成 evidence key 的填写模板；`get_product_console_map` 会把同一组模板放进推荐动作的
 `evidence_context.entry_templates`。模板只描述应该提供什么证据，不会自动生成真实证据文本。
+同一个 readiness packet 还会提供只读的 `submission_evidence_progress` 表，把 10 个
+evidence key 的 `ready`、`needs_attention`、`filled_not_marked_ready`、`placeholder`
+或 `not_started` 状态、manifest 引用和文件状态集中列出来；Product Console snapshot 会
+把这张表转发到 `release_submission_snapshot.submission_materials.evidence_progress`。
 
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission
