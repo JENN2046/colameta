@@ -53,6 +53,10 @@ from runner.runtime_observability import (
     loaded_runtime_project_root,
     runtime_healthz_provenance,
 )
+from runner.product_readiness import (
+    build_chatgpt_connection_packet,
+    build_product_readiness_packet,
+)
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
@@ -142,6 +146,8 @@ NORMAL_EXPOSED_TOOLS = (
     "get_service_entry_profile",
     "get_agent_operator_flow_packet",
     "get_web_gpt_service_entrypoint",
+    "get_product_readiness_status",
+    "get_chatgpt_app_readiness",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -495,6 +501,8 @@ def _manage_stage_parallel_merges_input_schema() -> dict[str, Any]:
 
 PROJECT_NAME_REQUIRED_TOOLS = {
     "get_agent_operator_flow_packet",
+    "get_product_readiness_status",
+    "get_chatgpt_app_readiness",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -784,6 +792,8 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_service_entry_profile",
         "get_agent_operator_flow_packet",
         "get_web_gpt_service_entrypoint",
+        "get_product_readiness_status",
+        "get_chatgpt_app_readiness",
         "get_commander_app_manifest",
         "render_commander_app",
         "get_apps_connector_smoke_packet",
@@ -1045,6 +1055,8 @@ class MCPPlanningBridgeServer:
             "get_service_entry_profile": self._tool_get_service_entry_profile,
             "get_agent_operator_flow_packet": self._tool_get_agent_operator_flow_packet,
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
+            "get_product_readiness_status": self._tool_get_product_readiness_status,
+            "get_chatgpt_app_readiness": self._tool_get_chatgpt_app_readiness,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1211,6 +1223,39 @@ class MCPPlanningBridgeServer:
                     f"[{self.project_hint}] ChatGPT Apps 侧 ColaMeta Commander App 的只读 manifest。"
                     "汇总项目身份、runtime、connector health、profile-aware 入口、preview-first 工作流和授权闸门。"
                     "只接受 sanitized tunnel/control-plane evidence；不读取 token、cookie、配置或 raw logs。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_product_readiness_status",
+                title="Get Product Readiness Status",
+                description=(
+                    f"[{self.project_hint}] ColaMeta 作为公开 Beta 产品入口的只读 readiness packet。"
+                    "聚合 ops-check、stable runtime、remote preflight、cloudflared 和 Apps connector smoke 状态，"
+                    "输出 primary_blocker 和 safe_next_action；不重启服务、不修改 DNS/tunnel、不授权 executor run、commit、push 或 stable replacement。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_chatgpt_app_readiness",
+                title="Get ChatGPT App Readiness",
+                description=(
+                    f"[{self.project_hint}] ChatGPT App 连接前的只读产品 readiness 和推荐工具顺序。"
+                    "返回 connector URL、recommended_sequence 和 readiness 摘要；只作为外部 connector closeout 证据，不授权写入或服务替换。scope=mcp:read。"
                 ),
                 input_schema=commander_app_input_schema,
                 output_schema=common_output_schema,
@@ -7834,6 +7879,15 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._commander_app_manifest(params)
+
+    def _tool_get_product_readiness_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        return build_product_readiness_packet(project_root)
+
+    def _tool_get_chatgpt_app_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        return build_chatgpt_connection_packet(project_root, project_name=project_name)
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
         manifest = self._commander_app_manifest(params)

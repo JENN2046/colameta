@@ -11,10 +11,20 @@
 如果只是想确认 ColaMeta 当前能不能用：
 
 ```text
-1. 跑 colameta status
-2. 看 Web healthy / MCP healthy
-3. 调 get_runtime_version_status
-4. 调 get_connector_runtime_health_status
+1. 跑 colameta doctor --json
+2. 看 status / primary_blocker / safe_next_action
+3. 需要底层 ops 证据时再跑 colameta ops-check --json
+4. 在 MCP 里调 get_product_readiness_status
+```
+
+如果要把 ChatGPT Apps 外部 connector 重新接上或做 smoke：
+
+```text
+1. colameta connect-chatgpt --json
+2. 在 ChatGPT Apps connector 里使用 connector_url
+3. 依次调 list_registered_projects -> get_product_readiness_status -> render_commander_app
+4. 跑 colameta app-smoke --json 读取外部 smoke 交接包
+5. 在 ChatGPT Apps connector 里调 get_apps_connector_smoke_packet
 ```
 
 如果网页 GPT 或本地 agent 刚连上稳定 MCP：
@@ -25,10 +35,12 @@
 3. get_service_entry_profile(profile_id="web_gpt_commander")
 4. get_agent_operator_flow_packet(project_name="colameta-self-dev", profile_id="web_gpt_commander")
 5. get_web_gpt_service_entrypoint
-6. get_runtime_version_status(project_name="colameta-self-dev")
-7. get_stable_replacement_cadence(project_name="colameta-self-dev")
-8. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-9. get_connector_runtime_health_status(project_name="colameta-self-dev")
+6. get_product_readiness_status(project_name="colameta-self-dev")
+7. get_chatgpt_app_readiness(project_name="colameta-self-dev")
+8. get_runtime_version_status(project_name="colameta-self-dev")
+9. get_stable_replacement_cadence(project_name="colameta-self-dev")
+10. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+11. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 如果要开一轮受控优化：
@@ -118,6 +130,21 @@ browser login state、tunnel-client config、raw logs 或 provider response。
 `apps_connector_closeout`、安全 operator sequence、token_expired 恢复指引、
 connector runtime health，以及 stable replacement drift hint。stable hint 可以提示
 “可替换”，但实际替换仍然必须有 Jenn 的精确授权：
+
+产品级 readiness 入口是 `get_product_readiness_status(project_name=...)`。它把
+ops-check、stable runtime、远端 preflight、cloudflared 和 Apps connector smoke 聚合成
+一个产品状态，重点看：
+
+```text
+status: ready / needs_attention / blocked
+ready: 是否可以作为公开 Beta 入口继续使用
+primary_blocker: 当前最先需要处理的阻塞项
+safe_next_action: 下一步只读或 runbook 动作
+```
+
+`get_chatgpt_app_readiness(project_name=...)` 返回同一 readiness 外加 `connector_url`
+和推荐工具顺序。它只用于连接和 smoke 交接，不授权 executor run、commit、push、重启服务
+或 stable replacement。
 `授权替换稳定服务到 <exact_commit_sha>`。
 
 如果 HTTP MCP `tools/list` 已经能看到 `get_apps_connector_smoke_packet`，但当前

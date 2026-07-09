@@ -38,6 +38,11 @@ from runner.production_ops import (
     validate_status_write_path,
     write_status_packet,
 )
+from runner.product_readiness import (
+    build_apps_connector_smoke_handoff_packet,
+    build_chatgpt_connection_packet,
+    build_product_readiness_packet,
+)
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -2121,6 +2126,189 @@ def _run_ops_check(args: list[str]) -> int:
         _print_ops_check_summary(packet)
     if bool(options.get("fail_on_not_ready")) and packet.get("beta_gate_ready") is not True:
         return 2
+    return 0
+
+
+def _parse_product_readiness_options(args: list[str], *, command_name: str) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    public_base_url = DEFAULT_PUBLIC_BASE_URL
+    json_output = False
+    no_network = False
+    expected_head: str | None = None
+    project_name: str | None = None
+    connector_status: str | None = None
+    connector_observed_at: str | None = None
+    connector_smoke_fresh_hours = DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS
+
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            json_output = True
+        elif token == "--no-network":
+            no_network = True
+        elif token == "--public-base-url":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--public-base-url 缺少值。", file=sys.stderr)
+                return None
+            public_base_url = args[idx + 1]
+            idx += 1
+        elif token == "--expected-head":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--expected-head 缺少值。", file=sys.stderr)
+                return None
+            expected_head = args[idx + 1]
+            idx += 1
+        elif token == "--project-name":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--project-name 缺少值。", file=sys.stderr)
+                return None
+            project_name = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-status":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--connector-smoke-status 缺少值。", file=sys.stderr)
+                return None
+            connector_status = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-observed-at":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--connector-smoke-observed-at 缺少值。", file=sys.stderr)
+                return None
+            connector_observed_at = args[idx + 1]
+            idx += 1
+        elif token == "--connector-smoke-fresh-hours":
+            if idx + 1 >= len(args):
+                print(f"{command_name} 参数错误：--connector-smoke-fresh-hours 缺少值。", file=sys.stderr)
+                return None
+            try:
+                connector_smoke_fresh_hours = int(args[idx + 1])
+            except ValueError:
+                print(f"{command_name} 参数错误：--connector-smoke-fresh-hours 必须是整数。", file=sys.stderr)
+                return None
+            if connector_smoke_fresh_hours < 1 or connector_smoke_fresh_hours > 24:
+                print(f"{command_name} 参数错误：--connector-smoke-fresh-hours 必须在 1..24 范围内。", file=sys.stderr)
+                return None
+            idx += 1
+        elif token.startswith("-"):
+            print(f"{command_name} 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"{command_name} 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"{command_name} 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    if public_base_url.startswith("http://") and not _is_local_http_url(public_base_url):
+        print(f"{command_name} 参数错误：--public-base-url 必须是 HTTPS；http:// 仅允许 localhost/loopback。", file=sys.stderr)
+        return None
+    if not (public_base_url.startswith("https://") or _is_local_http_url(public_base_url)):
+        print(f"{command_name} 参数错误：--public-base-url 必须是 HTTPS URL。", file=sys.stderr)
+        return None
+    connector_smoke = None
+    if connector_status is not None or connector_observed_at is not None:
+        connector_smoke = {
+            "status": connector_status,
+            "last_observed_at": connector_observed_at,
+            "evidence_source": "operator_supplied_sanitized_connector_smoke_status",
+        }
+    return project_path, {
+        "public_base_url": public_base_url,
+        "json_output": json_output,
+        "no_network": no_network,
+        "expected_head": expected_head,
+        "project_name": project_name,
+        "connector_smoke": connector_smoke,
+        "connector_smoke_fresh_hours": connector_smoke_fresh_hours,
+    }
+
+
+def _product_readiness_builder_kwargs(options: dict[str, object]) -> dict[str, object]:
+    return {
+        "public_base_url": str(options["public_base_url"]),
+        "expected_head": options.get("expected_head") if isinstance(options.get("expected_head"), str) else None,
+        "no_network": bool(options.get("no_network")),
+        "connector_smoke": options.get("connector_smoke") if isinstance(options.get("connector_smoke"), dict) else None,
+        "connector_smoke_fresh_hours": int(options.get("connector_smoke_fresh_hours") or DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS),
+    }
+
+
+def _print_product_readiness_summary(packet: dict[str, object]) -> None:
+    ops = packet.get("ops_check") if isinstance(packet.get("ops_check"), dict) else {}
+    print(
+        "Product readiness: "
+        f"status={packet.get('status')} "
+        f"ready={packet.get('ready')} "
+        f"beta_gate_ready={ops.get('beta_gate_ready')}",
+        file=sys.stderr,
+    )
+    blocker = packet.get("primary_blocker")
+    if isinstance(blocker, dict):
+        print(
+            f"  primary_blocker={blocker.get('check')} "
+            f"status={blocker.get('status')} "
+            f"reason={','.join(str(code) for code in blocker.get('reason_codes', []))}",
+            file=sys.stderr,
+        )
+    next_action = packet.get("safe_next_action")
+    if isinstance(next_action, dict):
+        print(f"  next={next_action.get('action')}", file=sys.stderr)
+
+
+def _run_product_doctor(args: list[str]) -> int:
+    parsed = _parse_product_readiness_options(args, command_name="doctor")
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_product_readiness_packet(project_path, **_product_readiness_builder_kwargs(options))
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        _print_product_readiness_summary(packet)
+    return 0
+
+
+def _run_connect_chatgpt(args: list[str]) -> int:
+    parsed = _parse_product_readiness_options(args, command_name="connect-chatgpt")
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_chatgpt_connection_packet(
+        project_path,
+        project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
+        **_product_readiness_builder_kwargs(options),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(f"ChatGPT connector URL: {packet.get('connector_url')}", file=sys.stderr)
+        print(f"Product readiness: status={packet.get('status')} ready={packet.get('ready')}", file=sys.stderr)
+        print("First tools: list_registered_projects -> get_product_readiness_status -> render_commander_app", file=sys.stderr)
+    return 0
+
+
+def _run_app_smoke(args: list[str]) -> int:
+    parsed = _parse_product_readiness_options(args, command_name="app-smoke")
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_apps_connector_smoke_handoff_packet(
+        project_path,
+        project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
+        **_product_readiness_builder_kwargs(options),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(f"Apps connector smoke: status={packet.get('status')} product_status={packet.get('product_status')}", file=sys.stderr)
+        print(f"Connector URL: {packet.get('connector_url')}", file=sys.stderr)
+        print("Run in ChatGPT Apps: list_registered_projects -> get_apps_connector_smoke_packet", file=sys.stderr)
     return 0
 
 
@@ -4309,6 +4497,12 @@ def main() -> int:
         return _run_service_status(sys.argv[1:])
     if cmd == "ops-check":
         return _run_ops_check(sys.argv[1:])
+    if cmd == "doctor":
+        return _run_product_doctor(sys.argv[1:])
+    if cmd == "connect-chatgpt":
+        return _run_connect_chatgpt(sys.argv[1:])
+    if cmd == "app-smoke":
+        return _run_app_smoke(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":
