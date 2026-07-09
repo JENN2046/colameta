@@ -1,0 +1,32 @@
+{
+  "schema_version": "chatgpt_app_submission_materials.v1",
+  "app_name": "ColaMeta",
+  "app_description": "Project console for local AI engineering workflows.",
+  "company_url": "https://github.com/JENN2046/colameta",
+  "privacy_policy_url": "",
+  "logo_ready": false,
+  "screenshots_ready": false,
+  "test_prompts_ready": false,
+  "test_responses_ready": false,
+  "localization_ready": false,
+  "mcp_tool_info_ready": false,
+  "app_management_permissions_confirmed": false,
+  "security_review_ready": false,
+  "metadata_snapshot_reviewed": false,
+  "submission_confirmations_ready": false,
+  "evidence": {
+    "logo": "docs/submission/logo.todo.md",
+    "screenshots": [
+      "docs/submission/screenshot-1.todo.md"
+    ],
+    "test_prompts": "docs/submission/test-prompts.todo.md",
+    "test_responses": "docs/submission/test-responses.todo.md",
+    "localization": "docs/submission/localization.todo.md",
+    "mcp_tool_info": "docs/submission/mcp-tool-info.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.todo.md",
+    "security_review": "docs/submission/security-review.md",
+    "metadata_snapshot": "docs/submission/metadata-snapshot.md",
+    "submission_confirmations": "docs/submission/submission-confirmations.todo.md"
+  },
+  "notes": "Submission evidence files were filled locally. Keep each ready field false until the referenced evidence has been reviewed by a human operator."
+}
