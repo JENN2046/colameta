@@ -1168,6 +1168,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "evidenceBundle" in widget_html
         assert "release_submission_evidence_bundle" in widget_html
         assert "clearStaleEvidenceState" in widget_html
+        assert "submissionPreviewCardModels" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
@@ -1795,6 +1796,65 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceText("evidence-purpose").includes("Capture evidence attached to the recommended action."), evidenceText("evidence-purpose"));
   assert(evidenceText("evidence-tag").includes("observation"), evidenceText("evidence-tag"));
   assert(evidenceText("evidence-tag").includes("decision"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "submission_evidence_fill_preview",
+    project_name: "demo-project",
+    status: "preview_ready",
+    summary: "Prepared a read-only fill payload preview with 1 evidence entries.",
+    copyable_tool_call: {{
+      tool: "fill_submission_evidence_files",
+      arguments: {{
+        project_name: "demo-project",
+        entries: [{{
+          key: "logo",
+          filename: "logo.md",
+          content: "<operator-confirmed evidence text>"
+        }}],
+        mark_ready: false
+      }}
+    }},
+    operator_instructions: ["Review every entry before writing files."]
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "preview_ready");
+  assert.strictEqual(byId("submission-blockers").textContent, "preview preview_ready | tool fill_submission_evidence_files | entries 1");
+  assert.strictEqual(evidenceCards().length, 1, "fill preview entries should render one evidence card");
+  assert(evidenceText("evidence-title").includes("logo | preview_ready"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("logo.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-purpose").includes("Prepared a read-only fill payload preview"), evidenceText("evidence-purpose"));
+  assert(evidenceText("evidence-tag").includes("Review every entry before writing files."), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "submission_evidence_fill_preview",
+    project_name: "demo-project",
+    status: "review_ready",
+    summary: "Prepared a read-only ready-field marking payload for human-reviewed evidence.",
+    copyable_tool_call: {{
+      tool: "mark_submission_evidence_ready_fields",
+      arguments: {{
+        project_name: "demo-project",
+        keys: ["logo"],
+        review_confirmation: "human_reviewed"
+      }}
+    }},
+    evidence_bundle: {{
+      fill_plan: {{
+        review_entries: [{{
+          key: "logo",
+          refs: ["docs/submission/logo.md"],
+          current_status: "filled_not_marked_ready"
+        }}]
+      }}
+    }},
+    operator_instructions: ["Use review_confirmation=human_reviewed only after review."]
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "review_ready");
+  assert.strictEqual(byId("submission-blockers").textContent, "preview review_ready | tool mark_submission_evidence_ready_fields | keys 1");
+  assert.strictEqual(evidenceCards().length, 1, "mark-ready preview keys should render one evidence card");
+  assert(evidenceText("evidence-title").includes("logo | review_ready"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-purpose").includes("ready-field marking payload"), evidenceText("evidence-purpose"));
+  assert(evidenceText("evidence-tag").includes("human_reviewed"), evidenceText("evidence-tag"));
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
