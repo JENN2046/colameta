@@ -1720,6 +1720,9 @@ function evidenceRecoveryButtons() {{
 function evidenceActivityText() {{
   return byId("submission-activity").textContent;
 }}
+function evidenceActivityCopyButton() {{
+  return byId("submission-activity-copy");
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1727,12 +1730,19 @@ async function flushPromises() {{
 
 const listeners = {{}};
 const toolCalls = [];
+let copiedText = "";
 global.document = {{
   getElementById: byId,
   createElement: function (tagName) {{ return new Element(tagName); }},
   querySelectorAll: function () {{ return []; }}
 }};
-global.navigator = {{}};
+global.navigator = {{
+  clipboard: {{
+    writeText: async function (value) {{
+      copiedText = value;
+    }}
+  }}
+}};
 global.window = {{
   openai: {{
     callTool: async function (name, args) {{
@@ -1990,6 +2000,21 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(evidenceRecoveryButtons().length, 0, "successful refresh should clear stale recovery actions");
   assert(evidenceActivityText().includes("recovery | updated | get_submission_evidence_fill_preview via direct call | refreshed"), evidenceActivityText());
   assert(!evidenceActivityText().includes("SUBMISSION_EVIDENCE_INPUT_INVALID"), evidenceActivityText());
+  await evidenceActivityCopyButton().listeners.click[0]();
+  await flushPromises();
+  const activityLog = byId("log").textContent;
+  const activityPayload = copiedText || activityLog.split("payload below:\\n", 2)[1];
+  assert(activityLog === "Copied evidence activity summary." || activityLog.includes("payload below:"), activityLog);
+  const activitySummary = JSON.parse(activityPayload);
+  assert.strictEqual(activitySummary.source, "submission_evidence_activity_summary");
+  assert.strictEqual(activitySummary.project_name, "demo-project");
+  assert.strictEqual(activitySummary.submission_status, "refreshed");
+  assert(activitySummary.rows.some(function (row) {{
+    return row.includes("recovery | updated | get_submission_evidence_fill_preview via direct call | refreshed");
+  }}), JSON.stringify(activitySummary.rows));
+  assert.strictEqual(activitySummary.authority_boundary.read_only_summary, true);
+  assert.strictEqual(activitySummary.authority_boundary.does_not_write_files, true);
+  assert.strictEqual(activitySummary.authority_boundary.does_not_mark_ready_fields, true);
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);

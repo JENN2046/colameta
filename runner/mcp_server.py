@@ -5526,7 +5526,13 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Submission status</strong><span id="submission-status">-</span></div>
         <div class="note"><strong>Evidence blockers</strong><span id="submission-blockers">-</span></div>
       </div>
-      <div class="note evidence-activity" id="submission-activity">No evidence activity yet.</div>
+      <div class="note evidence-activity-wrap">
+        <div class="evidence-head">
+          <strong>Activity</strong>
+          <button class="evidence-copy secondary" id="submission-activity-copy" type="button">Copy</button>
+        </div>
+        <span id="submission-activity">No evidence activity yet.</span>
+      </div>
       <div class="evidence-grid" id="submission-evidence"></div>
     </section>
     <section class="section">
@@ -5921,6 +5927,23 @@ class MCPPlanningBridgeServer:
         var rows = submissionActivityRows(data);
         var target = byId("submission-activity");
         target.textContent = rows.length ? rows.join("\\n") : "No evidence activity yet.";
+      }
+      function submissionActivityCopyPayload(data) {
+        return {
+          source: "submission_evidence_activity_summary",
+          schema_version: "submission_evidence_activity_summary.v1",
+          project_name: activeProjectName || statusValue(data || {}, ["project_name"]),
+          submission_status: byId("submission-status").textContent || "-",
+          evidence_blockers: byId("submission-blockers").textContent || "none",
+          rows: submissionActivityRows(data),
+          authority_boundary: {
+            read_only_summary: true,
+            side_effects: false,
+            does_not_write_files: true,
+            does_not_mark_ready_fields: true,
+            does_not_submit_app_for_review: true
+          }
+        };
       }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
@@ -6432,6 +6455,12 @@ class MCPPlanningBridgeServer:
       Array.prototype.forEach.call(document.querySelectorAll("button[data-tool]"), function (button) {
         button.addEventListener("click", function () { callTool(button.getAttribute("data-tool")); });
       });
+      var activityCopyButton = byId("submission-activity-copy");
+      if (activityCopyButton) {
+        activityCopyButton.addEventListener("click", function () {
+          copyText(JSON.stringify(submissionActivityCopyPayload(viewState), null, 2), "Copied evidence activity summary.");
+        });
+      }
       if (window.openai && window.openai.toolOutput) {
         render(window.openai.toolOutput);
       }
