@@ -5960,7 +5960,7 @@ class MCPPlanningBridgeServer:
             renderRecordButton(record, recordStatus, action, key);
             var recordResult = await callToolWithArgs("record_product_console_action_result", args, "record action result", recKey);
             renderRecordButton(record, recordStatus, action, key);
-            if (recordResult && recordResult.status === "updated") {
+            if (recordResult && recordResult.status === "recorded") {
               var refreshResult = await callToolWithArgs("get_product_console_map", action.arguments || {}, "recorded result refresh", "record-refresh|" + key);
               if (refreshResult && refreshResult.status) {
                 rememberActionRunStatus(recKey, "recorded", "refresh current");
