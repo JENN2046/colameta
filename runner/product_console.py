@@ -71,7 +71,11 @@ def build_product_console_map(
             },
         ],
         "entries": entries,
-        "recommended_first_actions": _recommended_first_actions(project_name=project_name, status=status),
+        "recommended_first_actions": _recommended_first_actions(
+            project_name=project_name,
+            status=status,
+            release_submission=release,
+        ),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
@@ -245,17 +249,72 @@ def _entry(
     }
 
 
-def _recommended_first_actions(*, project_name: str | None, status: str) -> list[dict[str, Any]]:
+def _recommended_first_actions(
+    *,
+    project_name: str | None,
+    status: str,
+    release_submission: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     project_args = {"project_name": project_name} if project_name else {}
+    release_actions = _release_submission_recommended_actions(project_args, release_submission)
     if status == "blocked":
-        return [
+        return release_actions + [
             {"tool": "get_product_readiness_status", "arguments": project_args},
             {"tool": "get_full_loop_authority_status", "arguments": project_args},
         ]
-    return [
+    return release_actions + [
         {"tool": "get_product_readiness_status", "arguments": project_args},
         {"tool": "get_agent_operator_flow_packet", "arguments": project_args},
         {"tool": "get_full_loop_authority_status", "arguments": project_args},
+    ]
+
+
+def _release_submission_recommended_actions(
+    project_args: dict[str, Any],
+    release_submission: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(release_submission, dict) or release_submission.get("ready") is True:
+        return []
+    materials = release_submission.get("submission_materials")
+    source = materials.get("source") if isinstance(materials, dict) else "unknown"
+    checks = release_submission.get("checks")
+    evidence_check = checks.get("submission_evidence_references") if isinstance(checks, dict) else None
+    manifest_check = checks.get("submission_materials_manifest") if isinstance(checks, dict) else None
+    if source in {"unknown", "parameters_only"}:
+        return [
+            {
+                "command": "colameta init-submission-evidence",
+                "arguments": project_args,
+                "why": "Create the real submission manifest and local evidence scaffold before release/App submission.",
+            }
+        ]
+    if isinstance(manifest_check, dict) and manifest_check.get("status") == "needs_attention":
+        return [
+            {
+                "tool": "get_release_submission_readiness",
+                "arguments": project_args,
+                "why": "Fix submission manifest schema or unknown fields before collecting final evidence.",
+            }
+        ]
+    if isinstance(evidence_check, dict) and evidence_check.get("status") == "needs_attention":
+        return [
+            {
+                "command": "fill_submission_evidence_files",
+                "arguments": {
+                    **project_args,
+                    "missing_keys": list(evidence_check.get("missing_keys") or []),
+                    "missing_files": list(evidence_check.get("missing_files") or []),
+                    "placeholder_files": list(evidence_check.get("placeholder_files") or []),
+                },
+                "why": "Replace placeholder submission evidence and add missing files before marking release/App submission ready.",
+            }
+        ]
+    return [
+        {
+            "tool": "get_release_submission_readiness",
+            "arguments": project_args,
+            "why": "Review release/App submission readiness details and complete remaining materials.",
+        }
     ]
 
 
