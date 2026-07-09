@@ -1714,6 +1714,9 @@ function evidenceText(className) {{
 function evidenceRefreshButtons() {{
   return findByClass(byId("submission-evidence"), "evidence-refresh");
 }}
+function evidenceRecoveryButtons() {{
+  return findByClass(byId("submission-evidence"), "evidence-recovery");
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1945,6 +1948,40 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
   assert(evidenceText("evidence-purpose").includes("ready-field marking payload"), evidenceText("evidence-purpose"));
   assert(evidenceText("evidence-tag").includes("human_reviewed"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "submission_evidence_fill",
+    project_name: "demo-project",
+    ok: false,
+    status: "failed",
+    error_code: "SUBMISSION_EVIDENCE_INPUT_INVALID",
+    safe_recovery_actions: [
+      {{
+        tool: "get_release_submission_readiness",
+        arguments: {{}},
+        required_scope: "mcp:read",
+        side_effects: false,
+        why: "Refresh current submission evidence status before retrying."
+      }},
+      {{
+        tool: "get_submission_evidence_fill_preview",
+        arguments: {{ selected_keys: ["logo"] }},
+        required_scope: "mcp:read",
+        side_effects: false,
+        why: "Regenerate the bounded fill payload."
+      }}
+    ]
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "failed");
+  assert.strictEqual(byId("submission-blockers").textContent, "failed SUBMISSION_EVIDENCE_INPUT_INVALID | recovery actions 2");
+  assert.strictEqual(evidenceRecoveryButtons().length, 2, "failed commit result should render safe recovery buttons");
+  assert.strictEqual(evidenceRecoveryButtons()[1].textContent, "get_submission_evidence_fill_preview");
+  await evidenceRecoveryButtons()[1].listeners.click[0]();
+  await flushPromises();
+  const recoveryCall = toolCalls[toolCalls.length - 1];
+  assert.strictEqual(recoveryCall.name, "get_submission_evidence_fill_preview");
+  assert.deepStrictEqual(recoveryCall.args, {{ selected_keys: ["logo"], project_name: "demo-project" }});
+  assert.strictEqual(evidenceRecoveryButtons().length, 0, "successful refresh should clear stale recovery actions");
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
