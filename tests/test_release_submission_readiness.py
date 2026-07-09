@@ -262,7 +262,14 @@ def test_release_submission_rejects_placeholder_evidence_when_marked_ready(tmp_p
 
     assert packet["status"] == "needs_attention"
     evidence_check = packet["checks"]["submission_evidence_references"]
+    assert evidence_check["incomplete_keys"] == ["logo"]
     assert "docs/submission/logo.todo.md" in evidence_check["placeholder_files"]
+    assert evidence_check["placeholder_files_by_key"] == [{"key": "logo", "ref": "docs/submission/logo.todo.md"}]
+    template = evidence_check["fill_entry_templates"][0]
+    assert template["key"] == "logo"
+    assert template["default_filename"] == "logo.md"
+    assert "asset_path" in template["required_sections"]
+    assert packet["submission_evidence_entry_templates"][0]["key"] == "logo"
 
 
 def test_fill_submission_evidence_files_updates_manifest_refs_without_marking_ready(tmp_path) -> None:

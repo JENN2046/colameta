@@ -297,6 +297,7 @@ def _release_submission_recommended_actions(
             }
         ]
     if isinstance(evidence_check, dict) and evidence_check.get("status") == "needs_attention":
+        entry_templates = list(evidence_check.get("fill_entry_templates") or [])
         return [
             {
                 "tool": "fill_submission_evidence_files",
@@ -307,7 +308,11 @@ def _release_submission_recommended_actions(
                 "evidence_context": {
                     "missing_keys": list(evidence_check.get("missing_keys") or []),
                     "missing_files": list(evidence_check.get("missing_files") or []),
+                    "missing_files_by_key": list(evidence_check.get("missing_files_by_key") or []),
                     "placeholder_files": list(evidence_check.get("placeholder_files") or []),
+                    "placeholder_files_by_key": list(evidence_check.get("placeholder_files_by_key") or []),
+                    "incomplete_keys": list(evidence_check.get("incomplete_keys") or []),
+                    "entry_templates": entry_templates,
                 },
                 "why": "Replace placeholder submission evidence and add missing files before marking release/App submission ready.",
             }
@@ -382,6 +387,8 @@ def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -
         "missing_evidence_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
         "missing_evidence_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
         "placeholder_evidence_files": list(evidence_check.get("placeholder_files") or []) if isinstance(evidence_check, dict) else [],
+        "incomplete_evidence_keys": list(evidence_check.get("incomplete_keys") or []) if isinstance(evidence_check, dict) else [],
+        "evidence_entry_templates": list(release_submission.get("submission_evidence_entry_templates") or []),
         "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
         "error": materials.get("error"),
     }
