@@ -214,6 +214,12 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert completion["components"]["release_submission"]["ready"] is False
     assert completion["components"]["submission_evidence"]["status"] == "manifest_missing"
     assert completion["components"]["submission_evidence_activity"]["status"] == "not_recorded"
+    assert completion["progress_state"]["source"] == "product_console_closeout_progress_state"
+    assert completion["progress_state"]["status"] == "not_started"
+    assert completion["progress_state"]["completion_status"] == "needs_attention"
+    assert completion["progress_state"]["gap_count"] == 3
+    assert completion["progress_state"]["followup_count"] == 3
+    assert completion["progress_state"]["pending_refresh_count"] == 0
     assert completion["needs_attention_codes"] == [
         "RELEASE_SUBMISSION_NOT_READY",
         "SUBMISSION_EVIDENCE_NOT_READY",
@@ -290,6 +296,11 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     assert packet["action_result_state"]["pending_refresh_count"] == 1
     assert packet["action_result_state"]["pending_refreshes"][0]["tool"] == "get_product_console_map"
     assert packet["action_result_state"]["pending_refreshes"][0]["arguments"] == {"project_name": "demo-project"}
+    completion = packet["completion_surface"]
+    assert completion["progress_state"]["status"] == "refresh_pending"
+    assert completion["progress_state"]["pending_refresh_count"] == 1
+    assert completion["progress_state"]["stored_result_count"] == 1
+    assert completion["progress_state"]["ready"] is False
     assert commander_action["last_action_result"]["status"] == "updated"
     assert commander_action["last_action_result"]["result_ok"] is True
     assert commander_action["last_action_result"]["fingerprint_verified"] is True
@@ -452,6 +463,10 @@ def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(
     completion = packet["completion_surface"]
     assert completion["status"] == "ready"
     assert completion["ready"] is True
+    assert completion["progress_state"]["status"] == "closeout_ready"
+    assert completion["progress_state"]["ready"] is True
+    assert completion["progress_state"]["pending_refresh_count"] == 0
+    assert completion["progress_state"]["submission_evidence_activity_recorded"] is True
     assert completion["gap_count"] == 0
     assert completion["gaps"] == []
     assert completion["blocker_codes"] == []

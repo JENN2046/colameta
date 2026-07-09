@@ -1812,6 +1812,22 @@ class WebConsoleServer:
                     "status": "unknown",
                     "ready": False,
                     "summary": "Product Console completion surface is unavailable.",
+                    "progress_state": {
+                        "source": "product_console_closeout_progress_state",
+                        "schema_version": "product_console_closeout_progress_state.v1",
+                        "read_only": True,
+                        "side_effects": False,
+                        "status": "not_started",
+                        "completion_status": "unknown",
+                        "ready": False,
+                        "message": "Product Console completion progress is unavailable.",
+                        "followup_count": 1,
+                        "gap_count": 1,
+                        "pending_refresh_count": 0,
+                        "stale_result_count": 0,
+                        "stored_result_count": 0,
+                        "submission_evidence_activity_recorded": False,
+                    },
                     "gap_count": 1,
                     "gaps": [
                         {

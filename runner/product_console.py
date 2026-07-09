@@ -825,6 +825,12 @@ def _completion_surface(
         "console_status": status,
         "ready": completion_status == "ready",
         "summary": _completion_summary(completion_status, gaps),
+        "progress_state": _completion_progress_state(
+            status=completion_status,
+            gaps=gaps,
+            action_result_state=action_result_state,
+            followup_count=len(action_groups),
+        ),
         "components": components,
         "gap_count": len(gaps),
         "gaps": gaps,
@@ -895,6 +901,55 @@ def _completion_gaps(components: dict[str, dict[str, Any]]) -> list[dict[str, An
             }
         )
     return gaps
+
+
+def _completion_progress_state(
+    *,
+    status: str,
+    gaps: list[dict[str, Any]],
+    action_result_state: dict[str, Any],
+    followup_count: int,
+) -> dict[str, Any]:
+    pending_refresh_count = int(action_result_state.get("pending_refresh_count") or 0)
+    stale_result_count = int(action_result_state.get("stale_result_count") or 0)
+    stored_result_count = int(action_result_state.get("stored_result_count") or 0)
+    submission_activity = (
+        action_result_state.get("submission_evidence_activity")
+        if isinstance(action_result_state.get("submission_evidence_activity"), dict)
+        else {}
+    )
+    submission_activity_recorded = submission_activity.get("available") is True
+    if status == "ready":
+        progress = "closeout_ready"
+        message = "Closeout is ready; no remaining follow-up action is required."
+    elif pending_refresh_count:
+        progress = "refresh_pending"
+        message = "Recorded action results exist and require a read-only refresh before closeout can be trusted."
+    elif stale_result_count:
+        progress = "stale_result"
+        message = "A recorded action result is stale because the underlying action changed."
+    elif submission_activity_recorded or stored_result_count:
+        progress = "recorded_needs_review"
+        message = "Action evidence has been recorded; review remaining gaps before claiming closeout ready."
+    else:
+        progress = "not_started"
+        message = "No closeout follow-up result has been recorded yet."
+    return {
+        "source": "product_console_closeout_progress_state",
+        "schema_version": "product_console_closeout_progress_state.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": progress,
+        "completion_status": status,
+        "ready": status == "ready",
+        "message": message,
+        "followup_count": followup_count,
+        "gap_count": len(gaps),
+        "pending_refresh_count": pending_refresh_count,
+        "stale_result_count": stale_result_count,
+        "stored_result_count": stored_result_count,
+        "submission_evidence_activity_recorded": submission_activity_recorded,
+    }
 
 
 def _completion_summary(status: str, gaps: list[dict[str, Any]]) -> str:
