@@ -44,6 +44,30 @@ def _release(status: str = "needs_attention") -> dict[str, object]:
     }
 
 
+def _evidence_refs() -> dict[str, object]:
+    return {
+        "logo": "docs/submission/logo.png",
+        "screenshots": ["docs/submission/screenshot-1.png"],
+        "test_prompts": "docs/submission/test-prompts.md",
+        "test_responses": "docs/submission/test-responses.md",
+        "localization": "docs/submission/localization.md",
+        "mcp_tool_info": "docs/submission/mcp-tool-info.md",
+        "app_management_permissions": "docs/submission/app-management-permissions.md",
+        "security_review": "docs/submission/security-review.md",
+        "metadata_snapshot": "docs/submission/metadata-snapshot.md",
+        "submission_confirmations": "docs/submission/submission-confirmations.md",
+    }
+
+
+def _write_evidence_files(project_root) -> None:
+    for value in _evidence_refs().values():
+        refs = value if isinstance(value, list) else [value]
+        for ref in refs:
+            path = project_root / ref
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("evidence\n", encoding="utf-8")
+
+
 def test_console_map_defaults_to_read_preview_product_surface() -> None:
     packet = build_product_console_map(
         "/tmp/project",
@@ -98,8 +122,9 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
 
 
 def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:
+    _write_evidence_files(tmp_path)
     manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
-    manifest_path.parent.mkdir(parents=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps(
             {
@@ -118,6 +143,7 @@ def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) ->
                 "security_review_ready": True,
                 "metadata_snapshot_reviewed": True,
                 "submission_confirmations_ready": True,
+                "evidence": _evidence_refs(),
             }
         ),
         encoding="utf-8",
@@ -132,3 +158,5 @@ def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) ->
     assert packet["release_submission_snapshot"]["status"] == "ready"
     assert packet["release_submission_snapshot"]["submission_materials"]["source"] == "default_manifest_file"
     assert "app_name" in packet["release_submission_snapshot"]["submission_materials"]["effective_fields"]
+    assert packet["release_submission_snapshot"]["submission_materials"]["evidence_status"] == "ready"
+    assert "screenshots" in packet["release_submission_snapshot"]["submission_materials"]["evidence_keys"]

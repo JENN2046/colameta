@@ -307,12 +307,18 @@ def _release_submission_snapshot(release_submission: dict[str, Any] | None) -> d
 
 def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -> dict[str, Any]:
     materials = release_submission.get("submission_materials")
+    checks = release_submission.get("checks")
+    evidence_check = checks.get("submission_evidence_references") if isinstance(checks, dict) else None
     if not isinstance(materials, dict):
         return {"source": "unknown", "effective_fields": []}
     return {
         "source": materials.get("source") or "unknown",
         "source_detail": materials.get("source_detail"),
         "effective_fields": list(materials.get("effective_fields") or []),
+        "evidence_keys": list(materials.get("evidence_keys") or []),
+        "evidence_status": evidence_check.get("status") if isinstance(evidence_check, dict) else "unknown",
+        "missing_evidence_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
+        "missing_evidence_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
         "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
         "error": materials.get("error"),
     }

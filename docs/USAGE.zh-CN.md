@@ -212,8 +212,16 @@ submission confirmations
   "metadata_snapshot_reviewed": true,
   "submission_confirmations_ready": true,
   "evidence": {
+    "logo": "docs/submission/logo.png",
     "screenshots": ["docs/submission/screenshot-1.png"],
-    "test_prompts": ["docs/submission/test-prompts.md"]
+    "test_prompts": "docs/submission/test-prompts.md",
+    "test_responses": "docs/submission/test-responses.md",
+    "localization": "docs/submission/localization.md",
+    "mcp_tool_info": "docs/submission/mcp-tool-info.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.md",
+    "security_review": "docs/submission/security-review.md",
+    "metadata_snapshot": "docs/submission/metadata-snapshot.md",
+    "submission_confirmations": "docs/submission/submission-confirmations.md"
   }
 }
 ```
@@ -222,6 +230,9 @@ CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小
 显式命令行 flag 会覆盖 manifest 中的同名 ready 状态。MCP 工具只接受结构化
 `submission_materials` object，不接受本机文件路径。manifest 里的未知字段会被标为
 `SUBMISSION_MATERIALS_MANIFEST_HAS_UNKNOWN_FIELDS`，防止拼写错误被静默忽略。
+manifest 中某个 `*_ready` / `*_reviewed` / `*_confirmed` 字段为 `true` 时，对应
+`evidence` 条目必须指向项目内存在的相对路径；绝对路径、`..` 越界路径、外部 URL、
+缺失文件都会让 `submission_evidence_references` 进入 `needs_attention`。
 
 约定的真实 manifest 路径是：
 
