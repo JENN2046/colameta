@@ -293,9 +293,10 @@ another generic readiness read as the main repair action.
 Each recommended action uses a stable action shape with `action_id`, `label`,
 `mode`, `status`, `tool` or `runbook`, `arguments`, `required_scope`,
 `requires_preview_confirm`, `requires_explicit_confirmation`, `side_effects`,
-and `authority_boundary`. A `mode=commit` action means invoking that tool can
-write local project state and needs explicit confirmation; the console map
-itself remains read-only and does not invoke the action. Its
+`authority_boundary`, and `result_contract`. A `mode=commit` action means
+invoking that tool can write local project state and needs explicit
+confirmation; the console map itself remains read-only and does not invoke the
+action. Its
 `release_submission_evidence_bundle` field
 summarizes the local ChatGPT App submission manifest, the 10-item evidence
 progress table, remaining gaps, and the next safe tool. When evidence still
@@ -316,6 +317,9 @@ confirmation flow. Each runnable card records its latest request state on the
 card, such as pending, updated, requested, or blocked. If a direct ChatGPT Apps
 tool call fails and the widget falls back to the MCP bridge, the card keeps a
 short error summary with the fallback request state.
+`result_contract` tells UIs and agents how to interpret action results, where to
+find failure summaries, and which read surfaces to refresh after a successful
+call.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it

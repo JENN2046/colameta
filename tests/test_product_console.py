@@ -169,6 +169,9 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert init_action["required_scope"] == "mcp:commit"
     assert init_action["requires_explicit_confirmation"] is True
     assert init_action["authority_boundary"]["does_not_execute_now"] is True
+    assert init_action["result_contract"]["expected_result_kind"] == "commit_scoped_result"
+    assert init_action["result_contract"]["last_action_result_shape"]["status"] == "pending|updated|requested|blocked|failed"
+    assert init_action["result_contract"]["refresh_after"][0]["tool"] == "get_release_submission_readiness"
     commander_action = _action_by_tool(packet, "render_commander_app")
     assert commander_action["arguments"] == {"project_name": "demo-project"}
     assert commander_action["source"] == "readiness_safe_next_action"
@@ -176,6 +179,8 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert commander_action["required_scope"] == "mcp:read"
     assert commander_action["side_effects"] is False
     assert commander_action["action"] == "continue_with_public_beta_workflow"
+    assert commander_action["result_contract"]["expected_result_kind"] == "read_packet"
+    assert commander_action["result_contract"]["refresh_after"][0]["tool"] == "get_product_console_map"
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
@@ -225,6 +230,11 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
     assert first["arguments"] == {"project_name": "demo-project", "entries": []}
     assert first["authority_boundary"]["side_effects_if_invoked"] is True
     assert first["authority_boundary"]["does_not_submit_app_for_review"] is True
+    assert first["result_contract"]["expected_result_kind"] == "commit_scoped_result"
+    assert [item["tool"] for item in first["result_contract"]["refresh_after"]] == [
+        "get_release_submission_readiness",
+        "get_product_console_map",
+    ]
     assert first["evidence_context"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
     assert first["evidence_context"]["incomplete_keys"] == ["logo"]
     assert first["evidence_context"]["entry_templates"][0]["default_filename"] == "logo.md"
@@ -277,6 +287,7 @@ def test_console_map_recommends_mark_ready_when_evidence_is_filled() -> None:
     assert first["mode"] == "commit"
     assert first["required_scope"] == "mcp:commit"
     assert first["requires_explicit_confirmation"] is True
+    assert first["result_contract"]["refresh_after"][1]["tool"] == "get_product_console_map"
     assert first["arguments"] == {
         "project_name": "demo-project",
         "keys": ["logo"],
@@ -365,6 +376,8 @@ def test_console_map_surfaces_stable_cadence_as_first_action_for_stable_blocker(
     assert first["requires_explicit_confirmation"] is False
     assert first["side_effects"] is False
     assert first["authority_boundary"]["does_not_execute_now"] is True
+    assert first["result_contract"]["expected_result_kind"] == "read_packet"
+    assert first["result_contract"]["failure_summary_source"] == "transport error, tool error, or result.error.message"
     assert first["source"] == "readiness_safe_next_action"
     assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
 

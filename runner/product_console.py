@@ -513,6 +513,7 @@ def _recommended_action(
             "does_not_submit_app_for_review": True,
             "does_not_publish_app": True,
         },
+        "result_contract": _result_contract_for_action(normalized_mode, tool),
     }
     if isinstance(tool, str) and tool:
         item["tool"] = tool
@@ -525,6 +526,49 @@ def _recommended_action(
     if isinstance(evidence_context, dict):
         item["evidence_context"] = evidence_context
     return item
+
+
+def _result_contract_for_action(mode: str, tool: str | None) -> dict[str, Any]:
+    refresh_after = _refresh_after_for_tool(tool)
+    return {
+        "schema_version": "recommended_action_result_contract.v1",
+        "expected_result_kind": (
+            "read_packet"
+            if mode == "read"
+            else "preview_packet"
+            if mode == "preview"
+            else "commit_scoped_result"
+        ),
+        "success_indicators": ["tool call returned without transport error", "result.ok is not false"],
+        "failure_summary_source": "transport error, tool error, or result.error.message",
+        "last_action_result_shape": {
+            "status": "pending|updated|requested|blocked|failed",
+            "message": "<short operator-readable summary>",
+            "observed_at": "<ISO-8601 timestamp>",
+        },
+        "refresh_after": refresh_after,
+    }
+
+
+def _refresh_after_for_tool(tool: str | None) -> list[dict[str, Any]]:
+    if tool in {
+        "fill_submission_evidence_files",
+        "mark_submission_evidence_ready_fields",
+        "init_submission_evidence",
+    }:
+        return [
+            {"tool": "get_release_submission_readiness", "why": "Refresh submission evidence and manifest status."},
+            {"tool": "get_product_console_map", "why": "Refresh recommended actions after local submission evidence changes."},
+        ]
+    if tool == "get_product_readiness_status":
+        return [{"tool": "get_product_console_map", "why": "Refresh console actions after product readiness changes."}]
+    if tool == "get_apps_connector_smoke_packet":
+        return [{"tool": "get_product_readiness_status", "why": "Refresh product readiness after connector smoke evidence."}]
+    if tool == "get_stable_replacement_cadence":
+        return [{"tool": "get_product_console_map", "why": "Refresh console guidance after stable cadence review."}]
+    if tool == "render_commander_app":
+        return [{"tool": "get_product_console_map", "why": "Refresh console action cards after entering Commander."}]
+    return []
 
 
 def _required_scope_for_mode(mode: str) -> str:
