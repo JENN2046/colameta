@@ -1169,6 +1169,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "release_submission_evidence_bundle" in widget_html
         assert "clearStaleEvidenceState" in widget_html
         assert "submissionPreviewCardModels" in widget_html
+        assert "copy_payload" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
@@ -1571,6 +1572,47 @@ vm.runInThisContext({json.dumps(widget_script)});
   logText = byId("log").textContent;
   assert(logText.includes("Copy failed; payload below:"), logText);
   assert(logText.includes('"key": "connector_closeout"'), logText);
+
+  navigator.clipboard = {{
+    writeText: async function (value) {{
+      copiedText = value;
+    }}
+  }};
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "submission_evidence_fill_preview",
+          project_name: "demo-project",
+          status: "preview_ready",
+          summary: "Prepared a read-only fill payload preview with 2 evidence entries.",
+          copyable_tool_call: {{
+            tool: "fill_submission_evidence_files",
+            arguments: {{
+              project_name: "demo-project",
+              entries: [
+                {{ key: "logo", filename: "logo.md", content: "<operator-confirmed evidence text>" }},
+                {{ key: "screenshot", filename: "screenshot.md", content: "<operator-confirmed evidence text>" }}
+              ],
+              mark_ready: false
+            }},
+            required_scope: "mcp:commit"
+          }},
+          operator_instructions: ["Review every entry before writing files."]
+        }}
+      }}
+    }}
+  }});
+  assert.strictEqual(evidenceCardCount(), 2, "fill preview should render both evidence cards");
+  await evidenceCopyButton().listeners.click[0]();
+  await flushPromises();
+  assert.strictEqual(byId("log").textContent, "Copied evidence tool call.");
+  const copiedCall = JSON.parse(copiedText);
+  assert.strictEqual(copiedCall.tool, "fill_submission_evidence_files");
+  assert.strictEqual(copiedCall.arguments.project_name, "demo-project");
+  assert.strictEqual(copiedCall.arguments.entries.length, 2);
+  assert.strictEqual(copiedCall.arguments.entries[1].key, "screenshot");
+  assert.strictEqual(copiedCall.arguments.mark_ready, false);
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);

@@ -5671,7 +5671,9 @@ class MCPPlanningBridgeServer:
               content_prompt: preview.summary,
               purpose: preview.summary,
               required_sections: preview.operator_instructions,
-              copyable_entry_shape: entry
+              copyable_entry_shape: entry,
+              copy_payload: call,
+              copy_message: "Copied evidence tool call."
             };
           });
         }
@@ -5689,7 +5691,9 @@ class MCPPlanningBridgeServer:
               content_prompt: preview.summary,
               purpose: preview.summary,
               required_sections: ["human_reviewed"].concat(preview.operator_instructions || []),
-              copyable_entry_shape: call
+              copyable_entry_shape: call,
+              copy_payload: call,
+              copy_message: "Copied evidence tool call."
             };
           });
         }
@@ -5820,11 +5824,11 @@ class MCPPlanningBridgeServer:
           copy.type = "button";
           copy.textContent = "Copy";
           copy.addEventListener("click", function () {
-            copyText(JSON.stringify(template.copyable_entry_shape || {
+            copyText(JSON.stringify(template.copy_payload || template.copyable_entry_shape || {
               key: template.key,
               filename: template.default_filename,
               content: "<operator-confirmed evidence text>"
-            }, null, 2), "Copied evidence entry shape.");
+            }, null, 2), template.copy_message || "Copied evidence entry shape.");
           });
           head.appendChild(titleWrap);
           head.appendChild(copy);
