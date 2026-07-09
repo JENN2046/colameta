@@ -58,6 +58,7 @@ from runner.product_readiness import (
     build_product_readiness_packet,
 )
 from runner.full_loop_authority import build_full_loop_authority_status
+from runner.product_console import build_product_console_map
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
@@ -150,6 +151,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_product_readiness_status",
     "get_chatgpt_app_readiness",
     "get_full_loop_authority_status",
+    "get_product_console_map",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -506,6 +508,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_product_readiness_status",
     "get_chatgpt_app_readiness",
     "get_full_loop_authority_status",
+    "get_product_console_map",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -798,6 +801,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_product_readiness_status",
         "get_chatgpt_app_readiness",
         "get_full_loop_authority_status",
+        "get_product_console_map",
         "get_commander_app_manifest",
         "render_commander_app",
         "get_apps_connector_smoke_packet",
@@ -1063,6 +1067,7 @@ class MCPPlanningBridgeServer:
             "get_product_readiness_status": self._tool_get_product_readiness_status,
             "get_chatgpt_app_readiness": self._tool_get_chatgpt_app_readiness,
             "get_full_loop_authority_status": self._tool_get_full_loop_authority_status,
+            "get_product_console_map": self._tool_get_product_console_map,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1281,6 +1286,23 @@ class MCPPlanningBridgeServer:
                     "和 executor/validation/commit/push gate 是否齐备，不启动 executor、不跑验证、不 commit、不 push、不替换 stable。scope=mcp:read。"
                 ),
                 input_schema=full_loop_authority_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_product_console_map",
+                title="Get Product Console Map",
+                description=(
+                    f"[{self.project_hint}] ColaMeta 项目操作台的只读能力地图。"
+                    "返回连接/readiness、计划审查、Controlled Full Loop、stable/release 的入口、工具、scope、状态和推荐首动作；"
+                    "不启动 executor、不跑验证、不 commit、不 push、不替换 stable、不发布。scope=mcp:read。"
+                ),
+                input_schema=commander_app_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -7958,6 +7980,11 @@ class MCPPlanningBridgeServer:
                 params.get("operator_confirmation_ref") if isinstance(params.get("operator_confirmation_ref"), str) else None
             ),
         )
+
+    def _tool_get_product_console_map(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        return build_product_console_map(project_root, project_name=project_name)
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
         manifest = self._commander_app_manifest(params)

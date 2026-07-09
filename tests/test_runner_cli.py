@@ -135,6 +135,32 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert build_packet.call_args.kwargs["confirmation_mode"] == "preview-confirm"
         assert build_packet.call_args.kwargs["operator_confirmation_ref"] == "receipt-1"
 
+    def test_console_map_json_outputs_product_console_map(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "product_console_map",
+            "read_only": True,
+            "side_effects": False,
+            "status": "ready_read_preview",
+            "entries": [],
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_product_console_map", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_console_map(
+                ["console-map", str(self.project), "--project-name", "demo-project", "--json"]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "product_console_map"
+        assert payload["read_only"] is True
+        assert build_packet.call_args.kwargs["project_name"] == "demo-project"
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:

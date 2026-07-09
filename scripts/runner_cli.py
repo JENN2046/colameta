@@ -44,6 +44,7 @@ from runner.product_readiness import (
     build_product_readiness_packet,
 )
 from runner.full_loop_authority import build_full_loop_authority_status
+from runner.product_console import build_product_console_map
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -2406,6 +2407,69 @@ def _run_full_loop_status(args: list[str]) -> int:
     return 0
 
 
+def _parse_console_map_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    json_output = False
+    project_name: str | None = None
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            json_output = True
+        elif token == "--project-name":
+            if idx + 1 >= len(args):
+                print("console-map 参数错误：--project-name 缺少值。", file=sys.stderr)
+                return None
+            project_name = args[idx + 1]
+            idx += 1
+        elif token.startswith("-"):
+            print(f"console-map 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"console-map 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"console-map 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, {"json_output": json_output, "project_name": project_name}
+
+
+def _run_console_map(args: list[str]) -> int:
+    parsed = _parse_console_map_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_product_console_map(
+        project_path,
+        project_name=options.get("project_name") if isinstance(options.get("project_name"), str) else None,
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(
+            "Product console: "
+            f"status={packet.get('status')} "
+            f"default_mode={packet.get('default_mode')}",
+            file=sys.stderr,
+        )
+        entries = packet.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                print(
+                    f"  {entry.get('entry_id')}: status={entry.get('status')} "
+                    f"mode={entry.get('mode')} tool={entry.get('tool')}",
+                    file=sys.stderr,
+                )
+    return 0
+
+
 def _run_service_stop(args: list[str]) -> int:
     if len(args) >= 2 and not args[1].startswith("-"):
         project_path = _resolve_path(args[1])
@@ -4599,6 +4663,8 @@ def main() -> int:
         return _run_app_smoke(sys.argv[1:])
     if cmd == "full-loop-status":
         return _run_full_loop_status(sys.argv[1:])
+    if cmd == "console-map":
+        return _run_console_map(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":

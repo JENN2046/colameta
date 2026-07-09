@@ -14,7 +14,8 @@
 1. 跑 colameta doctor --json
 2. 看 status / primary_blocker / safe_next_action
 3. 需要底层 ops 证据时再跑 colameta ops-check --json
-4. 在 MCP 里调 get_product_readiness_status
+4. 跑 colameta console-map --json 看操作台能力地图
+5. 在 MCP 里调 get_product_readiness_status 或 get_product_console_map
 ```
 
 如果要把 ChatGPT Apps 外部 connector 重新接上或做 smoke：
@@ -37,10 +38,11 @@
 5. get_web_gpt_service_entrypoint
 6. get_product_readiness_status(project_name="colameta-self-dev")
 7. get_chatgpt_app_readiness(project_name="colameta-self-dev")
-8. get_runtime_version_status(project_name="colameta-self-dev")
-9. get_stable_replacement_cadence(project_name="colameta-self-dev")
-10. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-11. get_connector_runtime_health_status(project_name="colameta-self-dev")
+8. get_product_console_map(project_name="colameta-self-dev")
+9. get_runtime_version_status(project_name="colameta-self-dev")
+10. get_stable_replacement_cadence(project_name="colameta-self-dev")
+11. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+12. get_connector_runtime_health_status(project_name="colameta-self-dev")
 ```
 
 如果要开一轮受控优化：
@@ -145,6 +147,25 @@ safe_next_action: 下一步只读或 runbook 动作
 `get_chatgpt_app_readiness(project_name=...)` 返回同一 readiness 外加 `connector_url`
 和推荐工具顺序。它只用于连接和 smoke 交接，不授权 executor run、commit、push、重启服务
 或 stable replacement。
+
+项目操作台能力地图入口是：
+
+```text
+colameta console-map --json
+get_product_console_map(project_name="colameta-self-dev")
+```
+
+它把 ColaMeta 当前能做的事情分成四组：
+
+```text
+connect_and_readiness: 连接 ChatGPT、产品 readiness、Apps connector smoke
+plan_and_review: operator flow、review context、stage parallel preview
+controlled_full_loop: full-loop authority、executor、validation、commit、push
+stable_and_release: stable promotion readiness、release/submission readiness
+```
+
+这个 map 只告诉操作者“入口在哪里、需要什么 scope、当前是否 blocked/available/preview_required”。
+它不执行任何入口动作，不启动 executor、不跑验证、不 commit、不 push、不替换 stable、不发布。
 
 Controlled Full Loop 的状态入口是：
 
