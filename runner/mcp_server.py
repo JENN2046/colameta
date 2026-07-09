@@ -5130,6 +5130,67 @@ class MCPPlanningBridgeServer:
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 8px;
     }
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .evidence-card {
+      min-height: 116px;
+      padding: 10px;
+      border: 1px solid #d8e0e6;
+      border-radius: 8px;
+      background: #ffffff;
+      display: grid;
+      gap: 7px;
+    }
+    .evidence-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 8px;
+    }
+    .evidence-title {
+      font-size: 12px;
+      line-height: 1.25;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .evidence-path {
+      color: #68727a;
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .evidence-purpose {
+      color: #334047;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .evidence-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .evidence-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 3px 6px;
+      border: 1px solid #d8e0e6;
+      border-radius: 6px;
+      color: #44515a;
+      background: #f5f7f9;
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .evidence-copy {
+      min-height: 28px;
+      padding: 5px 8px;
+      flex: 0 0 auto;
+      font-size: 12px;
+    }
     .note {
       min-height: 56px;
       padding: 10px;
@@ -5227,6 +5288,7 @@ class MCPPlanningBridgeServer:
       .top { grid-template-columns: minmax(0, 1fr); }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .readiness { grid-template-columns: minmax(0, 1fr); }
+      .evidence-grid { grid-template-columns: minmax(0, 1fr); }
       .profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .boundary { grid-template-columns: minmax(0, 1fr); }
     }
@@ -5269,10 +5331,20 @@ class MCPPlanningBridgeServer:
       </div>
     </section>
     <section class="section">
+      <h2>Release Evidence</h2>
+      <div class="readiness">
+        <div class="note"><strong>Submission status</strong><span id="submission-status">-</span></div>
+        <div class="note"><strong>Evidence blockers</strong><span id="submission-blockers">-</span></div>
+      </div>
+      <div class="evidence-grid" id="submission-evidence"></div>
+    </section>
+    <section class="section">
       <h2>Reads</h2>
       <div class="actions">
         <button data-tool="get_commander_app_manifest">Manifest</button>
         <button class="secondary" data-tool="get_agent_operator_flow_packet">Flow</button>
+        <button class="secondary" data-tool="get_product_console_map">Console</button>
+        <button class="secondary" data-tool="get_release_submission_readiness">Submission</button>
         <button class="secondary" data-tool="get_apps_connector_smoke_packet">Apps</button>
         <button class="secondary" data-tool="get_stable_replacement_cadence">Cadence</button>
         <button class="secondary" data-tool="get_runtime_version_status">Runtime</button>
@@ -5323,6 +5395,102 @@ class MCPPlanningBridgeServer:
         if (!blocker || typeof blocker !== "object") return "none";
         return [blocker.component, blocker.reason_code, blocker.safe_evidence_needed].filter(Boolean).join(" | ");
       }
+      function releaseSnapshot(data) {
+        if (!data || typeof data !== "object") return {};
+        if (data.source === "release_submission_readiness") return data;
+        if (data.release_submission_snapshot && typeof data.release_submission_snapshot === "object") return data.release_submission_snapshot;
+        if (data.release_submission && typeof data.release_submission === "object") return data.release_submission;
+        return {};
+      }
+      function evidenceTemplates(data) {
+        var snapshot = releaseSnapshot(data);
+        if (Array.isArray(snapshot.submission_evidence_entry_templates)) return snapshot.submission_evidence_entry_templates;
+        var materials = snapshot.submission_materials || {};
+        if (Array.isArray(materials.evidence_entry_templates)) return materials.evidence_entry_templates;
+        var actions = Array.isArray(data && data.recommended_first_actions) ? data.recommended_first_actions : [];
+        for (var i = 0; i < actions.length; i += 1) {
+          var ctx = actions[i] && actions[i].evidence_context;
+          if (ctx && Array.isArray(ctx.entry_templates)) return ctx.entry_templates;
+        }
+        return [];
+      }
+      function evidenceBlockers(data) {
+        var snapshot = releaseSnapshot(data);
+        var materials = snapshot.submission_materials || {};
+        var keys = Array.isArray(materials.incomplete_evidence_keys) ? materials.incomplete_evidence_keys : [];
+        var placeholders = Array.isArray(materials.placeholder_evidence_files) ? materials.placeholder_evidence_files : [];
+        var missing = Array.isArray(materials.missing_evidence_files) ? materials.missing_evidence_files : [];
+        return keys.concat(placeholders).concat(missing).slice(0, 6).join(" | ") || "none";
+      }
+      function copyText(textValue) {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          navigator.clipboard.writeText(textValue).then(function () {
+            text("log", "Copied evidence entry shape.");
+          }).catch(function () {
+            text("log", textValue);
+          });
+          return;
+        }
+        text("log", textValue);
+      }
+      function renderEvidence(data) {
+        var snapshot = releaseSnapshot(data);
+        text("submission-status", statusValue(snapshot, ["status"]));
+        text("submission-blockers", evidenceBlockers(data));
+        var target = byId("submission-evidence");
+        target.innerHTML = "";
+        var templates = evidenceTemplates(data);
+        if (!templates.length) {
+          var empty = document.createElement("div");
+          empty.className = "note";
+          empty.textContent = "No active evidence templates. Read Product Console or Release Submission readiness to refresh this panel.";
+          target.appendChild(empty);
+          return;
+        }
+        templates.slice(0, 6).forEach(function (template) {
+          var card = document.createElement("div");
+          card.className = "evidence-card";
+          var head = document.createElement("div");
+          head.className = "evidence-head";
+          var titleWrap = document.createElement("div");
+          var title = document.createElement("div");
+          title.className = "evidence-title";
+          title.textContent = template.title || template.key || "Evidence";
+          var path = document.createElement("div");
+          path.className = "evidence-path";
+          path.textContent = template.default_path || template.default_filename || "-";
+          titleWrap.appendChild(title);
+          titleWrap.appendChild(path);
+          var copy = document.createElement("button");
+          copy.className = "evidence-copy secondary";
+          copy.type = "button";
+          copy.textContent = "Copy";
+          copy.addEventListener("click", function () {
+            copyText(JSON.stringify(template.copyable_entry_shape || {
+              key: template.key,
+              filename: template.default_filename,
+              content: "<operator-confirmed evidence text>"
+            }, null, 2));
+          });
+          head.appendChild(titleWrap);
+          head.appendChild(copy);
+          var purpose = document.createElement("div");
+          purpose.className = "evidence-purpose";
+          purpose.textContent = template.content_prompt || template.purpose || "";
+          var tags = document.createElement("div");
+          tags.className = "evidence-tags";
+          (Array.isArray(template.required_sections) ? template.required_sections : []).slice(0, 4).forEach(function (section) {
+            var tag = document.createElement("span");
+            tag.className = "evidence-tag";
+            tag.textContent = String(section);
+            tags.appendChild(tag);
+          });
+          card.appendChild(head);
+          card.appendChild(purpose);
+          card.appendChild(tags);
+          target.appendChild(card);
+        });
+      }
       function profileCard(profile) {
         var node = document.createElement("div");
         node.className = "profile";
@@ -5372,6 +5540,7 @@ class MCPPlanningBridgeServer:
           statusValue(apps, ["connector_closeout_check", "current_operator_closeout"]),
           statusValue(apps, ["connector_closeout_check", "current_decision"])
         ].filter(function (item) { return item && item !== "-"; }).join(" | "));
+        renderEvidence(current);
         var profiles = byId("profiles");
         profiles.innerHTML = "";
         (current.profiles || current.service_entry_profiles || []).slice(0, 5).forEach(function (item) {
@@ -8438,6 +8607,7 @@ class MCPPlanningBridgeServer:
                     "agent_operator_flow",
                     "service_readiness",
                     "apps_connector_closeout",
+                    "release_submission_evidence",
                     "service_facts",
                     "runtime_freshness",
                     "connector_health",
@@ -8448,6 +8618,8 @@ class MCPPlanningBridgeServer:
                 "read_actions": [
                     {"tool": "get_commander_app_manifest", "arguments": {**project_args, "profile_id": flow_profile_id}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": {**project_args, "profile_id": flow_profile_id}},
+                    {"tool": "get_product_console_map", "arguments": project_args},
+                    {"tool": "get_release_submission_readiness", "arguments": project_args},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args},
                     {"tool": "get_stable_replacement_cadence", "arguments": project_args},
                     {"tool": "get_stage_parallel_plan_preview", "arguments": project_args},
