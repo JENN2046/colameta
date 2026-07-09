@@ -220,6 +220,14 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
         "SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED",
     ]
     assert completion["safe_next_action"]["tool"] == "init_submission_evidence"
+    groups = {item["group_id"]: item for item in completion["action_groups"]}
+    assert list(groups) == ["release_submission", "submission_evidence", "submission_evidence_activity"]
+    assert groups["release_submission"]["status"] == "needs_attention"
+    assert groups["release_submission"]["primary_action"]["tool"] == "init_submission_evidence"
+    assert groups["release_submission"]["action_refs"][0]["tool"] == "init_submission_evidence"
+    assert groups["submission_evidence"]["primary_action"]["tool"] == "init_submission_evidence"
+    assert groups["submission_evidence_activity"]["primary_action"]["tool"] == "get_product_console_map"
+    assert "Record the latest submission evidence activity" in groups["submission_evidence_activity"]["empty_state"]
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
@@ -445,6 +453,16 @@ def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(
     assert completion["components"]["action_refresh"]["ready"] is True
     assert completion["safe_next_action"]["tool"] == "render_commander_app"
     assert completion["safe_next_action"]["authority"] == "read_only"
+    ready_group = completion["action_groups"][0]
+    assert ready_group["group_id"] == "closeout_ready"
+    assert ready_group["status"] == "ready"
+    assert ready_group["gap_codes"] == []
+    assert ready_group["primary_action"]["tool"] == "render_commander_app"
+    assert [item["tool"] for item in ready_group["action_refs"]] == [
+        "render_commander_app",
+        "get_agent_operator_flow_packet",
+    ]
+    assert ready_group["empty_state"] == "Closeout is ready; continue through the read-only Commander flow."
 
 
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:

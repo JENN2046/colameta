@@ -803,6 +803,13 @@ def _completion_surface(
     blocker_codes = [gap["code"] for gap in gaps if gap.get("severity") == "blocker"]
     needs_attention_codes = [gap["code"] for gap in gaps if gap.get("severity") == "needs_attention"]
     completion_status = "ready" if not gaps else "blocked" if blocker_codes else "needs_attention"
+    safe_next_action = _completion_safe_next_action(
+        readiness=readiness,
+        release_evidence_bundle=release_evidence_bundle,
+        action_result_state=action_result_state,
+        recommended_actions=recommended_actions,
+        gaps=gaps,
+    )
     return {
         "source": "product_console_completion_surface",
         "schema_version": "product_console_completion_surface.v1",
@@ -817,12 +824,12 @@ def _completion_surface(
         "gaps": gaps,
         "blocker_codes": blocker_codes,
         "needs_attention_codes": needs_attention_codes,
-        "safe_next_action": _completion_safe_next_action(
-            readiness=readiness,
-            release_evidence_bundle=release_evidence_bundle,
-            action_result_state=action_result_state,
-            recommended_actions=recommended_actions,
+        "safe_next_action": safe_next_action,
+        "action_groups": _completion_action_groups(
+            status=completion_status,
             gaps=gaps,
+            recommended_actions=recommended_actions,
+            safe_next_action=safe_next_action,
         ),
         "authority_boundary": {
             "read_only": True,
@@ -949,6 +956,141 @@ def _completion_safe_next_action(
         "authority": first_action.get("required_scope") or "mcp:read",
         "why": first_action.get("why") or "Inspect the next recommended product console action.",
     }
+
+
+def _completion_action_groups(
+    *,
+    status: str,
+    gaps: list[dict[str, Any]],
+    recommended_actions: list[dict[str, Any]],
+    safe_next_action: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not gaps:
+        return [
+            {
+                "group_id": "closeout_ready",
+                "label": "Closeout Ready",
+                "status": "ready",
+                "gap_codes": [],
+                "primary_action": dict(safe_next_action),
+                "action_refs": _completion_action_refs_for_component("closeout_ready", recommended_actions),
+                "empty_state": "Closeout is ready; continue through the read-only Commander flow.",
+            }
+        ]
+    groups: list[dict[str, Any]] = []
+    seen_components: set[str] = set()
+    for gap in gaps:
+        component = str(gap.get("component") or "unknown")
+        if component in seen_components:
+            continue
+        seen_components.add(component)
+        component_gaps = [item for item in gaps if item.get("component") == component]
+        action_refs = _completion_action_refs_for_component(component, recommended_actions)
+        primary_action = (
+            dict(safe_next_action)
+            if gap is gaps[0]
+            else _completion_primary_action_from_refs(action_refs, component)
+        )
+        groups.append(
+            {
+                "group_id": component,
+                "label": _completion_group_label(component),
+                "status": "blocked" if any(item.get("severity") == "blocker" for item in component_gaps) else "needs_attention",
+                "component": component,
+                "gap_codes": [str(item.get("code")) for item in component_gaps if item.get("code")],
+                "primary_action": primary_action,
+                "action_refs": action_refs,
+                "empty_state": _completion_group_empty_state(component),
+            }
+        )
+    return groups
+
+
+def _completion_action_refs_for_component(
+    component: str,
+    recommended_actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for action in recommended_actions:
+        if not _completion_action_matches_component(component, action):
+            continue
+        refs.append(_completion_action_ref(action))
+    return refs
+
+
+def _completion_action_matches_component(component: str, action: dict[str, Any]) -> bool:
+    tool = str(action.get("tool") or "")
+    action_id = str(action.get("action_id") or "")
+    source = str(action.get("source") or "")
+    if component == "product_readiness":
+        return tool in {"get_product_readiness_status", "get_apps_connector_smoke_packet", "get_stable_replacement_cadence"} or source == "readiness_safe_next_action"
+    if component in {"release_submission", "submission_evidence"}:
+        return tool in {
+            "get_release_submission_readiness",
+            "init_submission_evidence",
+            "fill_submission_evidence_files",
+            "mark_submission_evidence_ready_fields",
+            "get_submission_evidence_fill_preview",
+        }
+    if component == "submission_evidence_activity":
+        return action_id == SUBMISSION_EVIDENCE_ACTIVITY_ACTION_ID or tool == SUBMISSION_EVIDENCE_ACTIVITY_TOOL
+    if component == "action_refresh":
+        return bool(action.get("next_refresh_actions"))
+    if component == "closeout_ready":
+        return tool == "render_commander_app" or action_id == "operator_flow"
+    return False
+
+
+def _completion_action_ref(action: dict[str, Any]) -> dict[str, Any]:
+    ref = {
+        "action_id": action.get("action_id"),
+        "label": action.get("label"),
+        "tool": action.get("tool"),
+        "action": action.get("action"),
+        "runbook": action.get("runbook"),
+        "mode": action.get("mode"),
+        "required_scope": action.get("required_scope"),
+        "arguments": action.get("arguments"),
+        "status": action.get("status"),
+    }
+    return {key: value for key, value in ref.items() if value not in (None, "", {})}
+
+
+def _completion_primary_action_from_refs(action_refs: list[dict[str, Any]], component: str) -> dict[str, Any]:
+    if action_refs:
+        first = dict(action_refs[0])
+        first["authority"] = first.get("required_scope") or first.get("mode") or "mcp:read"
+        return first
+    return {
+        "action": f"inspect_{component}",
+        "tool": "get_product_console_map",
+        "authority": "read_only",
+        "why": _completion_group_empty_state(component),
+    }
+
+
+def _completion_group_label(component: str) -> str:
+    labels = {
+        "product_readiness": "Product Readiness",
+        "release_submission": "Release Submission",
+        "submission_evidence": "Submission Evidence",
+        "submission_evidence_activity": "Evidence Activity",
+        "action_refresh": "Action Refresh",
+        "closeout_ready": "Closeout Ready",
+    }
+    return labels.get(component, component.replace("_", " ").title())
+
+
+def _completion_group_empty_state(component: str) -> str:
+    messages = {
+        "product_readiness": "Read product readiness or run the connector smoke packet before continuing.",
+        "release_submission": "Read release submission readiness and complete the remaining local submission material.",
+        "submission_evidence": "Fill or review the local submission evidence before claiming closeout ready.",
+        "submission_evidence_activity": "Record the latest submission evidence activity after refresh/recovery actions.",
+        "action_refresh": "Run the pending read-only refresh actions before trusting the console state.",
+        "closeout_ready": "Closeout is ready; continue through the read-only Commander flow.",
+    }
+    return messages.get(component, "Inspect Product Console recommendations for the next safe action.")
 
 
 def _submission_evidence_activity_result(entries: list[dict[str, Any]]) -> dict[str, Any]:

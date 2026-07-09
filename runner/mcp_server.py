@@ -5513,6 +5513,7 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Gaps</strong><span id="closeout-gaps">-</span></div>
         <div class="note"><strong>Next</strong><span id="closeout-next">-</span></div>
       </div>
+      <div class="recommended-actions" id="closeout-action-groups"></div>
     </section>
     <section class="section">
       <h2>Recommended Actions</h2>
@@ -5654,6 +5655,28 @@ class MCPPlanningBridgeServer:
         var action = completion && completion.safe_next_action;
         if (!action || typeof action !== "object") return "-";
         return [action.action, action.tool || action.runbook, action.authority].filter(Boolean).join(" | ");
+      }
+      function completionActionText(action) {
+        if (!action || typeof action !== "object") return "-";
+        return [action.action || action.action_id, action.tool || action.runbook, action.authority || action.required_scope || action.mode].filter(Boolean).join(" | ");
+      }
+      function completionActionGroups(completion) {
+        if (completion && Array.isArray(completion.action_groups) && completion.action_groups.length) {
+          return completion.action_groups;
+        }
+        var action = completion && completion.safe_next_action;
+        if (action && typeof action === "object") {
+          return [{
+            group_id: "next_action",
+            label: "Next Action",
+            status: completion.status || "unknown",
+            gap_codes: completion.needs_attention_codes || completion.blocker_codes || [],
+            primary_action: action,
+            action_refs: [],
+            empty_state: "Read Product Console to load closeout action groups."
+          }];
+        }
+        return [];
       }
       function releaseSnapshot(data) {
         if (!data || typeof data !== "object") return {};
@@ -6105,6 +6128,46 @@ class MCPPlanningBridgeServer:
         ].filter(Boolean).join(" | "));
         text("closeout-gaps", completionGapText(completion));
         text("closeout-next", completionNextText(completion));
+        renderCompletionGroups(completion);
+      }
+      function renderCompletionGroups(completion) {
+        var target = byId("closeout-action-groups");
+        target.innerHTML = "";
+        var groups = completionActionGroups(completion);
+        if (!groups.length) {
+          var empty = document.createElement("div");
+          empty.className = "note closeout-group-empty";
+          empty.textContent = "Read Product Console to load closeout action groups.";
+          target.appendChild(empty);
+          return;
+        }
+        groups.slice(0, 5).forEach(function (group) {
+          if (!group || typeof group !== "object") return;
+          var card = document.createElement("div");
+          card.className = "recommended-action closeout-action-group";
+          var title = document.createElement("div");
+          title.className = "recommended-action-title closeout-group-title";
+          title.textContent = [group.label || group.group_id || "Closeout", group.status].filter(Boolean).join(" | ");
+          var meta = document.createElement("div");
+          meta.className = "recommended-action-meta closeout-group-meta";
+          appendChip(meta, group.component || group.group_id || "");
+          var gaps = Array.isArray(group.gap_codes) ? group.gap_codes : [];
+          appendChip(meta, gaps.length ? "gaps " + gaps.length : "no gaps", gaps.length ? "commit" : "read");
+          var action = document.createElement("div");
+          action.className = "recommended-action-why closeout-group-action";
+          action.textContent = completionActionText(group.primary_action);
+          var refs = document.createElement("div");
+          refs.className = "recommended-action-boundary closeout-group-refs";
+          (Array.isArray(group.action_refs) ? group.action_refs : []).slice(0, 3).forEach(function (ref) {
+            appendChip(refs, completionActionText(ref));
+          });
+          if (!refs.textContent && group.empty_state) appendChip(refs, group.empty_state);
+          card.appendChild(title);
+          card.appendChild(meta);
+          card.appendChild(action);
+          card.appendChild(refs);
+          target.appendChild(card);
+        });
       }
       function recommendedActions(data) {
         if (!data || typeof data !== "object") return [];
