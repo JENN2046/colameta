@@ -44,6 +44,35 @@ def _release(status: str = "needs_attention") -> dict[str, object]:
     }
 
 
+def _release_with_materials(
+    *,
+    status: str = "needs_attention",
+    source: str = "default_manifest_file",
+    evidence_status: str = "needs_attention",
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "blocker_codes": [],
+        "needs_attention_codes": [] if status == "ready" else ["SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE"],
+        "submission_materials": {
+            "source": source,
+            "effective_fields": ["app_name"],
+            "evidence_keys": ["logo"],
+        },
+        "checks": {
+            "submission_materials_manifest": {"status": "ready"},
+            "submission_evidence_references": {
+                "status": evidence_status,
+                "missing_keys": ["logo"] if evidence_status == "needs_attention" else [],
+                "missing_files": [],
+                "placeholder_files": ["docs/submission/logo.todo.md"] if evidence_status == "needs_attention" else [],
+            },
+        },
+        "safe_next_action": {"action": "complete_submission_materials"},
+    }
+
+
 def _evidence_refs() -> dict[str, object]:
     return {
         "logo": "docs/submission/logo.png",
@@ -82,7 +111,10 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert packet["side_effects"] is False
     assert packet["status"] == "ready_read_preview"
     assert packet["default_mode"] == "public_beta_read_preview"
-    assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
+    assert packet["recommended_first_actions"][0]["command"] == "colameta init-submission-evidence"
+    assert {"tool": "get_product_readiness_status", "arguments": {"project_name": "demo-project"}} in packet[
+        "recommended_first_actions"
+    ]
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
@@ -90,6 +122,45 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert entries["release_submission_readiness"]["tool"] == "get_release_submission_readiness"
     assert entries["release_submission_readiness"]["status"] == "needs_attention"
     assert packet["authority_boundary"]["does_not_push"] is True
+
+
+def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(source="parameters_only"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["command"] == "colameta init-submission-evidence"
+    assert first["arguments"] == {"project_name": "demo-project"}
+
+
+def test_console_map_recommends_filling_submission_evidence_for_placeholders() -> None:
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["command"] == "fill_submission_evidence_files"
+    assert first["arguments"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
+
+
+def test_console_map_does_not_recommend_release_work_when_submission_ready() -> None:
+    packet = build_product_console_map(
+        "/tmp/project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
 
 
 def test_console_map_marks_full_loop_entries_preview_required_when_controls_ready() -> None:
@@ -116,7 +187,8 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
     )
 
     assert packet["status"] == "blocked"
-    assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
+    assert packet["recommended_first_actions"][0]["command"] == "colameta init-submission-evidence"
+    assert {"tool": "get_product_readiness_status", "arguments": {}} in packet["recommended_first_actions"]
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
     assert packet["release_submission_snapshot"]["status"] == "blocked"
 
