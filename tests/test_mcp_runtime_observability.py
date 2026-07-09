@@ -1170,6 +1170,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "clearStaleEvidenceState" in widget_html
         assert "submissionPreviewCardModels" in widget_html
         assert "copy_payload" in widget_html
+        assert "renderEvidenceRefreshQueue" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
@@ -1710,8 +1711,16 @@ function evidenceText(className) {{
     .map(function (node) {{ return node.textContent; }})
     .join("\\n");
 }}
+function evidenceRefreshButtons() {{
+  return findByClass(byId("submission-evidence"), "evidence-refresh");
+}}
+async function flushPromises() {{
+  await Promise.resolve();
+  await Promise.resolve();
+}}
 
 const listeners = {{}};
+const toolCalls = [];
 global.document = {{
   getElementById: byId,
   createElement: function (tagName) {{ return new Element(tagName); }},
@@ -1719,6 +1728,19 @@ global.document = {{
 }};
 global.navigator = {{}};
 global.window = {{
+  openai: {{
+    callTool: async function (name, args) {{
+      toolCalls.push({{ name: name, args: args }});
+      return {{
+        structuredContent: {{
+          source: name === "get_product_console_map" ? "product_console_map" : "release_submission_readiness",
+          project_name: args.project_name,
+          status: "refreshed",
+          recommended_first_actions: []
+        }}
+      }};
+    }}
+  }},
   parent: {{
     postMessage: function () {{ throw new Error("evidence render path should not use bridge"); }}
   }},
@@ -1862,6 +1884,12 @@ vm.runInThisContext({json.dumps(widget_script)});
           content: "<operator-confirmed evidence text>"
         }}],
         mark_ready: false
+      }},
+      result_contract: {{
+        refresh_after: [
+          {{ tool: "get_release_submission_readiness", why: "Refresh submission evidence and manifest status." }},
+          {{ tool: "get_product_console_map", why: "Refresh recommended actions after local submission evidence changes." }}
+        ]
       }}
     }},
     operator_instructions: ["Review every entry before writing files."]
@@ -1869,10 +1897,15 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(byId("submission-status").textContent, "preview_ready");
   assert.strictEqual(byId("submission-blockers").textContent, "preview preview_ready | tool fill_submission_evidence_files | entries 1");
   assert.strictEqual(evidenceCards().length, 1, "fill preview entries should render one evidence card");
+  assert.strictEqual(evidenceRefreshButtons().length, 2, "fill preview should render post-execution refresh buttons");
   assert(evidenceText("evidence-title").includes("logo | preview_ready"), evidenceText("evidence-title"));
   assert(evidenceText("evidence-path").includes("logo.md"), evidenceText("evidence-path"));
   assert(evidenceText("evidence-purpose").includes("Prepared a read-only fill payload preview"), evidenceText("evidence-purpose"));
   assert(evidenceText("evidence-tag").includes("Review every entry before writing files."), evidenceText("evidence-tag"));
+  await evidenceRefreshButtons()[0].listeners.click[0]();
+  await flushPromises();
+  assert.strictEqual(toolCalls[0].name, "get_release_submission_readiness");
+  assert.deepStrictEqual(toolCalls[0].args, {{ project_name: "demo-project" }});
 
   dispatchToolOutput({{
     source: "submission_evidence_fill_preview",
@@ -1885,6 +1918,12 @@ vm.runInThisContext({json.dumps(widget_script)});
         project_name: "demo-project",
         keys: ["logo"],
         review_confirmation: "human_reviewed"
+      }},
+      result_contract: {{
+        refresh_after: [
+          {{ tool: "get_release_submission_readiness", why: "Refresh submission evidence and manifest status." }},
+          {{ tool: "get_product_console_map", why: "Refresh recommended actions after local submission evidence changes." }}
+        ]
       }}
     }},
     evidence_bundle: {{
@@ -1901,6 +1940,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(byId("submission-status").textContent, "review_ready");
   assert.strictEqual(byId("submission-blockers").textContent, "preview review_ready | tool mark_submission_evidence_ready_fields | keys 1");
   assert.strictEqual(evidenceCards().length, 1, "mark-ready preview keys should render one evidence card");
+  assert.strictEqual(evidenceRefreshButtons().length, 2, "mark-ready preview should render post-execution refresh buttons");
   assert(evidenceText("evidence-title").includes("logo | review_ready"), evidenceText("evidence-title"));
   assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
   assert(evidenceText("evidence-purpose").includes("ready-field marking payload"), evidenceText("evidence-purpose"));

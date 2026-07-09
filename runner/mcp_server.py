@@ -5779,6 +5779,21 @@ class MCPPlanningBridgeServer:
         var missing = Array.isArray(materials.missing_evidence_files) ? materials.missing_evidence_files : [];
         return keys.concat(placeholders).concat(missing).slice(0, 6).join(" | ") || "none";
       }
+      function submissionPreviewRefreshes(data) {
+        var preview = submissionPreview(data);
+        var call = preview.copyable_tool_call || {};
+        var contract = call.result_contract || {};
+        return Array.isArray(contract.refresh_after) ? contract.refresh_after : [];
+      }
+      function submissionPreviewRefreshArgs(data, refresh) {
+        var preview = submissionPreview(data);
+        var call = preview.copyable_tool_call || {};
+        var callArgs = call.arguments || {};
+        var args = refresh && typeof refresh.arguments === "object" ? Object.assign({}, refresh.arguments) : {};
+        var projectName = preview.project_name || callArgs.project_name || activeProjectName;
+        if (projectName && !args.project_name) args.project_name = projectName;
+        return args;
+      }
       function copyText(textValue, message) {
         if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
           navigator.clipboard.writeText(textValue).then(function () {
@@ -5790,6 +5805,37 @@ class MCPPlanningBridgeServer:
         }
         text("log", "Copy unavailable; payload below:\\n" + textValue);
       }
+      function renderEvidenceRefreshQueue(target, data) {
+        var refreshes = submissionPreviewRefreshes(data);
+        if (!refreshes.length) return;
+        var queue = document.createElement("div");
+        queue.className = "action-refresh-queue evidence-refresh-queue";
+        var label = document.createElement("span");
+        label.className = "action-refresh-label evidence-refresh-label";
+        label.textContent = "Refresh after execution";
+        queue.appendChild(label);
+        refreshes.slice(0, 3).forEach(function (item, index) {
+          if (!item || typeof item.tool !== "string" || !item.tool) return;
+          var key = ["evidence-refresh", item.tool, index].join("|");
+          var button = document.createElement("button");
+          button.className = "action-refresh secondary evidence-refresh";
+          button.type = "button";
+          button.textContent = item.tool;
+          button.title = item.why || "Refresh read surface after executing the copied tool call.";
+          var status = document.createElement("span");
+          status.className = "action-refresh-label evidence-refresh-label";
+          renderRefreshStatus(status, key);
+          button.addEventListener("click", async function () {
+            rememberActionRunStatus(key, "pending", item.tool);
+            renderRefreshStatus(status, key);
+            var result = await callToolWithArgs(item.tool, submissionPreviewRefreshArgs(data, item), "evidence preview refresh", key);
+            if (result && result.status) renderRefreshStatus(status, key);
+          });
+          queue.appendChild(button);
+          queue.appendChild(status);
+        });
+        target.appendChild(queue);
+      }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
         var preview = submissionPreview(data);
@@ -5798,6 +5844,7 @@ class MCPPlanningBridgeServer:
         var target = byId("submission-evidence");
         target.innerHTML = "";
         var cards = evidenceCardModels(data);
+        renderEvidenceRefreshQueue(target, data);
         if (!cards.length) {
           var empty = document.createElement("div");
           empty.className = "note";
