@@ -5402,6 +5402,23 @@ class MCPPlanningBridgeServer:
         if (data.release_submission && typeof data.release_submission === "object") return data.release_submission;
         return {};
       }
+      function evidenceBundle(data) {
+        if (!data || typeof data !== "object") return {};
+        if (data.release_submission_evidence_bundle && typeof data.release_submission_evidence_bundle === "object") {
+          return data.release_submission_evidence_bundle;
+        }
+        var apps = data.apps_connector_closeout || {};
+        var releaseEvidence = apps.release_submission_evidence || data.release_submission_evidence || {};
+        if (releaseEvidence && typeof releaseEvidence === "object") {
+          return {
+            status: releaseEvidence.status,
+            ready: releaseEvidence.ready === true,
+            progress_summary: releaseEvidence.evidence_progress,
+            fill_plan: { status: releaseEvidence.ready === true ? "ready" : "read_release_submission_readiness", draft_entries: [] }
+          };
+        }
+        return {};
+      }
       function evidenceTemplates(data) {
         var snapshot = releaseSnapshot(data);
         if (Array.isArray(snapshot.submission_evidence_entry_templates)) return snapshot.submission_evidence_entry_templates;
@@ -5415,6 +5432,10 @@ class MCPPlanningBridgeServer:
         return [];
       }
       function evidenceProgress(data) {
+        var bundle = evidenceBundle(data);
+        if (bundle.progress_summary && typeof bundle.progress_summary === "object") {
+          return bundle.progress_summary;
+        }
         var snapshot = releaseSnapshot(data);
         if (snapshot.submission_evidence_progress && typeof snapshot.submission_evidence_progress === "object") {
           return snapshot.submission_evidence_progress;
@@ -5426,6 +5447,23 @@ class MCPPlanningBridgeServer:
         return {};
       }
       function evidenceCardModels(data) {
+        var bundle = evidenceBundle(data);
+        var fillPlan = bundle.fill_plan || {};
+        if (Array.isArray(fillPlan.draft_entries) && fillPlan.draft_entries.length) {
+          return fillPlan.draft_entries.map(function (entry) {
+            return {
+              key: entry.key,
+              title: entry.key,
+              status: entry.current_status || fillPlan.status,
+              default_path: entry.default_path,
+              default_filename: entry.filename,
+              content_prompt: entry.purpose || fillPlan.why,
+              purpose: entry.purpose || fillPlan.why,
+              required_sections: entry.required_sections,
+              copyable_entry_shape: entry.copyable_entry_shape
+            };
+          });
+        }
         var progress = evidenceProgress(data);
         if (Array.isArray(progress.rows) && progress.rows.length) {
           return progress.rows.map(function (row) {
@@ -5446,6 +5484,18 @@ class MCPPlanningBridgeServer:
         return evidenceTemplates(data);
       }
       function evidenceBlockers(data) {
+        var bundle = evidenceBundle(data);
+        var fillPlan = bundle.fill_plan || {};
+        if (fillPlan.status && bundle.progress_summary && typeof bundle.progress_summary === "object") {
+          var summary = bundle.progress_summary;
+          var counts = summary.counts || {};
+          return [
+            "plan " + fillPlan.status,
+            "ready " + (summary.complete_count || 0) + "/" + (summary.total_count || 0),
+            "attention " + (counts.needs_attention || 0),
+            "placeholder " + (counts.placeholder || 0)
+          ].join(" | ");
+        }
         var progress = evidenceProgress(data);
         if (progress.counts && typeof progress.counts === "object") {
           return [

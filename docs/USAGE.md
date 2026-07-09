@@ -291,6 +291,9 @@ needs work, `fill_plan.draft_entries[]` contains copyable
 the placeholder content with real reviewed evidence before writing files or
 marking ready fields. The bundle does not write files, mark ready fields, create
 an OpenAI App draft, submit review, publish, or read tokens/cookies.
+In the Commander widget, the Release Evidence panel prefers these bundle draft
+entries after a `Console` read and falls back to release-readiness progress and
+templates after a `Submission` read.
 
 ```json
 {
