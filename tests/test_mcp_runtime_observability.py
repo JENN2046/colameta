@@ -1717,6 +1717,9 @@ function evidenceRefreshButtons() {{
 function evidenceRecoveryButtons() {{
   return findByClass(byId("submission-evidence"), "evidence-recovery");
 }}
+function evidenceActivityText() {{
+  return byId("submission-activity").textContent;
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1766,6 +1769,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(notes()[0].textContent.includes("No evidence progress yet"), notes()[0].textContent);
   assert.strictEqual(byId("submission-status").textContent, "-");
   assert.strictEqual(byId("submission-blockers").textContent, "none");
+  assert.strictEqual(evidenceActivityText(), "No evidence activity yet.");
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
@@ -1909,6 +1913,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   await flushPromises();
   assert.strictEqual(toolCalls[0].name, "get_release_submission_readiness");
   assert.deepStrictEqual(toolCalls[0].args, {{ project_name: "demo-project" }});
+  assert(evidenceActivityText().includes("refresh | updated | get_release_submission_readiness via direct call | refreshed"), evidenceActivityText());
 
   dispatchToolOutput({{
     source: "submission_evidence_fill_preview",
@@ -1974,6 +1979,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   }});
   assert.strictEqual(byId("submission-status").textContent, "failed");
   assert.strictEqual(byId("submission-blockers").textContent, "failed SUBMISSION_EVIDENCE_INPUT_INVALID | recovery actions 2");
+  assert(evidenceActivityText().includes("result | failed | SUBMISSION_EVIDENCE_INPUT_INVALID"), evidenceActivityText());
   assert.strictEqual(evidenceRecoveryButtons().length, 2, "failed commit result should render safe recovery buttons");
   assert.strictEqual(evidenceRecoveryButtons()[1].textContent, "get_submission_evidence_fill_preview");
   await evidenceRecoveryButtons()[1].listeners.click[0]();
@@ -1982,6 +1988,8 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(recoveryCall.name, "get_submission_evidence_fill_preview");
   assert.deepStrictEqual(recoveryCall.args, {{ selected_keys: ["logo"], project_name: "demo-project" }});
   assert.strictEqual(evidenceRecoveryButtons().length, 0, "successful refresh should clear stale recovery actions");
+  assert(evidenceActivityText().includes("recovery | updated | get_submission_evidence_fill_preview via direct call | refreshed"), evidenceActivityText());
+  assert(!evidenceActivityText().includes("SUBMISSION_EVIDENCE_INPUT_INVALID"), evidenceActivityText());
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
