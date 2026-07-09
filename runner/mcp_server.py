@@ -5652,7 +5652,52 @@ class MCPPlanningBridgeServer:
         }
         return {};
       }
+      function submissionPreview(data) {
+        if (!data || typeof data !== "object") return {};
+        return data.source === "submission_evidence_fill_preview" ? data : {};
+      }
+      function submissionPreviewCardModels(data) {
+        var preview = submissionPreview(data);
+        if (!preview.source) return [];
+        var call = preview.copyable_tool_call || {};
+        var args = call.arguments || {};
+        if (call.tool === "fill_submission_evidence_files" && Array.isArray(args.entries)) {
+          return args.entries.map(function (entry) {
+            return {
+              key: entry.key,
+              title: entry.key,
+              status: preview.status,
+              default_filename: entry.filename,
+              content_prompt: preview.summary,
+              purpose: preview.summary,
+              required_sections: preview.operator_instructions,
+              copyable_entry_shape: entry
+            };
+          });
+        }
+        if (call.tool === "mark_submission_evidence_ready_fields" && Array.isArray(args.keys)) {
+          var bundle = preview.evidence_bundle || {};
+          var fillPlan = bundle.fill_plan || {};
+          var reviewEntries = Array.isArray(fillPlan.review_entries) ? fillPlan.review_entries : [];
+          return args.keys.map(function (key) {
+            var match = reviewEntries.find(function (entry) { return entry && String(entry.key) === String(key); }) || {};
+            return {
+              key: key,
+              title: key,
+              status: preview.status,
+              default_path: Array.isArray(match.refs) ? match.refs.join(", ") : "",
+              content_prompt: preview.summary,
+              purpose: preview.summary,
+              required_sections: ["human_reviewed"].concat(preview.operator_instructions || []),
+              copyable_entry_shape: call
+            };
+          });
+        }
+        return [];
+      }
       function evidenceCardModels(data) {
+        var previewCards = submissionPreviewCardModels(data);
+        if (previewCards.length) return previewCards;
         var bundle = evidenceBundle(data);
         var fillPlan = bundle.fill_plan || {};
         if (Array.isArray(fillPlan.draft_entries) && fillPlan.draft_entries.length) {
@@ -5690,6 +5735,19 @@ class MCPPlanningBridgeServer:
         return evidenceTemplates(data);
       }
       function evidenceBlockers(data) {
+        var preview = submissionPreview(data);
+        if (preview.source) {
+          var call = preview.copyable_tool_call || {};
+          var args = call.arguments || {};
+          var entryCount = Array.isArray(args.entries) ? args.entries.length : 0;
+          var keyCount = Array.isArray(args.keys) ? args.keys.length : 0;
+          return [
+            "preview " + (preview.status || "unknown"),
+            call.tool ? "tool " + call.tool : "",
+            entryCount ? "entries " + entryCount : "",
+            keyCount ? "keys " + keyCount : ""
+          ].filter(Boolean).join(" | ") || "none";
+        }
         var bundle = evidenceBundle(data);
         var fillPlan = bundle.fill_plan || {};
         if (fillPlan.status && bundle.progress_summary && typeof bundle.progress_summary === "object") {
@@ -5730,7 +5788,8 @@ class MCPPlanningBridgeServer:
       }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
-        text("submission-status", statusValue(snapshot, ["status"]));
+        var preview = submissionPreview(data);
+        text("submission-status", preview.status || statusValue(snapshot, ["status"]));
         text("submission-blockers", evidenceBlockers(data));
         var target = byId("submission-evidence");
         target.innerHTML = "";
