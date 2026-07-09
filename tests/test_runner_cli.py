@@ -161,6 +161,48 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert payload["read_only"] is True
         assert build_packet.call_args.kwargs["project_name"] == "demo-project"
 
+    def test_release_readiness_json_outputs_submission_packet(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "release_submission_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "needs_attention",
+            "ready": False,
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_release_submission_readiness", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_release_readiness(
+                [
+                    "release-readiness",
+                    str(self.project),
+                    "--project-name",
+                    "demo-project",
+                    "--app-name",
+                    "ColaMeta",
+                    "--company-url",
+                    "https://example.test",
+                    "--privacy-policy-url",
+                    "https://example.test/privacy",
+                    "--logo-ready",
+                    "--screenshots-ready",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "release_submission_readiness"
+        assert payload["read_only"] is True
+        assert build_packet.call_args.kwargs["project_name"] == "demo-project"
+        assert build_packet.call_args.kwargs["app_name"] == "ColaMeta"
+        assert build_packet.call_args.kwargs["logo_ready"] is True
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -167,6 +167,34 @@ stable_and_release: stable promotion readiness、release/submission readiness
 这个 map 只告诉操作者“入口在哪里、需要什么 scope、当前是否 blocked/available/preview_required”。
 它不执行任何入口动作，不启动 executor、不跑验证、不 commit、不 push、不替换 stable、不发布。
 
+Release / ChatGPT App submission 的只读准备状态入口是：
+
+```text
+colameta release-readiness --json
+get_release_submission_readiness(project_name="colameta-self-dev")
+```
+
+它检查的是本地可证明或操作者显式声明的材料状态：
+
+```text
+public MCP / product readiness
+Apps connector smoke
+app name / logo / description
+company URL / privacy policy URL
+MCP server details / tool information
+screenshots
+test prompts and expected responses
+localization information
+App management permission confirmation
+security/privacy review
+metadata snapshot review
+submission confirmations
+```
+
+它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
+不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission
+证据齐了；真正提交仍由人到 OpenAI Dashboard 手动完成。
+
 Controlled Full Loop 的状态入口是：
 
 ```text

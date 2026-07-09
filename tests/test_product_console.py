@@ -27,12 +27,23 @@ def _full_loop(status: str = "disabled") -> dict[str, object]:
     }
 
 
+def _release(status: str = "needs_attention") -> dict[str, object]:
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "blocker_codes": [] if status != "blocked" else ["PRODUCT_READINESS_NOT_READY"],
+        "needs_attention_codes": [] if status == "ready" else ["SUBMISSION_MATERIALS_MISSING"],
+        "safe_next_action": {"action": "complete_submission_materials"},
+    }
+
+
 def test_console_map_defaults_to_read_preview_product_surface() -> None:
     packet = build_product_console_map(
         "/tmp/project",
         project_name="demo-project",
         readiness_packet=_readiness(),
         full_loop_authority=_full_loop(),
+        release_submission_readiness=_release(),
     )
 
     assert packet["source"] == "product_console_map"
@@ -45,6 +56,8 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
     assert entries["git_remote_push"]["required_scope"] == "mcp:commit"
+    assert entries["release_submission_readiness"]["tool"] == "get_release_submission_readiness"
+    assert entries["release_submission_readiness"]["status"] == "needs_attention"
     assert packet["authority_boundary"]["does_not_push"] is True
 
 
@@ -53,6 +66,7 @@ def test_console_map_marks_full_loop_entries_preview_required_when_controls_read
         "/tmp/project",
         readiness_packet=_readiness(),
         full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release(),
     )
 
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
@@ -67,8 +81,10 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
         "/tmp/project",
         readiness_packet=_readiness("blocked"),
         full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release("blocked"),
     )
 
     assert packet["status"] == "blocked"
     assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
+    assert packet["release_submission_snapshot"]["status"] == "blocked"

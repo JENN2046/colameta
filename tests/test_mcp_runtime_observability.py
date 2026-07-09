@@ -936,6 +936,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_chatgpt_app_readiness" in tool_defs
         assert "get_full_loop_authority_status" in tool_defs
         assert "get_product_console_map" in tool_defs
+        assert "get_release_submission_readiness" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
         assert "render_commander_app" in tool_defs
         assert "get_apps_connector_smoke_packet" in tool_defs
@@ -964,6 +965,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_chatgpt_app_readiness"].title == "Get ChatGPT App Readiness"
         assert tool_defs["get_full_loop_authority_status"].title == "Get Full Loop Authority Status"
         assert tool_defs["get_product_console_map"].title == "Get Product Console Map"
+        assert tool_defs["get_release_submission_readiness"].title == "Get Release Submission Readiness"
         assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
         assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["get_apps_connector_smoke_packet"].title == "Get Apps Connector Smoke Packet"
@@ -999,6 +1001,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_chatgpt_app_readiness" in server._visible_tool_names()
         assert "get_full_loop_authority_status" in server._visible_tool_names()
         assert "get_product_console_map" in server._visible_tool_names()
+        assert "get_release_submission_readiness" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
         assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
@@ -1027,6 +1030,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_chatgpt_app_readiness", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_full_loop_authority_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_product_console_map", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_release_submission_readiness", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
@@ -1494,6 +1498,39 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert result["data"]["source"] == "product_console_map"
         assert result["data"]["read_only"] is True
         console_map.assert_called_once_with(str(project), project_name="demo-project")
+
+    def test_release_submission_readiness_tool_is_read_only_and_project_routed(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        release_packet = {
+            "ok": True,
+            "source": "release_submission_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "needs_attention",
+            "ready": False,
+        }
+
+        with patch("runner.mcp_server.build_release_submission_readiness", return_value=release_packet) as release:
+            result = server.call_tool_for_agent(
+                "get_release_submission_readiness",
+                {
+                    "project_name": "demo-project",
+                    "app_name": "ColaMeta",
+                    "logo_ready": True,
+                    "screenshots_ready": True,
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_release_submission_readiness"
+        assert result["data"]["source"] == "release_submission_readiness"
+        assert result["data"]["read_only"] is True
+        assert release.call_args.kwargs["project_name"] == "demo-project"
+        assert release.call_args.kwargs["app_name"] == "ColaMeta"
+        assert release.call_args.kwargs["logo_ready"] is True
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()

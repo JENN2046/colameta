@@ -6,6 +6,7 @@ from typing import Any
 
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_readiness import build_product_readiness_packet
+from runner.release_submission_readiness import build_release_submission_readiness
 
 
 PRODUCT_CONSOLE_SOURCE = "product_console_map"
@@ -18,8 +19,10 @@ def build_product_console_map(
     project_name: str | None = None,
     include_readiness: bool = True,
     include_full_loop_authority: bool = True,
+    include_release_submission: bool = True,
     readiness_packet: dict[str, Any] | None = None,
     full_loop_authority: dict[str, Any] | None = None,
+    release_submission_readiness: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     readiness = readiness_packet if isinstance(readiness_packet, dict) else None
@@ -28,8 +31,11 @@ def build_product_console_map(
     full_loop = full_loop_authority if isinstance(full_loop_authority, dict) else None
     if full_loop is None and include_full_loop_authority:
         full_loop = build_full_loop_authority_status(project_root, now=now)
+    release = release_submission_readiness if isinstance(release_submission_readiness, dict) else None
+    if release is None and include_release_submission:
+        release = build_release_submission_readiness(project_root, project_name=project_name, readiness_packet=readiness, now=now)
     status = _console_status(readiness, full_loop)
-    entries = _console_entries(project_name=project_name, readiness=readiness, full_loop=full_loop)
+    entries = _console_entries(project_name=project_name, readiness=readiness, full_loop=full_loop, release_submission=release)
     return {
         "ok": True,
         "source": PRODUCT_CONSOLE_SOURCE,
@@ -68,6 +74,7 @@ def build_product_console_map(
         "recommended_first_actions": _recommended_first_actions(project_name=project_name, status=status),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
+        "release_submission_snapshot": _release_submission_snapshot(release),
         "authority_boundary": _authority_boundary(),
         "not_authorized_actions": [
             "executor_run",
@@ -86,6 +93,7 @@ def _console_entries(
     project_name: str | None,
     readiness: dict[str, Any] | None,
     full_loop: dict[str, Any] | None,
+    release_submission: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     project_args = {"project_name": project_name} if project_name else {}
     readiness_status = _status_value(readiness)
@@ -204,10 +212,10 @@ def _console_entries(
             "release_submission_readiness",
             label="Release Submission Readiness",
             mode="read",
-            status="blocked",
-            tool=None,
-            arguments={},
-            why="Public release/App submission is not implemented in the product console yet.",
+            status=_status_value(release_submission),
+            tool="get_release_submission_readiness",
+            arguments=project_args,
+            why="Read local evidence for ChatGPT App release/submission readiness. This does not submit the app.",
         ),
     ]
 
@@ -281,6 +289,18 @@ def _full_loop_snapshot(full_loop: dict[str, Any] | None) -> dict[str, Any]:
         "full_loop_ready": full_loop.get("full_loop_ready") is True,
         "effective_authority": full_loop.get("effective_authority"),
         "missing_controls": list(full_loop.get("missing_controls") or []),
+    }
+
+
+def _release_submission_snapshot(release_submission: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(release_submission, dict):
+        return {"status": "unknown", "ready": False}
+    return {
+        "status": _status_value(release_submission),
+        "ready": release_submission.get("ready") is True,
+        "blocker_codes": list(release_submission.get("blocker_codes") or []),
+        "needs_attention_codes": list(release_submission.get("needs_attention_codes") or []),
+        "safe_next_action": release_submission.get("safe_next_action"),
     }
 
 
