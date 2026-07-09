@@ -5903,6 +5903,7 @@ class MCPPlanningBridgeServer:
               arguments: action.arguments || {},
               runbook: action.runbook,
               action_id: action.action_id,
+              action_fingerprint: action.action_fingerprint,
               mode: action.mode,
               required_scope: action.required_scope,
               requires_explicit_confirmation: action.requires_explicit_confirmation === true
@@ -5949,7 +5950,8 @@ class MCPPlanningBridgeServer:
               tool: action.tool,
               mode: action.mode || "read",
               status: current.status,
-              message: current.message || current.status
+              message: current.message || current.status,
+              action_fingerprint: action.action_fingerprint
             };
             var resultOk = resultOkForRecord(current.status);
             if (resultOk !== undefined) args.result_ok = resultOk;
@@ -7079,6 +7081,10 @@ class MCPPlanningBridgeServer:
                 "result_ok": {
                     "type": "boolean",
                     "description": "可选。原始工具结果是否成功；不存储 raw result。",
+                },
+                "action_fingerprint": {
+                    "type": "string",
+                    "description": "可选。Product Console action_fingerprint；用于识别旧结果是否仍匹配当前动作参数和结果契约。",
                 },
             },
             "required": ["status"],
@@ -9023,6 +9029,7 @@ class MCPPlanningBridgeServer:
             status=status.strip(),
             message=params.get("message") if isinstance(params.get("message"), str) else None,
             result_ok=params.get("result_ok") if isinstance(params.get("result_ok"), bool) else None,
+            action_fingerprint=params.get("action_fingerprint") if isinstance(params.get("action_fingerprint"), str) else None,
         )
 
     def _tool_get_submission_evidence_fill_preview(self, params: dict[str, Any]) -> dict[str, Any]:

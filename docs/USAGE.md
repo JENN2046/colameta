@@ -291,8 +291,8 @@ points without invoking them. When product readiness is `blocked` or
 cadence check, Apps connector smoke, or a bounded runbook; it does not treat
 another generic readiness read as the main repair action.
 Each recommended action uses a stable action shape with `action_id`,
-`action_key`, `label`, `mode`, `status`, `tool` or `runbook`, `arguments`,
-`required_scope`, `requires_preview_confirm`,
+`action_key`, `action_fingerprint`, `label`, `mode`, `status`, `tool` or
+`runbook`, `arguments`, `required_scope`, `requires_preview_confirm`,
 `requires_explicit_confirmation`, `side_effects`, `authority_boundary`,
 `result_contract`, `last_action_result`, and `next_refresh_actions`. A
 `mode=commit` action means invoking that tool can write local project state and
@@ -328,10 +328,15 @@ agent call has a bounded summary to record; it writes only
 `.colameta/runtime/product-console-action-results.json`, redacts and truncates
 the message, stores no raw tool output, and does not execute the action or
 replace the required follow-up readiness reads.
+Recorded results are bound to the current action fingerprint. If the action
+arguments, authority shape, or result contract changes while the `action_key`
+stays the same, `last_action_result.status` becomes `stale`; stale records are
+kept as history but are not treated as current successful evidence.
 After an `updated` or bridge `requested` result, each action's
 `next_refresh_actions` and `action_result_state.pending_refreshes` expose the
 read surfaces that should be refreshed next. Failed, blocked, pending, or
-explicitly `result_ok=false` records do not generate refresh suggestions.
+stale, or explicitly `result_ok=false` records do not generate refresh
+suggestions.
 Commander renders those `next_refresh_actions` as read-only refresh buttons on
 the action card. They call the listed read surface and update the widget; they
 do not re-run the original action, confirm preview/commit work, or grant write

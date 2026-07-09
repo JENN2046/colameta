@@ -1017,6 +1017,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["render_commander_app"].annotations["idempotentHint"] is True
         assert tool_defs["record_product_console_action_result"].annotations["readOnlyHint"] is False
         assert tool_defs["record_product_console_action_result"].annotations["idempotentHint"] is True
+        assert "action_fingerprint" in tool_defs["record_product_console_action_result"].input_schema["properties"]
         connector_schema = tool_defs["get_connector_runtime_health_status"].input_schema
         assert connector_schema["properties"]["tunnel_client"]["additionalProperties"] is False
         assert connector_schema["properties"]["control_plane"]["additionalProperties"] is False
@@ -1129,6 +1130,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "refresh queue" in widget_html
         assert "record_product_console_action_result" in widget_html
         assert "record action result" in widget_html
+        assert "action_fingerprint: action.action_fingerprint" in widget_html
         assert "recorded result refresh" in widget_html
         assert "recordStatus.status === \"recorded\"" in widget_html
         assert "refresh current" in widget_html
