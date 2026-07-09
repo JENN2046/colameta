@@ -1145,6 +1145,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "result.status === \"updated\"" in widget_html
         assert "result.result_status === \"recorded\"" in widget_html
         assert "result_status: normalized && normalized.status" in widget_html
+        assert "var directStatus = resultFailed(normalized) ? \"failed\" : \"updated\"" in widget_html
         assert "recordStatus.status === \"recorded\"" in widget_html
         assert "refresh current" in widget_html
         assert "next_refresh_actions" in widget_html
@@ -1386,6 +1387,179 @@ vm.runInThisContext({json.dumps(widget_script)});
   const statusText = actionStatusText();
   assert(statusText.includes("updated"), statusText);
   assert(statusText.includes("get_product_readiness_status via bridge | ready"), statusText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    def test_commander_widget_js_runs_refresh_queue_and_reports_direct_failures(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-refresh-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function recommendedActionCount() {{
+  return findByClass(byId("recommended-actions"), "recommended-action").length;
+}}
+function refreshButtons() {{
+  return findByClass(byId("recommended-actions"), "action-refresh");
+}}
+function refreshStatusText() {{
+  return findByClass(byId("recommended-actions"), "action-refresh-label")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+
+const listeners = {{}};
+const calls = [];
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("direct path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }},
+  openai: {{
+    callTool: async function (name, args) {{
+      calls.push({{ name, args }});
+      assert.strictEqual(args.project_name, "demo-project");
+      if (name === "get_runtime_version_status") {{
+        return {{ structuredContent: {{ source: "runtime_version_status", status: "current" }} }};
+      }}
+      if (name === "get_connector_runtime_health_status") {{
+        return {{ structuredContent: {{ source: "connector_runtime_health", status: "failed", ok: false, error: "probe failed" }} }};
+      }}
+      throw new Error("unexpected tool " + name);
+    }}
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "refresh_surface",
+            label: "Refresh surfaces",
+            mode: "read",
+            tool: "get_product_readiness_status",
+            arguments: {{ project_name: "demo-project" }},
+            required_scope: "mcp:read",
+            action_fingerprint: "refresh123",
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: [
+              {{
+                tool: "get_runtime_version_status",
+                arguments: {{ project_name: "demo-project" }},
+                why: "refresh runtime status"
+              }},
+              {{
+                tool: "get_connector_runtime_health_status",
+                arguments: {{ project_name: "demo-project" }},
+                why: "refresh connector status"
+              }}
+            ]
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert.strictEqual(recommendedActionCount(), 1, "console map should render one action");
+  assert.strictEqual(refreshButtons().length, 2, "refresh queue should render two buttons");
+
+  await refreshButtons()[0].listeners.click[0]();
+  assert.strictEqual(recommendedActionCount(), 1, "successful refresh must preserve console actions");
+  let statusText = refreshStatusText();
+  assert(statusText.includes("updated"), statusText);
+  assert(statusText.includes("get_runtime_version_status via direct call | current"), statusText);
+
+  await refreshButtons()[1].listeners.click[0]();
+  assert.strictEqual(recommendedActionCount(), 1, "failed refresh must preserve console actions");
+  statusText = refreshStatusText();
+  assert(statusText.includes("failed"), statusText);
+  assert(statusText.includes("get_connector_runtime_health_status via direct call | failed"), statusText);
+  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
+    "get_runtime_version_status",
+    "get_connector_runtime_health_status"
+  ]);
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
