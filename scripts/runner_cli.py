@@ -43,6 +43,7 @@ from runner.product_readiness import (
     build_chatgpt_connection_packet,
     build_product_readiness_packet,
 )
+from runner.full_loop_authority import build_full_loop_authority_status
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -2312,6 +2313,99 @@ def _run_app_smoke(args: list[str]) -> int:
     return 0
 
 
+def _parse_full_loop_authority_options(args: list[str]) -> tuple[str, dict[str, object]] | None:
+    project_path: str | None = None
+    options: dict[str, object] = {
+        "json_output": False,
+        "enable_full_loop": False,
+        "confirmation_mode": None,
+        "allow_executor_run": False,
+        "allow_validation_run": False,
+        "allow_local_commit": False,
+        "allow_remote_push": False,
+        "allow_stable_replacement": False,
+        "operator_confirmation_ref": None,
+    }
+    idx = 1
+    while idx < len(args):
+        token = args[idx]
+        if token == "--json":
+            options["json_output"] = True
+        elif token == "--enable-full-loop":
+            options["enable_full_loop"] = True
+        elif token == "--allow-executor-run":
+            options["allow_executor_run"] = True
+        elif token == "--allow-validation-run":
+            options["allow_validation_run"] = True
+        elif token == "--allow-local-commit":
+            options["allow_local_commit"] = True
+        elif token == "--allow-remote-push":
+            options["allow_remote_push"] = True
+        elif token == "--allow-stable-replacement":
+            options["allow_stable_replacement"] = True
+        elif token == "--confirmation-mode":
+            if idx + 1 >= len(args):
+                print("full-loop-status 参数错误：--confirmation-mode 缺少值。", file=sys.stderr)
+                return None
+            options["confirmation_mode"] = args[idx + 1]
+            idx += 1
+        elif token == "--operator-confirmation-ref":
+            if idx + 1 >= len(args):
+                print("full-loop-status 参数错误：--operator-confirmation-ref 缺少值。", file=sys.stderr)
+                return None
+            options["operator_confirmation_ref"] = args[idx + 1]
+            idx += 1
+        elif token.startswith("-"):
+            print(f"full-loop-status 参数错误：未知参数 {token}", file=sys.stderr)
+            print(USAGE_MESSAGE, file=sys.stderr)
+            return None
+        else:
+            if project_path is not None:
+                print(f"full-loop-status 参数错误：只能提供一个 project_path，收到额外参数 {token}", file=sys.stderr)
+                return None
+            project_path = _resolve_path(token)
+        idx += 1
+    project_path = project_path or _default_service_project_root()
+    if not os.path.isdir(project_path):
+        print(f"full-loop-status 参数错误：项目目录不存在：{redact_project_root(project_path)}", file=sys.stderr)
+        return None
+    return project_path, options
+
+
+def _run_full_loop_status(args: list[str]) -> int:
+    parsed = _parse_full_loop_authority_options(args)
+    if parsed is None:
+        return 1
+    project_path, options = parsed
+    packet = build_full_loop_authority_status(
+        project_path,
+        enable_full_loop=bool(options.get("enable_full_loop")),
+        confirmation_mode=options.get("confirmation_mode") if isinstance(options.get("confirmation_mode"), str) else None,
+        allow_executor_run=bool(options.get("allow_executor_run")),
+        allow_validation_run=bool(options.get("allow_validation_run")),
+        allow_local_commit=bool(options.get("allow_local_commit")),
+        allow_remote_push=bool(options.get("allow_remote_push")),
+        allow_stable_replacement=bool(options.get("allow_stable_replacement")),
+        operator_confirmation_ref=(
+            options.get("operator_confirmation_ref") if isinstance(options.get("operator_confirmation_ref"), str) else None
+        ),
+    )
+    if bool(options.get("json_output")):
+        print(json_dumps(packet))
+    else:
+        print(
+            "Full loop authority: "
+            f"status={packet.get('status')} "
+            f"ready={packet.get('full_loop_ready')} "
+            f"effective_authority={packet.get('effective_authority')}",
+            file=sys.stderr,
+        )
+        missing = packet.get("missing_controls")
+        if isinstance(missing, list) and missing:
+            print(f"  missing={','.join(str(item) for item in missing)}", file=sys.stderr)
+    return 0
+
+
 def _run_service_stop(args: list[str]) -> int:
     if len(args) >= 2 and not args[1].startswith("-"):
         project_path = _resolve_path(args[1])
@@ -4503,6 +4597,8 @@ def main() -> int:
         return _run_connect_chatgpt(sys.argv[1:])
     if cmd == "app-smoke":
         return _run_app_smoke(sys.argv[1:])
+    if cmd == "full-loop-status":
+        return _run_full_loop_status(sys.argv[1:])
     if cmd == "logs":
         return _run_service_logs(sys.argv[1:])
     if cmd == "mcp-server":

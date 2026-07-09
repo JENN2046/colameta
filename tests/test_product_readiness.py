@@ -47,6 +47,8 @@ def test_product_readiness_ready_packet_is_read_only() -> None:
     assert packet["side_effects"] is False
     assert packet["connector_url"] == "https://example.test/mcp"
     assert packet["chatgpt_app"]["main_entry"] == "render_commander_app"
+    assert packet["chatgpt_app"]["full_loop_authority_tool"] == "get_full_loop_authority_status"
+    assert packet["full_loop_authority"]["status"] == "disabled"
     assert packet["authority_boundary"]["does_not_authorize_commit_or_push"] is True
 
 

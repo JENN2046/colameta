@@ -13,6 +13,7 @@ from runner.production_ops import (
     READY,
     build_production_ops_packet,
 )
+from runner.full_loop_authority import build_full_loop_authority_status
 
 
 PRODUCT_PHASE_PUBLIC_BETA = "public_beta_mvp"
@@ -49,6 +50,7 @@ def build_product_readiness_packet(
         preflight_runner=preflight_runner,
         now=now,
     )
+    full_loop_authority = build_full_loop_authority_status(project_root, now=now)
     checks = ops_packet.get("checks") if isinstance(ops_packet.get("checks"), dict) else {}
     primary_blocker = _primary_blocker(checks)
     status = _product_status(ops_packet)
@@ -76,7 +78,9 @@ def build_product_readiness_packet(
             "smoke_tool": APPS_SMOKE_TOOL,
             "default_visible_authority": ["read", "preview"],
             "write_tools_default": "blocked_until_local_config_and_explicit_confirmation",
+            "full_loop_authority_tool": "get_full_loop_authority_status",
         },
+        "full_loop_authority": full_loop_authority,
         "local_service": {
             "stable_runtime": _check_summary(checks.get("stable_runtime")),
             "stable_service": _check_summary(checks.get("stable_service")),

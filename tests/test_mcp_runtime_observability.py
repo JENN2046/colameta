@@ -934,6 +934,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_web_gpt_service_entrypoint" in tool_defs
         assert "get_product_readiness_status" in tool_defs
         assert "get_chatgpt_app_readiness" in tool_defs
+        assert "get_full_loop_authority_status" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
         assert "render_commander_app" in tool_defs
         assert "get_apps_connector_smoke_packet" in tool_defs
@@ -960,6 +961,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_agent_operator_flow_packet"].title == "Get Agent Operator Flow Packet"
         assert tool_defs["get_product_readiness_status"].title == "Get Product Readiness Status"
         assert tool_defs["get_chatgpt_app_readiness"].title == "Get ChatGPT App Readiness"
+        assert tool_defs["get_full_loop_authority_status"].title == "Get Full Loop Authority Status"
         assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
         assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["get_apps_connector_smoke_packet"].title == "Get Apps Connector Smoke Packet"
@@ -993,6 +995,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_web_gpt_service_entrypoint" in server._visible_tool_names()
         assert "get_product_readiness_status" in server._visible_tool_names()
         assert "get_chatgpt_app_readiness" in server._visible_tool_names()
+        assert "get_full_loop_authority_status" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
         assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
@@ -1019,6 +1022,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_web_gpt_service_entrypoint", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_product_readiness_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_chatgpt_app_readiness", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("get_full_loop_authority_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
@@ -1435,6 +1439,34 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert chatgpt_result["data"]["read_only"] is True
         readiness.assert_called_once_with(str(project))
         chatgpt.assert_called_once()
+
+    def test_full_loop_authority_tool_is_read_only_and_does_not_echo_confirmation_ref(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+
+        result = server.call_tool_for_agent(
+            "get_full_loop_authority_status",
+            {
+                "enable_full_loop": True,
+                "confirmation_mode": "preview-confirm",
+                "operator_confirmation_ref": "receipt-secret-like-ref",
+                "allow_executor_run": True,
+                "allow_validation_run": True,
+                "allow_local_commit": True,
+                "allow_remote_push": True,
+            },
+        )
+
+        assert result["ok"] is True
+        assert result["tool"] == "get_full_loop_authority_status"
+        data = result["data"]
+        assert data["source"] == "full_loop_authority_status"
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["status"] == "ready"
+        assert data["requested_controls"]["operator_confirmation_ref_present"] is True
+        serialized = json.dumps(data, ensure_ascii=False)
+        assert "receipt-secret-like-ref" not in serialized
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()
