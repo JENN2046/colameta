@@ -301,6 +301,15 @@ does not write files, mark ready fields, create an OpenAI App draft, submit
 review, or publish. The Commander widget `Fill Preview` button calls this
 read-only preview.
 
+Use `get_submission_evidence_auto_draft` when you want read-only draft text for
+submission evidence that can be derived from current MCP/Commander facts. It
+currently supports `mcp_tool_info`, `security_review`, and `metadata_snapshot`.
+The returned `copyable_tool_call` still targets `fill_submission_evidence_files`
+with `mark_ready=false`; operators must review and edit the generated text
+before writing files or marking ready fields. It does not create logo,
+screenshot, permissions, policy, test prompt, test response, Dashboard review,
+or publication evidence.
+
 ```json
 {
   "name": "get_runtime_version_status",
