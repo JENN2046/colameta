@@ -311,6 +311,10 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 但 `content` 仍是 `<operator-confirmed evidence text>` 占位符，且 `mark_ready=false`。
 这个 preview 不写文件、不标 ready、不创建 OpenAI App draft、不提交审核、不发布；真正写入仍然
 必须由操作者审查并替换真实证据文本后，再显式调用 `fill_submission_evidence_files`。
+当 evidence 文件都已经存在、只剩 manifest ready 字段为 false 时，同一个 preview 会返回
+`copyable_tool_call.tool=mark_submission_evidence_ready_fields`，并带上
+`review_confirmation=human_reviewed`。只有人工确认这些 evidence 已经是最终版之后，才调用这个
+commit-scoped 工具标 ready。
 
 如果要让 MCP 根据当前服务事实先生成可审查草稿，可以调用只读 auto draft：
 

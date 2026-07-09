@@ -298,8 +298,12 @@ Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
 does not write files, mark ready fields, create an OpenAI App draft, submit
-review, or publish. The Commander widget `Fill Preview` button calls this
-read-only preview.
+review, or publish. When every evidence file is already present but the
+manifest ready fields are still false, the same preview returns
+`copyable_tool_call.tool=mark_submission_evidence_ready_fields` with
+`review_confirmation=human_reviewed`; run that commit-scoped tool only after a
+human reviewer confirms the referenced evidence is final. The Commander widget
+`Fill Preview` button calls this read-only preview.
 
 Use `get_submission_evidence_auto_draft` when you want read-only draft text for
 submission evidence that can be derived from current MCP/Commander facts. It
