@@ -5712,11 +5712,11 @@ class MCPPlanningBridgeServer:
           navigator.clipboard.writeText(textValue).then(function () {
             text("log", message || "Copied.");
           }).catch(function () {
-            text("log", textValue);
+            text("log", "Copy failed; payload below:\\n" + textValue);
           });
           return;
         }
-        text("log", textValue);
+        text("log", "Copy unavailable; payload below:\\n" + textValue);
       }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);

@@ -1156,6 +1156,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "errorSummary" in widget_html
         assert "bridge fallback after direct failure" in widget_html
         assert "colameta-commander-" in widget_html
+        assert "Copy failed; payload below:" in widget_html
+        assert "Copy unavailable; payload below:" in widget_html
         assert "Last run" in widget_html
         assert "Confirm outside" in widget_html
         assert "Preview first" in widget_html
@@ -1245,6 +1247,171 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
+    def test_commander_widget_js_copy_action_reports_success_and_fallbacks(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-copy-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function copyButton() {{
+  return findByClass(byId("recommended-actions"), "action-copy")[0];
+}}
+async function flushPromises() {{
+  await Promise.resolve();
+  await Promise.resolve();
+}}
+
+const listeners = {{}};
+let copiedText = "";
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function () {{ throw new Error("copy path should not use bridge"); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  dispatch("openai:set_globals", {{
+    detail: {{
+      globals: {{
+        toolOutput: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "copy_action",
+            label: "Copy action",
+            mode: "read",
+            tool: "get_product_readiness_status",
+            arguments: {{ project_name: "demo-project" }},
+            runbook: "docs/runbook.md",
+            required_scope: "mcp:read",
+            action_fingerprint: "copy123",
+            requires_explicit_confirmation: false,
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: []
+          }}]
+        }}
+      }}
+    }}
+  }});
+
+  assert(copyButton(), "copy button should exist");
+
+  await copyButton().listeners.click[0]();
+  let logText = byId("log").textContent;
+  assert(logText.includes("Copy unavailable; payload below:"), logText);
+  assert(logText.includes('"tool": "get_product_readiness_status"'), logText);
+  assert(logText.includes('"action_fingerprint": "copy123"'), logText);
+
+  navigator.clipboard = {{
+    writeText: async function (value) {{
+      copiedText = value;
+    }}
+  }};
+  await copyButton().listeners.click[0]();
+  await flushPromises();
+  assert.strictEqual(byId("log").textContent, "Copied recommended action.");
+  const copied = JSON.parse(copiedText);
+  assert.strictEqual(copied.tool, "get_product_readiness_status");
+  assert.deepStrictEqual(copied.arguments, {{ project_name: "demo-project" }});
+  assert.strictEqual(copied.runbook, "docs/runbook.md");
+  assert.strictEqual(copied.action_id, "copy_action");
+  assert.strictEqual(copied.action_fingerprint, "copy123");
+  assert.strictEqual(copied.mode, "read");
+  assert.strictEqual(copied.required_scope, "mcp:read");
+  assert.strictEqual(copied.requires_explicit_confirmation, false);
+
+  navigator.clipboard = {{
+    writeText: async function () {{
+      throw new Error("clipboard denied");
+    }}
+  }};
+  await copyButton().listeners.click[0]();
+  await flushPromises();
+  logText = byId("log").textContent;
+  assert(logText.includes("Copy failed; payload below:"), logText);
+  assert(logText.includes('"tool": "get_product_readiness_status"'), logText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
     def test_commander_widget_js_preserves_actions_and_updates_bridge_status(self) -> None:
         if shutil.which("node") is None:
