@@ -5526,6 +5526,7 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Submission status</strong><span id="submission-status">-</span></div>
         <div class="note"><strong>Evidence blockers</strong><span id="submission-blockers">-</span></div>
       </div>
+      <div class="note evidence-activity" id="submission-activity">No evidence activity yet.</div>
       <div class="evidence-grid" id="submission-evidence"></div>
     </section>
     <section class="section">
@@ -5893,11 +5894,40 @@ class MCPPlanningBridgeServer:
         });
         target.appendChild(queue);
       }
+      function submissionActivityRows(data) {
+        var rows = [];
+        if (data && typeof data === "object" && data.ok === false) {
+          rows.push([
+            "result",
+            data.status || "failed",
+            data.error_code || "",
+            data.message || ""
+          ].filter(Boolean).join(" | "));
+        }
+        Object.keys(actionRunStatus).filter(function (key) {
+          return key.indexOf("evidence-refresh|") === 0 || key.indexOf("evidence-recovery|") === 0;
+        }).slice(-4).forEach(function (key) {
+          var item = actionRunStatus[key] || {};
+          rows.push([
+            key.indexOf("evidence-recovery|") === 0 ? "recovery" : "refresh",
+            item.status,
+            item.message,
+            item.at
+          ].filter(Boolean).join(" | "));
+        });
+        return rows;
+      }
+      function renderEvidenceActivity(data) {
+        var rows = submissionActivityRows(data);
+        var target = byId("submission-activity");
+        target.textContent = rows.length ? rows.join("\\n") : "No evidence activity yet.";
+      }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
         var preview = submissionPreview(data);
         text("submission-status", preview.status || (data && data.ok === false ? "failed" : statusValue(snapshot, ["status"])));
         text("submission-blockers", evidenceBlockers(data));
+        renderEvidenceActivity(data);
         var target = byId("submission-evidence");
         target.innerHTML = "";
         var cards = evidenceCardModels(data);
