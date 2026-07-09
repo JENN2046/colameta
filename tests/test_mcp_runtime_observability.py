@@ -2068,6 +2068,33 @@ vm.runInThisContext({json.dumps(widget_script)});
   ]);
   assert.strictEqual(evidenceActivityRecordButton().disabled, true);
   assert(evidenceActivityRecordStatus().includes("recorded | refresh current"), evidenceActivityRecordStatus());
+
+  dispatchToolOutput({{
+    source: "apps_connector_smoke_packet",
+    project_name: "demo-project",
+    action_result_state: {{
+      submission_evidence_activity: {{ available: false }}
+    }},
+    apps_connector_closeout: {{
+      release_submission_evidence: {{
+        status: "ready",
+        ready: true,
+        evidence_progress: {{
+          complete_count: 3,
+          total_count: 3,
+          counts: {{ needs_attention: 0, placeholder: 0 }}
+        }},
+        submission_evidence_activity: {{
+          available: true,
+          status: "updated",
+          message: "Closeout evidence activity refreshed",
+          observed_at: "2026-01-03T04:05:06Z",
+          read_only_summary: true
+        }}
+      }}
+    }}
+  }});
+  assert(evidenceActivityText().includes("closeout | updated | Closeout evidence activity refreshed | 2026-01-03T04:05:06Z"), evidenceActivityText());
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
