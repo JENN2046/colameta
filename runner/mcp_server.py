@@ -6119,20 +6119,23 @@ class MCPPlanningBridgeServer:
         if (window.openai && typeof window.openai.callTool === "function") {
           try {
             var next = await window.openai.callTool(name, callArgs);
-            rememberActionRunStatus(statusKey, "updated", name + " via direct call");
             var normalized = null;
+            var payload = null;
             if (next && next.structuredContent) {
-              normalized = normalize(next.structuredContent);
-              render(next.structuredContent);
+              payload = next.structuredContent;
             } else if (next) {
-              normalized = normalize(next);
-              render(next);
+              payload = next;
             }
+            normalized = normalize(payload);
+            var directStatus = resultFailed(normalized) ? "failed" : "updated";
+            var payloadStatus = normalized && normalized.status ? " | " + normalized.status : "";
+            rememberActionRunStatus(statusKey, directStatus, name + " via direct call" + payloadStatus);
+            if (payload) render(payload);
             text("log", "Updated from " + (sourceLabel || name) + ".");
             return {
-              status: "updated",
+              status: directStatus,
               result_status: normalized && normalized.status,
-              message: name + " via direct call"
+              message: name + " via direct call" + payloadStatus
             };
           } catch (err) {
             var summary = errorSummary(err);
