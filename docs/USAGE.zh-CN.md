@@ -168,7 +168,8 @@ stable_and_release: stable promotion readiness、release/submission readiness
 它不执行任何入口动作，不启动 executor、不跑验证、不 commit、不 push、不替换 stable、不发布。
 当 release/submission 缺少真实 manifest 时，`recommended_first_actions` 会推荐 MCP 工具
 `init_submission_evidence`；当 manifest 已存在但 evidence 文件缺失或仍是
-`.todo.md` 占位文件时，它会推荐补齐 submission evidence 文件。
+`.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐
+submission evidence 文件。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 
@@ -259,6 +260,26 @@ init_submission_evidence(project_name="colameta-self-dev")
 占位文件；默认不覆盖已有文件。占位文件只是填写入口，不能被当作 ready evidence：
 如果 manifest 中某个 ready 字段被改成 `true` 但仍引用 `.todo.md`，readiness 会继续
 返回 `SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE`，直到引用被替换成真实证据文件。
+
+可以用 MCP 工具把操作者已经确认的证据文本写入真实 evidence 文件，并更新 manifest 引用：
+
+```text
+fill_submission_evidence_files(
+  project_name="colameta-self-dev",
+  entries=[
+    {
+      "key": "mcp_tool_info",
+      "filename": "mcp-tool-info.md",
+      "content": "Tool list, scopes, safety boundaries, and review notes..."
+    }
+  ]
+)
+```
+
+这个工具只会写 `docs/submission/*.md`，不接受绝对路径、`..` 越界路径、外部 URL 或
+`.todo.md` 目标；默认不覆盖已有真实文件，也不会自动把 manifest 的 ready 字段改成
+`true`。只有显式传入 `mark_ready=true` 时，它才会把本次 entries 对应的 ready 字段标
+为 `true`。
 
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission

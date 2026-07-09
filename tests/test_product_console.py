@@ -148,8 +148,9 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
     )
 
     first = packet["recommended_first_actions"][0]
-    assert first["command"] == "fill_submission_evidence_files"
-    assert first["arguments"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
+    assert first["tool"] == "fill_submission_evidence_files"
+    assert first["arguments"] == {"project_name": "demo-project", "entries": []}
+    assert first["evidence_context"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
 
 
 def test_console_map_does_not_recommend_release_work_when_submission_ready() -> None:
