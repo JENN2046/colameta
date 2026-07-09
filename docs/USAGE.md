@@ -364,6 +364,10 @@ manifest ready fields are still false, the same preview returns
 `review_confirmation=human_reviewed`; run that commit-scoped tool only after a
 human reviewer confirms the referenced evidence is final. The Commander widget
 `Fill Preview` button calls this read-only preview.
+If `fill_submission_evidence_files` or
+`mark_submission_evidence_ready_fields` returns `ok=false`, inspect
+`safe_recovery_actions`; those actions only refresh readiness or regenerate a
+preview and do not write files or mark ready fields.
 
 For the same local workflow outside the connector, use the read-only CLI
 preview first. It returns the same copyable next tool without writing files:
@@ -476,6 +480,8 @@ ok=true
 
 ok=false
   Read error_code, message, and details first. Do not guess parameters.
+  If safe_recovery_actions is present, run only those read-only recovery tools
+  before retrying any preview or commit-scoped action.
 
 packaged=true
   The result was compressed into a manifest. Continue through
