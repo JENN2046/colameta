@@ -204,6 +204,23 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert evidence_bundle["read_only"] is True
     assert evidence_bundle["fill_plan"]["status"] == "manifest_missing"
     assert evidence_bundle["fill_plan"]["next_tool"] == "init_submission_evidence"
+    completion = packet["completion_surface"]
+    assert completion["source"] == "product_console_completion_surface"
+    assert completion["read_only"] is True
+    assert completion["side_effects"] is False
+    assert completion["status"] == "needs_attention"
+    assert completion["ready"] is False
+    assert completion["components"]["product_readiness"]["ready"] is True
+    assert completion["components"]["release_submission"]["ready"] is False
+    assert completion["components"]["submission_evidence"]["status"] == "manifest_missing"
+    assert completion["components"]["submission_evidence_activity"]["status"] == "not_recorded"
+    assert completion["needs_attention_codes"] == [
+        "RELEASE_SUBMISSION_NOT_READY",
+        "SUBMISSION_EVIDENCE_NOT_READY",
+        "SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED",
+    ]
+    assert completion["safe_next_action"]["tool"] == "init_submission_evidence"
+    assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
 
@@ -391,6 +408,43 @@ def test_console_map_reports_missing_submission_evidence_activity_result(tmp_pat
         "message": "No submission evidence activity result recorded yet.",
         "read_only_summary": True,
     }
+
+
+def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(tmp_path) -> None:
+    record_product_console_action_result(
+        str(tmp_path),
+        action_id="submission_evidence_activity",
+        tool="submission_evidence_activity_summary",
+        mode="read",
+        status="updated",
+        message="Submission evidence activity | closeout refreshed",
+        project_name="demo-project",
+        result_ok=True,
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    completion = packet["completion_surface"]
+    assert completion["status"] == "ready"
+    assert completion["ready"] is True
+    assert completion["gap_count"] == 0
+    assert completion["gaps"] == []
+    assert completion["blocker_codes"] == []
+    assert completion["needs_attention_codes"] == []
+    assert completion["components"]["product_readiness"]["ready"] is True
+    assert completion["components"]["release_submission"]["ready"] is True
+    assert completion["components"]["submission_evidence"]["ready"] is True
+    assert completion["components"]["submission_evidence_activity"]["ready"] is True
+    assert completion["components"]["action_refresh"]["ready"] is True
+    assert completion["safe_next_action"]["tool"] == "render_commander_app"
+    assert completion["safe_next_action"]["authority"] == "read_only"
 
 
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:
