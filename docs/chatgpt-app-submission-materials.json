@@ -19,8 +19,8 @@
     "screenshots": [
       "docs/submission/screenshot-1.todo.md"
     ],
-    "test_prompts": "docs/submission/test-prompts.todo.md",
-    "test_responses": "docs/submission/test-responses.todo.md",
+    "test_prompts": "docs/submission/test-prompts.md",
+    "test_responses": "docs/submission/test-responses.md",
     "localization": "docs/submission/localization.todo.md",
     "mcp_tool_info": "docs/submission/mcp-tool-info.md",
     "app_management_permissions": "docs/submission/app-management-permissions.todo.md",
