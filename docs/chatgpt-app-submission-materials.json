@@ -3,7 +3,7 @@
   "app_name": "ColaMeta",
   "app_description": "Project console for local AI engineering workflows.",
   "company_url": "https://github.com/JENN2046/colameta",
-  "privacy_policy_url": "",
+  "privacy_policy_url": "https://github.com/JENN2046/colameta/blob/main/docs/privacy-policy.md",
   "logo_ready": false,
   "screenshots_ready": false,
   "test_prompts_ready": false,
