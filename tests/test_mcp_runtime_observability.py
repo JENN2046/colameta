@@ -1808,6 +1808,21 @@ vm.runInThisContext({json.dumps(widget_script)});
     source: "product_console_map",
     project_name: "demo-project",
     recommended_first_actions: [],
+    completion_surface: {{
+      status: "needs_attention",
+      ready: false,
+      summary: "Product console closeout needs attention: 1 gap(s) remain.",
+      gaps: [{{
+        component: "submission_evidence_activity",
+        status: "not_recorded",
+        code: "SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"
+      }}],
+      safe_next_action: {{
+        action: "record_submission_evidence_activity",
+        tool: "record_product_console_action_result",
+        authority: "commit"
+      }}
+    }},
     action_result_state: {{
       submission_evidence_activity: {{
         available: true,
@@ -1824,6 +1839,9 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(byId("submission-blockers").textContent, "none");
   assert(evidenceActivityText().includes("recorded | updated | Recorded recovery refreshed | 2026-01-02T03:04:05Z"), evidenceActivityText());
   assert.strictEqual(evidenceActivityRecordButton().disabled, false);
+  assert(byId("closeout-status").textContent.includes("needs_attention"), byId("closeout-status").textContent);
+  assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);
+  assert.strictEqual(byId("closeout-next").textContent, "record_submission_evidence_activity | record_product_console_action_result | commit");
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
@@ -1889,6 +1907,7 @@ vm.runInThisContext({json.dumps(widget_script)});
     }}
   }});
   assert.strictEqual(byId("submission-blockers").textContent, "plan draft_ready | ready 0/2 | attention 1 | placeholder 1");
+  assert.strictEqual(byId("closeout-status").textContent, "-");
   assert.strictEqual(evidenceCards().length, 1, "fill plan should replace progress-row cards");
   assert(evidenceText("evidence-title").includes("submission_summary | draft"), evidenceText("evidence-title"));
   assert(evidenceText("evidence-path").includes("docs/submission/summary.md"), evidenceText("evidence-path"));

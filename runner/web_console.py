@@ -25,6 +25,7 @@ from runner.executor_registry import (
 )
 from runner.executor_inventory import get_executor_inventory_summary
 from runner.project_identity import build_project_identity
+from runner.product_console import build_product_console_map
 from runner.execution_branch import ExecutionBranchController
 from runner.mcp_executor_workflow import (
     CLAIM_HEARTBEAT_INTERVAL_SECONDS,
@@ -1781,6 +1782,53 @@ class WebConsoleServer:
             stable_runtime_dir=DEFAULT_STABLE_RUNTIME_DIR,
             stable_runtime_head=stable_metadata.get("head") if isinstance(stable_metadata.get("head"), str) else None,
         )
+        product_readiness_context = {
+            "status": readiness.get("status"),
+            "ready": readiness.get("status") == "ready",
+            "primary_blocker": readiness.get("primary_blocker"),
+            "safe_next_action": (readiness.get("safe_next_actions") or [{}])[0]
+            if isinstance(readiness.get("safe_next_actions"), list)
+            else None,
+        }
+        try:
+            product_console_map = build_product_console_map(
+                self.project_root,
+                project_name=project_name,
+                readiness_packet=product_readiness_context,
+            )
+        except Exception as exc:
+            product_console_map = {
+                "ok": False,
+                "source": "product_console_map",
+                "read_only": True,
+                "side_effects": False,
+                "status": "unknown",
+                "error": str(exc),
+                "completion_surface": {
+                    "source": "product_console_completion_surface",
+                    "schema_version": "product_console_completion_surface.v1",
+                    "read_only": True,
+                    "side_effects": False,
+                    "status": "unknown",
+                    "ready": False,
+                    "summary": "Product Console completion surface is unavailable.",
+                    "gap_count": 1,
+                    "gaps": [
+                        {
+                            "code": "PRODUCT_CONSOLE_MAP_UNAVAILABLE",
+                            "component": "product_console_map",
+                            "severity": "needs_attention",
+                            "status": "unknown",
+                        }
+                    ],
+                    "safe_next_action": {
+                        "action": "read_product_console_map",
+                        "tool": "get_product_console_map",
+                        "authority": "read_only",
+                        "why": "Refresh the Product Console map to inspect closeout completion.",
+                    },
+                },
+            }
         apps_smoke_call = apps_connector_closeout.get("preferred_smoke_tool")
         if not isinstance(apps_smoke_call, dict):
             apps_smoke_call = {
@@ -1948,6 +1996,10 @@ class WebConsoleServer:
             "project_name": project_name,
             "project_root": self.project_root,
             "readiness": readiness,
+            "product_console_map": product_console_map,
+            "product_console_completion": product_console_map.get("completion_surface")
+            if isinstance(product_console_map.get("completion_surface"), dict)
+            else {},
             "apps_connector_closeout": apps_connector_closeout,
             "apps_connector_tool_refresh": apps_connector_closeout.get("metadata_refresh_guidance"),
             "stable_replacement_cadence": stable_replacement_cadence,
@@ -3388,6 +3440,7 @@ class WebConsoleServer:
         result["runtime_version_summary"] = self._json_safe(web_commander_service["runtime"])
         result["web_commander_service"] = self._json_safe(web_commander_service)
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
+        result["product_console_completion"] = self._json_safe(web_commander_service["product_console_completion"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
         result["stable_replacement_cadence"] = self._json_safe(web_commander_service["stable_replacement_cadence"])
