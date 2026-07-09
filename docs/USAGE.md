@@ -291,9 +291,10 @@ points without invoking them. When product readiness is `blocked` or
 cadence check, Apps connector smoke, or a bounded runbook; it does not treat
 another generic readiness read as the main repair action.
 Each recommended action uses a stable action shape with `action_id`, `label`,
-`mode`, `status`, `tool` or `runbook`, `arguments`, `required_scope`,
-`requires_preview_confirm`, `requires_explicit_confirmation`, `side_effects`,
-`authority_boundary`, and `result_contract`. A `mode=commit` action means
+`action_key`, `label`, `mode`, `status`, `tool` or `runbook`, `arguments`,
+`required_scope`, `requires_preview_confirm`,
+`requires_explicit_confirmation`, `side_effects`, `authority_boundary`,
+`result_contract`, and `last_action_result`. A `mode=commit` action means
 invoking that tool can write local project state and needs explicit
 confirmation; the console map itself remains read-only and does not invoke the
 action. Its
@@ -320,6 +321,13 @@ short error summary with the fallback request state.
 `result_contract` tells UIs and agents how to interpret action results, where to
 find failure summaries, and which read surfaces to refresh after a successful
 call.
+`action_result_state` and each action's `last_action_result` read the local
+runtime action-result summary when one exists. Use
+`record_product_console_action_result` only after an explicit operator or
+agent call has a bounded summary to record; it writes only
+`.colameta/runtime/product-console-action-results.json`, redacts and truncates
+the message, stores no raw tool output, and does not execute the action or
+replace the required follow-up readiness reads.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
