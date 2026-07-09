@@ -1474,6 +1474,9 @@ function actionStatusText() {{
     .map(function (node) {{ return node.textContent; }})
     .join("\\n");
 }}
+function runButton() {{
+  return findByClass(byId("recommended-actions"), "action-run")[0];
+}}
 
 const listeners = {{}};
 const parentMessages = [];
@@ -1528,10 +1531,9 @@ vm.runInThisContext({json.dumps(widget_script)});
   }});
 
   assert.strictEqual(recommendedActionCount(), 1, "console map should render one action");
-  const runButton = findByClass(byId("recommended-actions"), "action-run")[0];
-  assert(runButton, "run button should exist");
+  assert(runButton(), "run button should exist");
 
-  await runButton.listeners.click[0]();
+  await runButton().listeners.click[0]();
   assert.strictEqual(parentMessages.length, 1, "bridge fallback should post one request");
   assert.strictEqual(timers.length, 1, "bridge fallback should arm one timeout");
   assert.strictEqual(timers[0].ms, 5);
@@ -1542,6 +1544,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   let statusText = actionStatusText();
   assert(statusText.includes("failed"), statusText);
   assert(statusText.includes("get_product_readiness_status via bridge timeout"), statusText);
+  assert.strictEqual(runButton().disabled, false, "failed action should remain retryable");
 
   dispatch("message", {{
     data: {{
@@ -1555,6 +1558,31 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(statusText.includes("failed"), statusText);
   assert(statusText.includes("bridge timeout"), statusText);
   assert(!statusText.includes("via bridge | ready"), statusText);
+
+  await runButton().listeners.click[0]();
+  assert.strictEqual(parentMessages.length, 2, "retry should post a second bridge request");
+  assert.strictEqual(timers.length, 2, "retry should arm a second timeout");
+  statusText = actionStatusText();
+  assert(statusText.includes("requested"), statusText);
+  assert(!statusText.includes("bridge timeout"), statusText);
+
+  dispatch("message", {{
+    data: {{
+      id: parentMessages[1].id,
+      result: {{
+        structuredContent: {{ source: "product_readiness", status: "ready", ready: true }}
+      }}
+    }}
+  }});
+  statusText = actionStatusText();
+  assert(statusText.includes("updated"), statusText);
+  assert(statusText.includes("get_product_readiness_status via bridge | ready"), statusText);
+  assert.strictEqual(timers[1].cleared, true, "successful retry should clear its timeout");
+
+  timers[1].fn();
+  statusText = actionStatusText();
+  assert(statusText.includes("updated"), statusText);
+  assert(!statusText.includes("bridge timeout"), statusText);
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
