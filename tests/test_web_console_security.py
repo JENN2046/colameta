@@ -761,6 +761,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert service["product_console_completion"]["read_only"] is True
         assert service["product_console_completion"]["side_effects"] is False
         assert service["product_console_completion"]["status"] in {"ready", "needs_attention", "blocked", "unknown"}
+        assert service["product_console_completion"]["progress_state"]["source"] == "product_console_closeout_progress_state"
+        assert service["product_console_completion"]["progress_state"]["read_only"] is True
+        assert service["product_console_completion"]["progress_state"]["side_effects"] is False
+        assert service["product_console_completion"]["progress_state"]["status"] in {
+            "not_started",
+            "recorded_needs_review",
+            "refresh_pending",
+            "stale_result",
+            "closeout_ready",
+        }
         assert payload["product_console_completion"]["status"] == service["product_console_completion"]["status"]
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"

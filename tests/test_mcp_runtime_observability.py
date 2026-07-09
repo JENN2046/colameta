@@ -1827,6 +1827,18 @@ vm.runInThisContext({json.dumps(widget_script)});
       status: "needs_attention",
       ready: false,
       summary: "Product console closeout needs attention: 1 gap(s) remain.",
+      progress_state: {{
+        source: "product_console_closeout_progress_state",
+        status: "recorded_needs_review",
+        completion_status: "needs_attention",
+        ready: false,
+        message: "Action evidence has been recorded; review remaining gaps before claiming closeout ready.",
+        followup_count: 1,
+        gap_count: 1,
+        pending_refresh_count: 0,
+        stored_result_count: 1,
+        submission_evidence_activity_recorded: true
+      }},
       gaps: [{{
         component: "submission_evidence_activity",
         status: "not_recorded",
@@ -1920,6 +1932,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceActivityText().includes("recorded | updated | Recorded recovery refreshed | 2026-01-02T03:04:05Z"), evidenceActivityText());
   assert.strictEqual(evidenceActivityRecordButton().disabled, false);
   assert(byId("closeout-status").textContent.includes("needs_attention"), byId("closeout-status").textContent);
+  assert(byId("closeout-status").textContent.includes("progress recorded_needs_review"), byId("closeout-status").textContent);
   assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);
   assert.strictEqual(byId("closeout-next").textContent, "record_submission_evidence_activity | record_product_console_action_result | commit");
   assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());
