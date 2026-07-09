@@ -757,6 +757,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "executor_run" in service["readiness"]["not_authorized_actions"]
         assert payload["service_readiness_summary"]["status"] == service["readiness"]["status"]
         assert payload["service_readiness_summary"]["side_effects"] is False
+        assert service["product_console_completion"]["source"] == "product_console_completion_surface"
+        assert service["product_console_completion"]["read_only"] is True
+        assert service["product_console_completion"]["side_effects"] is False
+        assert service["product_console_completion"]["status"] in {"ready", "needs_attention", "blocked", "unknown"}
+        assert payload["product_console_completion"]["status"] == service["product_console_completion"]["status"]
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"

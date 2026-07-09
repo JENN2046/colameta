@@ -5507,6 +5507,14 @@ class MCPPlanningBridgeServer:
       </div>
     </section>
     <section class="section">
+      <h2>Closeout</h2>
+      <div class="readiness">
+        <div class="note"><strong>Status</strong><span id="closeout-status">-</span></div>
+        <div class="note"><strong>Gaps</strong><span id="closeout-gaps">-</span></div>
+        <div class="note"><strong>Next</strong><span id="closeout-next">-</span></div>
+      </div>
+    </section>
+    <section class="section">
       <h2>Recommended Actions</h2>
       <div class="recommended-actions" id="recommended-actions"></div>
     </section>
@@ -5583,11 +5591,12 @@ class MCPPlanningBridgeServer:
         return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
       }
       function clearStaleEvidenceState(next) {
-        if (!next || next.source !== "product_console_map" || !Array.isArray(next.recommended_first_actions)) return;
+        if (!next || next.source !== "product_console_map") return;
         if (!hasOwn(next, "release_submission_evidence_bundle")) delete viewState.release_submission_evidence_bundle;
         if (!hasOwn(next, "release_submission_snapshot")) delete viewState.release_submission_snapshot;
         if (!hasOwn(next, "release_submission")) delete viewState.release_submission;
         if (!hasOwn(next, "release_submission_evidence")) delete viewState.release_submission_evidence;
+        if (!hasOwn(next, "completion_surface")) delete viewState.completion_surface;
       }
       function clearStaleSubmissionFailureState(next) {
         if (!next || typeof next !== "object") return;
@@ -5624,6 +5633,27 @@ class MCPPlanningBridgeServer:
         var blocker = readiness && readiness.primary_blocker;
         if (!blocker || typeof blocker !== "object") return "none";
         return [blocker.component, blocker.reason_code, blocker.safe_evidence_needed].filter(Boolean).join(" | ");
+      }
+      function completionSurface(data) {
+        if (!data || typeof data !== "object") return {};
+        if (data.completion_surface && typeof data.completion_surface === "object") return data.completion_surface;
+        if (data.product_console_map && data.product_console_map.completion_surface && typeof data.product_console_map.completion_surface === "object") {
+          return data.product_console_map.completion_surface;
+        }
+        return {};
+      }
+      function completionGapText(completion) {
+        var gaps = completion && Array.isArray(completion.gaps) ? completion.gaps : [];
+        if (!gaps.length) return "none";
+        return gaps.slice(0, 4).map(function (gap) {
+          if (!gap || typeof gap !== "object") return String(gap);
+          return [gap.component, gap.status, gap.code].filter(Boolean).join(" | ");
+        }).join("\\n");
+      }
+      function completionNextText(completion) {
+        var action = completion && completion.safe_next_action;
+        if (!action || typeof action !== "object") return "-";
+        return [action.action, action.tool || action.runbook, action.authority].filter(Boolean).join(" | ");
       }
       function releaseSnapshot(data) {
         if (!data || typeof data !== "object") return {};
@@ -6066,6 +6096,16 @@ class MCPPlanningBridgeServer:
           target.appendChild(card);
         });
       }
+      function renderCompletion(data) {
+        var completion = completionSurface(data);
+        text("closeout-status", [
+          completion.status,
+          completion.ready === true ? "ready" : "",
+          completion.summary
+        ].filter(Boolean).join(" | "));
+        text("closeout-gaps", completionGapText(completion));
+        text("closeout-next", completionNextText(completion));
+      }
       function recommendedActions(data) {
         if (!data || typeof data !== "object") return [];
         if (Array.isArray(data.recommended_first_actions)) return data.recommended_first_actions;
@@ -6389,6 +6429,7 @@ class MCPPlanningBridgeServer:
           statusValue(apps, ["connector_closeout_check", "current_operator_closeout"]),
           statusValue(apps, ["connector_closeout_check", "current_decision"])
         ].filter(function (item) { return item && item !== "-"; }).join(" | "));
+        renderCompletion(current);
         renderRecommendedActions(current);
         renderEvidence(current);
         var profiles = byId("profiles");

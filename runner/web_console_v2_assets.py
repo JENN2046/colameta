@@ -1227,6 +1227,7 @@ function renderServiceCapabilityCard(data) {{
   const runtime = svc.runtime || {{}};
   const connector = svc.connector || {{}};
   const apps = svc.apps_connector_closeout || data.apps_connector_closeout || {{}};
+  const completion = svc.product_console_completion || data.product_console_completion || {{}};
   const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
   const cadence = svc.stable_replacement_cadence || data.stable_replacement_cadence || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
@@ -1255,6 +1256,10 @@ function renderServiceCapabilityCard(data) {{
   const batchCount = batch.commit_count_since_stable;
   const batchCountText = (batchCount === 0 || batchCount) ? String(batchCount) + " commits" : "-";
   const batchText = batchCountText + " ｜ " + (batch.batch_size || "-") + " ｜ " + (batch.promotion_posture || "-");
+  const completionAction = completion.safe_next_action || {{}};
+  const completionNext = [completionAction.action, completionAction.tool || completionAction.runbook, completionAction.authority].filter(Boolean).join(" ｜ ") || "-";
+  const completionGapCount = completion.gap_count === 0 || completion.gap_count ? String(completion.gap_count) : "-";
+  const completionText = (completion.status || "-") + " ｜ gaps " + completionGapCount + " ｜ " + completionNext;
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1273,6 +1278,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Runtime", staleText + " ｜ " + reloadText);
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
+  h += r("Product closeout", completionText);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);
