@@ -141,6 +141,13 @@ def _write_evidence_files(project_root) -> None:
             path.write_text("evidence\n", encoding="utf-8")
 
 
+def _action_by_tool(packet: dict[str, object], tool: str) -> dict[str, object]:
+    for action in packet["recommended_first_actions"]:
+        if isinstance(action, dict) and action.get("tool") == tool:
+            return action
+    raise AssertionError(f"missing recommended action for tool {tool}")
+
+
 def test_console_map_defaults_to_read_preview_product_surface() -> None:
     packet = build_product_console_map(
         "/tmp/project",
@@ -155,15 +162,20 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert packet["side_effects"] is False
     assert packet["status"] == "ready_read_preview"
     assert packet["default_mode"] == "public_beta_read_preview"
-    assert packet["recommended_first_actions"][0]["tool"] == "init_submission_evidence"
-    assert {
-        "tool": "render_commander_app",
-        "arguments": {"project_name": "demo-project"},
-        "source": "readiness_safe_next_action",
-        "required_scope": "mcp:read",
-        "side_effects": False,
-        "action": "continue_with_public_beta_workflow",
-    } in packet["recommended_first_actions"]
+    init_action = packet["recommended_first_actions"][0]
+    assert init_action["tool"] == "init_submission_evidence"
+    assert init_action["action_id"] == "init_submission_evidence"
+    assert init_action["mode"] == "commit"
+    assert init_action["required_scope"] == "mcp:commit"
+    assert init_action["requires_explicit_confirmation"] is True
+    assert init_action["authority_boundary"]["does_not_execute_now"] is True
+    commander_action = _action_by_tool(packet, "render_commander_app")
+    assert commander_action["arguments"] == {"project_name": "demo-project"}
+    assert commander_action["source"] == "readiness_safe_next_action"
+    assert commander_action["mode"] == "read"
+    assert commander_action["required_scope"] == "mcp:read"
+    assert commander_action["side_effects"] is False
+    assert commander_action["action"] == "continue_with_public_beta_workflow"
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
@@ -203,7 +215,16 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
 
     first = packet["recommended_first_actions"][0]
     assert first["tool"] == "fill_submission_evidence_files"
+    assert first["action_id"] == "fill_submission_evidence_files"
+    assert first["label"] == "Fill Submission Evidence"
+    assert first["mode"] == "commit"
+    assert first["required_scope"] == "mcp:commit"
+    assert first["requires_preview_confirm"] is True
+    assert first["requires_explicit_confirmation"] is True
+    assert first["side_effects"] is True
     assert first["arguments"] == {"project_name": "demo-project", "entries": []}
+    assert first["authority_boundary"]["side_effects_if_invoked"] is True
+    assert first["authority_boundary"]["does_not_submit_app_for_review"] is True
     assert first["evidence_context"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
     assert first["evidence_context"]["incomplete_keys"] == ["logo"]
     assert first["evidence_context"]["entry_templates"][0]["default_filename"] == "logo.md"
@@ -252,6 +273,10 @@ def test_console_map_recommends_mark_ready_when_evidence_is_filled() -> None:
 
     first = packet["recommended_first_actions"][0]
     assert first["tool"] == "mark_submission_evidence_ready_fields"
+    assert first["action_id"] == "mark_submission_evidence_ready_fields"
+    assert first["mode"] == "commit"
+    assert first["required_scope"] == "mcp:commit"
+    assert first["requires_explicit_confirmation"] is True
     assert first["arguments"] == {
         "project_name": "demo-project",
         "keys": ["logo"],
@@ -299,8 +324,15 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
     assert first["action"] == "follow_runbook"
     assert first["runbook"] == "docs/dns-proxy-tunnel-runbook.zh-CN.md"
     assert first["source"] == "readiness_safe_next_action"
+    assert first["action_id"] == "follow_runbook"
+    assert first["label"] == "Follow Runbook"
+    assert first["mode"] == "read"
+    assert first["required_scope"] == "mcp:read"
+    assert first["requires_explicit_confirmation"] is False
     assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
-    assert {"tool": "get_full_loop_authority_status", "arguments": {}} in packet["recommended_first_actions"]
+    full_loop_action = _action_by_tool(packet, "get_full_loop_authority_status")
+    assert full_loop_action["arguments"] == {}
+    assert full_loop_action["action_id"] == "full_loop_authority"
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
     assert packet["release_submission_snapshot"]["status"] == "blocked"
 
@@ -329,7 +361,10 @@ def test_console_map_surfaces_stable_cadence_as_first_action_for_stable_blocker(
     assert first["tool"] == "get_stable_replacement_cadence"
     assert first["arguments"] == {"project_name": "demo-project"}
     assert first["required_scope"] == "mcp:read"
+    assert first["mode"] == "read"
+    assert first["requires_explicit_confirmation"] is False
     assert first["side_effects"] is False
+    assert first["authority_boundary"]["does_not_execute_now"] is True
     assert first["source"] == "readiness_safe_next_action"
     assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
 
