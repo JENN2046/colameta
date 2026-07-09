@@ -413,3 +413,56 @@ def test_submission_evidence_fill_preview_returns_mark_ready_call_when_filled() 
         "review_confirmation": "human_reviewed",
     }
     assert packet["operator_instructions"][0].startswith("Review every referenced evidence file")
+
+
+def test_submission_evidence_fill_preview_filters_mark_ready_selected_keys() -> None:
+    release = _release_with_materials(evidence_status="filled_not_marked_ready")
+    progress = release["submission_evidence_progress"]
+    progress["total_count"] = 2
+    progress["counts"]["filled_not_marked_ready"] = 2
+    progress["rows"].append(
+        {
+            "key": "screenshots",
+            "ready_field": "screenshots_ready",
+            "ready": False,
+            "status": "filled_not_marked_ready",
+            "refs": ["docs/submission/screenshot-1.md"],
+            "file_states": [{"ref": "docs/submission/screenshot-1.md", "status": "present"}],
+        }
+    )
+
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        selected_keys=["logo"],
+        release_submission_readiness=release,
+    )
+
+    assert packet["status"] == "review_ready"
+    assert packet["selected_keys"] == ["logo"]
+    assert packet["ignored_selected_keys"] == []
+    assert packet["review_entry_count"] == 1
+    assert packet["copyable_tool_call"]["tool"] == "mark_submission_evidence_ready_fields"
+    assert packet["copyable_tool_call"]["arguments"] == {
+        "project_name": "demo-project",
+        "keys": ["logo"],
+        "review_confirmation": "human_reviewed",
+    }
+
+
+def test_submission_evidence_fill_preview_reports_unavailable_selected_review_key() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        selected_keys=["mcp_tool_info"],
+        release_submission_readiness=_release_with_materials(evidence_status="filled_not_marked_ready"),
+    )
+
+    assert packet["status"] == "selected_keys_not_available"
+    assert packet["selected_keys"] == ["mcp_tool_info"]
+    assert packet["ignored_selected_keys"] == ["mcp_tool_info"]
+    assert packet["copyable_tool_call"]["arguments"] == {
+        "project_name": "demo-project",
+        "entries": [],
+        "mark_ready": False,
+    }
