@@ -5567,6 +5567,16 @@ class MCPPlanningBridgeServer:
         if (payload.app_manifest_version) return payload;
         return payload.data && typeof payload.data === "object" ? payload.data : payload;
       }
+      function hasOwn(obj, key) {
+        return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+      }
+      function clearStaleEvidenceState(next) {
+        if (!next || next.source !== "product_console_map" || !Array.isArray(next.recommended_first_actions)) return;
+        if (!hasOwn(next, "release_submission_evidence_bundle")) delete viewState.release_submission_evidence_bundle;
+        if (!hasOwn(next, "release_submission_snapshot")) delete viewState.release_submission_snapshot;
+        if (!hasOwn(next, "release_submission")) delete viewState.release_submission;
+        if (!hasOwn(next, "release_submission_evidence")) delete viewState.release_submission_evidence;
+      }
       function statusValue(obj, keys) {
         var cur = obj || {};
         for (var i = 0; i < keys.length; i += 1) {
@@ -6066,6 +6076,7 @@ class MCPPlanningBridgeServer:
         var data = normalize(payload);
         if (!data || typeof data !== "object") return;
         if (data.app_manifest_version) manifest = data;
+        clearStaleEvidenceState(data);
         viewState = Object.assign({}, viewState, manifest || {}, data);
         var current = viewState;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);

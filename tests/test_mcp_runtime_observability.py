@@ -1167,6 +1167,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "evidenceProgress" in widget_html
         assert "evidenceBundle" in widget_html
         assert "release_submission_evidence_bundle" in widget_html
+        assert "clearStaleEvidenceState" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
         assert "get_agent_operator_flow_packet" in widget_html
@@ -1759,6 +1760,41 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceText("evidence-path").includes("docs/submission/summary.md"), evidenceText("evidence-path"));
   assert(evidenceText("evidence-purpose").includes("Explain submission status."), evidenceText("evidence-purpose"));
   assert(evidenceText("evidence-tag").includes("status"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "product_console_map",
+    project_name: "demo-project",
+    recommended_first_actions: [{{
+      action_id: "read_submission_context",
+      label: "Read submission context",
+      mode: "read",
+      tool: "get_release_readiness",
+      arguments: {{ project_name: "demo-project" }},
+      evidence_context: {{
+        entry_templates: [{{
+          key: "action_attached_evidence",
+          title: "Action attached evidence",
+          status: "suggested",
+          default_filename: "action-attached.md",
+          default_path: "docs/submission/action-attached.md",
+          purpose: "Capture evidence attached to the recommended action.",
+          required_sections: ["observation", "decision"],
+          copyable_entry_shape: {{
+            key: "action_attached_evidence",
+            filename: "action-attached.md",
+            content: "operator action evidence"
+          }}
+        }}]
+      }}
+    }}]
+  }});
+  assert.strictEqual(byId("submission-blockers").textContent, "none");
+  assert.strictEqual(evidenceCards().length, 1, "recommended action evidence context should render one evidence card");
+  assert(evidenceText("evidence-title").includes("Action attached evidence | suggested"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/action-attached.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-purpose").includes("Capture evidence attached to the recommended action."), evidenceText("evidence-purpose"));
+  assert(evidenceText("evidence-tag").includes("observation"), evidenceText("evidence-tag"));
+  assert(evidenceText("evidence-tag").includes("decision"), evidenceText("evidence-tag"));
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
