@@ -5414,7 +5414,46 @@ class MCPPlanningBridgeServer:
         }
         return [];
       }
+      function evidenceProgress(data) {
+        var snapshot = releaseSnapshot(data);
+        if (snapshot.submission_evidence_progress && typeof snapshot.submission_evidence_progress === "object") {
+          return snapshot.submission_evidence_progress;
+        }
+        var materials = snapshot.submission_materials || {};
+        if (materials.evidence_progress && typeof materials.evidence_progress === "object") {
+          return materials.evidence_progress;
+        }
+        return {};
+      }
+      function evidenceCardModels(data) {
+        var progress = evidenceProgress(data);
+        if (Array.isArray(progress.rows) && progress.rows.length) {
+          return progress.rows.map(function (row) {
+            var template = row.template || {};
+            return {
+              key: row.key,
+              title: template.title || row.key,
+              status: row.status,
+              default_path: row.default_path || template.default_path,
+              default_filename: template.default_filename,
+              content_prompt: template.content_prompt || template.purpose,
+              purpose: template.purpose,
+              required_sections: template.required_sections,
+              copyable_entry_shape: template.copyable_entry_shape
+            };
+          });
+        }
+        return evidenceTemplates(data);
+      }
       function evidenceBlockers(data) {
+        var progress = evidenceProgress(data);
+        if (progress.counts && typeof progress.counts === "object") {
+          return [
+            "ready " + (progress.complete_count || 0) + "/" + (progress.total_count || 0),
+            "attention " + (progress.counts.needs_attention || 0),
+            "placeholder " + (progress.counts.placeholder || 0)
+          ].join(" | ");
+        }
         var snapshot = releaseSnapshot(data);
         var materials = snapshot.submission_materials || {};
         var keys = Array.isArray(materials.incomplete_evidence_keys) ? materials.incomplete_evidence_keys : [];
@@ -5439,15 +5478,15 @@ class MCPPlanningBridgeServer:
         text("submission-blockers", evidenceBlockers(data));
         var target = byId("submission-evidence");
         target.innerHTML = "";
-        var templates = evidenceTemplates(data);
-        if (!templates.length) {
+        var cards = evidenceCardModels(data);
+        if (!cards.length) {
           var empty = document.createElement("div");
           empty.className = "note";
-          empty.textContent = "No active evidence templates. Read Product Console or Release Submission readiness to refresh this panel.";
+          empty.textContent = "No evidence progress yet. Read Product Console or Release Submission readiness to refresh this panel.";
           target.appendChild(empty);
           return;
         }
-        templates.slice(0, 6).forEach(function (template) {
+        cards.slice(0, 10).forEach(function (template) {
           var card = document.createElement("div");
           card.className = "evidence-card";
           var head = document.createElement("div");
@@ -5455,7 +5494,7 @@ class MCPPlanningBridgeServer:
           var titleWrap = document.createElement("div");
           var title = document.createElement("div");
           title.className = "evidence-title";
-          title.textContent = template.title || template.key || "Evidence";
+          title.textContent = [template.title || template.key || "Evidence", template.status].filter(Boolean).join(" | ");
           var path = document.createElement("div");
           path.className = "evidence-path";
           path.textContent = template.default_path || template.default_filename || "-";

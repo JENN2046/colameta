@@ -237,6 +237,7 @@ def build_release_submission_readiness(
     )
     materials_manifest = materials["manifest"]
     evidence_references = _evidence_references_check(project_root, materials, materials_manifest)
+    evidence_progress = _submission_evidence_progress(project_root, materials, materials_manifest)
     checks = _checks(
         readiness=readiness,
         app_name=materials["app_name"],
@@ -280,6 +281,7 @@ def build_release_submission_readiness(
         "needs_attention_codes": needs_attention_codes,
         "submission_materials": materials_manifest,
         "submission_evidence_entry_templates": evidence_entry_templates,
+        "submission_evidence_progress": evidence_progress,
         "required_submission_materials": [
             "app_name",
             "logo",
@@ -777,6 +779,105 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
         "incomplete_keys": [],
         "present_files": sorted(set(present_files)),
         "fill_entry_templates": [],
+    }
+
+
+def _submission_evidence_progress(project_root: str, materials: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    evidence = materials.get("_evidence")
+    if not isinstance(evidence, Mapping):
+        evidence = {}
+    rows: list[dict[str, Any]] = []
+    counts = {
+        "ready": 0,
+        "needs_attention": 0,
+        "filled_not_marked_ready": 0,
+        "placeholder": 0,
+        "not_started": 0,
+    }
+    for evidence_key in SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS:
+        ready_field = SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[evidence_key]
+        refs = _coerce_evidence_refs(evidence.get(evidence_key))
+        file_states = [_submission_evidence_ref_state(project_root, ref) for ref in refs]
+        ready_field_value = materials.get(ready_field) is True
+        status = _submission_evidence_progress_status(ready_field_value, refs, file_states)
+        counts[status] = counts.get(status, 0) + 1
+        template = _submission_evidence_entry_templates_for([evidence_key])[0]
+        rows.append(
+            {
+                "key": evidence_key,
+                "ready_field": ready_field,
+                "ready": ready_field_value,
+                "status": status,
+                "refs": refs,
+                "file_states": file_states,
+                "default_path": SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS[evidence_key],
+                "template": template,
+                "next_action": _submission_evidence_row_next_action(status, template),
+            }
+        )
+    total = len(rows)
+    complete = counts["ready"]
+    return {
+        "source": "submission_evidence_progress",
+        "schema_version": "submission_evidence_progress.v1",
+        "status": "ready" if complete == total else "needs_attention",
+        "complete_count": complete,
+        "total_count": total,
+        "counts": counts,
+        "rows": rows,
+        "manifest_source": manifest.get("source") if isinstance(manifest, dict) else "unknown",
+        "manifest_available": manifest.get("source") not in {"parameters_only", None} if isinstance(manifest, dict) else False,
+        "read_only": True,
+        "side_effects": False,
+    }
+
+
+def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any]:
+    normalized = _normalize_evidence_ref(project_root, ref)
+    if normalized.get("ok") is not True:
+        return {
+            "ref": ref,
+            "status": "invalid",
+            "error_code": str(normalized.get("error_code") or "EVIDENCE_REF_INVALID"),
+        }
+    rel_path = str(normalized["rel_path"])
+    if not os.path.isfile(str(normalized["abs_path"])):
+        return {"ref": rel_path, "status": "missing"}
+    if _is_placeholder_evidence_ref(rel_path):
+        return {"ref": rel_path, "status": "placeholder"}
+    return {"ref": rel_path, "status": "present"}
+
+
+def _submission_evidence_progress_status(ready: bool, refs: list[str], file_states: list[dict[str, Any]]) -> str:
+    if not refs:
+        return "needs_attention" if ready else "not_started"
+    state_values = {str(item.get("status") or "unknown") for item in file_states}
+    has_problem = bool(state_values & {"invalid", "missing", "placeholder"})
+    has_present = "present" in state_values
+    if ready:
+        return "needs_attention" if has_problem or not has_present else "ready"
+    if has_present and not has_problem:
+        return "filled_not_marked_ready"
+    if "placeholder" in state_values:
+        return "placeholder"
+    return "not_started"
+
+
+def _submission_evidence_row_next_action(status: str, template: dict[str, Any]) -> dict[str, Any]:
+    if status == "ready":
+        return {"action": "none", "why": "Evidence is present and the manifest ready field is true."}
+    if status == "filled_not_marked_ready":
+        return {
+            "action": "review_and_mark_ready",
+            "tool": "fill_submission_evidence_files",
+            "mark_ready": True,
+            "why": "Evidence file exists, but the manifest ready field remains false.",
+        }
+    return {
+        "action": "fill_submission_evidence",
+        "tool": "fill_submission_evidence_files",
+        "entry_shape": template.get("copyable_entry_shape"),
+        "why": "Provide operator-confirmed evidence text before marking the ready field true.",
     }
 
 
