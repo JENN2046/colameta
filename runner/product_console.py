@@ -283,7 +283,7 @@ def _release_submission_recommended_actions(
     if source in {"unknown", "parameters_only"}:
         return [
             {
-                "command": "colameta init-submission-evidence",
+                "tool": "init_submission_evidence",
                 "arguments": project_args,
                 "why": "Create the real submission manifest and local evidence scaffold before release/App submission.",
             }

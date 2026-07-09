@@ -937,6 +937,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_full_loop_authority_status" in tool_defs
         assert "get_product_console_map" in tool_defs
         assert "get_release_submission_readiness" in tool_defs
+        assert "init_submission_evidence" in tool_defs
         assert "get_commander_app_manifest" in tool_defs
         assert "render_commander_app" in tool_defs
         assert "get_apps_connector_smoke_packet" in tool_defs
@@ -966,6 +967,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_full_loop_authority_status"].title == "Get Full Loop Authority Status"
         assert tool_defs["get_product_console_map"].title == "Get Product Console Map"
         assert tool_defs["get_release_submission_readiness"].title == "Get Release Submission Readiness"
+        assert tool_defs["init_submission_evidence"].title == "Initialize Submission Evidence"
+        assert tool_defs["init_submission_evidence"].annotations["readOnlyHint"] is False
+        assert tool_defs["init_submission_evidence"].annotations["destructiveHint"] is False
         assert tool_defs["get_commander_app_manifest"].title == "Get Commander App Manifest"
         assert tool_defs["render_commander_app"].title == "Render Commander App"
         assert tool_defs["get_apps_connector_smoke_packet"].title == "Get Apps Connector Smoke Packet"
@@ -1002,6 +1006,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_full_loop_authority_status" in server._visible_tool_names()
         assert "get_product_console_map" in server._visible_tool_names()
         assert "get_release_submission_readiness" in server._visible_tool_names()
+        assert "init_submission_evidence" in server._visible_tool_names()
         assert "get_commander_app_manifest" in server._visible_tool_names()
         assert "render_commander_app" in server._visible_tool_names()
         assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
@@ -1031,6 +1036,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_full_loop_authority_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_product_console_map", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_release_submission_readiness", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool("init_submission_evidence", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_commander_app_manifest", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("render_commander_app", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
@@ -1537,6 +1543,39 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert release.call_args.kwargs["logo_ready"] is True
         assert release.call_args.kwargs["submission_materials"]["schema_version"] == "chatgpt_app_submission_materials.v1"
         assert release.call_args.kwargs["submission_materials"]["app_description"].startswith("Project console")
+
+    def test_init_submission_evidence_tool_is_commit_scoped_and_project_routed(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        scaffold_packet = {
+            "ok": True,
+            "source": "submission_evidence_scaffold",
+            "schema_version": "submission_evidence_scaffold.v1",
+            "manifest_created": True,
+            "created_files": ["docs/chatgpt-app-submission-materials.json"],
+            "existing_files": [],
+        }
+
+        with patch("runner.mcp_server.init_submission_evidence_scaffold", return_value=scaffold_packet) as scaffold:
+            result = server.call_tool_for_agent(
+                "init_submission_evidence",
+                {
+                    "project_name": "demo-project",
+                    "app_name": "Demo App",
+                    "company_url": "https://example.test",
+                    "privacy_policy_url": "https://example.test/privacy",
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "init_submission_evidence"
+        assert result["data"]["source"] == "submission_evidence_scaffold"
+        scaffold.assert_called_once()
+        assert scaffold.call_args.args == (str(project),)
+        assert scaffold.call_args.kwargs["app_name"] == "Demo App"
+        assert scaffold.call_args.kwargs["company_url"] == "https://example.test"
 
     def test_agent_consumer_contract_is_read_only_and_guides_standard_envelope(self) -> None:
         project = self.make_git_checkout()

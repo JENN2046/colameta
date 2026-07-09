@@ -111,7 +111,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert packet["side_effects"] is False
     assert packet["status"] == "ready_read_preview"
     assert packet["default_mode"] == "public_beta_read_preview"
-    assert packet["recommended_first_actions"][0]["command"] == "colameta init-submission-evidence"
+    assert packet["recommended_first_actions"][0]["tool"] == "init_submission_evidence"
     assert {"tool": "get_product_readiness_status", "arguments": {"project_name": "demo-project"}} in packet[
         "recommended_first_actions"
     ]
@@ -134,7 +134,7 @@ def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> N
     )
 
     first = packet["recommended_first_actions"][0]
-    assert first["command"] == "colameta init-submission-evidence"
+    assert first["tool"] == "init_submission_evidence"
     assert first["arguments"] == {"project_name": "demo-project"}
 
 
@@ -187,7 +187,7 @@ def test_console_map_blocks_on_product_readiness_blocker() -> None:
     )
 
     assert packet["status"] == "blocked"
-    assert packet["recommended_first_actions"][0]["command"] == "colameta init-submission-evidence"
+    assert packet["recommended_first_actions"][0]["tool"] == "init_submission_evidence"
     assert {"tool": "get_product_readiness_status", "arguments": {}} in packet["recommended_first_actions"]
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
     assert packet["release_submission_snapshot"]["status"] == "blocked"
