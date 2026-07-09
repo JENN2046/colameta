@@ -73,6 +73,58 @@ SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS = {
     "metadata_snapshot": "docs/submission/metadata-snapshot.md",
     "submission_confirmations": "docs/submission/submission-confirmations.md",
 }
+SUBMISSION_EVIDENCE_ENTRY_TEMPLATE_DETAILS = {
+    "logo": {
+        "title": "Logo Evidence",
+        "purpose": "Record the final app logo asset path, dimensions, and review notes.",
+        "required_sections": ["asset_path", "dimensions", "review_notes"],
+    },
+    "screenshots": {
+        "title": "Screenshot Evidence",
+        "purpose": "Record final ChatGPT App screenshots, viewport/device context, and captions.",
+        "required_sections": ["asset_paths", "viewport_or_device", "captions", "review_notes"],
+    },
+    "test_prompts": {
+        "title": "Test Prompts Evidence",
+        "purpose": "List review prompts that exercise the app's main workflows and failure paths.",
+        "required_sections": ["prompt_id", "prompt_text", "workflow_covered", "expected_tool_calls"],
+    },
+    "test_responses": {
+        "title": "Test Responses Evidence",
+        "purpose": "Record observed tool behavior and response evidence for each test prompt.",
+        "required_sections": ["prompt_id", "observed_result", "evidence_link_or_notes", "review_status"],
+    },
+    "localization": {
+        "title": "Localization Evidence",
+        "purpose": "Document supported locales and localized metadata or screenshot coverage.",
+        "required_sections": ["supported_locales", "localized_assets", "known_gaps"],
+    },
+    "mcp_tool_info": {
+        "title": "MCP Tool Information Evidence",
+        "purpose": "Document exposed tools, descriptions, scopes, and safety boundaries.",
+        "required_sections": ["tool_inventory", "scope_map", "side_effects", "safety_boundaries"],
+    },
+    "app_management_permissions": {
+        "title": "App Management Permissions Evidence",
+        "purpose": "Record who owns Dashboard submission and app management permissions.",
+        "required_sections": ["owner", "dashboard_access", "approval_notes"],
+    },
+    "security_review": {
+        "title": "Security And Privacy Review Evidence",
+        "purpose": "Record least privilege, consent, redaction, and monitoring review evidence.",
+        "required_sections": ["least_privilege", "consent", "redaction", "monitoring"],
+    },
+    "metadata_snapshot": {
+        "title": "Metadata Snapshot Evidence",
+        "purpose": "Record the app name, description, URLs, screenshots, and tool metadata reviewed for submission.",
+        "required_sections": ["app_metadata", "urls", "assets", "reviewer"],
+    },
+    "submission_confirmations": {
+        "title": "Submission Confirmations Evidence",
+        "purpose": "Record final human confirmations required before Dashboard submission.",
+        "required_sections": ["human_reviewer", "confirmed_items", "submission_boundary"],
+    },
+}
 SUBMISSION_EVIDENCE_SCAFFOLD_REFS = {
     "logo": "docs/submission/logo.todo.md",
     "screenshots": ["docs/submission/screenshot-1.todo.md"],
@@ -206,6 +258,9 @@ def build_release_submission_readiness(
     )
     blocker_codes, needs_attention_codes = _reason_codes(checks)
     status = BLOCKED if blocker_codes else NEEDS_ATTENTION if needs_attention_codes else READY
+    evidence_entry_templates = _submission_evidence_entry_templates_for(
+        evidence_references.get("incomplete_keys") if isinstance(evidence_references, dict) else []
+    )
     return {
         "ok": True,
         "source": RELEASE_SUBMISSION_SOURCE,
@@ -224,6 +279,7 @@ def build_release_submission_readiness(
         "blocker_codes": blocker_codes,
         "needs_attention_codes": needs_attention_codes,
         "submission_materials": materials_manifest,
+        "submission_evidence_entry_templates": evidence_entry_templates,
         "required_submission_materials": [
             "app_name",
             "logo",
@@ -667,7 +723,9 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
     missing_keys: list[str] = []
     invalid_refs: list[dict[str, str]] = []
     missing_files: list[str] = []
+    missing_files_by_key: list[dict[str, str]] = []
     placeholder_files: list[str] = []
+    placeholder_files_by_key: list[dict[str, str]] = []
     present_files: list[str] = []
 
     for evidence_key in required_keys:
@@ -684,27 +742,41 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
             if os.path.isfile(str(normalized["abs_path"])):
                 if _is_placeholder_evidence_ref(rel_path):
                     placeholder_files.append(rel_path)
+                    placeholder_files_by_key.append({"key": evidence_key, "ref": rel_path})
                 else:
                     present_files.append(rel_path)
             else:
                 missing_files.append(rel_path)
+                missing_files_by_key.append({"key": evidence_key, "ref": rel_path})
 
     if missing_keys or invalid_refs or missing_files or placeholder_files:
+        incomplete_keys = _dedupe_preserve_order(
+            sorted(set(missing_keys))
+            + [item["key"] for item in invalid_refs]
+            + [item["key"] for item in missing_files_by_key]
+            + [item["key"] for item in placeholder_files_by_key]
+        )
         return {
             "status": NEEDS_ATTENTION,
             "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE"],
             "required_keys": required_keys,
+            "incomplete_keys": incomplete_keys,
             "missing_keys": sorted(set(missing_keys)),
             "invalid_refs": invalid_refs,
             "missing_files": sorted(set(missing_files)),
+            "missing_files_by_key": missing_files_by_key,
             "placeholder_files": sorted(set(placeholder_files)),
+            "placeholder_files_by_key": placeholder_files_by_key,
             "present_files": sorted(set(present_files)),
+            "fill_entry_templates": _submission_evidence_entry_templates_for(incomplete_keys),
         }
     return {
         "status": READY,
         "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_READY"],
         "required_keys": required_keys,
+        "incomplete_keys": [],
         "present_files": sorted(set(present_files)),
+        "fill_entry_templates": [],
     }
 
 
@@ -811,6 +883,43 @@ def _normalize_submission_evidence_output_ref(project_root: str, ref: str) -> di
     if not rel_path.endswith(".md"):
         return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_MARKDOWN_REQUIRED"}
     return normalized
+
+
+def _submission_evidence_entry_templates_for(keys: Any) -> list[dict[str, Any]]:
+    if not isinstance(keys, list):
+        return []
+    templates: list[dict[str, Any]] = []
+    for key in keys:
+        if not isinstance(key, str) or key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY:
+            continue
+        detail = SUBMISSION_EVIDENCE_ENTRY_TEMPLATE_DETAILS.get(key, {})
+        default_ref = SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS[key]
+        templates.append(
+            {
+                "key": key,
+                "ready_field": SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[key],
+                "title": str(detail.get("title") or key),
+                "default_filename": os.path.basename(default_ref),
+                "default_path": default_ref,
+                "purpose": str(detail.get("purpose") or ""),
+                "required_sections": list(detail.get("required_sections") or []),
+                "content_prompt": _submission_evidence_content_prompt(key, detail),
+                "mark_ready_default": False,
+                "copyable_entry_shape": {
+                    "key": key,
+                    "filename": os.path.basename(default_ref),
+                    "content": "<operator-confirmed evidence text>",
+                },
+            }
+        )
+    return templates
+
+
+def _submission_evidence_content_prompt(key: str, detail: Mapping[str, Any]) -> str:
+    sections = [str(section) for section in detail.get("required_sections", []) if isinstance(section, str)]
+    section_text = ", ".join(sections) if sections else "evidence notes"
+    purpose = str(detail.get("purpose") or f"Record evidence for {key}.")
+    return f"{purpose} Include these sections: {section_text}. Do not mark ready until a human reviewer confirms the content."
 
 
 def _normalize_evidence_ref(project_root: str, ref: str) -> dict[str, Any]:

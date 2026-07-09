@@ -169,7 +169,8 @@ stable_and_release: stable promotion readiness、release/submission readiness
 当 release/submission 缺少真实 manifest 时，`recommended_first_actions` 会推荐 MCP 工具
 `init_submission_evidence`；当 manifest 已存在但 evidence 文件缺失或仍是
 `.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐
-submission evidence 文件。
+submission evidence 文件，并在 `evidence_context.entry_templates` 中给出每个 evidence key
+的推荐文件名、必填章节和内容提示。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 
@@ -280,6 +281,10 @@ fill_submission_evidence_files(
 `.todo.md` 目标；默认不覆盖已有真实文件，也不会自动把 manifest 的 ready 字段改成
 `true`。只有显式传入 `mark_ready=true` 时，它才会把本次 entries 对应的 ready 字段标
 为 `true`。
+
+`get_release_submission_readiness` 会在 `submission_evidence_entry_templates` 中列出当前
+未完成 evidence key 的填写模板；`get_product_console_map` 会把同一组模板放进推荐动作的
+`evidence_context.entry_templates`。模板只描述应该提供什么证据，不会自动生成真实证据文本。
 
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission

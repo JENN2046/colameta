@@ -50,6 +50,14 @@ def _release_with_materials(
     source: str = "default_manifest_file",
     evidence_status: str = "needs_attention",
 ) -> dict[str, object]:
+    entry_templates = [
+        {
+            "key": "logo",
+            "ready_field": "logo_ready",
+            "default_filename": "logo.md",
+            "content_prompt": "Record final logo evidence.",
+        }
+    ] if evidence_status == "needs_attention" else []
     return {
         "status": status,
         "ready": status == "ready",
@@ -64,11 +72,18 @@ def _release_with_materials(
             "submission_materials_manifest": {"status": "ready"},
             "submission_evidence_references": {
                 "status": evidence_status,
+                "incomplete_keys": ["logo"] if evidence_status == "needs_attention" else [],
                 "missing_keys": ["logo"] if evidence_status == "needs_attention" else [],
                 "missing_files": [],
+                "missing_files_by_key": [],
                 "placeholder_files": ["docs/submission/logo.todo.md"] if evidence_status == "needs_attention" else [],
+                "placeholder_files_by_key": [
+                    {"key": "logo", "ref": "docs/submission/logo.todo.md"}
+                ] if evidence_status == "needs_attention" else [],
+                "fill_entry_templates": entry_templates,
             },
         },
+        "submission_evidence_entry_templates": entry_templates,
         "safe_next_action": {"action": "complete_submission_materials"},
     }
 
@@ -151,6 +166,9 @@ def test_console_map_recommends_filling_submission_evidence_for_placeholders() -
     assert first["tool"] == "fill_submission_evidence_files"
     assert first["arguments"] == {"project_name": "demo-project", "entries": []}
     assert first["evidence_context"]["placeholder_files"] == ["docs/submission/logo.todo.md"]
+    assert first["evidence_context"]["incomplete_keys"] == ["logo"]
+    assert first["evidence_context"]["entry_templates"][0]["default_filename"] == "logo.md"
+    assert packet["release_submission_snapshot"]["submission_materials"]["evidence_entry_templates"][0]["key"] == "logo"
 
 
 def test_console_map_does_not_recommend_release_work_when_submission_ready() -> None:
