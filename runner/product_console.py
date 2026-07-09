@@ -810,6 +810,12 @@ def _completion_surface(
         recommended_actions=recommended_actions,
         gaps=gaps,
     )
+    action_groups = _completion_action_groups(
+        status=completion_status,
+        gaps=gaps,
+        recommended_actions=recommended_actions,
+        safe_next_action=safe_next_action,
+    )
     return {
         "source": "product_console_completion_surface",
         "schema_version": "product_console_completion_surface.v1",
@@ -825,11 +831,10 @@ def _completion_surface(
         "blocker_codes": blocker_codes,
         "needs_attention_codes": needs_attention_codes,
         "safe_next_action": safe_next_action,
-        "action_groups": _completion_action_groups(
+        "action_groups": action_groups,
+        "followup_queue": _completion_followup_queue(
             status=completion_status,
-            gaps=gaps,
-            recommended_actions=recommended_actions,
-            safe_next_action=safe_next_action,
+            action_groups=action_groups,
         ),
         "authority_boundary": {
             "read_only": True,
@@ -935,6 +940,14 @@ def _completion_safe_next_action(
         return {
             "action": "record_submission_evidence_activity",
             "tool": "record_product_console_action_result",
+            "arguments": {
+                "action_id": SUBMISSION_EVIDENCE_ACTIVITY_ACTION_ID,
+                "tool": SUBMISSION_EVIDENCE_ACTIVITY_TOOL,
+                "mode": "read",
+                "status": "updated",
+                "message": "<operator-confirmed submission evidence activity summary>",
+                "result_ok": True,
+            },
             "authority": "commit",
             "why": "Record the latest submission evidence activity summary after review/refresh actions complete.",
         }
@@ -1004,6 +1017,79 @@ def _completion_action_groups(
             }
         )
     return groups
+
+
+def _completion_followup_queue(
+    *,
+    status: str,
+    action_groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    items = [
+        _completion_followup_item(index=index, group=group)
+        for index, group in enumerate(action_groups)
+        if isinstance(group, dict)
+    ]
+    return {
+        "source": "product_console_closeout_followup_queue",
+        "schema_version": "product_console_closeout_followup_queue.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": status,
+        "ready": status == "ready",
+        "total_count": len(items),
+        "next_item": dict(items[0]) if items else None,
+        "items": items,
+        "authority_boundary": {
+            "queue_is_read_only": True,
+            "does_not_execute_actions": True,
+            "does_not_write_runtime_state": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_authorize_stable_replacement": True,
+        },
+    }
+
+
+def _completion_followup_item(*, index: int, group: dict[str, Any]) -> dict[str, Any]:
+    primary_action = group.get("primary_action") if isinstance(group.get("primary_action"), dict) else {}
+    action_refs = group.get("action_refs") if isinstance(group.get("action_refs"), list) else []
+    scope = _completion_action_scope(primary_action)
+    result = {
+        "item_id": group.get("group_id") or f"closeout_step_{index + 1}",
+        "position": index + 1,
+        "label": group.get("label"),
+        "status": group.get("status"),
+        "component": group.get("component") or group.get("group_id"),
+        "gap_codes": list(group.get("gap_codes") or []),
+        "primary_action": dict(primary_action),
+        "primary_tool": primary_action.get("tool"),
+        "required_scope": scope,
+        "gate_level": _completion_followup_gate_level(scope),
+        "requires_confirmation_before_write_or_run": scope != "mcp:read",
+        "action_ref_count": len([item for item in action_refs if isinstance(item, dict)]),
+        "empty_state": group.get("empty_state"),
+    }
+    return {key: value for key, value in result.items() if value not in (None, "", {})}
+
+
+def _completion_action_scope(action: dict[str, Any]) -> str:
+    raw = str(action.get("required_scope") or action.get("authority") or action.get("mode") or "mcp:read")
+    if raw in {"mcp:read", "read", "read_only"}:
+        return "mcp:read"
+    if raw in {"mcp:preview", "preview"}:
+        return "mcp:preview"
+    if raw in {"mcp:commit", "commit", "write"}:
+        return "mcp:commit"
+    return raw
+
+
+def _completion_followup_gate_level(scope: str) -> str:
+    if scope == "mcp:read":
+        return "read_only"
+    if scope == "mcp:preview":
+        return "preview_gate"
+    if scope == "mcp:commit":
+        return "explicit_apply_or_run_required"
+    return scope
 
 
 def _completion_action_refs_for_component(

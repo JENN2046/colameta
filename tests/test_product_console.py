@@ -228,6 +228,16 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert groups["submission_evidence"]["primary_action"]["tool"] == "init_submission_evidence"
     assert groups["submission_evidence_activity"]["primary_action"]["tool"] == "get_product_console_map"
     assert "Record the latest submission evidence activity" in groups["submission_evidence_activity"]["empty_state"]
+    queue = completion["followup_queue"]
+    assert queue["source"] == "product_console_closeout_followup_queue"
+    assert queue["read_only"] is True
+    assert queue["side_effects"] is False
+    assert queue["status"] == "needs_attention"
+    assert queue["total_count"] == 3
+    assert queue["next_item"]["item_id"] == "release_submission"
+    assert queue["next_item"]["primary_tool"] == "init_submission_evidence"
+    assert queue["next_item"]["required_scope"] == "mcp:commit"
+    assert queue["next_item"]["gate_level"] == "explicit_apply_or_run_required"
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
@@ -463,6 +473,11 @@ def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(
         "get_agent_operator_flow_packet",
     ]
     assert ready_group["empty_state"] == "Closeout is ready; continue through the read-only Commander flow."
+    queue = completion["followup_queue"]
+    assert queue["ready"] is True
+    assert queue["next_item"]["item_id"] == "closeout_ready"
+    assert queue["next_item"]["primary_tool"] == "render_commander_app"
+    assert queue["next_item"]["required_scope"] == "mcp:read"
 
 
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:
