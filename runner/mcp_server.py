@@ -5906,6 +5906,16 @@ class MCPPlanningBridgeServer:
       }
       function submissionActivityRows(data) {
         var rows = [];
+        var actionState = data && typeof data.action_result_state === "object" ? data.action_result_state : {};
+        var recordedActivity = actionState.submission_evidence_activity || {};
+        if (recordedActivity && recordedActivity.available === true) {
+          rows.push([
+            "recorded",
+            recordedActivity.status,
+            recordedActivity.message,
+            recordedActivity.observed_at
+          ].filter(Boolean).join(" | "));
+        }
         if (data && typeof data === "object" && data.ok === false) {
           rows.push([
             "result",

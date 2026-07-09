@@ -20,6 +20,8 @@ PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE = "product_console_action_results"
 PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v1"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
+SUBMISSION_EVIDENCE_ACTIVITY_ACTION_ID = "submission_evidence_activity"
+SUBMISSION_EVIDENCE_ACTIVITY_TOOL = "submission_evidence_activity_summary"
 ACTION_RESULT_STATUSES = frozenset({"not_recorded", "pending", "updated", "requested", "blocked", "failed", "stale"})
 RECORDABLE_ACTION_RESULT_STATUSES = ACTION_RESULT_STATUSES - {"not_recorded", "stale"}
 REFRESH_RECOMMENDED_RESULT_STATUSES = frozenset({"updated", "requested"})
@@ -706,6 +708,7 @@ def _action_result_state_summary(result_state: dict[str, Any], actions: list[dic
     entries = _action_result_entries(result_state)
     latest = entries[0] if entries else None
     pending_refreshes = _pending_refresh_actions(actions)
+    submission_activity = _submission_evidence_activity_result(entries)
     return {
         "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
         "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
@@ -719,6 +722,7 @@ def _action_result_state_summary(result_state: dict[str, Any], actions: list[dic
             and action["last_action_result"].get("status") == "stale"
         ),
         "latest": latest,
+        "submission_evidence_activity": submission_activity,
         "pending_refresh_count": len(pending_refreshes),
         "pending_refreshes": pending_refreshes,
         "authority_boundary": {
@@ -726,6 +730,42 @@ def _action_result_state_summary(result_state: dict[str, Any], actions: list[dic
             "does_not_write_runtime_state": True,
             "does_not_store_raw_tool_output": True,
         },
+    }
+
+
+def _submission_evidence_activity_result(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    expected_key = _action_key_from_fields(
+        action_id=SUBMISSION_EVIDENCE_ACTIVITY_ACTION_ID,
+        tool=SUBMISSION_EVIDENCE_ACTIVITY_TOOL,
+        mode="read",
+    )
+    for entry in entries:
+        if entry.get("action_key") != expected_key:
+            continue
+        result = {
+            "available": True,
+            "action_key": entry.get("action_key"),
+            "action_id": entry.get("action_id"),
+            "tool": entry.get("tool"),
+            "mode": entry.get("mode"),
+            "status": entry.get("status"),
+            "message": entry.get("message"),
+            "observed_at": entry.get("observed_at"),
+            "result_ok": entry.get("result_ok"),
+            "project_name": entry.get("project_name"),
+            "read_only_summary": True,
+            "authority_boundary": {
+                "read_only": True,
+                "does_not_write_runtime_state": True,
+                "does_not_store_raw_tool_output": True,
+            },
+        }
+        return {key: value for key, value in result.items() if value is not None}
+    return {
+        "available": False,
+        "status": "not_recorded",
+        "message": "No submission evidence activity result recorded yet.",
+        "read_only_summary": True,
     }
 
 
