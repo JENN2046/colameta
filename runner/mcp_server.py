@@ -6107,6 +6107,30 @@ class MCPPlanningBridgeServer:
                 "security_review_ready": {"type": "boolean"},
                 "metadata_snapshot_reviewed": {"type": "boolean"},
                 "submission_confirmations_ready": {"type": "boolean"},
+                "submission_materials": {
+                    "type": "object",
+                    "description": "可选。结构化 release/submission materials manifest；不会读取本机文件路径。",
+                    "properties": {
+                        "schema_version": {"type": "string"},
+                        "app_name": {"type": "string"},
+                        "app_description": {"type": "string"},
+                        "company_url": {"type": "string"},
+                        "privacy_policy_url": {"type": "string"},
+                        "logo_ready": {"type": "boolean"},
+                        "screenshots_ready": {"type": "boolean"},
+                        "test_prompts_ready": {"type": "boolean"},
+                        "test_responses_ready": {"type": "boolean"},
+                        "localization_ready": {"type": "boolean"},
+                        "mcp_tool_info_ready": {"type": "boolean"},
+                        "app_management_permissions_confirmed": {"type": "boolean"},
+                        "security_review_ready": {"type": "boolean"},
+                        "metadata_snapshot_reviewed": {"type": "boolean"},
+                        "submission_confirmations_ready": {"type": "boolean"},
+                        "evidence": {"type": "object", "additionalProperties": True},
+                        "notes": {"type": "string"},
+                    },
+                    "additionalProperties": True,
+                },
             },
             "required": [],
             "additionalProperties": False,
@@ -8056,6 +8080,9 @@ class MCPPlanningBridgeServer:
             security_review_ready=bool(params.get("security_review_ready")),
             metadata_snapshot_reviewed=bool(params.get("metadata_snapshot_reviewed")),
             submission_confirmations_ready=bool(params.get("submission_confirmations_ready")),
+            submission_materials=params.get("submission_materials")
+            if isinstance(params.get("submission_materials"), dict)
+            else None,
         )
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:

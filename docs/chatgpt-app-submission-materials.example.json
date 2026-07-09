@@ -1,0 +1,27 @@
+{
+  "schema_version": "chatgpt_app_submission_materials.v1",
+  "app_name": "ColaMeta",
+  "app_description": "Project console for local AI engineering workflows.",
+  "company_url": "https://example.com",
+  "privacy_policy_url": "https://example.com/privacy",
+  "logo_ready": false,
+  "screenshots_ready": false,
+  "test_prompts_ready": false,
+  "test_responses_ready": false,
+  "localization_ready": false,
+  "mcp_tool_info_ready": false,
+  "app_management_permissions_confirmed": false,
+  "security_review_ready": false,
+  "metadata_snapshot_reviewed": false,
+  "submission_confirmations_ready": false,
+  "evidence": {
+    "logo": "docs/submission/logo.png",
+    "screenshots": [
+      "docs/submission/screenshot-1.png"
+    ],
+    "test_prompts": "docs/submission/test-prompts.md",
+    "test_responses": "docs/submission/test-responses.md",
+    "security_review": "docs/submission/security-review.md"
+  },
+  "notes": "This example is a local readiness manifest. It is not submitted automatically."
+}
