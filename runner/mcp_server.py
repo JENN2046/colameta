@@ -5577,6 +5577,18 @@ class MCPPlanningBridgeServer:
         if (!hasOwn(next, "release_submission")) delete viewState.release_submission;
         if (!hasOwn(next, "release_submission_evidence")) delete viewState.release_submission_evidence;
       }
+      function clearStaleSubmissionFailureState(next) {
+        if (!next || typeof next !== "object") return;
+        var isSubmissionRefresh = [
+          "release_submission_readiness",
+          "submission_evidence_fill_preview",
+          "product_console_map"
+        ].indexOf(next.source) >= 0;
+        if (!isSubmissionRefresh && next.ok !== true) return;
+        if (!hasOwn(next, "safe_recovery_actions")) delete viewState.safe_recovery_actions;
+        if (!hasOwn(next, "error_code")) delete viewState.error_code;
+        if (!hasOwn(next, "ok")) delete viewState.ok;
+      }
       function statusValue(obj, keys) {
         var cur = obj || {};
         for (var i = 0; i < keys.length; i += 1) {
@@ -5739,6 +5751,13 @@ class MCPPlanningBridgeServer:
         return evidenceTemplates(data);
       }
       function evidenceBlockers(data) {
+        if (data && typeof data === "object" && data.ok === false) {
+          var recoveryCount = Array.isArray(data.safe_recovery_actions) ? data.safe_recovery_actions.length : 0;
+          return [
+            "failed " + (data.error_code || data.status || "unknown"),
+            recoveryCount ? "recovery actions " + recoveryCount : ""
+          ].filter(Boolean).join(" | ");
+        }
         var preview = submissionPreview(data);
         if (preview.source) {
           var call = preview.copyable_tool_call || {};
@@ -5794,6 +5813,14 @@ class MCPPlanningBridgeServer:
         if (projectName && !args.project_name) args.project_name = projectName;
         return args;
       }
+      function submissionSafeRecoveryActions(data) {
+        var actions = data && Array.isArray(data.safe_recovery_actions) ? data.safe_recovery_actions : [];
+        return actions.filter(function (item) {
+          if (!item || typeof item.tool !== "string" || !item.tool) return false;
+          if (item.required_scope === "mcp:read") return true;
+          return item.side_effects === false;
+        });
+      }
       function copyText(textValue, message) {
         if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
           navigator.clipboard.writeText(textValue).then(function () {
@@ -5836,14 +5863,45 @@ class MCPPlanningBridgeServer:
         });
         target.appendChild(queue);
       }
+      function renderEvidenceRecoveryActions(target, data) {
+        var actions = submissionSafeRecoveryActions(data);
+        if (!actions.length) return;
+        var queue = document.createElement("div");
+        queue.className = "action-refresh-queue evidence-recovery-queue";
+        var label = document.createElement("span");
+        label.className = "action-refresh-label evidence-recovery-label";
+        label.textContent = "Recovery actions";
+        queue.appendChild(label);
+        actions.slice(0, 3).forEach(function (item, index) {
+          var key = ["evidence-recovery", item.tool, index].join("|");
+          var button = document.createElement("button");
+          button.className = "action-refresh secondary evidence-recovery";
+          button.type = "button";
+          button.textContent = item.tool;
+          button.title = item.why || "Run safe read-only recovery action.";
+          var status = document.createElement("span");
+          status.className = "action-refresh-label evidence-recovery-label";
+          renderRefreshStatus(status, key);
+          button.addEventListener("click", async function () {
+            rememberActionRunStatus(key, "pending", item.tool);
+            renderRefreshStatus(status, key);
+            var result = await callToolWithArgs(item.tool, item.arguments || {}, "evidence recovery", key);
+            if (result && result.status) renderRefreshStatus(status, key);
+          });
+          queue.appendChild(button);
+          queue.appendChild(status);
+        });
+        target.appendChild(queue);
+      }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
         var preview = submissionPreview(data);
-        text("submission-status", preview.status || statusValue(snapshot, ["status"]));
+        text("submission-status", preview.status || (data && data.ok === false ? "failed" : statusValue(snapshot, ["status"])));
         text("submission-blockers", evidenceBlockers(data));
         var target = byId("submission-evidence");
         target.innerHTML = "";
         var cards = evidenceCardModels(data);
+        renderEvidenceRecoveryActions(target, data);
         renderEvidenceRefreshQueue(target, data);
         if (!cards.length) {
           var empty = document.createElement("div");
@@ -6187,6 +6245,7 @@ class MCPPlanningBridgeServer:
         if (!data || typeof data !== "object") return;
         if (data.app_manifest_version) manifest = data;
         clearStaleEvidenceState(data);
+        clearStaleSubmissionFailureState(data);
         viewState = Object.assign({}, viewState, manifest || {}, data);
         var current = viewState;
         var projectName = current.project_name || statusValue(current, ["project_identity", "project", "project_name"]);
