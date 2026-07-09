@@ -5,6 +5,7 @@ import json
 from runner.release_submission_readiness import (
     DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
     build_release_submission_readiness,
+    fill_submission_evidence_files,
     init_submission_evidence_scaffold,
 )
 
@@ -262,3 +263,87 @@ def test_release_submission_rejects_placeholder_evidence_when_marked_ready(tmp_p
     assert packet["status"] == "needs_attention"
     evidence_check = packet["checks"]["submission_evidence_references"]
     assert "docs/submission/logo.todo.md" in evidence_check["placeholder_files"]
+
+
+def test_fill_submission_evidence_files_updates_manifest_refs_without_marking_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "logo",
+                "filename": "logo-review.md",
+                "content": "# Logo\n\nReviewed logo asset: docs/submission/logo.png\n",
+            }
+        ],
+    )
+
+    assert packet["ok"] is True
+    assert packet["source"] == "submission_evidence_fill"
+    assert packet["created_files"] == ["docs/submission/logo-review.md"]
+    assert packet["ready_fields_marked"] == []
+    manifest = json.loads((tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH).read_text(encoding="utf-8"))
+    assert manifest["logo_ready"] is False
+    assert manifest["evidence"]["logo"] == "docs/submission/logo-review.md"
+    assert (tmp_path / "docs/submission/logo-review.md").read_text(encoding="utf-8").startswith("# Logo")
+
+
+def test_fill_submission_evidence_files_can_mark_reviewed_key_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "mcp_tool_info",
+                "content": "# MCP Tool Info\n\nTool scopes reviewed.\n",
+            }
+        ],
+        mark_ready=True,
+    )
+
+    assert packet["ok"] is True
+    assert packet["ready_fields_marked"] == ["mcp_tool_info_ready"]
+    manifest = json.loads((tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH).read_text(encoding="utf-8"))
+    assert manifest["mcp_tool_info_ready"] is True
+    assert manifest["evidence"]["mcp_tool_info"] == "docs/submission/mcp-tool-info.md"
+
+
+def test_fill_submission_evidence_files_rejects_unsafe_target_without_partial_write(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "security_review",
+                "filename": "../security-review.md",
+                "content": "reviewed\n",
+            }
+        ],
+        mark_ready=True,
+    )
+
+    assert packet["ok"] is False
+    assert packet["error_code"] == "SUBMISSION_EVIDENCE_INPUT_INVALID"
+    assert packet["validation_errors"][0]["error_code"] == "EVIDENCE_PATH_OUTSIDE_PROJECT"
+    assert manifest_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "security-review.md").exists()
+
+
+def test_fill_submission_evidence_files_rejects_existing_file_conflict(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    existing_path = tmp_path / "docs/submission/logo.md"
+    existing_path.write_text("existing\n", encoding="utf-8")
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[{"key": "logo", "content": "different\n"}],
+    )
+
+    assert packet["ok"] is False
+    assert packet["validation_errors"][0]["error_code"] == "SUBMISSION_EVIDENCE_FILE_EXISTS"
+    assert existing_path.read_text(encoding="utf-8") == "existing\n"

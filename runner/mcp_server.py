@@ -59,7 +59,11 @@ from runner.product_readiness import (
 )
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_console import build_product_console_map
-from runner.release_submission_readiness import build_release_submission_readiness, init_submission_evidence_scaffold
+from runner.release_submission_readiness import (
+    build_release_submission_readiness,
+    fill_submission_evidence_files,
+    init_submission_evidence_scaffold,
+)
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
@@ -155,6 +159,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_product_console_map",
     "get_release_submission_readiness",
     "init_submission_evidence",
+    "fill_submission_evidence_files",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -514,6 +519,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_product_console_map",
     "get_release_submission_readiness",
     "init_submission_evidence",
+    "fill_submission_evidence_files",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -861,6 +867,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         policies[name] = _static_policy(name, "mcp:preview")
     for name in (
         "init_submission_evidence",
+        "fill_submission_evidence_files",
         "todo_add",
         "todo_update",
         "todo_delete",
@@ -1074,6 +1081,7 @@ class MCPPlanningBridgeServer:
         full_loop_authority_input_schema = self._full_loop_authority_input_schema()
         release_submission_input_schema = self._release_submission_input_schema()
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
+        fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
@@ -1086,6 +1094,7 @@ class MCPPlanningBridgeServer:
             "get_product_console_map": self._tool_get_product_console_map,
             "get_release_submission_readiness": self._tool_get_release_submission_readiness,
             "init_submission_evidence": self._tool_init_submission_evidence,
+            "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1355,6 +1364,23 @@ class MCPPlanningBridgeServer:
                     "不覆盖已有文件、不提交 OpenAI review、不发布、不读取 token/cookie/provider config。scope=mcp:commit。"
                 ),
                 input_schema=init_submission_evidence_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="fill_submission_evidence_files",
+                title="Fill Submission Evidence Files",
+                description=(
+                    f"[{self.project_hint}] 写入操作者提供的 ChatGPT App submission evidence 文本。"
+                    "仅创建 docs/submission/*.md，更新 docs/chatgpt-app-submission-materials.json 的 evidence 引用；"
+                    "默认不标 ready，不覆盖已有真实文件，不读取 token/cookie/provider config。scope=mcp:commit。"
+                ),
+                input_schema=fill_submission_evidence_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": False,
@@ -6182,6 +6208,52 @@ class MCPPlanningBridgeServer:
             "additionalProperties": False,
         }
 
+    def _fill_submission_evidence_input_schema(self) -> dict[str, Any]:
+        evidence_keys = [
+            "logo",
+            "screenshots",
+            "test_prompts",
+            "test_responses",
+            "localization",
+            "mcp_tool_info",
+            "app_management_permissions",
+            "security_review",
+            "metadata_snapshot",
+            "submission_confirmations",
+        ]
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "entries": {
+                    "type": "array",
+                    "description": "要写入的 evidence 条目。内容由操作者提供；文件会被限制在 docs/submission/*.md。",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "enum": evidence_keys},
+                            "filename": {
+                                "type": "string",
+                                "description": "可选。文件名或 docs/submission/*.md 相对路径；不接受 .todo.md。",
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["key", "content"],
+                        "additionalProperties": False,
+                    },
+                },
+                "mark_ready": {
+                    "type": "boolean",
+                    "description": "显式为 true 时，才把对应 manifest ready 字段标记为 true。",
+                },
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        }
+
     def _agent_operator_flow_input_schema(self) -> dict[str, Any]:
         stage_schema = _stage_parallel_preview_input_schema()
         properties = {
@@ -8142,6 +8214,18 @@ class MCPPlanningBridgeServer:
             privacy_policy_url=str(params.get("privacy_policy_url") or "https://example.com/privacy"),
         )
         self._record_workflow_if_needed("init_submission_evidence", "apply", params, result)
+        return result
+
+    def _tool_fill_submission_evidence_files(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("fill_submission_evidence_files", params, require_managed=True)
+        entries = params.get("entries")
+        result = fill_submission_evidence_files(
+            self.project_root,
+            entries=entries if isinstance(entries, list) else [],
+            mark_ready=bool(params.get("mark_ready")),
+        )
+        self._record_workflow_if_needed("fill_submission_evidence_files", "apply", params, result)
         return result
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:

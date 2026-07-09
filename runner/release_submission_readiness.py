@@ -13,8 +13,11 @@ RELEASE_SUBMISSION_SOURCE = "release_submission_readiness"
 RELEASE_SUBMISSION_VERSION = "release_submission_readiness.v1"
 SUBMISSION_EVIDENCE_SCAFFOLD_SOURCE = "submission_evidence_scaffold"
 SUBMISSION_EVIDENCE_SCAFFOLD_VERSION = "submission_evidence_scaffold.v1"
+SUBMISSION_EVIDENCE_FILL_SOURCE = "submission_evidence_fill"
+SUBMISSION_EVIDENCE_FILL_VERSION = "submission_evidence_fill.v1"
 DEFAULT_SUBMISSION_MATERIALS_REL_PATH = "docs/chatgpt-app-submission-materials.json"
 RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
+SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES = 32768
 READY = "ready"
 NEEDS_ATTENTION = "needs_attention"
 BLOCKED = "blocked"
@@ -56,6 +59,19 @@ SUBMISSION_EVIDENCE_REQUIREMENTS = {
     "security_review_ready": "security_review",
     "metadata_snapshot_reviewed": "metadata_snapshot",
     "submission_confirmations_ready": "submission_confirmations",
+}
+SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY = {evidence_key: ready_field for ready_field, evidence_key in SUBMISSION_EVIDENCE_REQUIREMENTS.items()}
+SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS = {
+    "logo": "docs/submission/logo.md",
+    "screenshots": "docs/submission/screenshot-1.md",
+    "test_prompts": "docs/submission/test-prompts.md",
+    "test_responses": "docs/submission/test-responses.md",
+    "localization": "docs/submission/localization.md",
+    "mcp_tool_info": "docs/submission/mcp-tool-info.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.md",
+    "security_review": "docs/submission/security-review.md",
+    "metadata_snapshot": "docs/submission/metadata-snapshot.md",
+    "submission_confirmations": "docs/submission/submission-confirmations.md",
 }
 SUBMISSION_EVIDENCE_SCAFFOLD_REFS = {
     "logo": "docs/submission/logo.todo.md",
@@ -298,6 +314,115 @@ def init_submission_evidence_scaffold(
             "tool": "release-readiness",
             "arguments": {"project_path": root, "json": True},
             "why": "Fill real evidence, replace .todo.md refs, then mark the corresponding manifest fields true.",
+        },
+    }
+
+
+def fill_submission_evidence_files(
+    project_root: str,
+    *,
+    entries: list[dict[str, Any]],
+    mark_ready: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    root = os.path.abspath(os.path.expanduser(project_root))
+    manifest_rel_path = DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest_path = os.path.join(root, manifest_rel_path)
+    manifest, load_error = load_submission_materials_file(manifest_path)
+    if manifest is None:
+        return {
+            "ok": False,
+            "source": SUBMISSION_EVIDENCE_FILL_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_FILL_VERSION,
+            "project_root": root,
+            "observed_at": _iso_now(now),
+            "error_code": str((load_error or {}).get("error_code") or "SUBMISSION_MATERIALS_FILE_NOT_FOUND"),
+            "message": "Submission materials manifest must exist and be valid before evidence files can be filled.",
+            "details": {"manifest_path": manifest_rel_path, **(load_error or {})},
+        }
+
+    planned, validation_errors = _plan_submission_evidence_file_writes(root, entries)
+    if validation_errors:
+        return {
+            "ok": False,
+            "source": SUBMISSION_EVIDENCE_FILL_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_FILL_VERSION,
+            "project_root": root,
+            "observed_at": _iso_now(now),
+            "error_code": "SUBMISSION_EVIDENCE_INPUT_INVALID",
+            "message": "Submission evidence input is invalid; no files were written.",
+            "validation_errors": validation_errors,
+        }
+
+    evidence = manifest.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    else:
+        evidence = dict(evidence)
+
+    created_files: list[str] = []
+    existing_files: list[str] = []
+    grouped_refs: dict[str, list[str]] = {}
+    for item in planned:
+        rel_path = item["rel_path"]
+        abs_path = item["abs_path"]
+        if os.path.isfile(abs_path):
+            existing_files.append(rel_path)
+        else:
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "w", encoding="utf-8") as handle:
+                handle.write(item["content"])
+                if not item["content"].endswith("\n"):
+                    handle.write("\n")
+            created_files.append(rel_path)
+        grouped_refs.setdefault(item["key"], []).append(rel_path)
+
+    ready_fields_marked: list[str] = []
+    updated_evidence_keys: list[str] = []
+    for evidence_key, refs in sorted(grouped_refs.items()):
+        existing_real_refs = [
+            ref
+            for ref in _coerce_evidence_refs(evidence.get(evidence_key))
+            if not _is_placeholder_evidence_ref(ref)
+        ]
+        merged_refs = _dedupe_preserve_order(existing_real_refs + refs)
+        evidence[evidence_key] = merged_refs if evidence_key == "screenshots" or len(merged_refs) > 1 else merged_refs[0]
+        updated_evidence_keys.append(evidence_key)
+        ready_field = SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[evidence_key]
+        if mark_ready:
+            manifest[ready_field] = True
+            ready_fields_marked.append(ready_field)
+
+    manifest["evidence"] = evidence
+    manifest["notes"] = (
+        "Submission evidence files were filled locally. Keep each ready field false until the referenced evidence "
+        "has been reviewed by a human operator."
+        if not mark_ready
+        else "Submission evidence files were filled locally and requested ready fields were marked true."
+    )
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+    changed_files = sorted(set(created_files + [manifest_rel_path]))
+    return {
+        "ok": True,
+        "source": SUBMISSION_EVIDENCE_FILL_SOURCE,
+        "schema_version": SUBMISSION_EVIDENCE_FILL_VERSION,
+        "project_root": root,
+        "observed_at": _iso_now(now),
+        "manifest_path": manifest_rel_path,
+        "created_files": sorted(created_files),
+        "existing_files": sorted(existing_files),
+        "changed_files": changed_files,
+        "updated_evidence_keys": sorted(updated_evidence_keys),
+        "ready_fields_marked": sorted(ready_fields_marked),
+        "mark_ready": bool(mark_ready),
+        "next_step": {
+            "tool": "get_release_submission_readiness",
+            "arguments": {"project_path": root},
+            "why": "Review submission readiness; only mark remaining ready fields true after human evidence review.",
         },
     }
 
@@ -592,6 +717,102 @@ def _coerce_evidence_refs(value: Any) -> list[str]:
     return []
 
 
+def _plan_submission_evidence_file_writes(root: str, entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(entries, list) or not entries:
+        return [], [{"index": None, "error_code": "SUBMISSION_EVIDENCE_ENTRIES_REQUIRED"}]
+    planned: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    seen_rel_paths: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append({"index": index, "error_code": "SUBMISSION_EVIDENCE_ENTRY_INVALID"})
+            continue
+        evidence_key_raw = entry.get("key")
+        evidence_key = evidence_key_raw.strip() if isinstance(evidence_key_raw, str) else ""
+        if evidence_key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY:
+            errors.append(
+                {
+                    "index": index,
+                    "error_code": "SUBMISSION_EVIDENCE_KEY_INVALID",
+                    "key": evidence_key,
+                    "accepted_keys": sorted(SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY),
+                }
+            )
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str) or not content.strip():
+            errors.append({"index": index, "key": evidence_key, "error_code": "SUBMISSION_EVIDENCE_CONTENT_REQUIRED"})
+            continue
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES:
+            errors.append(
+                {
+                    "index": index,
+                    "key": evidence_key,
+                    "error_code": "SUBMISSION_EVIDENCE_CONTENT_TOO_LARGE",
+                    "max_bytes": SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES,
+                    "actual_bytes": content_bytes,
+                }
+            )
+            continue
+        ref_raw = entry.get("filename")
+        ref = ref_raw.strip() if isinstance(ref_raw, str) and ref_raw.strip() else SUBMISSION_EVIDENCE_DEFAULT_OUTPUT_REFS[evidence_key]
+        normalized = _normalize_submission_evidence_output_ref(root, ref)
+        if normalized.get("ok") is not True:
+            errors.append({"index": index, "key": evidence_key, "ref": ref, "error_code": str(normalized.get("error_code"))})
+            continue
+        rel_path = str(normalized["rel_path"])
+        abs_path = str(normalized["abs_path"])
+        if rel_path in seen_rel_paths:
+            errors.append({"index": index, "key": evidence_key, "ref": rel_path, "error_code": "SUBMISSION_EVIDENCE_DUPLICATE_FILE"})
+            continue
+        seen_rel_paths.add(rel_path)
+        if os.path.isfile(abs_path):
+            try:
+                with open(abs_path, encoding="utf-8") as handle:
+                    existing_content = handle.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                errors.append(
+                    {
+                        "index": index,
+                        "key": evidence_key,
+                        "ref": rel_path,
+                        "error_code": "SUBMISSION_EVIDENCE_EXISTING_FILE_UNREADABLE",
+                        "error_type": exc.__class__.__name__,
+                    }
+                )
+                continue
+            if existing_content.rstrip("\n") != content.rstrip("\n"):
+                errors.append(
+                    {
+                        "index": index,
+                        "key": evidence_key,
+                        "ref": rel_path,
+                        "error_code": "SUBMISSION_EVIDENCE_FILE_EXISTS",
+                    }
+                )
+                continue
+        planned.append({"key": evidence_key, "rel_path": rel_path, "abs_path": abs_path, "content": content})
+    return planned, errors
+
+
+def _normalize_submission_evidence_output_ref(project_root: str, ref: str) -> dict[str, Any]:
+    if ref.startswith(("http://", "https://")):
+        return {"ok": False, "error_code": "EXTERNAL_EVIDENCE_URL_NOT_ACCEPTED"}
+    candidate = ref if "/" in ref or "\\" in ref else f"docs/submission/{ref}"
+    normalized = _normalize_evidence_ref(project_root, candidate)
+    if normalized.get("ok") is not True:
+        return normalized
+    rel_path = str(normalized["rel_path"])
+    if not rel_path.startswith("docs/submission/"):
+        return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_PATH_OUTSIDE_SUBMISSION_DIR"}
+    if _is_placeholder_evidence_ref(rel_path):
+        return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_TODO_TARGET_NOT_ACCEPTED"}
+    if not rel_path.endswith(".md"):
+        return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_MARKDOWN_REQUIRED"}
+    return normalized
+
+
 def _normalize_evidence_ref(project_root: str, ref: str) -> dict[str, Any]:
     if ref.startswith(("http://", "https://")):
         return {"ok": False, "error_code": "EXTERNAL_EVIDENCE_URL_NOT_ACCEPTED"}
@@ -613,6 +834,17 @@ def _normalize_evidence_ref(project_root: str, ref: str) -> dict[str, Any]:
 
 def _is_placeholder_evidence_ref(rel_path: str) -> bool:
     return rel_path.endswith(".todo.md")
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _submission_materials_scaffold_manifest(

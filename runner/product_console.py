@@ -299,9 +299,12 @@ def _release_submission_recommended_actions(
     if isinstance(evidence_check, dict) and evidence_check.get("status") == "needs_attention":
         return [
             {
-                "command": "fill_submission_evidence_files",
+                "tool": "fill_submission_evidence_files",
                 "arguments": {
                     **project_args,
+                    "entries": [],
+                },
+                "evidence_context": {
                     "missing_keys": list(evidence_check.get("missing_keys") or []),
                     "missing_files": list(evidence_check.get("missing_files") or []),
                     "placeholder_files": list(evidence_check.get("placeholder_files") or []),
