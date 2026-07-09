@@ -3809,6 +3809,86 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert "get_stable_replacement_cadence" not in source_tools
         assert "managed_workflow_apply" in source["forbidden_workflows"]
 
+    def test_agent_operator_flow_prioritizes_product_console_closeout_followup(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        product_console = {
+            "source": "product_console_map",
+            "completion_surface": {
+                "source": "product_console_completion_surface",
+                "status": "needs_attention",
+                "ready": False,
+                "gap_count": 1,
+                "blocker_codes": [],
+                "needs_attention_codes": ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
+                "followup_queue": {
+                    "source": "product_console_closeout_followup_queue",
+                    "status": "needs_attention",
+                    "total_count": 1,
+                    "next_item": {
+                        "item_id": "submission_evidence_activity",
+                        "label": "Evidence Activity",
+                        "primary_tool": "record_product_console_action_result",
+                        "required_scope": "mcp:commit",
+                        "gate_level": "explicit_apply_or_run_required",
+                        "requires_confirmation_before_write_or_run": True,
+                        "empty_state": "Record the latest submission evidence activity after refresh/recovery actions.",
+                        "primary_action": {
+                            "action": "record_submission_evidence_activity",
+                            "tool": "record_product_console_action_result",
+                            "arguments": {
+                                "action_id": "submission_evidence_activity",
+                                "tool": "submission_evidence_activity_summary",
+                                "mode": "read",
+                                "status": "updated",
+                                "message": "<operator-confirmed submission evidence activity summary>",
+                                "result_ok": True,
+                            },
+                            "authority": "commit",
+                            "why": "Record the latest submission evidence activity summary.",
+                        },
+                    },
+                },
+            },
+        }
+
+        with (
+            patch(
+                "runner.mcp_server.build_service_readiness_summary",
+                return_value={"status": "ready", "safe_next_actions": [], "primary_blocker": None},
+            ),
+            patch("runner.mcp_server.build_apps_connector_closeout_packet", return_value={"status": "ready"}),
+            patch("runner.mcp_server.build_product_console_map", return_value=product_console) as product_console_builder,
+        ):
+            result = server.call_tool_for_agent(
+                "get_agent_operator_flow_packet",
+                {"project_name": "demo-project", "profile_id": "web_gpt_commander"},
+            )
+
+        assert result["ok"] is True
+        flow = result["data"]
+        assert flow["read_only"] is True
+        assert flow["side_effects"] is False
+        assert flow["current_state"]["product_console"]["completion_status"] == "needs_attention"
+        assert flow["current_state"]["product_console"]["followup_queue"]["next_item_id"] == "submission_evidence_activity"
+        assert flow["primary_next_action"]["derived_from"] == "product_console_closeout_followup_queue"
+        assert flow["primary_next_action"]["action_id"] == "product_console_closeout_submission_evidence_activity"
+        assert flow["primary_next_action"]["tool"] == "record_product_console_action_result"
+        assert flow["primary_next_action"]["gate_level"] == "explicit_apply_or_run_required"
+        assert flow["primary_next_action"]["requires_confirmation_before_write_or_run"] is True
+        assert flow["primary_next_action"]["requires_confirmation_before_preview"] is False
+        assert flow["copyable_tool_call"]["arguments"]["action_id"] == "submission_evidence_activity"
+        assert (
+            flow["advanced_context"]["product_console_completion_surface"]["followup_queue"]["source"]
+            == "product_console_closeout_followup_queue"
+        )
+        readiness_projection = product_console_builder.call_args.kwargs["readiness_packet"]
+        assert readiness_projection["source"] == "service_readiness_summary_projection"
+        assert readiness_projection["authority_boundary"]["does_not_run_remote_preflight"] is True
+        assert flow["authority_boundary"]["does_not_commit"] is True
+
     def test_agent_operator_flow_parallel_stage_reuses_next_action_without_side_effects(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)

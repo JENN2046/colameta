@@ -8568,6 +8568,16 @@ class MCPPlanningBridgeServer:
             project_name=project_name,
             connector_health=connector_health,
         )
+        product_console_map = build_product_console_map(
+            project_root,
+            project_name=project_name,
+            readiness_packet=self._agent_flow_projected_product_readiness(readiness),
+        )
+        product_console_completion = (
+            product_console_map.get("completion_surface")
+            if isinstance(product_console_map.get("completion_surface"), dict)
+            else {}
+        )
         stable_cadence = self._stable_replacement_hint(project_root, runtime_status)
         requested_mode = self._normalize_agent_task_mode(params.get("task_mode"))
         task_brief = params.get("task_brief") if isinstance(params.get("task_brief"), str) else ""
@@ -8587,6 +8597,7 @@ class MCPPlanningBridgeServer:
             task_brief=task_brief,
             readiness=readiness,
             apps_connector_closeout=apps_connector_closeout,
+            product_console_completion=product_console_completion,
         )
         token_recovery = apps_connector_closeout.get("token_expired_recovery")
         if not isinstance(token_recovery, dict):
@@ -8652,6 +8663,7 @@ class MCPPlanningBridgeServer:
                 "next_action": apps_connector_closeout.get("next_action"),
                 "token_expired_code": token_recovery.get("token_expired_code") or "token_expired",
             },
+            "product_console": self._agent_flow_product_console_state(product_console_completion),
             "stable_cadence": {
                 "relationship": stable_cadence.get("relationship"),
                 "stable_replacement_not_required": stable_cadence.get("stable_replacement_not_required"),
@@ -8710,6 +8722,7 @@ class MCPPlanningBridgeServer:
                 "available_profile_ids": [item["profile_id"] for item in profiles],
                 "profile_first_reads": selected_profile.get("first_reads", []),
                 "embedded_read_only_packets": embedded_packets,
+                "product_console_completion_surface": product_console_completion,
                 "service_entry_profiles_version": "service_entry_profiles.v1",
                 "project_identity": self._project_identity_for_root(project_root),
             }
@@ -8761,6 +8774,7 @@ class MCPPlanningBridgeServer:
         task_brief: str,
         readiness: dict[str, Any],
         apps_connector_closeout: dict[str, Any],
+        product_console_completion: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         embedded_packets: dict[str, Any] = {}
         if flow_mode == "parallel_stage":
@@ -8863,6 +8877,13 @@ class MCPPlanningBridgeServer:
                 reason="Web GPT should verify Apps connector reachability and connector closeout before coordinating external handoff.",
                 expected_output="Apps connector project-list check and connector closeout packet.",
             ), embedded_packets
+        product_console_next = self._agent_flow_product_console_next_action(
+            project_args=project_args,
+            profile_id=profile_id,
+            product_console_completion=product_console_completion,
+        )
+        if product_console_next is not None:
+            return product_console_next, embedded_packets
         return self._agent_flow_action(
             action_id="read_commander_manifest",
             label="Read Commander manifest",
@@ -8871,6 +8892,84 @@ class MCPPlanningBridgeServer:
             reason="No task-specific mode was selected; read the commander manifest for the current dashboard and safe next actions.",
             expected_output="Readiness, connector, runtime, profile entries, and preview-first workflow actions.",
         ), embedded_packets
+
+    def _agent_flow_product_console_next_action(
+        self,
+        *,
+        project_args: dict[str, Any],
+        profile_id: str,
+        product_console_completion: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if product_console_completion.get("ready") is True:
+            return None
+        queue = product_console_completion.get("followup_queue")
+        if not isinstance(queue, dict):
+            return None
+        next_item = queue.get("next_item")
+        if not isinstance(next_item, dict):
+            return None
+        primary = next_item.get("primary_action") if isinstance(next_item.get("primary_action"), dict) else {}
+        tool = str(primary.get("tool") or next_item.get("primary_tool") or "get_product_console_map")
+        arguments = primary.get("arguments") if isinstance(primary.get("arguments"), dict) else dict(project_args)
+        if tool in {"get_commander_app_manifest", "get_agent_operator_flow_packet", "render_commander_app"}:
+            arguments = {**arguments, "profile_id": profile_id}
+        if tool == "get_product_console_map":
+            arguments = {**project_args, **arguments}
+        return self._agent_flow_action(
+            action_id=f"product_console_closeout_{next_item.get('item_id') or 'followup'}",
+            label=str(next_item.get("label") or "Follow Product Console closeout"),
+            tool=tool,
+            arguments=arguments,
+            reason=str(primary.get("why") or next_item.get("empty_state") or "Product Console closeout still has follow-up items."),
+            expected_output="Updated Product Console completion surface, recorded action result, or explicit closeout blocker.",
+            derived_from="product_console_closeout_followup_queue",
+        )
+
+    @staticmethod
+    def _agent_flow_projected_product_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
+        safe_actions = readiness.get("safe_next_actions") if isinstance(readiness.get("safe_next_actions"), list) else []
+        safe_next_action = safe_actions[0] if safe_actions and isinstance(safe_actions[0], dict) else {}
+        status = str(readiness.get("status") or "unknown")
+        return {
+            "ok": True,
+            "source": "service_readiness_summary_projection",
+            "read_only": True,
+            "side_effects": False,
+            "status": status,
+            "ready": status == "ready",
+            "primary_blocker": readiness.get("primary_blocker"),
+            "safe_next_action": safe_next_action,
+            "authority_boundary": {
+                "projection_is_read_only": True,
+                "does_not_run_ops_check": True,
+                "does_not_run_remote_preflight": True,
+            },
+        }
+
+    @staticmethod
+    def _agent_flow_product_console_state(product_console_completion: dict[str, Any]) -> dict[str, Any]:
+        queue = product_console_completion.get("followup_queue")
+        if not isinstance(queue, dict):
+            queue = {}
+        next_item = queue.get("next_item")
+        if not isinstance(next_item, dict):
+            next_item = {}
+        return {
+            "completion_status": product_console_completion.get("status"),
+            "ready": product_console_completion.get("ready"),
+            "gap_count": product_console_completion.get("gap_count"),
+            "blocker_codes": product_console_completion.get("blocker_codes"),
+            "needs_attention_codes": product_console_completion.get("needs_attention_codes"),
+            "followup_queue": {
+                "source": queue.get("source"),
+                "status": queue.get("status"),
+                "total_count": queue.get("total_count"),
+                "next_item_id": next_item.get("item_id"),
+                "next_primary_tool": next_item.get("primary_tool"),
+                "next_required_scope": next_item.get("required_scope"),
+                "next_gate_level": next_item.get("gate_level"),
+            },
+        }
 
     def _agent_flow_action(
         self,
