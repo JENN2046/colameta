@@ -300,6 +300,7 @@ def build_submission_evidence_fill_preview(
             "arguments": copyable_arguments,
             "required_scope": "mcp:commit",
             "requires_explicit_operator_review": True,
+            "result_contract": _result_contract_for_action("commit", copyable_tool),
         },
         "operator_instructions": operator_instructions,
         "evidence_bundle": bundle,
