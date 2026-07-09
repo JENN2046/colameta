@@ -18,10 +18,12 @@ For onboarding a new local project into ColaMeta, read
 If you only need to check whether ColaMeta is usable now:
 
 ```text
-1. Run colameta status.
-2. Confirm Web healthy and MCP healthy.
-3. Call get_runtime_version_status.
-4. Call get_connector_runtime_health_status.
+1. Run colameta doctor --json.
+2. Read status / primary_blocker / safe_next_action.
+3. If stable runtime evidence is the blocker, safe_next_action points to
+   get_stable_replacement_cadence for read-only batch judgment.
+4. If connector evidence is the blocker, run the external Apps connector smoke.
+5. Use colameta ops-check --json only when you need lower-level evidence.
 ```
 
 If Web GPT or a local agent has just connected to the stable MCP endpoint:

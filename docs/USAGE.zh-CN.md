@@ -13,9 +13,11 @@
 ```text
 1. 跑 colameta doctor --json
 2. 看 status / primary_blocker / safe_next_action
-3. 需要底层 ops 证据时再跑 colameta ops-check --json
-4. 跑 colameta console-map --json 看操作台能力地图
-5. 在 MCP 里调 get_product_readiness_status 或 get_product_console_map
+3. 如果 blocker 是 stable runtime，safe_next_action 会指向只读的 get_stable_replacement_cadence
+4. 如果 blocker 是 connector 证据，再做外部 Apps connector smoke
+5. 需要底层 ops 证据时再跑 colameta ops-check --json
+6. 跑 colameta console-map --json 看操作台能力地图
+7. 在 MCP 里调 get_product_readiness_status 或 get_product_console_map
 ```
 
 如果要把 ChatGPT Apps 外部 connector 重新接上或做 smoke：
