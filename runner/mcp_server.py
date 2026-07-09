@@ -57,6 +57,7 @@ from runner.product_readiness import (
     build_chatgpt_connection_packet,
     build_product_readiness_packet,
 )
+from runner.full_loop_authority import build_full_loop_authority_status
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
@@ -148,6 +149,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_web_gpt_service_entrypoint",
     "get_product_readiness_status",
     "get_chatgpt_app_readiness",
+    "get_full_loop_authority_status",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -503,6 +505,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_agent_operator_flow_packet",
     "get_product_readiness_status",
     "get_chatgpt_app_readiness",
+    "get_full_loop_authority_status",
     "get_commander_app_manifest",
     "render_commander_app",
     "get_apps_connector_smoke_packet",
@@ -794,6 +797,7 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_web_gpt_service_entrypoint",
         "get_product_readiness_status",
         "get_chatgpt_app_readiness",
+        "get_full_loop_authority_status",
         "get_commander_app_manifest",
         "render_commander_app",
         "get_apps_connector_smoke_packet",
@@ -1049,6 +1053,7 @@ class MCPPlanningBridgeServer:
             self.project_hint = self.project_identity.get("mcp_display_hint", f"Project:{os.path.basename(self.project_root)}")
         common_output_schema = self._build_common_output_schema()
         commander_app_input_schema = self._commander_app_input_schema()
+        full_loop_authority_input_schema = self._full_loop_authority_input_schema()
         self.tools = {
             "list_registered_projects": self._tool_list_registered_projects,
             "get_agent_consumer_contract": self._tool_get_agent_consumer_contract,
@@ -1057,6 +1062,7 @@ class MCPPlanningBridgeServer:
             "get_web_gpt_service_entrypoint": self._tool_get_web_gpt_service_entrypoint,
             "get_product_readiness_status": self._tool_get_product_readiness_status,
             "get_chatgpt_app_readiness": self._tool_get_chatgpt_app_readiness,
+            "get_full_loop_authority_status": self._tool_get_full_loop_authority_status,
             "get_commander_app_manifest": self._tool_get_commander_app_manifest,
             "render_commander_app": self._tool_render_commander_app,
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
@@ -1258,6 +1264,23 @@ class MCPPlanningBridgeServer:
                     "返回 connector URL、recommended_sequence 和 readiness 摘要；只作为外部 connector closeout 证据，不授权写入或服务替换。scope=mcp:read。"
                 ),
                 input_schema=commander_app_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="get_full_loop_authority_status",
+                title="Get Full Loop Authority Status",
+                description=(
+                    f"[{self.project_hint}] Controlled Full Loop 的只读授权状态面。"
+                    "默认 disabled/read-preview-only；即使显式请求完整闭环，也只验证 preview-confirm、operator confirmation ref "
+                    "和 executor/validation/commit/push gate 是否齐备，不启动 executor、不跑验证、不 commit、不 push、不替换 stable。scope=mcp:read。"
+                ),
+                input_schema=full_loop_authority_input_schema,
                 output_schema=common_output_schema,
                 annotations={
                     "readOnlyHint": True,
@@ -5986,6 +6009,37 @@ class MCPPlanningBridgeServer:
             "additionalProperties": False,
         }
 
+    def _full_loop_authority_input_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "必填。服务模式下指定已登记 project_name。",
+                },
+                "enable_full_loop": {
+                    "type": "boolean",
+                    "description": "可选。显式请求检查完整闭环控制项；默认 false。",
+                },
+                "confirmation_mode": {
+                    "type": "string",
+                    "enum": ["preview_confirm", "preview-confirm"],
+                    "description": "可选。完整闭环必须使用 preview_confirm。",
+                },
+                "operator_confirmation_ref": {
+                    "type": "string",
+                    "description": "可选。外部确认引用；返回中只报告是否存在，不回显原文。",
+                },
+                "allow_executor_run": {"type": "boolean"},
+                "allow_validation_run": {"type": "boolean"},
+                "allow_local_commit": {"type": "boolean"},
+                "allow_remote_push": {"type": "boolean"},
+                "allow_stable_replacement": {"type": "boolean"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
+
     def _agent_operator_flow_input_schema(self) -> dict[str, Any]:
         stage_schema = _stage_parallel_preview_input_schema()
         properties = {
@@ -7888,6 +7942,22 @@ class MCPPlanningBridgeServer:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
         return build_chatgpt_connection_packet(project_root, project_name=project_name)
+
+    def _tool_get_full_loop_authority_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_root, _ = self._resolve_read_only_project_context(params)
+        return build_full_loop_authority_status(
+            project_root,
+            enable_full_loop=bool(params.get("enable_full_loop")),
+            confirmation_mode=params.get("confirmation_mode") if isinstance(params.get("confirmation_mode"), str) else None,
+            allow_executor_run=bool(params.get("allow_executor_run")),
+            allow_validation_run=bool(params.get("allow_validation_run")),
+            allow_local_commit=bool(params.get("allow_local_commit")),
+            allow_remote_push=bool(params.get("allow_remote_push")),
+            allow_stable_replacement=bool(params.get("allow_stable_replacement")),
+            operator_confirmation_ref=(
+                params.get("operator_confirmation_ref") if isinstance(params.get("operator_confirmation_ref"), str) else None
+            ),
+        )
 
     def _tool_render_commander_app(self, params: dict[str, Any]) -> dict[str, Any]:
         manifest = self._commander_app_manifest(params)

@@ -145,6 +145,26 @@ safe_next_action: 下一步只读或 runbook 动作
 `get_chatgpt_app_readiness(project_name=...)` 返回同一 readiness 外加 `connector_url`
 和推荐工具顺序。它只用于连接和 smoke 交接，不授权 executor run、commit、push、重启服务
 或 stable replacement。
+
+Controlled Full Loop 的状态入口是：
+
+```text
+colameta full-loop-status --json
+get_full_loop_authority_status(project_name="colameta-self-dev")
+```
+
+默认状态是 `disabled`，有效权限仍是 `read_preview_only`。即使命令或 MCP 参数显式传入
+`enable_full_loop=true`，它也只会检查这些控制项是否齐备：
+
+```text
+confirmation_mode=preview_confirm
+operator_confirmation_ref 存在
+executor_run / validation_run / local_commit / remote_push gate 全部显式允许
+```
+
+这个 packet 本身仍然只读：不启动 executor、不跑验证、不 commit、不 push、不替换 stable、
+不发布。每一个实际写动作仍必须走自己的 preview-confirm 和 scope gate。Stable replacement
+永远不由通用 full-loop status 打开，仍需要精确 commit 授权和 replacement receipt。
 `授权替换稳定服务到 <exact_commit_sha>`。
 
 如果 HTTP MCP `tools/list` 已经能看到 `get_apps_connector_smoke_packet`，但当前

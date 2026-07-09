@@ -94,6 +94,47 @@ class RunnerCliProductReadinessTests(unittest.TestCase):
         assert payload["source"] == "apps_connector_smoke_handoff"
         assert payload["safe_next_action"]["tool"] == "get_apps_connector_smoke_packet"
 
+    def test_full_loop_status_json_outputs_read_only_authority_packet(self) -> None:
+        from scripts import runner_cli
+
+        packet = {
+            "ok": True,
+            "source": "full_loop_authority_status",
+            "read_only": True,
+            "side_effects": False,
+            "status": "disabled",
+            "full_loop_ready": False,
+        }
+        stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            patch.object(runner_cli, "build_full_loop_authority_status", return_value=packet) as build_packet,
+        ):
+            result = runner_cli._run_full_loop_status(
+                [
+                    "full-loop-status",
+                    str(self.project),
+                    "--enable-full-loop",
+                    "--confirmation-mode",
+                    "preview-confirm",
+                    "--operator-confirmation-ref",
+                    "receipt-1",
+                    "--allow-executor-run",
+                    "--allow-validation-run",
+                    "--allow-local-commit",
+                    "--allow-remote-push",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert result == 0
+        assert payload["source"] == "full_loop_authority_status"
+        assert payload["read_only"] is True
+        assert build_packet.call_args.kwargs["enable_full_loop"] is True
+        assert build_packet.call_args.kwargs["confirmation_mode"] == "preview-confirm"
+        assert build_packet.call_args.kwargs["operator_confirmation_ref"] == "receipt-1"
+
 
 class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
     def setUp(self) -> None:
