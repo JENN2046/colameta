@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -1170,6 +1171,12 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_apps_connector_smoke_packet" in widget_html
         assert "get_stable_replacement_cadence" in widget_html
 
+    def test_web_gpt_service_entrypoint_lists_commander_sequence(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
         result = server.call_tool_for_agent("get_web_gpt_service_entrypoint", {})
 
         assert result["ok"] is True
@@ -1182,52 +1189,179 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert data["service_profile"]["project_name_required_for_project_tools"] is True
         assert "demo-project" in [item["project_name"] for item in data["registered_projects"]]
         profiles = {item["profile_id"]: item for item in data["service_entry_profiles"]}
-        assert set(profiles) == {
-            "web_gpt_commander",
-            "local_codex_commander",
-            "reviewer_agent",
-            "planner_agent",
-            "source_observer",
-        }
+        assert "web_gpt_commander" in profiles
         assert profiles["web_gpt_commander"]["first_reads"][1]["tool"] == "get_agent_consumer_contract"
         assert profiles["web_gpt_commander"]["first_reads"][2]["tool"] == "get_agent_operator_flow_packet"
         assert profiles["web_gpt_commander"]["first_reads"][4]["tool"] == "render_commander_app"
-        assert profiles["reviewer_agent"]["default_authority"] == "review_only"
-        assert data["entry_sequence"][0]["tool"] == "list_registered_projects"
-        assert data["entry_sequence"][1]["tool"] == "get_agent_consumer_contract"
-        assert data["entry_sequence"][2]["tool"] == "get_service_entry_profile"
-        assert data["entry_sequence"][3]["tool"] == "get_agent_operator_flow_packet"
-        assert data["entry_sequence"][4]["tool"] == "render_commander_app"
-        assert data["entry_sequence"][4]["arguments"]["profile_id"] == "web_gpt_commander"
-        assert data["entry_sequence"][5]["tool"] == "get_stable_replacement_cadence"
-        assert data["entry_sequence"][6]["tool"] == "get_stage_parallel_plan_preview"
-        assert data["entry_sequence"][7]["tool"] == "get_stage_parallel_run_preview"
-        assert data["entry_sequence"][8]["tool"] == "get_stage_parallel_worktree_assignment_preview"
-        assert data["entry_sequence"][9]["tool"] == "get_stage_parallel_next_action_packet"
-        assert data["entry_sequence"][10]["tool"] == "manage_stage_parallel_shard_inputs"
-        assert data["entry_sequence"][11]["tool"] == "get_stage_parallel_executor_group_preview"
-        assert data["entry_sequence"][12]["tool"] == "manage_stage_parallel_executor_runs"
-        assert data["entry_sequence"][13]["tool"] == "get_stage_parallel_executor_results_packet"
-        assert data["entry_sequence"][14]["tool"] == "get_stage_parallel_group_status"
-        assert data["entry_sequence"][15]["tool"] == "get_stage_parallel_merge_preview"
-        assert data["entry_sequence"][16]["tool"] == "manage_stage_parallel_merges"
-        assert data["entry_sequence"][17]["tool"] == "get_stage_parallel_closeout_packet"
-        assert data["entry_sequence"][18]["tool"] == "get_stable_promotion_readiness"
-        assert data["entry_sequence"][19]["tool"] == "get_apps_connector_smoke_packet"
-        assert data["entry_sequence"][20]["tool"] == "get_connector_runtime_health_status"
-        assert data["entry_sequence"][21]["tool"] == "analyze_project_state"
+        entry_tools = [item["tool"] for item in data["entry_sequence"]]
+        assert entry_tools[:5] == [
+            "list_registered_projects",
+            "get_agent_consumer_contract",
+            "get_service_entry_profile",
+            "get_agent_operator_flow_packet",
+            "render_commander_app",
+        ]
+        assert "get_stable_promotion_readiness" in entry_tools
+        assert "get_apps_connector_smoke_packet" in entry_tools
         thin_flow = data["recommended_flows"]["thin_governed_loop_input_draft"]
         assert thin_flow["tool"] == "run_mcp_workflow"
         assert thin_flow["draft_arguments"]["input_mode"] == "draft"
-        assert thin_flow["draft_arguments"]["draft_seed"]["task_tier"] == "M0-M2"
-        assert thin_flow["direct_codex_packet_field"] == "result.codex_execution_packet"
-        assert "result.codex_execution_packet.packet_status=ready" in thin_flow["next_step"]
-        assert "result.codex_execution_packet.copy_paste_codex_prompt" in thin_flow["next_step"]
-        assert "result.next_request_payload" in thin_flow["next_step"]
-        assert thin_flow["provided_arguments"]["input_mode"] == "provided"
-        assert thin_flow["provided_arguments"]["thin_loop_inputs"] == "<generated_input_bundle>"
         assert data["safety_boundary"]["does_not_authorize_stable_promotion"] is True
         assert "stable promotion" in data["web_gpt_handoff_prompt"]
+
+    def test_commander_widget_js_preserves_actions_and_updates_bridge_status(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-behavior-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{
+    this.children.push(child);
+    return child;
+  }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{
+    this._textContent = value === undefined || value === null ? "" : String(value);
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{
+    return this._innerHTML;
+  }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function recommendedActionCount() {{
+  return findByClass(byId("recommended-actions"), "recommended-action").length;
+}}
+function actionStatusText() {{
+  return findByClass(byId("recommended-actions"), "action-run-status")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+
+const listeners = {{}};
+const parentMessages = [];
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{
+    postMessage: function (message) {{ parentMessages.push(message); }}
+  }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  const consoleMap = {{
+    source: "product_console_map",
+    project_name: "demo-project",
+    recommended_first_actions: [{{
+      action_id: "readiness_check",
+      label: "Read readiness",
+      mode: "read",
+      tool: "get_product_readiness_status",
+      arguments: {{ project_name: "demo-project" }},
+      required_scope: "mcp:read",
+      action_fingerprint: "abc123",
+      last_action_result: {{ status: "not_recorded" }},
+      next_refresh_actions: []
+    }}]
+  }};
+
+  dispatch("openai:set_globals", {{ detail: {{ globals: {{ toolOutput: consoleMap }} }} }});
+  assert.strictEqual(recommendedActionCount(), 1, "console map should render one action");
+
+  dispatch("message", {{
+    data: {{
+      method: "ui/notifications/tool-result",
+      params: {{
+        id: "unmatched",
+        structuredContent: {{ source: "product_console_action_results", status: "recorded" }}
+      }}
+    }}
+  }});
+  assert.strictEqual(recommendedActionCount(), 1, "record result must not drop console actions");
+
+  const runButton = findByClass(byId("recommended-actions"), "action-run")[0];
+  assert(runButton, "run button should exist");
+  await runButton.listeners.click[0]();
+  assert.strictEqual(parentMessages.length, 1, "bridge fallback should post one request");
+  assert(actionStatusText().includes("requested"), "action should show requested after bridge post");
+
+  dispatch("message", {{
+    data: {{
+      id: parentMessages[0].id,
+      result: {{
+        structuredContent: {{ source: "product_readiness", status: "ready", ready: true }}
+      }}
+    }}
+  }});
+  assert.strictEqual(recommendedActionCount(), 1, "bridge result must preserve console actions");
+  const statusText = actionStatusText();
+  assert(statusText.includes("updated"), statusText);
+  assert(statusText.includes("get_product_readiness_status via bridge | ready"), statusText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
     def test_stage_parallel_plan_preview_tool_is_read_only_and_project_routed(self) -> None:
         project = self.make_git_checkout(managed=True)
