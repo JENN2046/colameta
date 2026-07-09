@@ -21,12 +21,12 @@
     ],
     "test_prompts": "docs/submission/test-prompts.md",
     "test_responses": "docs/submission/test-responses.md",
-    "localization": "docs/submission/localization.todo.md",
+    "localization": "docs/submission/localization.md",
     "mcp_tool_info": "docs/submission/mcp-tool-info.md",
-    "app_management_permissions": "docs/submission/app-management-permissions.todo.md",
+    "app_management_permissions": "docs/submission/app-management-permissions.md",
     "security_review": "docs/submission/security-review.md",
     "metadata_snapshot": "docs/submission/metadata-snapshot.md",
-    "submission_confirmations": "docs/submission/submission-confirmations.todo.md"
+    "submission_confirmations": "docs/submission/submission-confirmations.md"
   },
   "notes": "Submission evidence files were filled locally. Keep each ready field false until the referenced evidence has been reviewed by a human operator."
 }
