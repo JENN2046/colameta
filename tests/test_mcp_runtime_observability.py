@@ -1118,6 +1118,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Evidence blockers" in widget_html
         assert "recommendedActions" in widget_html
         assert "callToolWithArgs" in widget_html
+        assert "viewState = {}" in widget_html
+        assert "viewState = Object.assign({}, viewState, manifest || {}, data)" in widget_html
+        assert "var current = viewState" in widget_html
         assert "action-run" in widget_html
         assert "action-run-status" in widget_html
         assert "action-refresh-queue" in widget_html
