@@ -1680,6 +1680,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert entries[0]["filename"] == "mcp-tool-info.md"
         assert "# MCP Tool Information Evidence" in entries[0]["content"]
         assert "`get_submission_evidence_auto_draft`" in entries[0]["content"]
+        assert "`manage_stage_parallel_worktrees` | `action-dependent`" in entries[0]["content"]
+        assert "mcp:unknown" not in entries[0]["content"]
         runtime_status.assert_called_once_with(str(project), local_service={"status": "ready"})
         connector_health.assert_called_once_with(runtime_status=runtime_packet, local_service={"status": "ready"})
 
