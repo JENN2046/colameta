@@ -59,6 +59,7 @@ from runner.product_readiness import (
 )
 from runner.full_loop_authority import build_full_loop_authority_status
 from runner.product_console import (
+    build_submission_evidence_activity_result,
     build_product_console_map,
     build_submission_evidence_fill_preview,
     record_product_console_action_result,
@@ -10173,6 +10174,7 @@ class MCPPlanningBridgeServer:
         evidence_progress = release_submission.get("submission_evidence_progress")
         if compact_progress:
             evidence_progress = self._compact_submission_evidence_progress(evidence_progress)
+        submission_activity = build_submission_evidence_activity_result(project_root)
         return {
             "ok": True,
             "source": "release_submission_evidence_closeout",
@@ -10184,6 +10186,7 @@ class MCPPlanningBridgeServer:
             "status": release_submission.get("status"),
             "ready": release_submission.get("ready") is True,
             "evidence_progress": evidence_progress,
+            "submission_evidence_activity": submission_activity,
             "safe_next_action": release_submission.get("safe_next_action"),
             "blocker_codes": release_submission.get("blocker_codes") or [],
             "needs_attention_codes": release_submission.get("needs_attention_codes") or [],

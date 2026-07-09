@@ -216,6 +216,15 @@ def record_product_console_action_result(
     }
 
 
+def build_submission_evidence_activity_result(
+    project_root: str,
+) -> dict[str, Any]:
+    """Return the latest recorded submission evidence activity summary."""
+    return _submission_evidence_activity_result(
+        _action_result_entries(load_product_console_action_results(project_root)),
+    )
+
+
 def build_submission_evidence_fill_preview(
     project_root: str,
     *,
