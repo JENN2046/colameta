@@ -1596,7 +1596,13 @@ vm.runInThisContext({json.dumps(widget_script)});
               ],
               mark_ready: false
             }},
-            required_scope: "mcp:commit"
+            required_scope: "mcp:commit",
+            result_contract: {{
+              refresh_after: [
+                {{ tool: "get_release_submission_readiness", why: "Refresh submission evidence and manifest status." }},
+                {{ tool: "get_product_console_map", why: "Refresh recommended actions after local submission evidence changes." }}
+              ]
+            }}
           }},
           operator_instructions: ["Review every entry before writing files."]
         }}
@@ -1613,6 +1619,8 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(copiedCall.arguments.entries.length, 2);
   assert.strictEqual(copiedCall.arguments.entries[1].key, "screenshot");
   assert.strictEqual(copiedCall.arguments.mark_ready, false);
+  assert.strictEqual(copiedCall.result_contract.refresh_after[0].tool, "get_release_submission_readiness");
+  assert.strictEqual(copiedCall.result_contract.refresh_after[1].tool, "get_product_console_map");
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);

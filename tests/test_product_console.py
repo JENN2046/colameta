@@ -580,6 +580,10 @@ def test_submission_evidence_fill_preview_packages_bundle_draft_entries() -> Non
     assert packet["fill_plan_status"] == "evidence_needs_fill"
     assert packet["copyable_tool_call"]["tool"] == "fill_submission_evidence_files"
     assert packet["copyable_tool_call"]["required_scope"] == "mcp:commit"
+    assert [item["tool"] for item in packet["copyable_tool_call"]["result_contract"]["refresh_after"]] == [
+        "get_release_submission_readiness",
+        "get_product_console_map",
+    ]
     assert packet["copyable_tool_call"]["arguments"] == {
         "project_name": "demo-project",
         "entries": [
@@ -643,6 +647,10 @@ def test_submission_evidence_fill_preview_returns_mark_ready_call_when_filled() 
     assert packet["status"] == "review_ready"
     assert packet["summary"].startswith("Prepared a read-only ready-field marking payload")
     assert packet["copyable_tool_call"]["tool"] == "mark_submission_evidence_ready_fields"
+    assert [item["tool"] for item in packet["copyable_tool_call"]["result_contract"]["refresh_after"]] == [
+        "get_release_submission_readiness",
+        "get_product_console_map",
+    ]
     assert packet["copyable_tool_call"]["arguments"] == {
         "project_name": "demo-project",
         "keys": ["logo"],
