@@ -5529,9 +5529,13 @@ class MCPPlanningBridgeServer:
       <div class="note evidence-activity-wrap">
         <div class="evidence-head">
           <strong>Activity</strong>
-          <button class="evidence-copy secondary" id="submission-activity-copy" type="button">Copy</button>
+          <div class="actions">
+            <button class="evidence-copy secondary" id="submission-activity-copy" type="button">Copy</button>
+            <button class="action-record secondary" id="submission-activity-record" type="button">Record</button>
+          </div>
         </div>
         <span id="submission-activity">No evidence activity yet.</span>
+        <div class="action-run-status" id="submission-activity-record-status"></div>
       </div>
       <div class="evidence-grid" id="submission-evidence"></div>
     </section>
@@ -5945,12 +5949,47 @@ class MCPPlanningBridgeServer:
           }
         };
       }
+      function submissionActivityRecordStatus(rows) {
+        if (!Array.isArray(rows) || !rows.length) return "blocked";
+        return rows.some(function (row) { return String(row).indexOf("failed") >= 0; }) ? "failed" : "updated";
+      }
+      function submissionActivityRecordArgs(data) {
+        var payload = submissionActivityCopyPayload(data);
+        var rows = Array.isArray(payload.rows) ? payload.rows : [];
+        var status = submissionActivityRecordStatus(rows);
+        return {
+          action_id: "submission_evidence_activity",
+          tool: "submission_evidence_activity_summary",
+          mode: "read",
+          status: status,
+          message: [
+            "Submission evidence activity",
+            payload.submission_status,
+            payload.evidence_blockers,
+            rows.slice(-2).join(" / ")
+          ].filter(Boolean).join(" | "),
+          result_ok: status === "updated"
+        };
+      }
+      function submissionActivityRecordKey() {
+        return "record|submission_evidence_activity|submission_evidence_activity_summary|read";
+      }
+      function renderSubmissionActivityRecordControl(data) {
+        var button = byId("submission-activity-record");
+        var statusNode = byId("submission-activity-record-status");
+        if (!button || !statusNode) return;
+        var rows = submissionActivityRows(data);
+        var recordStatus = actionRunStatus[submissionActivityRecordKey()];
+        button.disabled = !rows.length || !!(recordStatus && (recordStatus.status === "pending" || recordStatus.status === "recorded"));
+        statusNode.textContent = recordStatus ? [recordStatus.status, recordStatus.message].filter(Boolean).join(" | ") : "";
+      }
       function renderEvidence(data) {
         var snapshot = releaseSnapshot(data);
         var preview = submissionPreview(data);
         text("submission-status", preview.status || (data && data.ok === false ? "failed" : statusValue(snapshot, ["status"])));
         text("submission-blockers", evidenceBlockers(data));
         renderEvidenceActivity(data);
+        renderSubmissionActivityRecordControl(data);
         var target = byId("submission-evidence");
         target.innerHTML = "";
         var cards = evidenceCardModels(data);
@@ -6459,6 +6498,25 @@ class MCPPlanningBridgeServer:
       if (activityCopyButton) {
         activityCopyButton.addEventListener("click", function () {
           copyText(JSON.stringify(submissionActivityCopyPayload(viewState), null, 2), "Copied evidence activity summary.");
+        });
+      }
+      var activityRecordButton = byId("submission-activity-record");
+      if (activityRecordButton) {
+        activityRecordButton.addEventListener("click", async function () {
+          var key = submissionActivityRecordKey();
+          var args = submissionActivityRecordArgs(viewState);
+          if (!submissionActivityCopyPayload(viewState).rows.length) return;
+          rememberActionRunStatus(key, "pending", "record_product_console_action_result");
+          renderSubmissionActivityRecordControl(viewState);
+          var result = await callToolWithArgs("record_product_console_action_result", args, "record evidence activity", key);
+          renderSubmissionActivityRecordControl(viewState);
+          if (recordActionResultSucceeded(result)) {
+            var refreshResult = await callToolWithArgs("get_product_console_map", {}, "recorded evidence activity refresh", "record-refresh|submission_evidence_activity");
+            if (refreshResult && refreshResult.status) {
+              rememberActionRunStatus(key, "recorded", "refresh current");
+              renderSubmissionActivityRecordControl(viewState);
+            }
+          }
         });
       }
       if (window.openai && window.openai.toolOutput) {

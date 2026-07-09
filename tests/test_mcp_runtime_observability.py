@@ -1723,6 +1723,12 @@ function evidenceActivityText() {{
 function evidenceActivityCopyButton() {{
   return byId("submission-activity-copy");
 }}
+function evidenceActivityRecordButton() {{
+  return byId("submission-activity-record");
+}}
+function evidenceActivityRecordStatus() {{
+  return byId("submission-activity-record-status").textContent;
+}}
 async function flushPromises() {{
   await Promise.resolve();
   await Promise.resolve();
@@ -1747,6 +1753,16 @@ global.window = {{
   openai: {{
     callTool: async function (name, args) {{
       toolCalls.push({{ name: name, args: args }});
+      if (name === "record_product_console_action_result") {{
+        assert.strictEqual(args.action_id, "submission_evidence_activity");
+        assert.strictEqual(args.tool, "submission_evidence_activity_summary");
+        assert.strictEqual(args.mode, "read");
+        assert.strictEqual(args.status, "updated");
+        assert.strictEqual(args.result_ok, true);
+        assert(args.message.includes("Submission evidence activity"), args.message);
+        assert(args.message.includes("get_submission_evidence_fill_preview via direct call | refreshed"), args.message);
+        return {{ structuredContent: {{ source: "product_console_action_results", status: "recorded" }} }};
+      }}
       return {{
         structuredContent: {{
           source: name === "get_product_console_map" ? "product_console_map" : "release_submission_readiness",
@@ -1780,6 +1796,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(byId("submission-status").textContent, "-");
   assert.strictEqual(byId("submission-blockers").textContent, "none");
   assert.strictEqual(evidenceActivityText(), "No evidence activity yet.");
+  assert.strictEqual(evidenceActivityRecordButton().disabled, true);
 
   dispatchToolOutput({{
     source: "release_submission_readiness",
@@ -2015,6 +2032,15 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(activitySummary.authority_boundary.read_only_summary, true);
   assert.strictEqual(activitySummary.authority_boundary.does_not_write_files, true);
   assert.strictEqual(activitySummary.authority_boundary.does_not_mark_ready_fields, true);
+  assert.strictEqual(evidenceActivityRecordButton().disabled, false);
+  await evidenceActivityRecordButton().listeners.click[0]();
+  await flushPromises();
+  assert.deepStrictEqual(toolCalls.slice(-2).map(function (call) {{ return call.name; }}), [
+    "record_product_console_action_result",
+    "get_product_console_map"
+  ]);
+  assert.strictEqual(evidenceActivityRecordButton().disabled, true);
+  assert(evidenceActivityRecordStatus().includes("recorded | refresh current"), evidenceActivityRecordStatus());
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
