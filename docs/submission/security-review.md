@@ -9,6 +9,11 @@ The generated submission evidence payload is a preview only. Operators must revi
 ## redaction
 This draft is built from sanitized service facts: tool names, scopes, runtime freshness, and connector summary statuses. It does not read token values, cookies, browser login state, provider config, raw logs, tunnel-client config, or proxy config.
 
+## privacy_policy
+Privacy policy draft: docs/privacy-policy.md
+Published candidate URL: https://github.com/JENN2046/colameta/blob/main/docs/privacy-policy.md
+Human privacy review is still required before marking `security_review_ready=true`.
+
 ## monitoring
 Runtime reload awareness: installed_package_project_checkout_dirty
 Reload needed for verification: true
