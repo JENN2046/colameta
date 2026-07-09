@@ -245,6 +245,17 @@ docs/chatgpt-app-submission-materials.json
 状态仍可通过显式 flag 或 MCP 的结构化 `submission_materials` object 提供。仓库里的
 `docs/chatgpt-app-submission-materials.example.json` 只是模板，不会被自动当作真实证据。
 
+可以用下面的命令初始化真实 manifest 和可填写的本地证据包骨架：
+
+```text
+colameta init-submission-evidence --json
+```
+
+它会创建 `docs/chatgpt-app-submission-materials.json` 和 `docs/submission/*.todo.md`
+占位文件；默认不覆盖已有文件。占位文件只是填写入口，不能被当作 ready evidence：
+如果 manifest 中某个 ready 字段被改成 `true` 但仍引用 `.todo.md`，readiness 会继续
+返回 `SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE`，直到引用被替换成真实证据文件。
+
 它不会创建 OpenAI App draft、不会提交 review、不会发布、不会调用 OpenAI Dashboard/API、
 不会读取 token/cookie/provider config。即使返回 `ready`，也只是说明本地 submission
 证据齐了；真正提交仍由人到 OpenAI Dashboard 手动完成。

@@ -5,6 +5,7 @@ import json
 from runner.release_submission_readiness import (
     DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
     build_release_submission_readiness,
+    init_submission_evidence_scaffold,
 )
 
 
@@ -220,3 +221,44 @@ def test_release_submission_rejects_evidence_paths_outside_project(tmp_path) -> 
             "error_code": "EVIDENCE_PATH_OUTSIDE_PROJECT",
         }
     ]
+
+
+def test_submission_evidence_scaffold_creates_manifest_and_placeholders(tmp_path) -> None:
+    packet = init_submission_evidence_scaffold(str(tmp_path), app_name="Demo App")
+
+    assert packet["source"] == "submission_evidence_scaffold"
+    assert packet["manifest_created"] is True
+    assert DEFAULT_SUBMISSION_MATERIALS_REL_PATH in packet["created_files"]
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["app_name"] == "Demo App"
+    assert manifest["logo_ready"] is False
+    assert manifest["evidence"]["logo"] == "docs/submission/logo.todo.md"
+    assert (tmp_path / "docs/submission/logo.todo.md").is_file()
+
+
+def test_submission_evidence_scaffold_preserves_existing_files(tmp_path) -> None:
+    first = init_submission_evidence_scaffold(str(tmp_path))
+    logo_path = tmp_path / "docs/submission/logo.todo.md"
+    logo_path.write_text("custom\n", encoding="utf-8")
+
+    second = init_submission_evidence_scaffold(str(tmp_path))
+
+    assert first["manifest_created"] is True
+    assert second["manifest_created"] is False
+    assert "docs/submission/logo.todo.md" in second["existing_files"]
+    assert logo_path.read_text(encoding="utf-8") == "custom\n"
+
+
+def test_release_submission_rejects_placeholder_evidence_when_marked_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["logo_ready"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    assert packet["status"] == "needs_attention"
+    evidence_check = packet["checks"]["submission_evidence_references"]
+    assert "docs/submission/logo.todo.md" in evidence_check["placeholder_files"]
