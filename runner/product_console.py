@@ -20,6 +20,7 @@ PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v1"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
 ACTION_RESULT_STATUSES = frozenset({"not_recorded", "pending", "updated", "requested", "blocked", "failed"})
+REFRESH_RECOMMENDED_RESULT_STATUSES = frozenset({"updated", "requested"})
 MAX_ACTION_RESULT_MESSAGE_CHARS = 240
 MAX_STORED_ACTION_RESULTS = 50
 
@@ -94,7 +95,7 @@ def build_product_console_map(
         ],
         "entries": entries,
         "recommended_first_actions": recommended_actions,
-        "action_result_state": _action_result_state_summary(result_state),
+        "action_result_state": _action_result_state_summary(result_state, recommended_actions),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
@@ -687,13 +688,15 @@ def _attach_action_results(actions: list[dict[str, Any]], result_state: dict[str
         action_key = _action_key_for_model(item)
         item["action_key"] = action_key
         item["last_action_result"] = index.get(action_key) or _not_recorded_action_result()
+        item["next_refresh_actions"] = _next_refresh_actions_for_action(item)
         attached.append(item)
     return attached
 
 
-def _action_result_state_summary(result_state: dict[str, Any]) -> dict[str, Any]:
+def _action_result_state_summary(result_state: dict[str, Any], actions: list[dict[str, Any]]) -> dict[str, Any]:
     entries = _action_result_entries(result_state)
     latest = entries[0] if entries else None
+    pending_refreshes = _pending_refresh_actions(actions)
     return {
         "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
         "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
@@ -701,6 +704,8 @@ def _action_result_state_summary(result_state: dict[str, Any]) -> dict[str, Any]
         "available": bool(entries),
         "stored_result_count": len(entries),
         "latest": latest,
+        "pending_refresh_count": len(pending_refreshes),
+        "pending_refreshes": pending_refreshes,
         "authority_boundary": {
             "read_only": True,
             "does_not_write_runtime_state": True,
@@ -797,7 +802,82 @@ def _action_result_index(result_state: dict[str, Any]) -> dict[str, dict[str, An
 
 
 def _not_recorded_action_result() -> dict[str, Any]:
-    return {"status": "not_recorded", "message": "No action result recorded yet.", "observed_at": None}
+    return {
+        "status": "not_recorded",
+        "message": "No action result recorded yet.",
+        "observed_at": None,
+        "refresh_recommended": False,
+    }
+
+
+def _next_refresh_actions_for_action(action: dict[str, Any]) -> list[dict[str, Any]]:
+    result = action.get("last_action_result") if isinstance(action.get("last_action_result"), dict) else {}
+    if not _result_should_offer_refresh(result):
+        return []
+    contract = action.get("result_contract") if isinstance(action.get("result_contract"), dict) else {}
+    refresh_after = contract.get("refresh_after") if isinstance(contract.get("refresh_after"), list) else []
+    if not refresh_after:
+        return []
+    action_key = _clean_optional_text(action.get("action_key")) or _action_key_for_model(action)
+    arguments = _refresh_arguments_for_action(action)
+    status = _clean_optional_text(result.get("status")) or "updated"
+    observed_at = _clean_optional_text(result.get("observed_at"))
+    refreshes: list[dict[str, Any]] = []
+    for item in refresh_after:
+        if not isinstance(item, dict):
+            continue
+        tool = _clean_optional_text(item.get("tool"))
+        if not tool:
+            continue
+        refreshes.append(
+            {
+                "tool": tool,
+                "arguments": arguments,
+                "why": _clean_optional_text(item.get("why")) or "Refresh after the recorded action result.",
+                "source_action_key": action_key,
+                "after_result_status": status,
+                "after_observed_at": observed_at,
+                "requires_operator_or_agent_refresh": True,
+            }
+        )
+    if refreshes:
+        result["refresh_recommended"] = True
+    return refreshes
+
+
+def _result_should_offer_refresh(result: dict[str, Any]) -> bool:
+    status = _clean_optional_text(result.get("status"))
+    if status not in REFRESH_RECOMMENDED_RESULT_STATUSES:
+        return False
+    if result.get("result_ok") is False:
+        return False
+    return True
+
+
+def _refresh_arguments_for_action(action: dict[str, Any]) -> dict[str, Any]:
+    arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+    project_name = _clean_optional_text(arguments.get("project_name"))
+    return {"project_name": project_name} if project_name else {}
+
+
+def _pending_refresh_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pending: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for action in actions:
+        refreshes = action.get("next_refresh_actions") if isinstance(action.get("next_refresh_actions"), list) else []
+        for refresh in refreshes:
+            if not isinstance(refresh, dict):
+                continue
+            tool = _clean_optional_text(refresh.get("tool"))
+            if not tool:
+                continue
+            args_key = json.dumps(refresh.get("arguments") or {}, sort_keys=True, ensure_ascii=True)
+            key = (tool, args_key)
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append(refresh)
+    return pending
 
 
 def _action_key_for_model(action: dict[str, Any]) -> str:

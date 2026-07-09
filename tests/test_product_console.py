@@ -235,8 +235,41 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     commander_action = _action_by_tool(packet, "render_commander_app")
     assert packet["action_result_state"]["available"] is True
     assert packet["action_result_state"]["stored_result_count"] == 1
+    assert packet["action_result_state"]["pending_refresh_count"] == 1
+    assert packet["action_result_state"]["pending_refreshes"][0]["tool"] == "get_product_console_map"
+    assert packet["action_result_state"]["pending_refreshes"][0]["arguments"] == {"project_name": "demo-project"}
     assert commander_action["last_action_result"]["status"] == "updated"
     assert commander_action["last_action_result"]["result_ok"] is True
+    assert commander_action["last_action_result"]["refresh_recommended"] is True
+    assert commander_action["next_refresh_actions"][0]["tool"] == "get_product_console_map"
+    assert commander_action["next_refresh_actions"][0]["source_action_key"] == commander_action["action_key"]
+
+
+def test_console_map_does_not_offer_refresh_after_failed_action_result(tmp_path) -> None:
+    record_product_console_action_result(
+        str(tmp_path),
+        action_id="continue_with_public_beta_workflow",
+        tool="render_commander_app",
+        mode="read",
+        status="failed",
+        message="direct call failed",
+        project_name="demo-project",
+        result_ok=False,
+    )
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+
+    commander_action = _action_by_tool(packet, "render_commander_app")
+    assert packet["action_result_state"]["pending_refresh_count"] == 0
+    assert packet["action_result_state"]["pending_refreshes"] == []
+    assert commander_action["last_action_result"]["status"] == "failed"
+    assert commander_action["next_refresh_actions"] == []
 
 
 def test_console_map_recommends_submission_scaffold_when_manifest_missing() -> None:

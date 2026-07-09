@@ -5798,6 +5798,16 @@ class MCPPlanningBridgeServer:
         var observed = item.at || item.observed_at;
         node.textContent = ["Last run", item.status, item.message, observed].filter(Boolean).join(" | ");
       }
+      function renderActionRefreshQueue(node, action) {
+        var refreshes = action && Array.isArray(action.next_refresh_actions) ? action.next_refresh_actions : [];
+        if (!refreshes.length) {
+          node.textContent = "";
+          return;
+        }
+        node.textContent = "Refresh | " + refreshes.slice(0, 3).map(function (item) {
+          return item && item.tool ? item.tool : "";
+        }).filter(Boolean).join(" -> ");
+      }
       function appendChip(parent, value, className) {
         if (value === undefined || value === null || value === "" || value === false) return;
         var chip = document.createElement("span");
@@ -5852,6 +5862,9 @@ class MCPPlanningBridgeServer:
           var runStatus = document.createElement("div");
           runStatus.className = "action-run-status";
           renderActionRunStatus(runStatus, key, action);
+          var refreshQueue = document.createElement("div");
+          refreshQueue.className = "action-run-status";
+          renderActionRefreshQueue(refreshQueue, action);
           run.addEventListener("click", async function () {
             if (!runnable) return;
             rememberActionRunStatus(key, "pending", action.tool);
@@ -5883,6 +5896,7 @@ class MCPPlanningBridgeServer:
           card.appendChild(head);
           card.appendChild(meta);
           card.appendChild(runStatus);
+          if (refreshQueue.textContent) card.appendChild(refreshQueue);
           if (why.textContent) card.appendChild(why);
           card.appendChild(boundary);
           target.appendChild(card);
