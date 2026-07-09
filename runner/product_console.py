@@ -79,6 +79,10 @@ def build_product_console_map(
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
+        "release_submission_evidence_bundle": _release_submission_evidence_bundle(
+            project_args={"project_name": project_name} if project_name else {},
+            release_submission=release,
+        ),
         "authority_boundary": _authority_boundary(),
         "not_authorized_actions": [
             "executor_run",
@@ -392,6 +396,226 @@ def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -
         "evidence_progress": release_submission.get("submission_evidence_progress"),
         "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
         "error": materials.get("error"),
+    }
+
+
+def _release_submission_evidence_bundle(
+    *,
+    project_args: dict[str, Any],
+    release_submission: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(release_submission, dict):
+        return {
+            "ok": True,
+            "source": "release_submission_evidence_bundle",
+            "schema_version": "release_submission_evidence_bundle.v1",
+            "read_only": True,
+            "side_effects": False,
+            "status": "unknown",
+            "summary": "Release submission evidence is not loaded.",
+            "manifest": {"status": "unknown", "available": False},
+            "progress_summary": {"status": "unknown", "complete_count": 0, "total_count": 0, "counts": {}},
+            "fill_plan": _release_submission_fill_plan(
+                project_args=project_args,
+                release_submission=None,
+                progress=None,
+                manifest_status="unknown",
+            ),
+            "authority_boundary": _submission_evidence_bundle_authority_boundary(),
+        }
+
+    materials = release_submission.get("submission_materials")
+    if not isinstance(materials, dict):
+        materials = {}
+    checks = release_submission.get("checks")
+    evidence_check = checks.get("submission_evidence_references") if isinstance(checks, dict) else None
+    manifest_check = checks.get("submission_materials_manifest") if isinstance(checks, dict) else None
+    progress = release_submission.get("submission_evidence_progress")
+    manifest_source = str(materials.get("source") or "unknown")
+    manifest_available = manifest_source not in {"unknown", "parameters_only"}
+    manifest_status = str(manifest_check.get("status") or "unknown") if isinstance(manifest_check, dict) else "unknown"
+    progress_summary = _release_submission_progress_summary(progress)
+    fill_plan = _release_submission_fill_plan(
+        project_args=project_args,
+        release_submission=release_submission,
+        progress=progress,
+        manifest_status=manifest_status,
+    )
+    return {
+        "ok": True,
+        "source": "release_submission_evidence_bundle",
+        "schema_version": "release_submission_evidence_bundle.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": _status_value(release_submission),
+        "ready": release_submission.get("ready") is True,
+        "summary": _release_submission_evidence_bundle_summary(release_submission, progress_summary),
+        "manifest": {
+            "status": manifest_status,
+            "source": manifest_source,
+            "available": manifest_available,
+            "default_path": "docs/chatgpt-app-submission-materials.json",
+            "effective_fields": list(materials.get("effective_fields") or []),
+            "ignored_manifest_fields": list(materials.get("ignored_manifest_fields") or []),
+            "error": materials.get("error"),
+        },
+        "progress_summary": progress_summary,
+        "gap_summary": {
+            "blocker_codes": list(release_submission.get("blocker_codes") or []),
+            "needs_attention_codes": list(release_submission.get("needs_attention_codes") or []),
+            "missing_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
+            "missing_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
+            "placeholder_files": list(evidence_check.get("placeholder_files") or []) if isinstance(evidence_check, dict) else [],
+            "incomplete_keys": list(evidence_check.get("incomplete_keys") or []) if isinstance(evidence_check, dict) else [],
+        },
+        "fill_plan": fill_plan,
+        "authority_boundary": _submission_evidence_bundle_authority_boundary(),
+    }
+
+
+def _release_submission_progress_summary(progress: Any) -> dict[str, Any]:
+    if not isinstance(progress, dict):
+        return {"status": "unknown", "complete_count": 0, "total_count": 0, "counts": {}, "rows": []}
+    rows = progress.get("rows")
+    compact_rows: list[dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            compact_rows.append(
+                {
+                    "key": row.get("key"),
+                    "ready_field": row.get("ready_field"),
+                    "status": row.get("status"),
+                    "ready": row.get("ready") is True,
+                    "refs": list(row.get("refs") or []) if isinstance(row.get("refs"), list) else [],
+                    "default_path": row.get("default_path"),
+                }
+            )
+    return {
+        "status": progress.get("status") or "unknown",
+        "complete_count": progress.get("complete_count") if isinstance(progress.get("complete_count"), int) else 0,
+        "total_count": progress.get("total_count") if isinstance(progress.get("total_count"), int) else len(compact_rows),
+        "counts": dict(progress.get("counts") or {}) if isinstance(progress.get("counts"), dict) else {},
+        "rows": compact_rows,
+    }
+
+
+def _release_submission_fill_plan(
+    *,
+    project_args: dict[str, Any],
+    release_submission: dict[str, Any] | None,
+    progress: Any,
+    manifest_status: str,
+) -> dict[str, Any]:
+    if not isinstance(release_submission, dict):
+        return {
+            "status": "needs_release_readiness",
+            "next_tool": "get_release_submission_readiness",
+            "next_arguments": project_args,
+            "draft_entries": [],
+            "human_review_required": True,
+            "why": "Load release submission readiness before collecting evidence.",
+        }
+    materials = release_submission.get("submission_materials")
+    source = materials.get("source") if isinstance(materials, dict) else "unknown"
+    if source in {"unknown", "parameters_only"}:
+        return {
+            "status": "manifest_missing",
+            "next_tool": "init_submission_evidence",
+            "next_arguments": project_args,
+            "draft_entries": [],
+            "human_review_required": True,
+            "why": "Create the real local submission manifest before filling evidence files.",
+        }
+    if manifest_status == "needs_attention":
+        return {
+            "status": "manifest_needs_attention",
+            "next_tool": "get_release_submission_readiness",
+            "next_arguments": project_args,
+            "draft_entries": [],
+            "human_review_required": True,
+            "why": "Fix manifest schema or unknown fields before writing evidence files.",
+        }
+    if release_submission.get("ready") is True:
+        return {
+            "status": "ready",
+            "next_tool": "get_release_submission_readiness",
+            "next_arguments": project_args,
+            "draft_entries": [],
+            "human_review_required": False,
+            "why": "Submission evidence is already marked ready by the local manifest and readiness checks.",
+        }
+    draft_entries = _release_submission_draft_entries(release_submission, progress)
+    return {
+        "status": "evidence_needs_fill",
+        "next_tool": "fill_submission_evidence_files",
+        "next_arguments": {**project_args, "entries": []},
+        "draft_entries": draft_entries,
+        "human_review_required": True,
+        "why": "Fill real operator-reviewed evidence text before marking the corresponding ready fields true.",
+    }
+
+
+def _release_submission_draft_entries(release_submission: dict[str, Any], progress: Any) -> list[dict[str, Any]]:
+    templates_by_key = {
+        str(item.get("key")): item
+        for item in list(release_submission.get("submission_evidence_entry_templates") or [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    rows = progress.get("rows") if isinstance(progress, dict) else []
+    entries: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return entries
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") == "ready":
+            continue
+        key = str(row.get("key") or "")
+        if not key:
+            continue
+        template = row.get("template") if isinstance(row.get("template"), dict) else templates_by_key.get(key, {})
+        default_path = str(row.get("default_path") or template.get("default_path") or "")
+        default_filename = str(template.get("default_filename") or os.path.basename(default_path) or f"{key}.md")
+        entries.append(
+            {
+                "key": key,
+                "ready_field": row.get("ready_field"),
+                "current_status": row.get("status"),
+                "default_path": default_path,
+                "filename": default_filename,
+                "purpose": template.get("purpose") or template.get("content_prompt"),
+                "required_sections": list(template.get("required_sections") or []),
+                "copyable_entry_shape": {
+                    "key": key,
+                    "filename": default_filename,
+                    "content": "<operator-confirmed evidence text>",
+                },
+            }
+        )
+    return entries
+
+
+def _release_submission_evidence_bundle_summary(
+    release_submission: dict[str, Any],
+    progress_summary: dict[str, Any],
+) -> str:
+    if release_submission.get("ready") is True:
+        return "Release submission evidence is ready."
+    total = progress_summary.get("total_count") or 0
+    complete = progress_summary.get("complete_count") or 0
+    return f"Release submission evidence needs attention: {complete}/{total} evidence items are ready."
+
+
+def _submission_evidence_bundle_authority_boundary() -> dict[str, bool]:
+    return {
+        "read_only": True,
+        "side_effects": False,
+        "does_not_write_files": True,
+        "does_not_mark_ready_fields": True,
+        "does_not_create_openai_app_draft": True,
+        "does_not_submit_app_for_review": True,
+        "does_not_publish_app": True,
+        "does_not_read_tokens_or_cookies": True,
     }
 
 
