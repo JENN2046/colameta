@@ -285,7 +285,12 @@ stable service replacement, ReviewDecision, GateEvent, or Delivery accepted.
 For a compact product surface map, call `get_product_console_map` or
 `colameta console-map --json`. The map is read-only: it groups the available
 connect/readiness, plan/review, controlled full-loop, and stable/release entry
-points without invoking them. Its `release_submission_evidence_bundle` field
+points without invoking them. When product readiness is `blocked` or
+`needs_attention`, `recommended_first_actions` promotes the concrete
+`safe_next_action` from the readiness packet, such as the read-only stable
+cadence check, Apps connector smoke, or a bounded runbook; it does not treat
+another generic readiness read as the main repair action. Its
+`release_submission_evidence_bundle` field
 summarizes the local ChatGPT App submission manifest, the 10-item evidence
 progress table, remaining gaps, and the next safe tool. When evidence still
 needs work, `fill_plan.draft_entries[]` contains copyable

@@ -171,6 +171,10 @@ stable_and_release: stable promotion readiness、release/submission readiness
 
 这个 map 只告诉操作者“入口在哪里、需要什么 scope、当前是否 blocked/available/preview_required”。
 它不执行任何入口动作，不启动 executor、不跑验证、不 commit、不 push、不替换 stable、不发布。
+当产品 readiness 是 `blocked` 或 `needs_attention` 时，`recommended_first_actions`
+会优先提升 readiness packet 里的具体 `safe_next_action`，例如只读的
+`get_stable_replacement_cadence`、Apps connector smoke，或带边界的 runbook；它不会把
+“再读一次 readiness”当成主要修复动作。
 当 release/submission 缺少真实 manifest 时，`recommended_first_actions` 会推荐 MCP 工具
 `init_submission_evidence`；当 manifest 已存在但 evidence 文件缺失或仍是
 `.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐
