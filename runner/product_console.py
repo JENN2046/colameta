@@ -76,6 +76,7 @@ def build_product_console_map(
         "recommended_first_actions": _recommended_first_actions(
             project_name=project_name,
             status=status,
+            readiness=readiness,
             release_submission=release,
         ),
         "readiness_snapshot": _readiness_snapshot(readiness),
@@ -361,20 +362,60 @@ def _recommended_first_actions(
     *,
     project_name: str | None,
     status: str,
+    readiness: dict[str, Any] | None,
     release_submission: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     project_args = {"project_name": project_name} if project_name else {}
+    readiness_actions = _readiness_recommended_actions(project_args, readiness)
     release_actions = _release_submission_recommended_actions(project_args, release_submission)
     if status == "blocked":
-        return release_actions + [
-            {"tool": "get_product_readiness_status", "arguments": project_args},
+        return readiness_actions + release_actions + [
+            {"tool": "get_full_loop_authority_status", "arguments": project_args},
+        ]
+    if status == "needs_attention":
+        return readiness_actions + release_actions + [
+            {"tool": "get_agent_operator_flow_packet", "arguments": project_args},
             {"tool": "get_full_loop_authority_status", "arguments": project_args},
         ]
     return release_actions + [
-        {"tool": "get_product_readiness_status", "arguments": project_args},
+        *readiness_actions,
         {"tool": "get_agent_operator_flow_packet", "arguments": project_args},
         {"tool": "get_full_loop_authority_status", "arguments": project_args},
     ]
+
+
+def _readiness_recommended_actions(
+    project_args: dict[str, Any],
+    readiness: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    fallback = {"tool": "get_product_readiness_status", "arguments": project_args}
+    if not isinstance(readiness, dict):
+        return [fallback]
+    safe_next = readiness.get("safe_next_action")
+    if not isinstance(safe_next, dict):
+        return [fallback]
+    tool = safe_next.get("tool")
+    action = safe_next.get("action")
+    runbook = safe_next.get("runbook")
+    why = safe_next.get("why")
+    arguments = safe_next.get("arguments") if isinstance(safe_next.get("arguments"), dict) else {}
+    recommended = {
+        "arguments": {**project_args, **arguments},
+        "source": "readiness_safe_next_action",
+        "required_scope": "mcp:read",
+        "side_effects": False,
+    }
+    if isinstance(action, str) and action:
+        recommended["action"] = action
+    if isinstance(why, str) and why:
+        recommended["why"] = why
+    if isinstance(tool, str) and tool:
+        recommended["tool"] = tool
+        return [recommended]
+    if isinstance(runbook, str) and runbook:
+        recommended["runbook"] = runbook
+        return [recommended]
+    return [fallback]
 
 
 def _release_submission_recommended_actions(

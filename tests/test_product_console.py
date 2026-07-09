@@ -6,12 +6,12 @@ from runner.product_console import build_product_console_map, build_submission_e
 from runner.release_submission_readiness import DEFAULT_SUBMISSION_MATERIALS_REL_PATH
 
 
-def _readiness(status: str = "ready") -> dict[str, object]:
+def _readiness(status: str = "ready", safe_next_action: dict[str, object] | None = None) -> dict[str, object]:
     return {
         "status": status,
         "ready": status == "ready",
         "primary_blocker": None if status == "ready" else {"check": "remote_https_mcp_preflight"},
-        "safe_next_action": {"action": "continue_with_public_beta_workflow"},
+        "safe_next_action": safe_next_action or {"action": "continue_with_public_beta_workflow", "tool": "render_commander_app"},
         "remote_connector": {
             "connector_smoke": {
                 "status": "ready",
@@ -156,9 +156,14 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert packet["status"] == "ready_read_preview"
     assert packet["default_mode"] == "public_beta_read_preview"
     assert packet["recommended_first_actions"][0]["tool"] == "init_submission_evidence"
-    assert {"tool": "get_product_readiness_status", "arguments": {"project_name": "demo-project"}} in packet[
-        "recommended_first_actions"
-    ]
+    assert {
+        "tool": "render_commander_app",
+        "arguments": {"project_name": "demo-project"},
+        "source": "readiness_safe_next_action",
+        "required_scope": "mcp:read",
+        "side_effects": False,
+        "action": "continue_with_public_beta_workflow",
+    } in packet["recommended_first_actions"]
     entries = {entry["entry_id"]: entry for entry in packet["entries"]}
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
@@ -231,7 +236,7 @@ def test_console_map_does_not_recommend_release_work_when_submission_ready() -> 
         release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
     )
 
-    assert packet["recommended_first_actions"][0]["tool"] == "get_product_readiness_status"
+    assert packet["recommended_first_actions"][0]["tool"] == "render_commander_app"
     assert packet["release_submission_evidence_bundle"]["fill_plan"]["status"] == "ready"
     assert packet["release_submission_evidence_bundle"]["fill_plan"]["human_review_required"] is False
 
@@ -277,16 +282,56 @@ def test_console_map_marks_full_loop_entries_preview_required_when_controls_read
 def test_console_map_blocks_on_product_readiness_blocker() -> None:
     packet = build_product_console_map(
         "/tmp/project",
-        readiness_packet=_readiness("blocked"),
+        readiness_packet=_readiness(
+            "blocked",
+            safe_next_action={
+                "action": "follow_runbook",
+                "runbook": "docs/dns-proxy-tunnel-runbook.zh-CN.md",
+                "why": "The primary blocker includes a bounded operator runbook.",
+            },
+        ),
         full_loop_authority=_full_loop("ready"),
         release_submission_readiness=_release("blocked"),
     )
 
     assert packet["status"] == "blocked"
-    assert packet["recommended_first_actions"][0]["tool"] == "init_submission_evidence"
-    assert {"tool": "get_product_readiness_status", "arguments": {}} in packet["recommended_first_actions"]
+    first = packet["recommended_first_actions"][0]
+    assert first["action"] == "follow_runbook"
+    assert first["runbook"] == "docs/dns-proxy-tunnel-runbook.zh-CN.md"
+    assert first["source"] == "readiness_safe_next_action"
+    assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
+    assert {"tool": "get_full_loop_authority_status", "arguments": {}} in packet["recommended_first_actions"]
     assert packet["readiness_snapshot"]["primary_blocker"]["check"] == "remote_https_mcp_preflight"
     assert packet["release_submission_snapshot"]["status"] == "blocked"
+
+
+def test_console_map_surfaces_stable_cadence_as_first_action_for_stable_blocker() -> None:
+    readiness = _readiness(
+        "blocked",
+        safe_next_action={
+            "action": "inspect_stable_replacement_cadence",
+            "tool": "get_stable_replacement_cadence",
+            "arguments": {},
+            "why": "Inspect the read-only cadence packet before deciding whether stable replacement should be requested.",
+        },
+    )
+    readiness["primary_blocker"] = {"check": "stable_runtime"}
+
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=readiness,
+        full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release("blocked"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["tool"] == "get_stable_replacement_cadence"
+    assert first["arguments"] == {"project_name": "demo-project"}
+    assert first["required_scope"] == "mcp:read"
+    assert first["side_effects"] is False
+    assert first["source"] == "readiness_safe_next_action"
+    assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
 
 
 def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:
