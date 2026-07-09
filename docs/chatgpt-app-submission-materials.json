@@ -15,9 +15,9 @@
   "metadata_snapshot_reviewed": false,
   "submission_confirmations_ready": false,
   "evidence": {
-    "logo": "docs/submission/logo.todo.md",
+    "logo": "docs/submission/logo.md",
     "screenshots": [
-      "docs/submission/screenshot-1.todo.md"
+      "docs/submission/screenshot-1.md"
     ],
     "test_prompts": "docs/submission/test-prompts.md",
     "test_responses": "docs/submission/test-responses.md",
