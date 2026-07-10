@@ -71,6 +71,7 @@ from runner.release_submission_readiness import (
     mark_submission_evidence_ready_fields,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
+from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
     build_stage_parallel_closeout_packet,
@@ -175,6 +176,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "manage_stable_promotion_evidence",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
@@ -539,6 +541,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "manage_stable_promotion_evidence",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
@@ -1048,6 +1051,16 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
                 "manage_validation_run",
                 {"inspect": "mcp:read", "status": "mcp:read", "preview": "mcp:preview", "run": "mcp:commit"},
             ),
+            "manage_stable_promotion_evidence": _action_policy(
+                "manage_stable_promotion_evidence",
+                {
+                    "inspect": "mcp:read",
+                    "status": "mcp:read",
+                    "preview": "mcp:preview",
+                    "discard": "mcp:preview",
+                    "apply": "mcp:commit",
+                },
+            ),
         }
     )
     stage_action_scopes = {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"}
@@ -1126,6 +1139,7 @@ class MCPPlanningBridgeServer:
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
             "get_stable_replacement_cadence": self._tool_get_stable_replacement_cadence,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
+            "manage_stable_promotion_evidence": self._tool_manage_stable_promotion_evidence,
             "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
             "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
             "get_stage_parallel_worktree_assignment_preview": self._tool_get_stage_parallel_worktree_assignment_preview,
@@ -1556,6 +1570,7 @@ class MCPPlanningBridgeServer:
             ),
             MCPToolDef(
                 name="get_stable_promotion_readiness",
+                title="Get Stable Promotion Readiness",
                 description=(
                     f"[{self.project_hint}] 稳定服务晋升只读预检卡片。"
                     "汇总运行中代码新鲜度、Git clean、MCP 入口能力、registry、稳定运行目录来源和晋升阻断项。"
@@ -1573,6 +1588,46 @@ class MCPPlanningBridgeServer:
                     "additionalProperties": False,
                 },
                 output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="manage_stable_promotion_evidence",
+                title="Manage Stable Promotion Evidence",
+                description=(
+                    f"[{self.project_hint}] 为精确 Git candidate HEAD 生成、预览、持久化并验证 artifact manifest receipt。"
+                    "preview 只写短期 runtime preview；apply 仅写 .colameta runtime evidence，且要求 HEAD、origin/main、clean worktree "
+                    "与 preview 保持一致。它不替换或重启 stable service，不修改 Git，不 push，不 release/deploy。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["inspect", "status", "preview", "apply", "discard"],
+                            "description": "inspect/status 只读；preview 生成受控预览；apply 持久化精确 HEAD manifest receipt；discard 丢弃预览。",
+                        },
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。服务模式下按已登记 project_name 路由；服务模式必须提供。",
+                        },
+                        "candidate_head": {
+                            "type": "string",
+                            "description": "preview/status 可选。精确候选 commit；省略时使用当前 HEAD。",
+                        },
+                        "preview_id": {
+                            "type": "string",
+                            "description": "apply/discard 必填。来自 preview 的 preview_id。",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
+                },
             ),
             MCPToolDef(
                 name="get_stage_parallel_plan_preview",
@@ -10728,6 +10783,21 @@ class MCPPlanningBridgeServer:
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
         )
+
+    def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"inspect", "status", "preview", "apply", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 inspect、status、preview、apply 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stable_promotion_evidence", params, require_managed=True)
+        manager = MCPStablePromotionEvidenceManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stable_promotion_evidence", action, params, result)
+        return self._with_project_identity(result)
 
     def _tool_get_stage_parallel_plan_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)

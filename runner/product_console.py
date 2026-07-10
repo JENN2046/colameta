@@ -107,7 +107,11 @@ def build_product_console_map(
             {
                 "section_id": "stable_and_release",
                 "title": "Stable And Release",
-                "entry_ids": ["stable_promotion_readiness", "release_submission_readiness"],
+                "entry_ids": [
+                    "stable_promotion_readiness",
+                    "stable_promotion_artifact_evidence",
+                    "release_submission_readiness",
+                ],
             },
         ],
         "entries": entries,
@@ -587,6 +591,15 @@ def _console_entries(
             tool="get_stable_promotion_readiness",
             arguments=project_args,
             why="Read stable promotion evidence. This does not authorize replacement.",
+        ),
+        _entry(
+            "stable_promotion_artifact_evidence",
+            label="Stable Promotion Artifact Evidence",
+            mode="read",
+            status="available",
+            tool="manage_stable_promotion_evidence",
+            arguments={**project_args, "action": "status"},
+            why="Read exact-HEAD artifact manifest receipt status before any stable promotion review.",
         ),
         _entry(
             "release_submission_readiness",

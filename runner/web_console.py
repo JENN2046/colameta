@@ -2100,6 +2100,20 @@ class WebConsoleServer:
                 "arguments": {"project_name": project_name},
             },
             {
+                "label": "Stable promotion evidence preview",
+                "tool": "manage_stable_promotion_evidence",
+                "arguments": {
+                    "action": "preview",
+                    "project_name": project_name,
+                    **(
+                        {"candidate_head": stable_replacement_cadence.get("candidate_head")}
+                        if isinstance(stable_replacement_cadence.get("candidate_head"), str)
+                        and stable_replacement_cadence.get("candidate_head")
+                        else {}
+                    ),
+                },
+            },
+            {
                 "label": "Parallel plan preview",
                 "tool": "get_stage_parallel_plan_preview",
                 "arguments": {"project_name": project_name},
@@ -2387,6 +2401,28 @@ class WebConsoleServer:
         )
         if item:
             items.append(item)
+        candidate_head = stable_replacement_cadence.get("candidate_head")
+        if stable_replacement_cadence.get("candidate_differs_from_stable") is True and isinstance(candidate_head, str):
+            promotion_arguments = {
+                "action": "preview",
+                "project_name": project_name,
+                "candidate_head": candidate_head,
+            }
+            item = self._web_commander_inbox_item(
+                item_id="stable_promotion_evidence_preview",
+                source="stable_promotion",
+                component="artifact_evidence",
+                label="Stable promotion evidence preview",
+                tool="manage_stable_promotion_evidence",
+                arguments=promotion_arguments,
+                required_scope="mcp:preview",
+                gate_level="preview_required",
+                can_run_now=False,
+                copy_payload={"tool": "manage_stable_promotion_evidence", "arguments": promotion_arguments},
+                why="Prepare an exact-HEAD artifact manifest preview without replacing or restarting stable service.",
+            )
+            if item:
+                items.append(item)
         read_count = sum(1 for item in items if item.get("required_scope") == "mcp:read")
         runnable_read_count = sum(1 for item in items if item.get("can_run_now") is True)
         gated_count = len(items) - runnable_read_count

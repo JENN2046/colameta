@@ -27,7 +27,8 @@
 - `get_service_entry_profile` 是否可见
 - `thin_governed_loop_preview` 是否可用
 - 稳定运行目录 `/home/jenn/tools/colameta` 是否存在、是否有可证明 Git HEAD
-- 候选 tracked-file artifact manifest 摘要与 `manifest_sha256`
+- 从精确候选 Git commit object database 计算的 tracked-file artifact manifest 摘要与 `manifest_sha256`
+- 当前候选 manifest receipt 是否已持久化并重新验证
 - `local_blockers`
 - `warnings`
 - 稳定替换前仍需要的外部材料
@@ -50,12 +51,34 @@
 
 `candidate_artifact_manifest` 是服务现场计算的只读候选摘要：
 
-- 只覆盖 Git tracked files
-- 不包含 `.git`、`.venv`、build artifacts、ignored runtime state、untracked files
+- 只覆盖精确 `project_head` commit 中的 Git tracked files
+- 从 Git object database 读取 blob 和 gitlink，不读取当前 worktree 文件内容
+- worktree 的 tracked 修改、untracked 文件、ignored runtime state、`.git`、`.venv` 和 build artifacts 都不会污染该 commit manifest
 - 返回 `manifest_sha256`、tracked path list hash、文件数量和总字节数
 - 默认不把完整文件条目塞进 MCP 响应，避免输出臃肿
 
-它能把候选版本推进到“可哈希绑定”的审查状态，但还不是已经持久化的 release artifact。正式稳定替换前，仍要把该摘要写入晋升材料，并完成 rehearsal / rollback 证明。
+它能把候选版本推进到“可哈希绑定”的审查状态，但还不是已经持久化的 release artifact。
+使用下面的 preview/apply 流程生成 runtime receipt：
+
+```json
+{
+  "name": "manage_stable_promotion_evidence",
+  "arguments": {
+    "action": "preview",
+    "project_name": "colameta-self-dev",
+    "candidate_head": "<exact-head>"
+  }
+}
+```
+
+preview 只写短期 `.colameta/runtime` 预览，并要求 candidate 等于当前 `HEAD` 和
+`origin/main`、worktree clean。`apply` 必须使用该 preview 的一次性 `preview_id`，重新计算
+精确 commit manifest 并比对后，才写入完整 receipt。`status` 会再次从 Git object database
+计算 manifest，验证 receipt digest、完整 file entries 和当前候选绑定。已有无效 receipt 不会被
+静默覆盖。这个流程只准备晋升证据，不替换或重启 stable service，不修改 Git，不 push，也不
+release/deploy。clean gate 会忽略未跟踪的 `.colameta/runtime` 本地证据，但不会忽略任何 source
+修改、其他 untracked 文件或已跟踪的 runtime 修改。正式稳定替换前仍要完成 rehearsal / rollback
+证明并取得精确 Commander 授权。
 
 ## local_blockers
 
@@ -86,10 +109,13 @@
 1. `get_web_gpt_service_entrypoint`
 2. `list_registered_projects`
 3. `get_stable_promotion_readiness`
-4. `analyze_project_state`
-5. `manage_workflow_run action=list`
-6. 只在 readiness 干净后准备 artifact manifest 和 rehearsal
-7. 只有 Commander 给出精确授权后，才考虑稳定服务替换
+4. `manage_stable_promotion_evidence action=preview`
+5. 显式确认后 `manage_stable_promotion_evidence action=apply`
+6. `manage_stable_promotion_evidence action=status` 验证持久化 receipt
+7. `analyze_project_state`
+8. `manage_workflow_run action=list`
+9. 只在 readiness 干净后准备 rehearsal
+10. 只有 Commander 给出精确授权后，才考虑稳定服务替换
 
 ## 禁止误解
 
