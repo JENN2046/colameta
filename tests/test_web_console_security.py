@@ -833,6 +833,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "inboxBadgeClass" in page
         assert "tab-badge warn" in page
         assert "Operator inbox: " in page
+        assert "activeRightTab" in page
+        assert "normalizeRightTab" in page
+        assert "rightTabActiveClass" in page
+        assert "rightTabDisplayStyle" in page
         assert "renderOperatorInboxPanel" in page
         assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page

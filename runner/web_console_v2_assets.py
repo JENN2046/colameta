@@ -327,6 +327,9 @@ let latestStatusData = null;
 let latestStatusSignature = "";
 let todoPage = 1;
 let decisionPage = 1;
+const RIGHT_TAB_DEFAULT = "todolist";
+const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
+let activeRightTab = RIGHT_TAB_DEFAULT;
 const TODO_PAGE_SIZE_DEFAULT = 8;
 const TODO_PAGE_SIZE_MIN = 3;
 const TODO_PAGE_SIZE_MAX = 20;
@@ -1687,6 +1690,8 @@ function openDecisionModal(decisionId, title, decision, reason, relatedVersions,
 }}
 
 function showRightTab(tabName) {{
+  tabName = normalizeRightTab(tabName);
+  activeRightTab = tabName;
   const card = $("layout-right") && $("layout-right").querySelector(".card");
   if (card) {{
     card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
@@ -1696,6 +1701,18 @@ function showRightTab(tabName) {{
     const tabContent = card.querySelector('[data-tab="' + tabName + '"]');
     if (tabContent) tabContent.style.display = "block";
   }}
+}}
+
+function normalizeRightTab(tabName) {{
+  return RIGHT_TAB_NAMES.includes(tabName) ? tabName : RIGHT_TAB_DEFAULT;
+}}
+
+function rightTabActiveClass(tabName) {{
+  return normalizeRightTab(activeRightTab) === tabName ? " active" : "";
+}}
+
+function rightTabDisplayStyle(tabName) {{
+  return normalizeRightTab(activeRightTab) === tabName ? "" : ` style="display:none;"`;
 }}
 
 function switchLeftTab(tabName, btn) {{
@@ -1728,6 +1745,7 @@ function estimateTodoPageSize() {{
 
 function syncAdaptiveTodoPageSize() {{
   if (adaptiveTodoPageSizeSyncing) return;
+  if (normalizeRightTab(activeRightTab) !== "todolist") return;
   const data = latestStatusData || {{}};
   const todo = data.todolist || {{}};
   const items = Array.isArray(todo.items) ? todo.items : [];
@@ -1739,11 +1757,11 @@ function syncAdaptiveTodoPageSize() {{
   todoPage = Math.min(maxPage, Math.max(1, todoPage));
   adaptiveTodoPageSizeSyncing = true;
   renderRightColumn(data);
-  showRightTab("todolist");
   adaptiveTodoPageSizeSyncing = false;
 }}
 
 function changeTodoPage(delta) {{
+  activeRightTab = "todolist";
   const data = latestStatusData || {{}};
   const todo = data.todolist || {{}};
   const items = Array.isArray(todo.items) ? todo.items : [];
@@ -1754,6 +1772,7 @@ function changeTodoPage(delta) {{
 }}
 
 function changeDecisionPage(delta) {{
+  activeRightTab = "decision";
   const data = latestStatusData || {{}};
   const decisionResult = data.decisions || {{}};
   const decisions = Array.isArray(decisionResult.decisions) ? decisionResult.decisions : [];
@@ -1913,6 +1932,7 @@ function renderOperatorInboxPanel(data) {{
 
 function renderRightColumn(data) {{
   let h = "";
+  activeRightTab = normalizeRightTab(activeRightTab);
   const inbox = operatorInboxFromData(data || {{}});
   const inboxCounts = operatorInboxCountSummary(inbox);
   const inboxTotalNumber = operatorInboxNumericCount(inboxCounts.total, inboxCounts.items.length);
@@ -1924,14 +1944,14 @@ function renderRightColumn(data) {{
   // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar">`;
-  h += `<button class="tab-btn active" data-tab-button="todolist" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST</button>`;
-  h += `<button class="tab-btn" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX<span class="${{inboxBadgeClass}}">${{esc(inboxBadgeText)}}</span></button>`;
-  h += `<button class="tab-btn" data-tab-button="decision" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION</button>`;
-  h += `<button class="tab-btn" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX<span class="${{inboxBadgeClass}}">${{esc(inboxBadgeText)}}</span></button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
 
   // TODOLIST tab
-  h += `<div class="tab-content" data-tab="todolist">`;
+  h += `<div class="tab-content" data-tab="todolist"${{rightTabDisplayStyle("todolist")}}>`;
   const todo = data.todolist || {{}};
   if (todo.ok === false) {{
     h += `<div class="empty-state">${{esc(todo.error_code || "读取失败")}}</div>`;
@@ -1967,12 +1987,12 @@ function renderRightColumn(data) {{
   h += `</div>`;
 
   // INBOX tab
-  h += `<div class="tab-content" data-tab="operator-inbox" style="display:none;">`;
+  h += `<div class="tab-content" data-tab="operator-inbox"${{rightTabDisplayStyle("operator-inbox")}}>`;
   h += renderOperatorInboxPanel(data);
   h += `</div>`;
 
   // DECISION tab
-  h += `<div class="tab-content" data-tab="decision" style="display:none;">`;
+  h += `<div class="tab-content" data-tab="decision"${{rightTabDisplayStyle("decision")}}>`;
   const decisionResult = data.decisions || {{}};
   if (decisionResult.ok === false) {{
     h += `<div class="empty-state">${{esc(decisionResult.error_code || "读取失败")}}</div>`;
@@ -2011,7 +2031,7 @@ function renderRightColumn(data) {{
   h += `</div>`;
 
   // MEMORY tab
-  h += `<div class="tab-content" data-tab="memory" style="display:none;">`;
+  h += `<div class="tab-content" data-tab="memory"${{rightTabDisplayStyle("memory")}}>`;
   const memoryResult = data.memory || {{}};
   if (memoryResult.ok === false) {{
     h += `<div class="empty-state">${{esc(memoryResult.error_code || "读取失败")}}</div>`;
@@ -2074,6 +2094,8 @@ function renderRightColumn(data) {{
 }}
 
 function switchActionTab(tabName, btn) {{
+  tabName = normalizeRightTab(tabName);
+  activeRightTab = tabName;
   const card = btn.closest(".card");
   card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
   btn.classList.add("active");
