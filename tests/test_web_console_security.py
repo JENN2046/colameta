@@ -837,6 +837,14 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "Operator trail" in page
         assert "operatorTrailText" in page
         assert "recovery_action_count" in page
+        assert "renderOperatorInboxRunImpact" in page
+        assert 'class="operator-inbox-run-impact ${escAttr(state)}" role="status" aria-live="polite"' in page
+        assert "刚才 INBOX Run：" in page
+        assert "Product closeout 当前未报告 pending refresh。" in page
+        assert "pending refresh，请优先运行或复制刷新项" in page
+        assert "Product closeout 将在结果返回后刷新。" in page
+        assert "Product closeout 未被推进，请查看 INBOX 项或复制调用手动处理。" in page
+        assert "renderCenterColumn(latestStatusData)" in page
         assert "Operator inbox" in page
         assert "operatorInbox" in page
         assert 'data-tab-button="operator-inbox"' in page
