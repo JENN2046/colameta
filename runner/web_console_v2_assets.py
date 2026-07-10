@@ -109,6 +109,9 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .registry-action-trail-item.completed { color: #3fb950; }
 .registry-action-trail-item.failed { color: #f85149; }
 .local-trail-boundary { color: #8b949e; font-size: 10px; line-height: 1.4; margin-bottom: 6px; }
+.local-trail-clear { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; border-radius: 999px; font-size: 10px; cursor: pointer; margin-bottom: 6px; }
+.local-trail-clear:hover:not(:disabled) { background: #30363d; }
+.local-trail-clear:disabled { opacity: 0.45; cursor: not-allowed; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1753,6 +1756,14 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabe
   }}
 }}
 
+function clearOperatorInboxRunTrail() {{
+  operatorInboxRunTrail = [];
+  if (latestStatusData) {{
+    renderRightColumn(latestStatusData);
+    showRightTab("operator-inbox");
+  }}
+}}
+
 let registryActionInFlight = false;
 let registryActionStatusState = "idle";
 let registryActionStatusMessage = "项目管理操作就绪。";
@@ -1779,6 +1790,11 @@ function pushRegistryActionTrail(state, actionMeta, message) {{
     timestamp: operatorInboxFeedbackTimestamp(),
   }});
   registryActionTrail = registryActionTrail.slice(0, REGISTRY_ACTION_TRAIL_LIMIT);
+}}
+
+function clearRegistryActionTrail() {{
+  registryActionTrail = [];
+  renderProjectManagementModal(latestStatusData || {{}});
 }}
 
 function registryAction(actionName, params) {{
@@ -2273,6 +2289,7 @@ function renderRegistryActionTrail() {{
   let h = `<div class="registry-action-trail" aria-label="最近项目管理操作">`;
   h += `<div class="registry-action-trail-title">最近项目管理操作</div>`;
   h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
+  h += `<button type="button" class="local-trail-clear" aria-label="清空最近项目管理操作记录" aria-disabled="${{registryActionTrail.length ? "false" : "true"}}" onclick="clearRegistryActionTrail()"${{registryActionTrail.length ? "" : " disabled"}}>清空本会话记录</button>`;
   if (!registryActionTrail.length) {{
     h += `<div class="registry-action-trail-item">暂无最近操作。</div>`;
   }} else {{
@@ -2425,6 +2442,7 @@ function renderOperatorInboxRunTrail() {{
   let h = `<div class="operator-inbox-run-trail" aria-label="最近 operator inbox Run">`;
   h += `<div class="operator-inbox-run-trail-title">最近 Run</div>`;
   h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
+  h += `<button type="button" class="local-trail-clear" aria-label="清空最近 operator inbox Run 记录" aria-disabled="${{operatorInboxRunTrail.length ? "false" : "true"}}" onclick="clearOperatorInboxRunTrail()"${{operatorInboxRunTrail.length ? "" : " disabled"}}>清空本会话记录</button>`;
   if (!operatorInboxRunTrail.length) {{
     h += `<div class="operator-inbox-run-trail-item">暂无最近 Run。</div>`;
   }} else {{
