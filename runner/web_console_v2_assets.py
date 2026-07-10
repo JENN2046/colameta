@@ -1272,7 +1272,8 @@ function renderServiceCapabilityCard(data) {{
       const label = category.label || category.category_id || "-";
       const state = category.severity || category.status || "-";
       const gapCount = Array.isArray(category.gap_codes) ? category.gap_codes.length : 0;
-      return label + " " + state + " " + (gapCount ? "gaps " + gapCount : "ready");
+      const tool = category.primary_tool || (category.primary_action && category.primary_action.tool) || "";
+      return label + " " + state + " " + (gapCount ? "gaps " + gapCount : "ready") + (tool ? " " + tool : "");
     }}).join(" ｜ ")
     : "-";
 

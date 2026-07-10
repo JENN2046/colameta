@@ -1754,6 +1754,15 @@ function closeoutGroupText() {{
 function productCompletionCategoryText() {{
   return byId("product-completion-categories").textContent;
 }}
+function productCompletionFollowupRecordButton() {{
+  return findByClass(byId("product-completion-categories"), "closeout-followup-record")[0];
+}}
+function productCompletionFollowupCopyButton() {{
+  return findByClass(byId("product-completion-categories"), "closeout-followup-copy")[0];
+}}
+function productCompletionFollowupRefreshButton() {{
+  return findByClass(byId("product-completion-categories"), "closeout-followup-refresh")[0];
+}}
 function closeoutFollowupRecordButton() {{
   return findByClass(byId("closeout-action-groups"), "closeout-followup-record")[0];
 }}
@@ -1864,23 +1873,32 @@ vm.runInThisContext({json.dumps(widget_script)});
         blocker_category_count: 0,
         needs_attention_category_count: 1,
         categories: [{{
-          category_id: "product_readiness",
-          label: "Product Readiness",
-          status: "ready",
-          ready: true,
-          severity: "ready",
-          gap_codes: [],
-          message: "Product readiness is complete.",
-          next_step: "Keep this category green while resolving the remaining closeout gaps."
-        }}, {{
           category_id: "submission_evidence_activity",
+          component: "submission_evidence_activity",
           label: "Evidence Activity",
           status: "needs_attention",
           ready: false,
           severity: "needs_attention",
           gap_codes: ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
           message: "Submission evidence activity has not been recorded after the latest refresh.",
-          next_step: "Record the latest submission evidence activity after refresh/recovery actions."
+          next_step: "Record the latest submission evidence activity after refresh/recovery actions.",
+          display_order: 1,
+          followup_position: 1,
+          primary_tool: "record_product_console_action_result",
+          required_scope: "mcp:commit",
+          gate_level: "explicit_apply_or_run_required"
+        }}, {{
+          category_id: "product_readiness",
+          component: "product_readiness",
+          label: "Product Readiness",
+          status: "ready",
+          ready: true,
+          severity: "ready",
+          gap_codes: [],
+          message: "Product readiness is complete.",
+          next_step: "Keep this category green while resolving the remaining closeout gaps.",
+          display_order: 2,
+          has_followup: false
         }}],
         next_step: "Review remaining closeout gaps and follow the next Product Console action group."
       }},
@@ -1985,7 +2003,12 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(productCompletionCategoryText().includes("Product Readiness | ready"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("Evidence Activity | needs_attention"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("gaps 1"), productCompletionCategoryText());
+  assert(productCompletionCategoryText().includes("record_product_console_action_result"), productCompletionCategoryText());
+  assert(productCompletionCategoryText().includes("mcp:commit"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("Record the latest submission evidence activity"), productCompletionCategoryText());
+  assert(productCompletionFollowupCopyButton(), "product completion category copy should render");
+  assert(productCompletionFollowupRecordButton(), "product completion category record should render");
+  assert(productCompletionFollowupRefreshButton(), "product completion category refresh should render");
   assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());
   assert(closeoutGroupText().includes("gaps 1"), closeoutGroupText());
   assert(closeoutGroupText().includes("record_submission_evidence_activity | record_product_console_action_result | commit"), closeoutGroupText());

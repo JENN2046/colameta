@@ -815,6 +815,9 @@ def _completion_surface(
     action_groups = _completion_action_groups(
         status=completion_status,
         gaps=gaps,
+        readiness=readiness,
+        release_evidence_bundle=release_evidence_bundle,
+        action_result_state=action_result_state,
         recommended_actions=recommended_actions,
         safe_next_action=safe_next_action,
     )
@@ -834,6 +837,7 @@ def _completion_surface(
         gaps=gaps,
         progress_state=progress_state,
         safe_next_action=safe_next_action,
+        followup_queue=followup_queue,
     )
     return {
         "source": "product_console_completion_surface",
@@ -922,11 +926,37 @@ def _product_completion_overview(
     gaps: list[dict[str, Any]],
     progress_state: dict[str, Any],
     safe_next_action: dict[str, Any],
+    followup_queue: dict[str, Any],
 ) -> dict[str, Any]:
+    followup_items = (
+        followup_queue.get("items")
+        if isinstance(followup_queue.get("items"), list)
+        else []
+    )
+    followup_by_component = {
+        str(item.get("component") or item.get("item_id")): item
+        for item in followup_items
+        if isinstance(item, dict)
+    }
     categories = [
-        _product_completion_category(component_id=component_id, component=component, gaps=gaps)
+        _product_completion_category(
+            component_id=component_id,
+            component=component,
+            gaps=gaps,
+            followup_item=followup_by_component.get(component_id),
+        )
         for component_id, component in components.items()
     ]
+    categories = sorted(
+        categories,
+        key=lambda item: (
+            _product_completion_category_severity_rank(str(item.get("severity") or "")),
+            int(item.get("followup_position") or 999),
+            int(item.get("source_position") or 999),
+        ),
+    )
+    for display_order, category in enumerate(categories, start=1):
+        category["display_order"] = display_order
     ready_count = sum(1 for item in categories if item["ready"])
     blocker_count = sum(1 for item in categories if item["severity"] == "blocker")
     needs_attention_count = sum(1 for item in categories if item["severity"] == "needs_attention")
@@ -980,6 +1010,7 @@ def _product_completion_category(
     component_id: str,
     component: dict[str, Any],
     gaps: list[dict[str, Any]],
+    followup_item: dict[str, Any] | None,
 ) -> dict[str, Any]:
     component_gaps = [gap for gap in gaps if gap.get("component") == component_id]
     severity = "ready"
@@ -988,8 +1019,14 @@ def _product_completion_category(
     elif component_gaps:
         severity = "needs_attention"
     guidance = _product_completion_category_guidance(component_id, severity)
-    return {
+    primary_action = (
+        followup_item.get("primary_action")
+        if isinstance(followup_item, dict) and isinstance(followup_item.get("primary_action"), dict)
+        else {}
+    )
+    category = {
         "category_id": component_id,
+        "component": component_id,
         "label": _completion_group_label(component_id),
         "status": component.get("status") or "unknown",
         "ready": component.get("ready") is True,
@@ -997,7 +1034,38 @@ def _product_completion_category(
         "gap_codes": [str(gap.get("code")) for gap in component_gaps if gap.get("code")],
         "message": guidance["message"],
         "next_step": guidance["next_step"],
+        "source_position": _product_completion_component_position(component_id),
+        "has_followup": isinstance(followup_item, dict),
     }
+    if isinstance(followup_item, dict):
+        category["followup_position"] = int(followup_item.get("position") or 0)
+        category["followup_item"] = dict(followup_item)
+        category["primary_action"] = dict(primary_action)
+        category["primary_tool"] = followup_item.get("primary_tool") or primary_action.get("tool")
+        category["required_scope"] = followup_item.get("required_scope") or _completion_action_scope(primary_action)
+        category["gate_level"] = followup_item.get("gate_level") or _completion_followup_gate_level(
+            str(category["required_scope"])
+        )
+    return category
+
+
+def _product_completion_component_position(component_id: str) -> int:
+    order = {
+        "product_readiness": 1,
+        "release_submission": 2,
+        "submission_evidence": 3,
+        "submission_evidence_activity": 4,
+        "action_refresh": 5,
+    }
+    return order.get(component_id, 999)
+
+
+def _product_completion_category_severity_rank(severity: str) -> int:
+    if severity == "blocker":
+        return 0
+    if severity == "needs_attention":
+        return 1
+    return 2
 
 
 def _product_completion_category_guidance(component_id: str, severity: str) -> dict[str, str]:
@@ -1262,6 +1330,9 @@ def _completion_action_groups(
     *,
     status: str,
     gaps: list[dict[str, Any]],
+    readiness: dict[str, Any] | None,
+    release_evidence_bundle: dict[str, Any],
+    action_result_state: dict[str, Any],
     recommended_actions: list[dict[str, Any]],
     safe_next_action: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -1289,7 +1360,13 @@ def _completion_action_groups(
         primary_action = (
             dict(safe_next_action)
             if gap is gaps[0]
-            else _completion_primary_action_from_refs(action_refs, component)
+            else _completion_safe_next_action(
+                readiness=readiness,
+                release_evidence_bundle=release_evidence_bundle,
+                action_result_state=action_result_state,
+                recommended_actions=recommended_actions,
+                gaps=[gap],
+            )
         )
         groups.append(
             {

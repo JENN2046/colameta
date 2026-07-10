@@ -237,12 +237,22 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert overview["primary_gap_category"]["category_id"] == "release_submission"
     assert overview["recommended_action"]["tool"] == "init_submission_evidence"
     assert [item["category_id"] for item in overview["categories"]] == [
-        "product_readiness",
         "release_submission",
         "submission_evidence",
         "submission_evidence_activity",
+        "product_readiness",
         "action_refresh",
     ]
+    category_by_id = {item["category_id"]: item for item in overview["categories"]}
+    assert category_by_id["release_submission"]["display_order"] == 1
+    assert category_by_id["release_submission"]["followup_position"] == 1
+    assert category_by_id["release_submission"]["primary_tool"] == "init_submission_evidence"
+    assert category_by_id["release_submission"]["required_scope"] == "mcp:commit"
+    assert category_by_id["release_submission"]["gate_level"] == "explicit_apply_or_run_required"
+    assert category_by_id["submission_evidence_activity"]["primary_tool"] == "record_product_console_action_result"
+    assert category_by_id["submission_evidence_activity"]["required_scope"] == "mcp:commit"
+    assert category_by_id["submission_evidence_activity"]["followup_item"]["item_id"] == "submission_evidence_activity"
+    assert category_by_id["product_readiness"]["has_followup"] is False
     assert completion["needs_attention_codes"] == [
         "RELEASE_SUBMISSION_NOT_READY",
         "SUBMISSION_EVIDENCE_NOT_READY",
@@ -255,7 +265,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert groups["release_submission"]["primary_action"]["tool"] == "init_submission_evidence"
     assert groups["release_submission"]["action_refs"][0]["tool"] == "init_submission_evidence"
     assert groups["submission_evidence"]["primary_action"]["tool"] == "init_submission_evidence"
-    assert groups["submission_evidence_activity"]["primary_action"]["tool"] == "get_product_console_map"
+    assert groups["submission_evidence_activity"]["primary_action"]["tool"] == "record_product_console_action_result"
     assert "Record the latest submission evidence activity" in groups["submission_evidence_activity"]["empty_state"]
     queue = completion["followup_queue"]
     assert queue["source"] == "product_console_closeout_followup_queue"

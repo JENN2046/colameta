@@ -6191,6 +6191,8 @@ class MCPPlanningBridgeServer:
           appendChip(meta, category.ready === true ? "ready" : (category.status || "needs_attention"), category.ready === true ? "read" : "commit");
           var gaps = Array.isArray(category.gap_codes) ? category.gap_codes : [];
           appendChip(meta, gaps.length ? "gaps " + gaps.length : "no gaps", gaps.length ? "commit" : "read");
+          appendChip(meta, category.primary_tool || "");
+          appendChip(meta, category.required_scope || "");
           var message = document.createElement("div");
           message.className = "recommended-action-why product-completion-message";
           message.textContent = category.message || "";
@@ -6201,6 +6203,7 @@ class MCPPlanningBridgeServer:
           card.appendChild(meta);
           card.appendChild(message);
           card.appendChild(next);
+          renderCloseoutFollowupControls(card, completion, category);
           target.appendChild(card);
         });
       }
@@ -6246,10 +6249,12 @@ class MCPPlanningBridgeServer:
       }
       function renderCloseoutFollowupControls(card, completion, group) {
         var items = completionFollowupItems(completion).filter(function (item) {
+          var groupId = group.group_id || group.category_id;
+          var groupComponent = group.component || group.category_id || group.group_id;
           return item && typeof item === "object" && (
-            item.item_id === group.group_id ||
-            item.component === group.component ||
-            item.component === group.group_id
+            item.item_id === groupId ||
+            item.component === groupComponent ||
+            item.component === groupId
           );
         });
         if (!items.length) return;
