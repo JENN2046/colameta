@@ -8,6 +8,7 @@ import threading
 import uuid
 import ipaddress
 import hashlib
+import hmac
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
@@ -205,6 +206,31 @@ WEB_V2_PRODUCT_CONSOLE_RECORD_FIELDS = frozenset({
     "action_fingerprint",
 })
 
+WEB_V2_OPERATOR_INBOX_READ_ACTION = "operator_inbox_read"
+WEB_V2_OPERATOR_INBOX_READ_FIELDS = frozenset({
+    "item_id",
+    "source",
+    "component",
+    "tool",
+    "arguments",
+    "required_scope",
+    "gate_level",
+    "item_signature",
+})
+WEB_V2_OPERATOR_INBOX_READ_TOOLS = frozenset({
+    "get_agent_operator_flow_packet",
+    "get_apps_connector_smoke_packet",
+    "get_chatgpt_app_readiness",
+    "get_full_loop_authority_status",
+    "get_product_console_map",
+    "get_product_readiness_status",
+    "get_release_submission_readiness",
+    "get_stable_promotion_readiness",
+    "get_stable_replacement_cadence",
+    "get_stage_parallel_plan_preview",
+    "get_web_gpt_service_entrypoint",
+})
+
 REMOTE_GIT_WEB_MUTATION_ACTIONS = frozenset({
     "manage_git_remote",
     "git_remote_push_preview",
@@ -274,6 +300,7 @@ class WebConsoleServer:
         self.runner_settings_store = RunnerSettingsStore()
         self._set_project_root(project_path)
         self._settings_resolve_cache: dict[str, Any] = {}
+        self._operator_inbox_signing_key = secrets.token_bytes(32)
         self._csrf_token = secrets.token_urlsafe(32)
         self._local_web_read_token = secrets.token_urlsafe(32)
         self.dangerous_action_guard = DangerousActionGuard()
@@ -2248,6 +2275,7 @@ class WebConsoleServer:
                 can_run_now=True,
                 copy_payload=preferred_smoke,
                 why="Refresh Apps connector smoke evidence.",
+                run_arguments={"project_name": project_name},
             )
             if item:
                 items.append(item)
@@ -2285,22 +2313,29 @@ class WebConsoleServer:
         if item:
             items.append(item)
         read_count = sum(1 for item in items if item.get("required_scope") == "mcp:read")
-        gated_count = len(items) - read_count
+        runnable_read_count = sum(1 for item in items if item.get("can_run_now") is True)
+        gated_count = len(items) - runnable_read_count
         return {
             "source": "web_commander_operator_inbox",
             "schema_version": "web_commander_operator_inbox.v1",
             "read_only": True,
             "side_effects": False,
             "status": "ready" if items else "empty",
-            "summary": f"Operator inbox has {len(items)} item(s): {read_count} read-only, {gated_count} gated.",
+            "summary": (
+                f"Operator inbox has {len(items)} item(s): {read_count} read-only, "
+                f"{runnable_read_count} runnable in Web, {gated_count} gated."
+            ),
             "total_count": len(items),
             "read_only_count": read_count,
+            "runnable_read_count": runnable_read_count,
             "gated_count": gated_count,
             "items": items[:12],
             "authority_boundary": {
                 "read_only": True,
                 "side_effects": False,
-                "does_not_execute_actions": True,
+                "packet_generation_does_not_execute_actions": True,
+                "web_run_executes_server_bound_allowlisted_read_tools_only": True,
+                "does_not_execute_write_actions": True,
                 "does_not_authorize_commit_push_or_stable_replacement": True,
             },
         }
@@ -2319,6 +2354,7 @@ class WebConsoleServer:
         can_run_now: bool,
         copy_payload: Any,
         why: Any,
+        run_arguments: Any = None,
     ) -> dict[str, Any] | None:
         if not isinstance(tool, str) or not tool:
             return None
@@ -2326,7 +2362,14 @@ class WebConsoleServer:
         scope = required_scope if isinstance(required_scope, str) and required_scope else "mcp:read"
         gate = gate_level if isinstance(gate_level, str) and gate_level else ("read_only" if scope == "mcp:read" else scope)
         payload = copy_payload if isinstance(copy_payload, dict) else {"tool": tool, "arguments": args}
-        return {
+        direct_arguments = run_arguments if isinstance(run_arguments, dict) else args
+        runnable = (
+            can_run_now
+            and scope == "mcp:read"
+            and tool in WEB_V2_OPERATOR_INBOX_READ_TOOLS
+            and not self._operator_inbox_contains_placeholder(direct_arguments)
+        )
+        item = {
             "item_id": item_id,
             "source": source,
             "component": component,
@@ -2335,10 +2378,33 @@ class WebConsoleServer:
             "arguments": dict(args),
             "required_scope": scope,
             "gate_level": gate,
-            "can_run_now": can_run_now and scope == "mcp:read",
+            "can_run_now": runnable,
+            "run_arguments": dict(direct_arguments),
             "copy_payload": dict(payload),
             "why": why if isinstance(why, str) and why else "Review this operator inbox item.",
         }
+        if runnable:
+            item["item_signature"] = self._web_operator_inbox_item_signature(item)
+        return item
+
+    def _web_operator_inbox_item_signature(self, item: dict[str, Any]) -> str:
+        payload = {
+            "schema_version": "web_operator_inbox_item_signature.v1",
+            "project_root": self.project_root,
+            "item_id": item.get("item_id"),
+            "source": item.get("source"),
+            "component": item.get("component"),
+            "tool": item.get("tool"),
+            "arguments": item.get("run_arguments") if isinstance(item.get("run_arguments"), dict) else {},
+            "required_scope": item.get("required_scope"),
+            "gate_level": item.get("gate_level"),
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        signing_key = getattr(self, "_operator_inbox_signing_key", None)
+        if not isinstance(signing_key, bytes) or not signing_key:
+            signing_key = secrets.token_bytes(32)
+            self._operator_inbox_signing_key = signing_key
+        return hmac.new(signing_key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _apply_executor_session_head_mismatch_classification(
         self,
@@ -4032,6 +4098,8 @@ class WebConsoleServer:
         registry_result = self._handle_registry_action(action_name, next_action)
         if registry_result is not None:
             return registry_result
+        if action_name == WEB_V2_OPERATOR_INBOX_READ_ACTION:
+            return self._handle_operator_inbox_read_action(next_action)
         if action_name == WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
             return self._handle_product_console_record_action(next_action)
 
@@ -4072,6 +4140,192 @@ class WebConsoleServer:
         orchestrator = WorkflowOrchestrator(self.project_root)
         core_output = orchestrator.handle_request(core_request)
         return self._json_safe(core_output)
+
+    def _handle_operator_inbox_read_action(self, next_action: dict[str, Any]) -> dict[str, Any]:
+        params = next_action.get("params")
+        if not isinstance(params, dict):
+            return self._operator_inbox_read_error("OPERATOR_INBOX_READ_PARAMS_REQUIRED", "Operator inbox read params are required.")
+        unknown_fields = sorted(str(key) for key in params if key not in WEB_V2_OPERATOR_INBOX_READ_FIELDS)
+        if unknown_fields:
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_FIELDS_INVALID",
+                f"Unsupported operator inbox read fields: {', '.join(unknown_fields)}.",
+            )
+
+        item_id = params.get("item_id")
+        source = params.get("source")
+        component = params.get("component")
+        tool = params.get("tool")
+        arguments = params.get("arguments")
+        required_scope = params.get("required_scope")
+        gate_level = params.get("gate_level")
+        item_signature = params.get("item_signature")
+        required_text = {
+            "item_id": item_id,
+            "source": source,
+            "component": component,
+            "tool": tool,
+            "required_scope": required_scope,
+            "gate_level": gate_level,
+            "item_signature": item_signature,
+        }
+        invalid_text = [
+            key for key, value in required_text.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if invalid_text:
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_BINDING_REQUIRED",
+                f"Missing operator inbox read binding fields: {', '.join(invalid_text)}.",
+            )
+        if not isinstance(arguments, dict):
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_ARGUMENTS_INVALID",
+                "Operator inbox read arguments must be an object.",
+            )
+        normalized_tool = tool.strip()
+        if normalized_tool not in WEB_V2_OPERATOR_INBOX_READ_TOOLS:
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_TOOL_DENIED",
+                f"Tool is not allowlisted for Web operator inbox reads: {normalized_tool}.",
+            )
+        if required_scope.strip() != "mcp:read" or gate_level.strip() != "read_only":
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_SCOPE_DENIED",
+                "Web operator inbox Run accepts only mcp:read items with the read_only gate.",
+            )
+        if self._operator_inbox_contains_placeholder(arguments):
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_PLACEHOLDER_REJECTED",
+                "Operator inbox Run arguments cannot contain unresolved placeholders.",
+            )
+
+        signed_item = {
+            "item_id": item_id.strip(),
+            "source": source.strip(),
+            "component": component.strip(),
+            "tool": normalized_tool,
+            "run_arguments": dict(arguments),
+            "required_scope": "mcp:read",
+            "gate_level": "read_only",
+        }
+        expected_signature = self._web_operator_inbox_item_signature(signed_item)
+        normalized_signature = item_signature.strip()
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", normalized_signature) is None
+            or not hmac.compare_digest(normalized_signature, expected_signature)
+        ):
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_BINDING_MISMATCH",
+                "Operator inbox read payload does not match a server-issued runnable item.",
+            )
+
+        from runner.mcp_server import MCPPlanningBridgeServer
+
+        read_tool_server = MCPPlanningBridgeServer(self.project_root)
+        execution_arguments = dict(arguments)
+        # Web Run is pinned to the currently selected project root. The signed
+        # project_name remains display context, not a cross-project router.
+        execution_arguments.pop("project_name", None)
+        policy_scope = read_tool_server.get_required_scope_for_tool(normalized_tool, execution_arguments)
+        if policy_scope != "mcp:read":
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_POLICY_DENIED",
+                f"MCP policy does not classify {normalized_tool} as mcp:read.",
+            )
+        tool_result = read_tool_server.call_tool_for_agent(normalized_tool, execution_arguments)
+        data = tool_result.get("data") if isinstance(tool_result.get("data"), dict) else {}
+        tool_ok = tool_result.get("ok") is True and data.get("ok") is not False
+        evidence = self._operator_inbox_read_evidence(normalized_tool, tool_result)
+        observed_status = str(evidence.get("status") or ("completed" if tool_ok else "failed"))
+        message = (
+            f"{normalized_tool} completed ({observed_status}); Web status refreshed."
+            if tool_ok
+            else f"{normalized_tool} failed; Web status refreshed."
+        )
+        run_result = {
+            "source": "web_v2_operator_inbox_read",
+            "schema_version": "web_v2_operator_inbox_read.v1",
+            "read_only": True,
+            "side_effects": False,
+            "status": "completed" if tool_ok else "failed",
+            "item_id": item_id.strip(),
+            "tool": normalized_tool,
+            "required_scope": "mcp:read",
+            "message": message,
+            "evidence": evidence,
+            "tool_result": self._json_safe(tool_result),
+        }
+        refreshed = self._api_v2_status()
+        refreshed["ok"] = tool_ok
+        refreshed["action"] = WEB_V2_OPERATOR_INBOX_READ_ACTION
+        refreshed["message"] = message
+        refreshed["action_outcome"] = {
+            "code": "SUCCESS" if tool_ok else "FAILED",
+            "message": message,
+            **({} if tool_ok else {"error_code": tool_result.get("error_code") or "OPERATOR_INBOX_READ_TOOL_FAILED"}),
+        }
+        refreshed["operator_inbox_run_result"] = run_result
+        return refreshed
+
+    @staticmethod
+    def _operator_inbox_contains_placeholder(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(re.search(r"<[^>]+>", value))
+        if isinstance(value, dict):
+            return any(WebConsoleServer._operator_inbox_contains_placeholder(item) for item in value.values())
+        if isinstance(value, list):
+            return any(WebConsoleServer._operator_inbox_contains_placeholder(item) for item in value)
+        return False
+
+    @staticmethod
+    def _operator_inbox_read_evidence(tool: str, tool_result: dict[str, Any]) -> dict[str, Any]:
+        data = tool_result.get("data") if isinstance(tool_result.get("data"), dict) else {}
+        evidence: dict[str, Any] = {
+            "tool": tool,
+            "ok": tool_result.get("ok") is True and data.get("ok") is not False,
+            "source": data.get("source"),
+            "status": data.get("status") or data.get("overall_status"),
+            "summary": data.get("summary"),
+            "read_only": data.get("read_only"),
+            "side_effects": data.get("side_effects"),
+        }
+        service_profile = data.get("service_profile") if isinstance(data.get("service_profile"), dict) else {}
+        if service_profile:
+            evidence["service_mode"] = service_profile.get("mode")
+            evidence["visible_tool_count"] = service_profile.get("visible_tool_count")
+        connector_health = data.get("connector_runtime_health") if isinstance(data.get("connector_runtime_health"), dict) else {}
+        if connector_health:
+            evidence["connector_overall_status"] = connector_health.get("overall_status")
+            closeout = connector_health.get("operator_closeout") if isinstance(connector_health.get("operator_closeout"), dict) else {}
+            evidence["operator_closeout_status"] = closeout.get("status") or closeout.get("decision")
+        for key in (
+            "candidate_head",
+            "stable_runtime_head",
+            "candidate_differs_from_stable",
+            "replacement_possible",
+            "replacement_urgency",
+        ):
+            if key in data:
+                evidence[key] = data.get(key)
+        return {key: value for key, value in evidence.items() if value is not None}
+
+    @staticmethod
+    def _operator_inbox_read_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "web_v2",
+            "action": WEB_V2_OPERATOR_INBOX_READ_ACTION,
+            "status": "failed",
+            "risk_level": "error",
+            "error_code": error_code,
+            "message": message,
+            "action_outcome": {
+                "code": "FAILED",
+                "message": message,
+                "error_code": error_code,
+            },
+        }
 
     def _handle_product_console_record_action(self, next_action: dict[str, Any]) -> dict[str, Any]:
         params = next_action.get("params")
