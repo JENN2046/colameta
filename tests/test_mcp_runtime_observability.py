@@ -1192,6 +1192,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Last run" in widget_html
         assert "Confirm outside" in widget_html
         assert "Preview first" in widget_html
+        assert "stablePreviewActionIsRunnable" in widget_html
+        assert "stablePreviewConfirmationMessage" in widget_html
+        assert "previewActionConfirmations" in widget_html
+        assert "Review preview" in widget_html
+        assert "Confirm preview" in widget_html
+        assert "confirmation_required" in widget_html
+        assert 'args.action === "preview"' in widget_html
+        assert 'resultContract.expected_result_kind === "preview_packet"' in widget_html
         assert "recommended_first_actions" in widget_html
         assert "requires_explicit_confirmation" in widget_html
         assert "does_not_authorize_stable_replacement" in widget_html
@@ -3410,6 +3418,229 @@ vm.runInThisContext({json.dumps(widget_script)});
   const statusText = recordStatusText();
   assert(statusText.includes("recorded"), statusText);
   assert(statusText.includes("refresh current"), statusText);
+}})().catch(function (err) {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(["node", str(script_path)], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    def test_commander_widget_js_runs_confirmed_stable_preview_then_refreshes_to_apply(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander widget behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        widget_script = widget_html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script_path = self.tmp_path / "commander-widget-stable-preview-smoke.js"
+        script_path.write_text(
+            f"""
+const assert = require("assert");
+const vm = require("vm");
+
+class Element {{
+  constructor(tagName, id) {{
+    this.tagName = tagName;
+    this.id = id || "";
+    this.children = [];
+    this.listeners = {{}};
+    this.className = "";
+    this.type = "";
+    this.title = "";
+    this.disabled = false;
+    this._textContent = "";
+    this._innerHTML = "";
+  }}
+  appendChild(child) {{ this.children.push(child); return child; }}
+  addEventListener(name, fn) {{
+    if (!this.listeners[name]) this.listeners[name] = [];
+    this.listeners[name].push(fn);
+  }}
+  set textContent(value) {{ this._textContent = value === undefined || value === null ? "" : String(value); }}
+  get textContent() {{
+    return this._textContent + this.children.map(function (child) {{ return child.textContent || ""; }}).join("");
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value === undefined || value === null ? "" : String(value);
+    if (this._innerHTML === "") this.children = [];
+  }}
+  get innerHTML() {{ return this._innerHTML; }}
+}}
+
+const elements = {{}};
+function byId(id) {{
+  if (!elements[id]) elements[id] = new Element("div", id);
+  return elements[id];
+}}
+function findByClass(root, className, out) {{
+  out = out || [];
+  if (!root) return out;
+  const classes = String(root.className || "").split(/\\s+/);
+  if (classes.indexOf(className) >= 0) out.push(root);
+  (root.children || []).forEach(function (child) {{ findByClass(child, className, out); }});
+  return out;
+}}
+function dispatch(name, event) {{
+  (listeners[name] || []).forEach(function (fn) {{ fn(event); }});
+}}
+function runButton() {{ return findByClass(byId("recommended-actions"), "action-run")[0]; }}
+function recordButton() {{ return findByClass(byId("recommended-actions"), "action-record")[0]; }}
+function actionStatusText() {{
+  return findByClass(byId("recommended-actions"), "action-run-status")
+    .map(function (node) {{ return node.textContent; }})
+    .join("\\n");
+}}
+function previewAction(fingerprint, head) {{
+  return {{
+    action_id: "persist_artifact_manifest",
+    label: "Preview Stable Promotion Artifact Evidence",
+    mode: "preview",
+    status: "available",
+    tool: "manage_stable_promotion_evidence",
+    arguments: {{ action: "preview", candidate_head: head, project_name: "demo-project" }},
+    required_scope: "mcp:preview",
+    requires_preview_confirm: true,
+    requires_explicit_confirmation: true,
+    side_effects: true,
+    result_contract: {{ expected_result_kind: "preview_packet" }},
+    authority_boundary: {{
+      does_not_execute_now: true,
+      does_not_authorize_stable_replacement: true
+    }},
+    action_fingerprint: fingerprint,
+    last_action_result: {{ status: "not_recorded" }},
+    next_refresh_actions: []
+  }};
+}}
+function dispatchAction(action) {{
+  dispatch("openai:set_globals", {{
+    detail: {{ globals: {{ toolOutput: {{
+      source: "product_console_map",
+      project_name: "demo-project",
+      recommended_first_actions: [action]
+    }} }} }}
+  }});
+}}
+
+const listeners = {{}};
+const calls = [];
+global.document = {{
+  getElementById: byId,
+  createElement: function (tagName) {{ return new Element(tagName); }},
+  querySelectorAll: function () {{ return []; }}
+}};
+global.navigator = {{}};
+global.window = {{
+  parent: {{ postMessage: function () {{ throw new Error("direct path should not use bridge"); }} }},
+  addEventListener: function (name, fn) {{
+    if (!listeners[name]) listeners[name] = [];
+    listeners[name].push(fn);
+  }},
+  openai: {{
+    callTool: async function (name, args) {{
+      calls.push({{ name, args }});
+      if (name === "manage_stable_promotion_evidence") {{
+        assert.deepStrictEqual(args, {{
+          action: "preview",
+          candidate_head: "b".repeat(40),
+          project_name: "demo-project"
+        }});
+        return {{ structuredContent: {{
+          source: "stable_promotion_artifact_evidence",
+          action: "preview",
+          preview_id: "preview_current",
+          can_apply: true,
+          next_action: {{
+            tool: "manage_stable_promotion_evidence",
+            arguments: {{ action: "apply", preview_id: "preview_current", project_name: "demo-project" }},
+            required_scope: "mcp:commit"
+          }}
+        }} }};
+      }}
+      if (name === "record_product_console_action_result") {{
+        assert.strictEqual(args.action_fingerprint, "preview-current");
+        assert.strictEqual(args.mode, "preview");
+        assert.strictEqual(args.status, "updated");
+        assert.strictEqual(args.result_ok, true);
+        return {{ structuredContent: {{ source: "product_console_action_results", status: "recorded" }} }};
+      }}
+      if (name === "get_product_console_map") {{
+        return {{ structuredContent: {{
+          source: "product_console_map",
+          project_name: "demo-project",
+          recommended_first_actions: [{{
+            action_id: "persist_artifact_manifest",
+            label: "Apply Stable Promotion Artifact Evidence",
+            mode: "commit",
+            tool: "manage_stable_promotion_evidence",
+            arguments: {{ action: "apply", preview_id: "preview_current", project_name: "demo-project" }},
+            required_scope: "mcp:commit",
+            requires_explicit_confirmation: true,
+            side_effects: true,
+            action_fingerprint: "apply-current",
+            last_action_result: {{ status: "not_recorded" }},
+            next_refresh_actions: []
+          }}]
+        }} }};
+      }}
+      throw new Error("unexpected tool " + name);
+    }}
+  }}
+}};
+
+vm.runInThisContext({json.dumps(widget_script)});
+
+(async function () {{
+  const completedPreview = previewAction("preview-completed", "a".repeat(40));
+  completedPreview.last_action_result = {{ status: "updated", message: "preview already created" }};
+  dispatchAction(completedPreview);
+  assert.strictEqual(runButton().disabled, true, "recorded preview result must remain locked after rerender");
+  assert.strictEqual(runButton().textContent, "Preview created");
+
+  const unsafePreview = previewAction("preview-unsafe", "a".repeat(40));
+  unsafePreview.side_effects = false;
+  dispatchAction(unsafePreview);
+  assert.strictEqual(runButton().disabled, true, "preview metadata must match the bounded allowlist");
+  assert.strictEqual(runButton().textContent, "Preview outside");
+
+  dispatchAction(previewAction("preview-old", "a".repeat(40)));
+  assert.strictEqual(runButton().disabled, false);
+  assert.strictEqual(runButton().textContent, "Review preview");
+  assert.strictEqual(recordButton().disabled, true);
+
+  await runButton().listeners.click[0]();
+  assert.strictEqual(calls.length, 0, "first click only arms confirmation");
+  assert.strictEqual(runButton().textContent, "Confirm preview");
+  assert.strictEqual(recordButton().disabled, true, "arming is not a recordable result");
+  assert(actionStatusText().includes("Confirmation required"), actionStatusText());
+
+  dispatchAction(previewAction("preview-current", "b".repeat(40)));
+  assert.strictEqual(runButton().textContent, "Review preview", "changed fingerprint must invalidate confirmation");
+  await runButton().listeners.click[0]();
+  assert.strictEqual(calls.length, 0, "changed action also requires a fresh first click");
+  assert(actionStatusText().includes("manage_stable_promotion_evidence"), actionStatusText());
+  assert(actionStatusText().includes("candidate_head=" + "b".repeat(40)), actionStatusText());
+  assert(actionStatusText().includes("project_name=demo-project"), actionStatusText());
+  await runButton().listeners.click[0]();
+  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
+    "manage_stable_promotion_evidence"
+  ]);
+  assert.strictEqual(runButton().disabled, true, "successful preview is locked until record and refresh");
+  assert.strictEqual(runButton().textContent, "Preview created");
+  assert.strictEqual(recordButton().disabled, false, "successful preview can be recorded");
+
+  await recordButton().listeners.click[0]();
+  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
+    "manage_stable_promotion_evidence",
+    "record_product_console_action_result",
+    "get_product_console_map"
+  ]);
+  assert.strictEqual(runButton().textContent, "Confirm outside");
+  assert.strictEqual(runButton().disabled, true, "commit-scoped apply remains unavailable in the widget");
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
