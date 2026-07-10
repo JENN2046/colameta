@@ -289,6 +289,36 @@ const DANGEROUS_REGISTRY_ACTIONS = new Set([
   "project_registry_prune_unavailable",
   "project_registry_prune_temporary",
 ]);
+const REGISTRY_ACTION_META = {{
+  project_registry_unregister: {{
+    label: "移出项目登记",
+    description: "仅移出登记记录，不删除磁盘文件。需要危险操作确认。",
+    target_param: "project_root",
+  }},
+  project_registry_prune_unavailable: {{
+    label: "清理不可用项目登记",
+    description: "移出当前不可用的登记记录，不删除磁盘文件。需要危险操作确认。",
+  }},
+  project_registry_prune_temporary: {{
+    label: "清理临时项目登记",
+    description: "移出临时登记记录，不删除磁盘文件。需要危险操作确认。",
+  }},
+}};
+function registryActionMeta(actionName, params) {{
+  params = params || {{}};
+  const meta = REGISTRY_ACTION_META[actionName] || {{}};
+  const targetParam = meta.target_param || "";
+  const target = targetParam && params[targetParam] ? String(params[targetParam]) : "";
+  return Object.assign({{}}, meta, {{
+    action: actionName,
+    target: target,
+  }});
+}}
+function registryActionButtonLabel(actionName, params) {{
+  const meta = registryActionMeta(actionName, params);
+  const target = meta.target ? " 目标：" + meta.target : "";
+  return (meta.label || "项目管理操作") + "：" + (meta.description || "项目管理操作需要确认。") + target;
+}}
 async function dangerousPostAction(route, payload) {{
   const previewResp = await fetch("/api/dangerous-action/preview", {{
     method: "POST",
@@ -1448,11 +1478,14 @@ function bindOperatorInboxActions(root) {{
 function registryAction(actionName, params) {{
   $("loading").style.display = "block";
   $("error").style.display = "none";
+  const actionMeta = registryActionMeta(actionName, params || {{}});
   const payload = {{
     next_action: {{
       action: actionName,
       params: params || {{}},
-      label: "项目管理操作",
+      label: actionMeta.label || "项目管理操作",
+      target: actionMeta.target || "",
+      reason: actionMeta.description || "",
     }},
     client_context: {{
       source_url: window.location.href,
@@ -1933,7 +1966,9 @@ function renderProjectManagement(data) {{
       h += `</div>`;
       h += `<div style="display:flex;gap:6px;flex:0 0 auto;margin-left:8px;">`;
       h += `<button class="action-btn" title="编辑登记元数据，不修改磁盘文件。" style="width:auto;padding:3px 10px;font-size:11px;margin:0;" data-project-id="${{escAttr(projectId)}}" data-project-name="${{escAttr(p.project_name || "")}}" data-display-name="${{escAttr(p.display_name || p.project_name || "")}}" data-project-root="${{escAttr(root)}}" onclick="openProjectIdentityEditor(this)">编辑登记</button>`;
-      h += `<button class="action-btn" title="仅移出登记记录，不删除磁盘文件。" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})">移出登记</button>`;
+      const unregisterParams = {{ project_root: root }};
+      const unregisterLabel = registryActionButtonLabel("project_registry_unregister", unregisterParams);
+      h += `<button class="action-btn" title="${{escAttr(unregisterLabel)}}" aria-label="${{escAttr(unregisterLabel)}}" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})">移出登记</button>`;
       h += `</div>`;
       h += `</div>`;
       if (isEditing) {{
@@ -1956,8 +1991,10 @@ function renderProjectManagement(data) {{
   }}
 
   h += `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">`;
-  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})">清理不可用登记</button>`;
-  h += `<button class="action-btn" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})">清理临时登记</button>`;
+  const pruneUnavailableLabel = registryActionButtonLabel("project_registry_prune_unavailable", {{}});
+  const pruneTemporaryLabel = registryActionButtonLabel("project_registry_prune_temporary", {{}});
+  h += `<button class="action-btn" title="${{escAttr(pruneUnavailableLabel)}}" aria-label="${{escAttr(pruneUnavailableLabel)}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})">清理不可用登记</button>`;
+  h += `<button class="action-btn" title="${{escAttr(pruneTemporaryLabel)}}" aria-label="${{escAttr(pruneTemporaryLabel)}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})">清理临时登记</button>`;
   h += `</div>`;
   h += `</div>`;
   return h;
