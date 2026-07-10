@@ -88,6 +88,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-action-status.running { color: #d29922; }
 .operator-inbox-action-status.completed { color: #3fb950; }
 .operator-inbox-action-status.failed { color: #f85149; }
+.operator-inbox-action-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1549,11 +1550,17 @@ function clearStaleOperatorInboxFeedback(data) {{
   }}
 }}
 
+function operatorInboxFeedbackTimestamp() {{
+  return new Date().toLocaleTimeString([], {{ hour: "2-digit", minute: "2-digit", second: "2-digit" }});
+}}
+
 function setOperatorInboxRunFeedback(actionKey, state, message, data) {{
   operatorInboxRunFeedback = {{
     actionKey: actionKey,
     state: state,
     message: message,
+    source: "来自刚才的 Run 操作",
+    timestamp: operatorInboxFeedbackTimestamp(),
     inboxSignature: operatorInboxSignature(data || latestStatusData || {{}}),
   }};
   if (latestStatusData) {{
@@ -2145,6 +2152,7 @@ function renderOperatorInboxItem(item) {{
   h += `</div>`;
   if (feedback) {{
     h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
+    h += `<div class="operator-inbox-action-meta">${{esc(feedback.source || "来自刚才的 Run 操作")}} ｜ ${{esc(feedback.timestamp || "")}}</div>`;
   }}
   h += `</div>`;
   return h;

@@ -881,6 +881,9 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "clearStaleOperatorInboxFeedback" in page
         assert 'operatorInboxRunFeedback.state === "running"' in page
         assert "operatorInboxRunFeedback.inboxSignature" in page
+        assert "operatorInboxFeedbackTimestamp" in page
+        assert "来自刚才的 Run 操作" in page
+        assert "operator-inbox-action-meta" in page
         assert "data-operator-inbox-action-key" in page
         assert "operator-inbox-action-status" in page
         assert "正在运行 operator inbox 项" in page
