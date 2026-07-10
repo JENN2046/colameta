@@ -450,9 +450,36 @@ the next key. The Commander widget
 If a referenced Markdown file still says it is a draft, not final, awaiting
 human confirmation, missing required assets/permissions, or knowingly lacks
 required coverage, the preview instead returns `status=content_review_required`
-and a read-only readiness refresh call. Edit the named file and resolve the
-reported reason codes first; changing `review_confirmation` cannot bypass this
-content gate.
+and a copyable `manage_submission_evidence_revision(action=preview)` call for
+the first blocked ref. Replace its content placeholder with complete Markdown.
+The preview accepts only a manifest-bound `docs/submission/*.md` file that is
+currently `review_required`, rejects unfinished markers or missing required
+sections, and rejects a ref shared by multiple evidence keys. It returns only
+the current/proposed/manifest digests, sizes, path, and a
+short-lived `preview_id`—never either evidence body. Apply with that exact
+`preview_id` and resubmit the identical replacement Markdown; the preview
+artifact stores only its digest, never the body. ColaMeta rechecks the proposed
+digest, evidence digest, manifest digest, binding, path, and symlink state,
+atomically replaces the evidence and manifest, and keeps the corresponding
+ready field false. Refresh readiness, review the final
+file, and only then use `mark_submission_evidence_ready_fields`. Changing
+`review_confirmation` cannot bypass this content gate.
+
+```text
+manage_submission_evidence_revision(
+    project_name="colameta-self-dev",
+    action="preview",
+    key="logo",
+    ref="docs/submission/logo.md",
+    content="<complete replacement Markdown with every required section>",
+)
+manage_submission_evidence_revision(
+    project_name="colameta-self-dev",
+    action="apply",
+    preview_id="<preview_id from preview>",
+    content="<the exact replacement Markdown used for preview>",
+)
+```
 If `fill_submission_evidence_files` or
 `mark_submission_evidence_ready_fields` returns `ok=false`, inspect
 `safe_recovery_actions`; those actions only refresh readiness or regenerate a

@@ -430,9 +430,33 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 确认该 key 的 referenced evidence 已经是最终版之后，才调用这个 commit-scoped 工具标 ready，
 随后刷新再审核下一项。
 如果 referenced Markdown 仍写明它是草稿、并非最终版、等待人工确认、缺少必须资产/权限，或
-明确承认存在必需覆盖缺口，preview 会改为返回 `status=content_review_required` 和只读 readiness
-刷新调用。操作者必须先修改对应文件并消除 reason code；修改 `review_confirmation` 不能绕过
-这个内容门槛。
+明确承认存在必需覆盖缺口，preview 会改为返回 `status=content_review_required`，并为队首阻塞
+ref 给出可复制的 `manage_submission_evidence_revision(action=preview)` 调用。操作者先把其中的
+content 占位符替换为完整 Markdown。这个 preview 只接受 manifest 已绑定、当前确实是
+`review_required` 的 `docs/submission/*.md`；若正文仍含 unfinished marker 或缺少 required section
+就直接拒绝；同一 ref 被多个 evidence key 共用时也会拒绝，避免替换后留下其他 key 的陈旧 ready 状态。
+公开结果只返回当前/拟议/manifest digest、大小、路径和短时 `preview_id`，不会回传新旧正文。
+apply 必须使用这个 `preview_id`，并重新提交与 preview 完全相同的 replacement Markdown；preview
+工件只保存正文 digest，不保存正文。落盘前会重新检查 proposed digest、evidence digest、manifest
+digest、绑定关系、路径和 symlink 状态，再以文件事务原子替换 evidence 与 manifest，并继续保持对应 ready 字段为
+false。之后刷新 readiness、人工审核最终文件，才调用 `mark_submission_evidence_ready_fields`。
+修改 `review_confirmation` 不能绕过这个内容门槛。
+
+```text
+manage_submission_evidence_revision(
+    project_name="colameta-self-dev",
+    action="preview",
+    key="logo",
+    ref="docs/submission/logo.md",
+    content="<包含全部 required section 的完整 replacement Markdown>",
+)
+manage_submission_evidence_revision(
+    project_name="colameta-self-dev",
+    action="apply",
+    preview_id="<preview 返回的 preview_id>",
+    content="<preview 时使用的同一份 replacement Markdown>",
+)
+```
 
 如果不走 connector，先用本地 CLI 做同一个只读 preview。它只返回下一步 copyable tool，
 不写文件：
@@ -610,7 +634,9 @@ preview-first 路线和显式授权闸门；不授权 executor run、commit、pu
 stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 面板里的 `Release Evidence` 区块可以通过 `Console` / `Submission` 读按钮刷新
 release/submission readiness，并把未完成 evidence key 的模板渲染成可扫描卡片。卡片里的
-`Copy` 只复制 `fill_submission_evidence_files.entries[]` 的结构，仍需要操作者提供真实证据文本。
+`Copy` 在待填条目上复制 `fill_submission_evidence_files.entries[]` 的结构；在
+`review_required` 条目上复制受控 `manage_submission_evidence_revision` preview 调用。两者仍都需要
+操作者提供并审核真实证据文本。
 读 `Console` 时，这个区块会优先使用 `release_submission_evidence_bundle.fill_plan.draft_entries[]`；
 读 `Submission` 时，则回退到 release readiness 的 progress/template 字段。
 `Auto Draft` 读按钮会调用 `get_submission_evidence_auto_draft`，为可自动推导的 evidence key

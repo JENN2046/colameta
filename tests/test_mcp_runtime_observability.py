@@ -967,6 +967,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_release_submission_readiness" in tool_defs
         assert "get_submission_evidence_auto_draft" in tool_defs
         assert "get_submission_evidence_fill_preview" in tool_defs
+        assert "manage_submission_evidence_revision" in tool_defs
         assert "init_submission_evidence" in tool_defs
         assert "fill_submission_evidence_files" in tool_defs
         assert "mark_submission_evidence_ready_fields" in tool_defs
@@ -1003,6 +1004,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_submission_evidence_auto_draft"].annotations["readOnlyHint"] is True
         assert tool_defs["get_submission_evidence_fill_preview"].title == "Get Submission Evidence Fill Preview"
         assert tool_defs["get_submission_evidence_fill_preview"].annotations["readOnlyHint"] is True
+        assert tool_defs["manage_submission_evidence_revision"].title == "Manage Submission Evidence Revision"
+        assert tool_defs["manage_submission_evidence_revision"].annotations["destructiveHint"] is True
         assert tool_defs["init_submission_evidence"].title == "Initialize Submission Evidence"
         assert tool_defs["init_submission_evidence"].annotations["readOnlyHint"] is False
         assert tool_defs["init_submission_evidence"].annotations["destructiveHint"] is False
@@ -1053,6 +1056,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_release_submission_readiness" in server._visible_tool_names()
         assert "get_submission_evidence_auto_draft" in server._visible_tool_names()
         assert "get_submission_evidence_fill_preview" in server._visible_tool_names()
+        assert "manage_submission_evidence_revision" in server._visible_tool_names()
         assert "init_submission_evidence" in server._visible_tool_names()
         assert "fill_submission_evidence_files" in server._visible_tool_names()
         assert "mark_submission_evidence_ready_fields" in server._visible_tool_names()
@@ -1088,6 +1092,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("get_release_submission_readiness", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_submission_evidence_auto_draft", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_submission_evidence_fill_preview", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool(
+            "manage_submission_evidence_revision", {"action": "status"}
+        ) == "mcp:read"
+        assert server.get_required_scope_for_tool(
+            "manage_submission_evidence_revision", {"action": "preview"}
+        ) == "mcp:preview"
+        assert server.get_required_scope_for_tool(
+            "manage_submission_evidence_revision", {"action": "apply"}
+        ) == "mcp:commit"
         assert server.get_required_scope_for_tool("init_submission_evidence", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("fill_submission_evidence_files", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("mark_submission_evidence_ready_fields", {}) == "mcp:commit"
@@ -1708,6 +1721,50 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(copiedCall.arguments.mark_ready, false);
   assert.strictEqual(copiedCall.result_contract.refresh_after[0].tool, "get_release_submission_readiness");
   assert.strictEqual(copiedCall.result_contract.refresh_after[1].tool, "get_product_console_map");
+
+  const revisionCall = {{
+    tool: "manage_submission_evidence_revision",
+    arguments: {{
+      project_name: "demo-project",
+      action: "preview",
+      key: "logo",
+      ref: "docs/submission/logo.md",
+      content: "<operator-confirmed complete replacement evidence Markdown>"
+    }},
+    required_scope: "mcp:preview"
+  }};
+  dispatch("openai:set_globals", {{
+    detail: {{ globals: {{ toolOutput: {{
+      source: "submission_evidence_fill_preview",
+      project_name: "demo-project",
+      status: "content_review_required",
+      summary: "Prepared a bounded evidence revision call.",
+      copyable_tool_call: revisionCall,
+      evidence_bundle: {{
+        fill_plan: {{
+          status: "evidence_content_review_required",
+          why: "Revise unfinished evidence.",
+          content_review_entries: [{{
+            key: "logo",
+            current_status: "review_required",
+            refs: ["docs/submission/logo.md"],
+            required_sections: ["asset_path", "dimensions", "review_notes"],
+            file_states: [{{ ref: "docs/submission/logo.md", status: "review_required", reason_codes: ["DRAFT_CONTENT"] }}],
+            revision_preview_calls: [revisionCall]
+          }}]
+        }}
+      }}
+    }} }} }}
+  }});
+  assert.strictEqual(evidenceCardCount(), 1, "content review should render a revision card");
+  await evidenceCopyButton().listeners.click[0]();
+  await flushPromises();
+  assert.strictEqual(byId("log").textContent, "Copied bounded evidence revision preview call.");
+  const copiedRevision = JSON.parse(copiedText);
+  assert.strictEqual(copiedRevision.tool, "manage_submission_evidence_revision");
+  assert.strictEqual(copiedRevision.arguments.action, "preview");
+  assert.strictEqual(copiedRevision.arguments.ref, "docs/submission/logo.md");
+  assert.strictEqual(copiedRevision.required_scope, "mcp:preview");
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
@@ -2532,9 +2589,15 @@ vm.runInThisContext({json.dumps(widget_script)});
     status: "content_review_required",
     summary: "Unfinished evidence blocks mark-ready.",
     copyable_tool_call: {{
-      tool: "get_release_submission_readiness",
-      arguments: {{ project_name: "demo-project" }},
-      required_scope: "mcp:read"
+      tool: "manage_submission_evidence_revision",
+      arguments: {{
+        project_name: "demo-project",
+        action: "preview",
+        key: "logo",
+        ref: "docs/submission/logo.md",
+        content: "<operator-confirmed complete replacement evidence Markdown>"
+      }},
+      required_scope: "mcp:preview"
     }},
     evidence_bundle: {{
       fill_plan: {{
@@ -2558,7 +2621,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.strictEqual(byId("submission-status").textContent, "content_review_required");
   assert.strictEqual(
     byId("submission-blockers").textContent,
-    "preview content_review_required | tool get_release_submission_readiness"
+    "preview content_review_required | tool manage_submission_evidence_revision"
   );
   assert.strictEqual(evidenceCards().length, 1, "content-review preview should render the nested evidence entry");
   assert(evidenceText("evidence-title").includes("logo | review_required"), evidenceText("evidence-title"));
@@ -4549,6 +4612,50 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert fill.call_args.args == (str(project),)
         assert fill.call_args.kwargs["entries"] == [{"key": "logo", "filename": "logo.md", "content": "reviewed\n"}]
         assert fill.call_args.kwargs["mark_ready"] is False
+
+    def test_submission_evidence_revision_tool_is_action_scoped_and_project_routed(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        preview_packet = {
+            "ok": True,
+            "source": "submission_evidence_revision",
+            "schema_version": "submission_evidence_revision.v1",
+            "action": "preview",
+            "preview_id": "evidence_revision_demo",
+            "content_included": False,
+            "copyable_apply_call": {
+                "tool": "manage_submission_evidence_revision",
+                "arguments": {
+                    "action": "apply",
+                    "preview_id": "evidence_revision_demo",
+                    "content": "<resubmit exact content>",
+                },
+                "required_scope": "mcp:commit",
+            },
+        }
+
+        with patch("runner.mcp_server.MCPSubmissionEvidenceRevisionManager") as manager_cls:
+            manager_cls.return_value.handle.return_value = preview_packet
+            result = server.call_tool_for_agent(
+                "manage_submission_evidence_revision",
+                {
+                    "project_name": "demo-project",
+                    "action": "preview",
+                    "key": "logo",
+                    "ref": "docs/submission/logo.md",
+                    "content": "# Logo Evidence\n",
+                },
+            )
+
+        assert result["ok"] is True
+        assert result["tool"] == "manage_submission_evidence_revision"
+        assert result["data"]["preview_id"] == "evidence_revision_demo"
+        assert result["data"]["copyable_apply_call"]["arguments"]["project_name"] == "demo-project"
+        manager_cls.assert_called_once_with(str(project))
+        assert manager_cls.return_value.handle.call_args.args[0] == "preview"
+        assert manager_cls.return_value.handle.call_args.args[1]["content"] == "# Logo Evidence\n"
 
     def test_mark_submission_evidence_ready_fields_tool_is_commit_scoped_and_project_routed(self) -> None:
         project = self.make_git_checkout(managed=True)

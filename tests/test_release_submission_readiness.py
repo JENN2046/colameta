@@ -416,7 +416,8 @@ def test_release_submission_progress_flags_explicitly_unfinished_evidence(tmp_pa
             "reason_codes": ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"],
         }
     ]
-    assert logo_row["next_action"]["action"] == "review_evidence_content"
+    assert logo_row["next_action"]["action"] == "preview_evidence_content_revision"
+    assert logo_row["next_action"]["tool"] == "manage_submission_evidence_revision"
     assert logo_row["next_action"]["mark_ready"] is False
     assert progress["counts"]["review_required"] == 1
     assert progress["counts"]["filled_not_marked_ready"] == 0
@@ -446,7 +447,7 @@ def test_release_submission_rejects_unfinished_content_when_manifest_marks_ready
     logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
     assert logo_row["ready"] is True
     assert logo_row["status"] == "review_required"
-    assert logo_row["next_action"]["action"] == "review_evidence_content"
+    assert logo_row["next_action"]["action"] == "preview_evidence_content_revision"
 
 
 def test_fill_submission_evidence_files_updates_manifest_refs_without_marking_ready(tmp_path) -> None:

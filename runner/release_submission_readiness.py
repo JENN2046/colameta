@@ -1203,12 +1203,13 @@ def _submission_evidence_row_next_action(status: str, template: dict[str, Any]) 
         }
     if status == "review_required":
         return {
-            "action": "review_evidence_content",
-            "tool": "get_release_submission_readiness",
+            "action": "preview_evidence_content_revision",
+            "tool": "manage_submission_evidence_revision",
+            "phase": "preview",
             "mark_ready": False,
             "why": (
                 "The referenced file explicitly declares draft, missing-final-asset, pending-review, "
-                "unconfirmed-permission, or uncovered-test state; edit and review it before marking ready."
+                "unconfirmed-permission, or uncovered-test state; preview a controlled revision before marking ready."
             ),
         }
     return {
