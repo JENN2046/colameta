@@ -994,7 +994,7 @@ def test_console_map_advances_loaded_stable_readiness_to_artifact_preview() -> N
     assert packet["stable_promotion_readiness_snapshot"]["artifact_preview_status"] == "missing"
 
 
-def test_console_map_advances_active_stable_preview_to_explicit_apply() -> None:
+def test_console_map_advances_active_stable_preview_to_fail_closed_explicit_apply() -> None:
     readiness = _readiness(
         "blocked",
         safe_next_action={"tool": "get_stable_promotion_readiness"},
@@ -1012,7 +1012,7 @@ def test_console_map_advances_active_stable_preview_to_explicit_apply() -> None:
                 "description": "Apply the current exact-HEAD preview.",
                 "tool": "manage_stable_promotion_evidence",
                 "arguments": {"action": "apply", "preview_id": "preview_1234"},
-                "required_scope": "mcp:commit",
+                "required_scope": "mcp:read",
             }
         ],
     }

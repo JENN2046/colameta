@@ -787,6 +787,15 @@ def _stable_promotion_recommended_action(
     scope = _clean_optional_text(step.get("required_scope")) or "mcp:read"
     mode = "commit" if scope == "mcp:commit" else "preview" if scope == "mcp:preview" else "read"
     evidence_action = _clean_optional_text(arguments.get("action"))
+    if tool == "manage_stable_promotion_evidence":
+        minimum_mode = (
+            "commit"
+            if evidence_action == "apply"
+            else "preview"
+            if evidence_action in {"preview", "discard"}
+            else "read"
+        )
+        mode = max((mode, minimum_mode), key=lambda item: {"read": 0, "preview": 1, "commit": 2}[item])
     label = (
         "Apply Stable Promotion Artifact Evidence"
         if evidence_action == "apply"
