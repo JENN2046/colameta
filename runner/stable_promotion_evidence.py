@@ -143,7 +143,7 @@ def get_stable_promotion_evidence_status(
             "Stable promotion evidence storage resolves outside the project Runner runtime directory.",
         )
     if not os.path.isfile(receipt_path):
-        current = _git_snapshot(root).get("head") == resolved_head
+        freshness = _candidate_freshness(_git_snapshot(root), resolved_head)
         return {
             "ok": True,
             "source": "stable_promotion_artifact_evidence",
@@ -152,7 +152,8 @@ def get_stable_promotion_evidence_status(
             "side_effects": False,
             "status": "missing",
             "verified": False,
-            "current": current,
+            "current": freshness["current"],
+            "freshness": freshness,
             "candidate_head": resolved_head,
             "receipt_path": _relative_runner_path(root, receipt_path),
             "safe_next_action": {
@@ -183,16 +184,17 @@ def get_stable_promotion_evidence_status(
     if persisted_manifest != current_manifest:
         return _status_error("RECEIPT_MANIFEST_MISMATCH", "Persisted manifest does not match the exact Git commit.")
     snapshot = _git_snapshot(root)
-    current = snapshot.get("head") == resolved_head
+    freshness = _candidate_freshness(snapshot, resolved_head)
     return {
         "ok": True,
         "source": "stable_promotion_artifact_evidence",
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "read_only": True,
         "side_effects": False,
-        "status": "verified_current" if current else "verified_stale",
+        "status": "verified_current" if freshness["current"] else "verified_stale",
         "verified": True,
-        "current": current,
+        "current": freshness["current"],
+        "freshness": freshness,
         "candidate_head": resolved_head,
         "manifest": _manifest_summary(current_manifest),
         "recorded_at": receipt.get("recorded_at"),
@@ -600,6 +602,18 @@ def _apply_blockers(snapshot: dict[str, Any], candidate_head: str, manifest: dic
     if manifest.get("available") is not True:
         blockers.append(_blocker("CANDIDATE_MANIFEST_UNAVAILABLE", "Exact candidate manifest could not be generated."))
     return blockers
+
+
+def _candidate_freshness(snapshot: dict[str, Any], candidate_head: str) -> dict[str, bool]:
+    head_matches = snapshot.get("head") == candidate_head
+    origin_main_available = snapshot.get("origin_main_available") is True
+    origin_main_matches = origin_main_available and snapshot.get("origin_main_head") == candidate_head
+    return {
+        "current": head_matches and origin_main_matches,
+        "head_matches": head_matches,
+        "origin_main_available": origin_main_available,
+        "origin_main_matches": origin_main_matches,
+    }
 
 
 def _resolve_commit(project_root: str, value: str | None) -> str | None:

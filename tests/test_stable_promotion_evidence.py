@@ -20,6 +20,7 @@ from runner.stable_promotion_readiness import (
     get_stable_promotion_readiness,
 )
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_registry import ProjectRegistry
 
 
 def _run(*args: str, cwd: Path | None = None) -> str:
@@ -133,6 +134,45 @@ def test_preview_apply_persists_and_verifies_current_manifest(tmp_path: Path) ->
         item["code"] for item in readiness["external_required_before_stable_replacement"]
     }
     assert readiness["recommended_next_steps"][0]["step"] == "run_stable_promotion_rehearsal"
+
+
+def test_verified_receipt_becomes_stale_when_origin_main_advances(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+    preview = manager.handle("preview", {"candidate_head": head})
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert applied["evidence_status"]["status"] == "verified_current"
+
+    (repo / "NEXT.md").write_text("next\n", encoding="utf-8")
+    _run("git", "add", "NEXT.md", cwd=repo)
+    _run("git", "commit", "-m", "advance origin", cwd=repo)
+    _run("git", "push", "origin", "main", cwd=repo)
+    _run("git", "reset", "--hard", head, cwd=repo)
+
+    status = get_stable_promotion_evidence_status(str(repo), candidate_head=head)
+
+    assert status["verified"] is True
+    assert status["status"] == "verified_stale"
+    assert status["current"] is False
+    assert status["freshness"] == {
+        "current": False,
+        "head_matches": True,
+        "origin_main_available": True,
+        "origin_main_matches": False,
+    }
+    stable_dir = tmp_path / "stable"
+    stable_dir.mkdir()
+    readiness = get_stable_promotion_readiness(
+        str(repo),
+        visible_tool_names=list(REQUIRED_VISIBLE_TOOLS),
+        supported_workflows=list(REQUIRED_WORKFLOWS),
+        runtime_status=_runtime(repo, head),
+        stable_runtime_dir=str(stable_dir),
+    )
+    assert readiness["promotion_artifact_evidence"]["status"] == "verified_stale"
+    assert "PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED" in {
+        item["code"] for item in readiness["external_required_before_stable_replacement"]
+    }
 
 
 def test_preview_apply_fails_closed_when_worktree_or_head_changes(tmp_path: Path) -> None:
@@ -312,3 +352,31 @@ def test_mcp_tool_is_visible_and_action_scoped(tmp_path: Path) -> None:
     )
     assert preview["ok"] is True
     assert preview["data"]["can_apply"] is True
+
+
+def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(repo),
+        project_name="demo-project",
+        project_mode="managed",
+    )
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(str(repo), service_mode=True)
+    server.project_registry = registry
+
+    preview = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {"action": "preview", "candidate_head": head, "project_name": "demo-project"},
+    )
+
+    assert preview["ok"] is True
+    next_arguments = preview["data"]["next_action"]["arguments"]
+    assert next_arguments["project_name"] == "demo-project"
+    applied = server.call_tool_for_agent("manage_stable_promotion_evidence", next_arguments)
+    assert applied["ok"] is True
+    assert applied["data"]["status"] == "recorded"

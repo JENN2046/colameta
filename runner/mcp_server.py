@@ -261,6 +261,26 @@ def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
     return None
 
 
+def _find_next_action(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract a singular next_action from flat or data-wrapped tool results."""
+    next_action = result.get("next_action")
+    if isinstance(next_action, dict):
+        return next_action
+    data = result.get("data")
+    if isinstance(data, dict):
+        next_action = data.get("next_action")
+        if isinstance(next_action, dict):
+            return next_action
+    return None
+
+
+def _inject_project_name_into_action(action: dict[str, Any], project_name: str) -> None:
+    for key in ("arguments", "params"):
+        action_params = action.get(key)
+        if isinstance(action_params, dict) and "project_name" not in action_params:
+            action_params["project_name"] = project_name
+
+
 class _MCPRateLimiter:
     def __init__(
         self,
@@ -8647,14 +8667,16 @@ class MCPPlanningBridgeServer:
         original_project_name = params.get("project_name")
         result = routed_tool(routed_params)
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
-            self._inject_project_name_into_routed_result(result, original_project_name.strip())
+            clean_project_name = original_project_name.strip()
+            self._inject_project_name_into_routed_result(result, clean_project_name)
+            next_action = _find_next_action(result)
+            if next_action is not None:
+                _inject_project_name_into_action(next_action, clean_project_name)
             next_actions = _find_next_actions(result)
             if next_actions is not None:
                 for action in next_actions:
                     if isinstance(action, dict):
-                        action_params = action.get("params")
-                        if isinstance(action_params, dict) and "project_name" not in action_params:
-                            action_params["project_name"] = original_project_name.strip()
+                        _inject_project_name_into_action(action, clean_project_name)
         return result
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
