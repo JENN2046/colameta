@@ -172,6 +172,9 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .tab-btn { background: transparent; border: none; color: #8b949e; padding: 6px 14px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; text-align: left; display: flex; align-items: center; justify-content: flex-start; }
 .tab-btn.active { color: #f0f6fc; border-bottom-color: #58a6ff; }
 .tab-btn:hover { color: #c9d1d9; }
+.tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 16px; margin-left: 6px; padding: 0 5px; border-radius: 999px; border: 1px solid #30363d; color: #8b949e; background: #0d1117; font-size: 10px; line-height: 1; }
+.tab-badge.info { color: #58a6ff; border-color: #1f6feb88; background: #1f6feb22; }
+.tab-badge.warn { color: #d29922; border-color: #d2992288; background: #d2992222; }
 .layout-left { display: flex; flex-direction: column; }
 .layout-left .left-tab-card { flex: 1; min-height: 0; margin-bottom: 0; display: flex; flex-direction: column; }
 .layout-left .tab-content { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #30363d transparent; }
@@ -1853,14 +1856,31 @@ function renderOperatorInboxItem(item) {{
   return h;
 }}
 
-function renderOperatorInboxPanel(data) {{
+function operatorInboxFromData(data) {{
   data = data || {{}};
   const svc = data.web_commander_service || {{}};
-  const inbox = svc.operator_inbox || data.operator_inbox || {{}};
+  return svc.operator_inbox || data.operator_inbox || {{}};
+}}
+
+function operatorInboxCountSummary(inbox) {{
+  inbox = inbox || {{}};
   const items = Array.isArray(inbox.items) ? inbox.items : [];
   const total = inbox.total_count === 0 || inbox.total_count ? inbox.total_count : items.length;
   const readOnly = inbox.read_only_count === 0 || inbox.read_only_count ? inbox.read_only_count : "-";
   const gated = inbox.gated_count === 0 || inbox.gated_count ? inbox.gated_count : "-";
+  return {{ items: items, total: total, readOnly: readOnly, gated: gated }};
+}}
+
+function operatorInboxNumericCount(value, fallback) {{
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}}
+
+function renderOperatorInboxPanel(data) {{
+  data = data || {{}};
+  const inbox = operatorInboxFromData(data);
+  const counts = operatorInboxCountSummary(inbox);
+  const items = counts.items;
   const sources = [];
   for (const item of items) {{
     const source = item && item.source ? String(item.source) : "-";
@@ -1868,7 +1888,7 @@ function renderOperatorInboxPanel(data) {{
   }}
 
   let h = `<div class="operator-inbox-summary">`;
-  h += `${{esc(inbox.status || "-")}} ｜ total ${{esc(total)}} ｜ read ${{esc(readOnly)}} ｜ gated ${{esc(gated)}}`;
+  h += `${{esc(inbox.status || "-")}} ｜ total ${{esc(counts.total)}} ｜ read ${{esc(counts.readOnly)}} ｜ gated ${{esc(counts.gated)}}`;
   if (inbox.authority_boundary) h += `<br>${{esc(inbox.authority_boundary)}}`;
   h += `</div>`;
   if (sources.length) {{
@@ -1893,12 +1913,19 @@ function renderOperatorInboxPanel(data) {{
 
 function renderRightColumn(data) {{
   let h = "";
+  const inbox = operatorInboxFromData(data || {{}});
+  const inboxCounts = operatorInboxCountSummary(inbox);
+  const inboxTotalNumber = operatorInboxNumericCount(inboxCounts.total, inboxCounts.items.length);
+  const inboxGatedNumber = operatorInboxNumericCount(inboxCounts.gated, 0);
+  const inboxBadgeClass = inboxGatedNumber > 0 ? "tab-badge warn" : (inboxTotalNumber > 0 ? "tab-badge info" : "tab-badge");
+  const inboxBadgeText = inboxTotalNumber > 99 ? "99+" : String(inboxTotalNumber);
+  const inboxTabTitle = "Operator inbox: " + inboxCounts.total + " total, " + inboxCounts.readOnly + " read-only, " + inboxCounts.gated + " gated";
 
   // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar">`;
   h += `<button class="tab-btn active" data-tab-button="todolist" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST</button>`;
-  h += `<button class="tab-btn" data-tab-button="operator-inbox" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX</button>`;
+  h += `<button class="tab-btn" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX<span class="${{inboxBadgeClass}}">${{esc(inboxBadgeText)}}</span></button>`;
   h += `<button class="tab-btn" data-tab-button="decision" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION</button>`;
   h += `<button class="tab-btn" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;

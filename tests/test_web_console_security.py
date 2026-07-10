@@ -828,6 +828,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operatorInbox" in page
         assert 'data-tab-button="operator-inbox"' in page
         assert 'data-tab="operator-inbox"' in page
+        assert "operatorInboxCountSummary" in page
+        assert "operatorInboxNumericCount" in page
+        assert "inboxBadgeClass" in page
+        assert "tab-badge warn" in page
+        assert "Operator inbox: " in page
         assert "renderOperatorInboxPanel" in page
         assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page
