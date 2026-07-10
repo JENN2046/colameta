@@ -784,7 +784,17 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert overview["status"] in {"ready", "needs_attention", "blocked"}
         assert overview["total_category_count"] >= overview["ready_category_count"]
         assert isinstance(overview["categories"], list)
+        assert overview["categories"]
+        assert {"category_id", "label", "status", "severity", "gap_codes", "next_step"} <= set(
+            overview["categories"][0]
+        )
         assert payload["product_completion_overview"]["status"] == overview["status"]
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+        assert "Product categories" in page
+        assert "completionCategoryText" in page
+        assert "completionOverview.categories" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
