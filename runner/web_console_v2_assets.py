@@ -74,6 +74,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .layout-center .service-copy-btn:hover { background: #30363d; }
 .operator-inbox-list { display: grid; gap: 7px; margin-top: 8px; }
 .operator-inbox-item { border: 1px solid #30363d; border-radius: 6px; padding: 8px; background: #0d1117; }
+.operator-inbox-item.target-highlight { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff44; }
 .operator-inbox-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
 .operator-inbox-title { font-size: 12px; color: #f0f6fc; font-weight: 600; word-break: break-word; }
 .operator-inbox-summary { color: #8b949e; font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
@@ -120,6 +121,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .product-followup-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .product-followup-label { color: #c9d1d9; font-size: 12px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-followup-meta { color: #8b949e; font-size: 10px; line-height: 1.4; word-break: break-word; }
+.product-followup-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1497,14 +1499,18 @@ function renderProductFollowupQueue(completion) {{
       const gate = item.gate_level || primary.gate_level || "-";
       const tool = item.primary_tool || primary.tool || "";
       const position = item.position === 0 || item.position ? String(item.position) : "-";
+      const followupItemId = item.item_id ? String(item.item_id) : "";
       h += `<div class="product-followup-item">`;
       h += `<div class="product-followup-head"><div class="product-followup-label">${{esc(position)}}. ${{esc(label)}}</div><span class="badge ${{scope === "mcp:read" ? "badge-ok" : "badge-warn"}}">${{esc(scope)}}</span></div>`;
       h += `<div class="product-followup-meta">${{esc(status)}} ｜ ${{esc(gate)}} ｜ ${{esc(tool || "manual")}}</div>`;
+      h += `<div class="product-followup-actions">`;
+      h += `<button type="button" class="operator-inbox-btn" data-open-product-followup="${{escAttr(followupItemId)}}" aria-label="${{escAttr("在 INBOX 中查看：" + label)}}" title="${{escAttr("在 INBOX 中查看：" + label)}}">Open INBOX</button>`;
       if (tool) {{
         const payload = JSON.stringify({{ tool: tool, arguments: primary.arguments || {{}} }}, null, 2);
         const copyLabel = "复制 Product follow-up 调用：" + label;
         h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy follow-up</button>`;
       }}
+      h += `</div>`;
       h += `</div>`;
     }}
     if (items.length > 3) {{
@@ -1514,6 +1520,31 @@ function renderProductFollowupQueue(completion) {{
   h += `<div class="product-followup-meta">队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。</div>`;
   h += `</div>`;
   return h;
+}}
+
+function openProductFollowupInInbox(itemId) {{
+  itemId = String(itemId || "");
+  if (!$("layout-right") || !$("layout-right").querySelector('[data-tab="operator-inbox"]')) {{
+    if (latestStatusData) renderRightColumn(latestStatusData);
+  }}
+  showRightTab("operator-inbox");
+  const root = $("layout-right");
+  if (!root) return;
+  root.querySelectorAll(".operator-inbox-item.target-highlight").forEach(function(el) {{
+    el.classList.remove("target-highlight");
+  }});
+  let target = null;
+  if (itemId) {{
+    root.querySelectorAll("[data-operator-inbox-followup-item-id]").forEach(function(el) {{
+      if (!target && el.getAttribute("data-operator-inbox-followup-item-id") === itemId) target = el;
+    }});
+  }}
+  if (!target) target = root.querySelector('[data-tab="operator-inbox"]');
+  if (target) {{
+    if (target.classList && target.classList.contains("operator-inbox-item")) target.classList.add("target-highlight");
+    target.scrollIntoView({{ block: "nearest", behavior: "smooth" }});
+    if (typeof target.focus === "function") target.focus({{ preventScroll: true }});
+  }}
 }}
 
 function renderServiceCapabilityCard(data) {{
@@ -1696,6 +1727,11 @@ function renderCenterColumn(data) {{
   $("layout-center").querySelectorAll("[data-copy-mcp-call]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       copyTextToClipboard(this.getAttribute("data-copy-mcp-call") || "", this);
+    }});
+  }});
+  $("layout-center").querySelectorAll("[data-open-product-followup]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      openProductFollowupInInbox(this.getAttribute("data-open-product-followup") || "");
     }});
   }});
   bindOperatorInboxActions($("layout-center"));
@@ -2438,6 +2474,7 @@ function renderOperatorInboxItem(item) {{
   const itemLabel = item.label || item.tool || item.item_id || "Inbox item";
   const actionKey = operatorInboxActionKey(item);
   const feedback = operatorInboxFeedbackFor(actionKey);
+  const followupItemId = item.copy_payload && item.copy_payload.item_id ? String(item.copy_payload.item_id) : "";
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
   const nextAction = JSON.stringify({{
     action: item.item_id || item.tool || "operator_inbox_item",
@@ -2454,7 +2491,7 @@ function renderOperatorInboxItem(item) {{
     : canRun
     ? "运行只读 operator inbox 项：" + itemLabel
     : "需要更高权限，不能在 Web Console 直接运行：" + itemLabel;
-  let h = `<div class="operator-inbox-item">`;
+  let h = `<div class="operator-inbox-item" tabindex="-1" data-operator-inbox-key="${{escAttr(actionKey)}}" data-operator-inbox-followup-item-id="${{escAttr(followupItemId)}}">`;
   h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(itemLabel)}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
   h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
