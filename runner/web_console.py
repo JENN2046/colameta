@@ -216,6 +216,8 @@ WEB_V2_OPERATOR_INBOX_READ_FIELDS = frozenset({
     "required_scope",
     "gate_level",
     "item_signature",
+    "record_action_id",
+    "action_fingerprint",
 })
 WEB_V2_OPERATOR_INBOX_READ_TOOLS = frozenset({
     "get_agent_operator_flow_packet",
@@ -230,6 +232,22 @@ WEB_V2_OPERATOR_INBOX_READ_TOOLS = frozenset({
     "get_stage_parallel_plan_preview",
     "get_web_gpt_service_entrypoint",
 })
+WEB_V2_OPERATOR_INBOX_RECORD_ACTION = "operator_inbox_record_result"
+WEB_V2_OPERATOR_INBOX_RECORD_FIELDS = frozenset({
+    "run_receipt_id",
+    "run_receipt_signature",
+    "item_id",
+    "source",
+    "component",
+    "action_id",
+    "tool",
+    "mode",
+    "status",
+    "message",
+    "result_ok",
+    "action_fingerprint",
+})
+WEB_V2_OPERATOR_INBOX_RECORD_RECEIPT_LIMIT = 128
 
 REMOTE_GIT_WEB_MUTATION_ACTIONS = frozenset({
     "manage_git_remote",
@@ -298,6 +316,9 @@ class WebConsoleServer:
         self.project_registry = project_registry or self._default_project_registry(project_path)
         self.service_mode = service_mode
         self.runner_settings_store = RunnerSettingsStore()
+        self._operator_inbox_record_lock = threading.Lock()
+        self._operator_inbox_record_receipts: dict[str, dict[str, Any]] = {}
+        self._project_context_lock = threading.RLock()
         self._set_project_root(project_path)
         self._settings_resolve_cache: dict[str, Any] = {}
         self._operator_inbox_signing_key = secrets.token_bytes(32)
@@ -326,17 +347,30 @@ class WebConsoleServer:
         return "TemporaryItems" in parts or "Cleanup At Startup" in parts
 
     def _set_project_root(self, project_path: str) -> None:
-        self.project_root = os.path.realpath(os.path.abspath(os.path.expanduser(project_path)))
-        self.runner_dir = resolve_project_runner_dir(self.project_root)
-        self.runner_rel_dir = resolve_project_runner_rel_dir(self.project_root)
-        self.plan_file = os.path.join(self.runner_dir, "plan.json")
-        self.state_file = os.path.join(self.runner_dir, "state.json")
-        self.logs_dir = os.path.join(self.runner_dir, "logs")
-        self.runtime_dir = os.path.join(self.runner_dir, "runtime")
-        self.marker_file = os.path.join(self.runtime_dir, "plan-updated.marker")
-        self.start_plan_mtime = self._safe_mtime(self.plan_file)
-        self.start_marker_mtime = self._safe_mtime(self.marker_file)
-        self.executor_session_store = ExecutorSessionStore(self.project_root)
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            self.project_root = os.path.realpath(os.path.abspath(os.path.expanduser(project_path)))
+            self.runner_dir = resolve_project_runner_dir(self.project_root)
+            self.runner_rel_dir = resolve_project_runner_rel_dir(self.project_root)
+            self.plan_file = os.path.join(self.runner_dir, "plan.json")
+            self.state_file = os.path.join(self.runner_dir, "state.json")
+            self.logs_dir = os.path.join(self.runner_dir, "logs")
+            self.runtime_dir = os.path.join(self.runner_dir, "runtime")
+            self.marker_file = os.path.join(self.runtime_dir, "plan-updated.marker")
+            self.start_plan_mtime = self._safe_mtime(self.plan_file)
+            self.start_marker_mtime = self._safe_mtime(self.marker_file)
+            self.executor_session_store = ExecutorSessionStore(self.project_root)
+            receipts = getattr(self, "_operator_inbox_record_receipts", None)
+            if isinstance(receipts, dict):
+                receipt_lock = getattr(self, "_operator_inbox_record_lock", None)
+                if hasattr(receipt_lock, "acquire"):
+                    with receipt_lock:
+                        receipts.clear()
+                else:
+                    receipts.clear()
 
     def _should_require_execution_branch(
         self,
@@ -1070,6 +1104,32 @@ class WebConsoleServer:
             if not isinstance(next_action, dict):
                 return None
             action_name = str(next_action.get("action") or "").strip().lower()
+            if action_name == WEB_V2_OPERATOR_INBOX_RECORD_ACTION:
+                params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
+                action_id = str(params.get("action_id") or "").strip()
+                tool = str(params.get("tool") or "").strip()
+                status = str(params.get("status") or "").strip().lower()
+                target = " | ".join(value for value in (action_id, tool, status) if value) or "Web INBOX read result"
+                return {
+                    "action_type": "web_v2_record_operator_inbox_read_result",
+                    "risk_class": "runtime_summary_write",
+                    "target_summary": {
+                        "item_id": str(params.get("item_id") or "").strip(),
+                        "action_id": action_id,
+                        "tool": tool,
+                        "mode": str(params.get("mode") or "read").strip().lower(),
+                        "status": status,
+                        "result_ok": params.get("result_ok") if isinstance(params.get("result_ok"), bool) else None,
+                        "action_fingerprint_present": bool(str(params.get("action_fingerprint") or "").strip()),
+                        "run_receipt_present": bool(str(params.get("run_receipt_signature") or "").strip()),
+                        "writes_runtime_summary_only": True,
+                    },
+                    "display_summary": {
+                        "title": "Record Web INBOX read result",
+                        "target": target,
+                        "rollback_guidance": "Run the read again and record a corrected signed result for the same action key.",
+                    },
+                }
             if action_name == WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
                 params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
                 action_id = str(params.get("action_id") or "").strip()
@@ -2363,6 +2423,8 @@ class WebConsoleServer:
         gate = gate_level if isinstance(gate_level, str) and gate_level else ("read_only" if scope == "mcp:read" else scope)
         payload = copy_payload if isinstance(copy_payload, dict) else {"tool": tool, "arguments": args}
         direct_arguments = run_arguments if isinstance(run_arguments, dict) else args
+        record_action_id = str(payload.get("action_id") or payload.get("action") or item_id).strip()
+        action_fingerprint = str(payload.get("action_fingerprint") or "").strip()
         runnable = (
             can_run_now
             and scope == "mcp:read"
@@ -2380,6 +2442,8 @@ class WebConsoleServer:
             "gate_level": gate,
             "can_run_now": runnable,
             "run_arguments": dict(direct_arguments),
+            "record_action_id": record_action_id,
+            "action_fingerprint": action_fingerprint,
             "copy_payload": dict(payload),
             "why": why if isinstance(why, str) and why else "Review this operator inbox item.",
         }
@@ -2398,6 +2462,8 @@ class WebConsoleServer:
             "arguments": item.get("run_arguments") if isinstance(item.get("run_arguments"), dict) else {},
             "required_scope": item.get("required_scope"),
             "gate_level": item.get("gate_level"),
+            "record_action_id": item.get("record_action_id"),
+            "action_fingerprint": item.get("action_fingerprint"),
         }
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         signing_key = getattr(self, "_operator_inbox_signing_key", None)
@@ -3754,6 +3820,14 @@ class WebConsoleServer:
         return live
 
     def _api_v2_status(self) -> dict[str, Any]:
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            return self._api_v2_status_bound_to_project()
+
+    def _api_v2_status_bound_to_project(self) -> dict[str, Any]:
         orchestrator = WorkflowOrchestrator(self.project_root)
         core_output = orchestrator.handle("project_status", {"include_reports": True})
         result = self._json_safe(core_output)
@@ -4100,6 +4174,8 @@ class WebConsoleServer:
             return registry_result
         if action_name == WEB_V2_OPERATOR_INBOX_READ_ACTION:
             return self._handle_operator_inbox_read_action(next_action)
+        if action_name == WEB_V2_OPERATOR_INBOX_RECORD_ACTION:
+            return self._handle_operator_inbox_record_action(next_action)
         if action_name == WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
             return self._handle_product_console_record_action(next_action)
 
@@ -4160,6 +4236,8 @@ class WebConsoleServer:
         required_scope = params.get("required_scope")
         gate_level = params.get("gate_level")
         item_signature = params.get("item_signature")
+        record_action_id = params.get("record_action_id")
+        action_fingerprint = params.get("action_fingerprint")
         required_text = {
             "item_id": item_id,
             "source": source,
@@ -4168,6 +4246,7 @@ class WebConsoleServer:
             "required_scope": required_scope,
             "gate_level": gate_level,
             "item_signature": item_signature,
+            "record_action_id": record_action_id,
         }
         invalid_text = [
             key for key, value in required_text.items()
@@ -4182,6 +4261,11 @@ class WebConsoleServer:
             return self._operator_inbox_read_error(
                 "OPERATOR_INBOX_READ_ARGUMENTS_INVALID",
                 "Operator inbox read arguments must be an object.",
+            )
+        if not isinstance(action_fingerprint, str):
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_FINGERPRINT_INVALID",
+                "Operator inbox action_fingerprint must be a string.",
             )
         normalized_tool = tool.strip()
         if normalized_tool not in WEB_V2_OPERATOR_INBOX_READ_TOOLS:
@@ -4208,17 +4292,47 @@ class WebConsoleServer:
             "run_arguments": dict(arguments),
             "required_scope": "mcp:read",
             "gate_level": "read_only",
+            "record_action_id": record_action_id.strip(),
+            "action_fingerprint": action_fingerprint.strip(),
         }
-        expected_signature = self._web_operator_inbox_item_signature(signed_item)
         normalized_signature = item_signature.strip()
-        if (
-            re.fullmatch(r"[0-9a-f]{64}", normalized_signature) is None
-            or not hmac.compare_digest(normalized_signature, expected_signature)
-        ):
+        if re.fullmatch(r"[0-9a-f]{64}", normalized_signature) is None:
             return self._operator_inbox_read_error(
                 "OPERATOR_INBOX_READ_BINDING_MISMATCH",
                 "Operator inbox read payload does not match a server-issued runnable item.",
             )
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            expected_signature = self._web_operator_inbox_item_signature(signed_item)
+            if not hmac.compare_digest(normalized_signature, expected_signature):
+                return self._operator_inbox_read_error(
+                    "OPERATOR_INBOX_READ_BINDING_MISMATCH",
+                    "Operator inbox read payload does not match a server-issued runnable item.",
+                )
+            return self._execute_operator_inbox_read_bound_to_project(
+                item_id=item_id.strip(),
+                source=source.strip(),
+                component=component.strip(),
+                record_action_id=record_action_id.strip(),
+                tool=normalized_tool,
+                arguments=dict(arguments),
+                action_fingerprint=action_fingerprint.strip(),
+            )
+
+    def _execute_operator_inbox_read_bound_to_project(
+        self,
+        *,
+        item_id: str,
+        source: str,
+        component: str,
+        record_action_id: str,
+        tool: str,
+        arguments: dict[str, Any],
+        action_fingerprint: str,
+    ) -> dict[str, Any]:
 
         from runner.mcp_server import MCPPlanningBridgeServer
 
@@ -4227,21 +4341,32 @@ class WebConsoleServer:
         # Web Run is pinned to the currently selected project root. The signed
         # project_name remains display context, not a cross-project router.
         execution_arguments.pop("project_name", None)
-        policy_scope = read_tool_server.get_required_scope_for_tool(normalized_tool, execution_arguments)
+        policy_scope = read_tool_server.get_required_scope_for_tool(tool, execution_arguments)
         if policy_scope != "mcp:read":
             return self._operator_inbox_read_error(
                 "OPERATOR_INBOX_READ_POLICY_DENIED",
-                f"MCP policy does not classify {normalized_tool} as mcp:read.",
+                f"MCP policy does not classify {tool} as mcp:read.",
             )
-        tool_result = read_tool_server.call_tool_for_agent(normalized_tool, execution_arguments)
+        tool_result = read_tool_server.call_tool_for_agent(tool, execution_arguments)
         data = tool_result.get("data") if isinstance(tool_result.get("data"), dict) else {}
         tool_ok = tool_result.get("ok") is True and data.get("ok") is not False
-        evidence = self._operator_inbox_read_evidence(normalized_tool, tool_result)
+        evidence = self._operator_inbox_read_evidence(tool, tool_result)
         observed_status = str(evidence.get("status") or ("completed" if tool_ok else "failed"))
         message = (
-            f"{normalized_tool} completed ({observed_status}); Web status refreshed."
+            f"{tool} completed ({observed_status}); Web status refreshed."
             if tool_ok
-            else f"{normalized_tool} failed; Web status refreshed."
+            else f"{tool} failed; Web status refreshed."
+        )
+        record_action = self._create_operator_inbox_record_action(
+            item_id=item_id,
+            source=source,
+            component=component,
+            action_id=record_action_id,
+            tool=tool,
+            result_ok=tool_ok,
+            observed_status=observed_status,
+            evidence=evidence,
+            action_fingerprint=action_fingerprint,
         )
         run_result = {
             "source": "web_v2_operator_inbox_read",
@@ -4249,12 +4374,14 @@ class WebConsoleServer:
             "read_only": True,
             "side_effects": False,
             "status": "completed" if tool_ok else "failed",
-            "item_id": item_id.strip(),
-            "tool": normalized_tool,
+            "item_id": item_id,
+            "tool": tool,
             "required_scope": "mcp:read",
             "message": message,
             "evidence": evidence,
             "tool_result": self._json_safe(tool_result),
+            "record_available": True,
+            "record_action": record_action,
         }
         refreshed = self._api_v2_status()
         refreshed["ok"] = tool_ok
@@ -4267,6 +4394,90 @@ class WebConsoleServer:
         }
         refreshed["operator_inbox_run_result"] = run_result
         return refreshed
+
+    def _create_operator_inbox_record_action(
+        self,
+        *,
+        item_id: str,
+        source: str,
+        component: str,
+        action_id: str,
+        tool: str,
+        result_ok: bool,
+        observed_status: str,
+        evidence: dict[str, Any],
+        action_fingerprint: str,
+    ) -> dict[str, Any]:
+        evidence_source = self._bounded_operator_inbox_record_value(evidence.get("source"), fallback="unknown")
+        bounded_status = self._bounded_operator_inbox_record_value(observed_status, fallback="unknown")
+        message = (
+            f"Web INBOX read result: tool={tool}; ok={'true' if result_ok else 'false'}; "
+            f"status={bounded_status}; source={evidence_source}."
+        )
+        params = {
+            "run_receipt_id": secrets.token_urlsafe(18),
+            "item_id": item_id,
+            "source": source,
+            "component": component,
+            "action_id": action_id,
+            "tool": tool,
+            "mode": "read",
+            "status": "updated" if result_ok else "failed",
+            "message": message,
+            "result_ok": result_ok,
+            "action_fingerprint": action_fingerprint,
+        }
+        signature = self._web_operator_inbox_record_signature(params)
+        params["run_receipt_signature"] = signature
+        self._register_operator_inbox_record_receipt(signature, params["run_receipt_id"])
+        return {
+            "action": WEB_V2_OPERATOR_INBOX_RECORD_ACTION,
+            "params": params,
+            "label": "Record Web INBOX read result",
+            "target": f"{action_id} | {tool} | {params['status']}",
+            "reason": "Persist the signed, redacted runtime summary from this exact Web INBOX read.",
+        }
+
+    @staticmethod
+    def _bounded_operator_inbox_record_value(value: Any, *, fallback: str) -> str:
+        cleaned = " ".join(str(value or "").strip().split())
+        if not cleaned:
+            return fallback
+        return cleaned[:64]
+
+    def _web_operator_inbox_record_signature(self, params: dict[str, Any]) -> str:
+        payload = {
+            "schema_version": "web_operator_inbox_run_receipt.v1",
+            "project_root": self.project_root,
+            **{
+                key: params.get(key)
+                for key in sorted(WEB_V2_OPERATOR_INBOX_RECORD_FIELDS - {"run_receipt_signature"})
+            },
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        signing_key = getattr(self, "_operator_inbox_signing_key", None)
+        if not isinstance(signing_key, bytes) or not signing_key:
+            signing_key = secrets.token_bytes(32)
+            self._operator_inbox_signing_key = signing_key
+        return hmac.new(signing_key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _operator_inbox_record_receipt_state(self) -> tuple[threading.Lock, dict[str, dict[str, Any]]]:
+        lock = getattr(self, "_operator_inbox_record_lock", None)
+        if not hasattr(lock, "acquire"):
+            lock = threading.Lock()
+            self._operator_inbox_record_lock = lock
+        receipts = getattr(self, "_operator_inbox_record_receipts", None)
+        if not isinstance(receipts, dict):
+            receipts = {}
+            self._operator_inbox_record_receipts = receipts
+        return lock, receipts
+
+    def _register_operator_inbox_record_receipt(self, signature: str, receipt_id: str) -> None:
+        lock, receipts = self._operator_inbox_record_receipt_state()
+        with lock:
+            while len(receipts) >= WEB_V2_OPERATOR_INBOX_RECORD_RECEIPT_LIMIT:
+                receipts.pop(next(iter(receipts)))
+            receipts[signature] = {"status": "pending", "run_receipt_id": receipt_id}
 
     @staticmethod
     def _operator_inbox_contains_placeholder(value: Any) -> bool:
@@ -4316,6 +4527,195 @@ class WebConsoleServer:
             "ok": False,
             "source": "web_v2",
             "action": WEB_V2_OPERATOR_INBOX_READ_ACTION,
+            "status": "failed",
+            "risk_level": "error",
+            "error_code": error_code,
+            "message": message,
+            "action_outcome": {
+                "code": "FAILED",
+                "message": message,
+                "error_code": error_code,
+            },
+        }
+
+    def _handle_operator_inbox_record_action(self, next_action: dict[str, Any]) -> dict[str, Any]:
+        params = next_action.get("params")
+        if not isinstance(params, dict):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_PARAMS_REQUIRED",
+                "Signed operator inbox record params are required.",
+            )
+        unknown_fields = sorted(str(key) for key in params if key not in WEB_V2_OPERATOR_INBOX_RECORD_FIELDS)
+        if unknown_fields:
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_FIELDS_INVALID",
+                f"Unsupported operator inbox record fields: {', '.join(unknown_fields)}.",
+            )
+        required_text_fields = (
+            "run_receipt_id",
+            "run_receipt_signature",
+            "item_id",
+            "source",
+            "component",
+            "action_id",
+            "tool",
+            "mode",
+            "status",
+            "message",
+        )
+        invalid_text = [
+            key for key in required_text_fields
+            if not isinstance(params.get(key), str) or not str(params.get(key)).strip()
+        ]
+        if invalid_text:
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_BINDING_REQUIRED",
+                f"Missing signed operator inbox record fields: {', '.join(invalid_text)}.",
+            )
+        action_fingerprint = params.get("action_fingerprint")
+        if not isinstance(action_fingerprint, str):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_FINGERPRINT_INVALID",
+                "Signed operator inbox action_fingerprint must be a string.",
+            )
+        result_ok = params.get("result_ok")
+        if not isinstance(result_ok, bool):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_RESULT_OK_INVALID",
+                "Signed operator inbox result_ok must be boolean.",
+            )
+        tool = str(params["tool"]).strip()
+        mode = str(params["mode"]).strip().lower()
+        status = str(params["status"]).strip().lower()
+        message = str(params["message"]).strip()
+        if tool not in WEB_V2_OPERATOR_INBOX_READ_TOOLS:
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_TOOL_DENIED",
+                f"Tool is not allowlisted for Web operator inbox records: {tool}.",
+            )
+        if mode != "read" or status not in {"updated", "failed"}:
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_OUTCOME_INVALID",
+                "Signed operator inbox records accept only read mode with updated or failed status.",
+            )
+        if (status == "updated") != result_ok:
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_RESULT_CONFLICT",
+                "updated requires result_ok=true; failed requires result_ok=false.",
+            )
+        if self._operator_inbox_contains_placeholder(message):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_PLACEHOLDER_REJECTED",
+                "Signed operator inbox record message cannot contain unresolved placeholders.",
+            )
+        signature = str(params["run_receipt_signature"]).strip()
+        expected_signature = self._web_operator_inbox_record_signature(params)
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", signature) is None
+            or not hmac.compare_digest(signature, expected_signature)
+        ):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_RECEIPT_MISMATCH",
+                "Record payload does not match a signed Web INBOX run receipt.",
+            )
+
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            locked_expected_signature = self._web_operator_inbox_record_signature(params)
+            if not hmac.compare_digest(signature, locked_expected_signature):
+                return self._operator_inbox_record_error(
+                    "OPERATOR_INBOX_RECORD_PROJECT_CHANGED",
+                    "Active project changed after the signed Web INBOX run; run the read again in the current project.",
+                )
+            return self._write_operator_inbox_record_bound_to_project(
+                params=params,
+                signature=signature,
+                tool=tool,
+                status=status,
+                message=message,
+                result_ok=result_ok,
+                action_fingerprint=action_fingerprint.strip(),
+            )
+
+    def _write_operator_inbox_record_bound_to_project(
+        self,
+        *,
+        params: dict[str, Any],
+        signature: str,
+        tool: str,
+        status: str,
+        message: str,
+        result_ok: bool,
+        action_fingerprint: str,
+    ) -> dict[str, Any]:
+        lock, receipts = self._operator_inbox_record_receipt_state()
+        with lock:
+            receipt = receipts.get(signature)
+            if not isinstance(receipt, dict) or receipt.get("run_receipt_id") != str(params["run_receipt_id"]).strip():
+                return self._operator_inbox_record_error(
+                    "OPERATOR_INBOX_RECORD_RECEIPT_UNAVAILABLE",
+                    "Signed Web INBOX run receipt is unavailable or expired after service restart.",
+                )
+            receipt_status = str(receipt.get("status") or "")
+            if receipt_status != "pending":
+                return self._operator_inbox_record_error(
+                    "OPERATOR_INBOX_RECORD_RECEIPT_REUSED",
+                    "Signed Web INBOX run receipt has already been consumed.",
+                )
+            receipt["status"] = "recording"
+
+        try:
+            recorded = record_product_console_action_result(
+                self.project_root,
+                action_id=str(params["action_id"]).strip(),
+                tool=tool,
+                mode="read",
+                status=status,
+                message=message,
+                result_ok=result_ok,
+                action_fingerprint=action_fingerprint or None,
+            )
+        except Exception:
+            with lock:
+                if isinstance(receipts.get(signature), dict):
+                    receipts[signature]["status"] = "pending"
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_WRITE_FAILED",
+                "Signed Web INBOX result could not be written to runtime summary state.",
+            )
+        with lock:
+            if isinstance(receipts.get(signature), dict):
+                receipts[signature]["status"] = "recorded"
+
+        refreshed = self._api_v2_status()
+        response_message = "Signed Web INBOX read result recorded; Product Console status refreshed."
+        refreshed["action"] = WEB_V2_OPERATOR_INBOX_RECORD_ACTION
+        refreshed["message"] = response_message
+        refreshed["action_outcome"] = {"code": "SUCCESS", "message": response_message}
+        refreshed["operator_inbox_record_result"] = {
+            "source": "web_v2_operator_inbox_record",
+            "schema_version": "web_v2_operator_inbox_record.v1",
+            "read_only": False,
+            "side_effects": True,
+            "writes_runtime_summary_only": True,
+            "run_receipt_id": "REDACTED",
+            "item_id": str(params["item_id"]).strip(),
+            "action_id": str(params["action_id"]).strip(),
+            "tool": tool,
+            "status": status,
+            "record_result": self._json_safe(recorded),
+        }
+        return refreshed
+
+    @staticmethod
+    def _operator_inbox_record_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "web_v2",
+            "action": WEB_V2_OPERATOR_INBOX_RECORD_ACTION,
             "status": "failed",
             "risk_level": "error",
             "error_code": error_code,

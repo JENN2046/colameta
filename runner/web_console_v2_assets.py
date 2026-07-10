@@ -1866,7 +1866,7 @@ function renderServiceCapabilityCard(data) {{
     }}
     h += `</div>`;
   }}
-  h += `<div class="service-boundary">网页可执行服务端绑定且 MCP policy 仍判定为 mcp:read 的 INBOX 工具；Product follow-up 的 Record result 只在 dangerous confirmation 后写 runtime 摘要；不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
+  h += `<div class="service-boundary">网页可执行服务端绑定且 MCP policy 仍判定为 mcp:read 的 INBOX 工具；INBOX 与 Product follow-up 的 Record result 只在 dangerous confirmation 后写签名或绑定的 runtime 摘要；不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
   h += `</div>`;
   return h;
 }}
@@ -2010,6 +2010,47 @@ function bindOperatorInboxActions(root) {{
         const actionComponent = this.getAttribute("data-operator-inbox-component") || "";
         if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e), null, actionLabel, actionComponent);
         showError(String(e));
+      }}
+    }});
+  }});
+  root.querySelectorAll("[data-record-operator-inbox-result]").forEach(function(btn) {{
+    btn.addEventListener("click", async function() {{
+      if (this.disabled) return;
+      const originalText = this.textContent;
+      const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
+      this.disabled = true;
+      this.setAttribute("aria-busy", "true");
+      this.textContent = "Recording";
+      setGlobalLoading(true, "正在记录已签名的 INBOX read 结果...");
+      clearGlobalError();
+      try {{
+        const nextAction = JSON.parse(this.getAttribute("data-record-operator-inbox-result") || "{{}}");
+        const payload = {{
+          next_action: nextAction,
+          client_context: {{
+            source_url: window.location.href,
+            timestamp: new Date().toISOString(),
+          }},
+        }};
+        const data = await dangerousPostAction("/api/v2/action", payload);
+        if (data && data.ok === false) {{
+          showError(data.message || data.error_code || "记录失败。");
+          return;
+        }}
+        if (operatorInboxRunFeedback && operatorInboxRunFeedback.actionKey === actionKey && operatorInboxRunFeedback.result) {{
+          operatorInboxRunFeedback.result.recorded = true;
+          operatorInboxRunFeedback.result.record_available = false;
+          operatorInboxRunFeedback.result.record_action = null;
+          operatorInboxRunFeedback.message = data.message || "已记录签名 read 结果并刷新状态。";
+        }}
+        render(data);
+      }} catch (e) {{
+        showError(String(e));
+      }} finally {{
+        this.disabled = false;
+        this.setAttribute("aria-busy", "false");
+        this.textContent = originalText;
+        setGlobalLoading(false);
       }}
     }});
   }});
@@ -2765,6 +2806,8 @@ function renderOperatorInboxItem(item) {{
       required_scope: item.required_scope || "mcp:read",
       gate_level: item.gate_level || "read_only",
       item_signature: item.item_signature || "",
+      record_action_id: item.record_action_id || item.item_id || "",
+      action_fingerprint: item.action_fingerprint || "",
     }},
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool && item.item_signature;
@@ -2795,6 +2838,14 @@ function renderOperatorInboxItem(item) {{
       const copyResultLabel = "复制本次只读工具结果：" + itemLabel;
       h += `<details class="operator-inbox-result"><summary>Result evidence</summary>`;
       h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(resultText)}}" aria-label="${{escAttr(copyResultLabel)}}" title="${{escAttr(copyResultLabel)}}">Copy result</button>`;
+      const recordAction = feedback.result.record_action && typeof feedback.result.record_action === "object" ? feedback.result.record_action : null;
+      if (recordAction && feedback.result.record_available === true && feedback.result.recorded !== true) {{
+        const recordActionText = JSON.stringify(recordAction);
+        const recordResultLabel = "显式确认并记录本次 INBOX read 结果：" + itemLabel;
+        h += `<button type="button" class="operator-inbox-btn" data-record-operator-inbox-result="${{escAttr(recordActionText)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" aria-label="${{escAttr(recordResultLabel)}}" title="${{escAttr(recordResultLabel)}}" aria-busy="false">Record result</button>`;
+      }} else if (feedback.result.recorded === true) {{
+        h += `<span class="badge badge-ok">Recorded</span>`;
+      }}
       h += `<pre>${{esc(evidenceText)}}</pre></details>`;
     }}
   }}
