@@ -2093,6 +2093,31 @@ class WebConsoleServer:
                 },
             },
         ]
+        product_console_completion = (
+            product_console_map.get("completion_surface")
+            if isinstance(product_console_map.get("completion_surface"), dict)
+            else {}
+        )
+        product_completion_overview = (
+            product_console_map.get("product_completion_overview")
+            if isinstance(product_console_map.get("product_completion_overview"), dict)
+            else product_console_map.get("completion_surface", {}).get("product_completion_overview")
+            if isinstance(product_console_map.get("completion_surface"), dict)
+            else {}
+        )
+        operator_session_trail = (
+            product_console_map.get("operator_session_trail")
+            if isinstance(product_console_map.get("operator_session_trail"), dict)
+            else product_console_map.get("completion_surface", {}).get("operator_session_trail")
+            if isinstance(product_console_map.get("completion_surface"), dict)
+            else {}
+        )
+        operator_inbox = self._web_commander_operator_inbox(
+            operator_session_trail=operator_session_trail,
+            apps_connector_closeout=apps_connector_closeout,
+            stable_replacement_cadence=stable_replacement_cadence,
+            project_name=project_name,
+        )
 
         return {
             "ok": True,
@@ -2102,23 +2127,10 @@ class WebConsoleServer:
             "project_root": self.project_root,
             "readiness": readiness,
             "product_console_map": product_console_map,
-            "product_console_completion": product_console_map.get("completion_surface")
-            if isinstance(product_console_map.get("completion_surface"), dict)
-            else {},
-            "product_completion_overview": (
-                product_console_map.get("product_completion_overview")
-                if isinstance(product_console_map.get("product_completion_overview"), dict)
-                else product_console_map.get("completion_surface", {}).get("product_completion_overview")
-                if isinstance(product_console_map.get("completion_surface"), dict)
-                else {}
-            ),
-            "operator_session_trail": (
-                product_console_map.get("operator_session_trail")
-                if isinstance(product_console_map.get("operator_session_trail"), dict)
-                else product_console_map.get("completion_surface", {}).get("operator_session_trail")
-                if isinstance(product_console_map.get("completion_surface"), dict)
-                else {}
-            ),
+            "product_console_completion": product_console_completion,
+            "product_completion_overview": product_completion_overview,
+            "operator_session_trail": operator_session_trail,
+            "operator_inbox": operator_inbox,
             "apps_connector_closeout": apps_connector_closeout,
             "apps_connector_tool_refresh": apps_connector_closeout.get("metadata_refresh_guidance"),
             "stable_replacement_cadence": stable_replacement_cadence,
@@ -2157,6 +2169,139 @@ class WebConsoleServer:
                 "does_not_authorize_commit_push_or_stable_replacement": True,
                 "stable_replacement_requires_exact_commander_authorization": True,
             },
+        }
+
+    def _web_commander_operator_inbox(
+        self,
+        *,
+        operator_session_trail: dict[str, Any],
+        apps_connector_closeout: dict[str, Any],
+        stable_replacement_cadence: dict[str, Any],
+        project_name: str,
+    ) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        for index, action in enumerate(operator_session_trail.get("recovery_actions") or [], start=1):
+            if not isinstance(action, dict):
+                continue
+            item = self._web_commander_inbox_item(
+                item_id=f"product_console_{action.get('action_id') or index}",
+                source="product_console",
+                component=str(action.get("kind") or "recovery"),
+                label=str(action.get("label") or action.get("tool") or "Product Console recovery"),
+                tool=action.get("tool"),
+                arguments=action.get("arguments"),
+                required_scope=action.get("required_scope"),
+                gate_level=action.get("gate_level"),
+                can_run_now=action.get("can_run_now") is True,
+                copy_payload=action.get("copy_payload") if isinstance(action.get("copy_payload"), dict) else action,
+                why=action.get("why"),
+            )
+            if item:
+                items.append(item)
+        preferred_smoke = apps_connector_closeout.get("preferred_smoke_tool")
+        if isinstance(preferred_smoke, dict):
+            item = self._web_commander_inbox_item(
+                item_id="apps_connector_smoke",
+                source="apps_connector",
+                component="smoke",
+                label="Apps connector smoke",
+                tool=preferred_smoke.get("tool"),
+                arguments=preferred_smoke.get("arguments"),
+                required_scope="mcp:read",
+                gate_level="read_only",
+                can_run_now=True,
+                copy_payload=preferred_smoke,
+                why="Refresh Apps connector smoke evidence.",
+            )
+            if item:
+                items.append(item)
+        metadata_refresh = apps_connector_closeout.get("metadata_refresh_guidance")
+        if isinstance(metadata_refresh, dict):
+            expected_tool = metadata_refresh.get("expected_tool")
+            item = self._web_commander_inbox_item(
+                item_id="apps_connector_metadata_refresh",
+                source="apps_connector",
+                component="metadata_refresh",
+                label="Apps metadata refresh",
+                tool=expected_tool,
+                arguments={"project_name": project_name} if expected_tool else {},
+                required_scope="mcp:read",
+                gate_level="read_only",
+                can_run_now=bool(expected_tool),
+                copy_payload={"tool": expected_tool, "arguments": {"project_name": project_name}} if expected_tool else {},
+                why=metadata_refresh.get("next_step") or metadata_refresh.get("why") or "Refresh Apps connector metadata evidence.",
+            )
+            if item:
+                items.append(item)
+        item = self._web_commander_inbox_item(
+            item_id="stable_replacement_cadence",
+            source="stable_cadence",
+            component="cadence",
+            label="Stable cadence",
+            tool="get_stable_replacement_cadence",
+            arguments={"project_name": project_name},
+            required_scope="mcp:read",
+            gate_level="read_only",
+            can_run_now=True,
+            copy_payload={"tool": "get_stable_replacement_cadence", "arguments": {"project_name": project_name}},
+            why=stable_replacement_cadence.get("recommended_cadence") or "Review stable replacement cadence.",
+        )
+        if item:
+            items.append(item)
+        read_count = sum(1 for item in items if item.get("required_scope") == "mcp:read")
+        gated_count = len(items) - read_count
+        return {
+            "source": "web_commander_operator_inbox",
+            "schema_version": "web_commander_operator_inbox.v1",
+            "read_only": True,
+            "side_effects": False,
+            "status": "ready" if items else "empty",
+            "summary": f"Operator inbox has {len(items)} item(s): {read_count} read-only, {gated_count} gated.",
+            "total_count": len(items),
+            "read_only_count": read_count,
+            "gated_count": gated_count,
+            "items": items[:12],
+            "authority_boundary": {
+                "read_only": True,
+                "side_effects": False,
+                "does_not_execute_actions": True,
+                "does_not_authorize_commit_push_or_stable_replacement": True,
+            },
+        }
+
+    def _web_commander_inbox_item(
+        self,
+        *,
+        item_id: str,
+        source: str,
+        component: str,
+        label: str,
+        tool: Any,
+        arguments: Any,
+        required_scope: Any,
+        gate_level: Any,
+        can_run_now: bool,
+        copy_payload: Any,
+        why: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(tool, str) or not tool:
+            return None
+        args = arguments if isinstance(arguments, dict) else {}
+        scope = required_scope if isinstance(required_scope, str) and required_scope else "mcp:read"
+        gate = gate_level if isinstance(gate_level, str) and gate_level else ("read_only" if scope == "mcp:read" else scope)
+        payload = copy_payload if isinstance(copy_payload, dict) else {"tool": tool, "arguments": args}
+        return {
+            "item_id": item_id,
+            "source": source,
+            "component": component,
+            "label": label,
+            "tool": tool,
+            "arguments": dict(args),
+            "required_scope": scope,
+            "gate_level": gate,
+            "can_run_now": can_run_now and scope == "mcp:read",
+            "copy_payload": dict(payload),
+            "why": why if isinstance(why, str) and why else "Review this operator inbox item.",
         }
 
     def _apply_executor_session_head_mismatch_classification(
@@ -3562,6 +3707,7 @@ class WebConsoleServer:
         result["product_console_completion"] = self._json_safe(web_commander_service["product_console_completion"])
         result["product_completion_overview"] = self._json_safe(web_commander_service["product_completion_overview"])
         result["operator_session_trail"] = self._json_safe(web_commander_service["operator_session_trail"])
+        result["operator_inbox"] = self._json_safe(web_commander_service["operator_inbox"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
         result["stable_replacement_cadence"] = self._json_safe(web_commander_service["stable_replacement_cadence"])

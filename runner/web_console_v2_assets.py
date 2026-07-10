@@ -1230,6 +1230,7 @@ function renderServiceCapabilityCard(data) {{
   const completion = svc.product_console_completion || data.product_console_completion || {{}};
   const completionOverview = svc.product_completion_overview || data.product_completion_overview || completion.product_completion_overview || {{}};
   const operatorTrail = svc.operator_session_trail || data.operator_session_trail || completion.operator_session_trail || {{}};
+  const operatorInbox = svc.operator_inbox || data.operator_inbox || {{}};
   const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
   const cadence = svc.stable_replacement_cadence || data.stable_replacement_cadence || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
@@ -1282,6 +1283,7 @@ function renderServiceCapabilityCard(data) {{
   const trailRecoveryCount = operatorTrail.recovery_action_count === 0 || operatorTrail.recovery_action_count ? operatorTrail.recovery_action_count : Array.isArray(operatorTrail.recovery_actions) ? operatorTrail.recovery_actions.length : "-";
   const trailNext = operatorTrail.next_item && (operatorTrail.next_item.label || operatorTrail.next_item.item_id) ? operatorTrail.next_item.label || operatorTrail.next_item.item_id : "-";
   const operatorTrailText = (operatorTrail.status || "-") + " ｜ refresh " + trailRefreshCount + " ｜ recovery " + trailRecoveryCount + " ｜ events " + trailEventCount + " ｜ next " + trailNext;
+  const inboxText = (operatorInbox.status || "-") + " ｜ total " + (operatorInbox.total_count === 0 || operatorInbox.total_count ? operatorInbox.total_count : "-") + " ｜ read " + (operatorInbox.read_only_count === 0 || operatorInbox.read_only_count ? operatorInbox.read_only_count : "-") + " ｜ gated " + (operatorInbox.gated_count === 0 || operatorInbox.gated_count ? operatorInbox.gated_count : "-");
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1303,6 +1305,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Product closeout", completionText);
   h += r("Product categories", completionCategoryText);
   h += r("Operator trail", operatorTrailText);
+  h += r("Operator inbox", inboxText);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);
