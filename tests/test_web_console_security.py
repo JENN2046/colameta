@@ -254,6 +254,22 @@ assert.deepStrictEqual(result.arguments, argumentsPayload);
 assert.strictEqual(result.source_action_key, "submission_evidence_activity|submission_evidence_activity_summary|read");
 assert.strictEqual(result.required_scope, "mcp:commit");
 assert.strictEqual(result.gate_level, "explicit_operator_record_required");
+const fingerprintBound = productFollowupRecordPayload({
+  item_id: "release_submission",
+  component: "release_submission",
+  primary_tool: "record_product_console_action_result",
+  required_scope: "mcp:commit",
+  action_fingerprint: "bound-fingerprint",
+}, {
+  tool: "record_product_console_action_result",
+  arguments: {
+    action_id: "submission_evidence_activity",
+    tool: "submission_evidence_activity_summary",
+    mode: "read",
+    status: "updated",
+  },
+}, "mcp:commit");
+assert.strictEqual(fingerprintBound.arguments.action_fingerprint, "bound-fingerprint");
 '''
         completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr

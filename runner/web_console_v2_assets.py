@@ -1559,6 +1559,8 @@ function productFollowupRecordPayload(item, primary, scope) {{
   const primaryArguments = primary.arguments && typeof primary.arguments === "object" ? primary.arguments : {{}};
   if (primaryTool === "record_product_console_action_result" && (primaryArguments.action_id || primaryArguments.tool)) {{
     const recordArguments = Object.assign({{}}, primaryArguments);
+    const recordFingerprint = recordArguments.action_fingerprint || item.action_fingerprint || primary.action_fingerprint || "";
+    if (recordFingerprint) recordArguments.action_fingerprint = recordFingerprint;
     const underlyingMode = recordArguments.mode || "read";
     const underlyingActionKey = item.action_key || primary.action_key || [recordArguments.action_id, recordArguments.tool, underlyingMode].filter(Boolean).join("|");
     return {{
