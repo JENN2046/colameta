@@ -1715,6 +1715,14 @@ function rightTabDisplayStyle(tabName) {{
   return normalizeRightTab(activeRightTab) === tabName ? "" : ` style="display:none;"`;
 }}
 
+function rightTabCountBadge(count, activeClass) {{
+  const numeric = Number(count || 0);
+  const safeCount = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  const badgeClass = safeCount > 0 ? activeClass : "tab-badge";
+  const badgeText = safeCount > 99 ? "99+" : String(safeCount);
+  return `<span class="${{escAttr(badgeClass)}}">${{esc(badgeText)}}</span>`;
+}}
+
 function switchLeftTab(tabName, btn) {{
   const card = btn.closest(".card");
   card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
@@ -1933,20 +1941,31 @@ function renderOperatorInboxPanel(data) {{
 function renderRightColumn(data) {{
   let h = "";
   activeRightTab = normalizeRightTab(activeRightTab);
+  const todoForBadge = (data || {{}}).todolist || {{}};
+  const todoItemsForBadge = Array.isArray(todoForBadge.items) ? todoForBadge.items : [];
+  const todoCount = todoForBadge.ok === false ? 0 : todoItemsForBadge.length;
+  const todoTabTitle = todoForBadge.ok === false
+    ? "TODOLIST: unavailable"
+    : "TODOLIST: " + todoCount + " item" + (todoCount === 1 ? "" : "s");
+  const decisionForBadge = (data || {{}}).decisions || {{}};
+  const decisionsForBadge = Array.isArray(decisionForBadge.decisions) ? decisionForBadge.decisions : [];
+  const decisionCount = decisionForBadge.ok === false ? 0 : decisionsForBadge.length;
+  const decisionTabTitle = decisionForBadge.ok === false
+    ? "DECISION: unavailable"
+    : "DECISION: " + decisionCount + " record" + (decisionCount === 1 ? "" : "s");
   const inbox = operatorInboxFromData(data || {{}});
   const inboxCounts = operatorInboxCountSummary(inbox);
   const inboxTotalNumber = operatorInboxNumericCount(inboxCounts.total, inboxCounts.items.length);
   const inboxGatedNumber = operatorInboxNumericCount(inboxCounts.gated, 0);
   const inboxBadgeClass = inboxGatedNumber > 0 ? "tab-badge warn" : (inboxTotalNumber > 0 ? "tab-badge info" : "tab-badge");
-  const inboxBadgeText = inboxTotalNumber > 99 ? "99+" : String(inboxTotalNumber);
   const inboxTabTitle = "Operator inbox: " + inboxCounts.total + " total, " + inboxCounts.readOnly + " read-only, " + inboxCounts.gated + " gated";
 
   // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar">`;
-  h += `<button class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST</button>`;
-  h += `<button class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX<span class="${{inboxBadgeClass}}">${{esc(inboxBadgeText)}}</span></button>`;
-  h += `<button class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
+  h += `<button class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
   h += `<button class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
 
