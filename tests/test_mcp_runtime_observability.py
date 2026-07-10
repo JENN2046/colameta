@@ -1757,6 +1757,12 @@ function productCompletionCategoryText() {{
 function operatorSessionTrailText() {{
   return byId("operator-session-trail").textContent;
 }}
+function operatorSessionRecoveryCopyButton() {{
+  return findByClass(byId("operator-session-trail"), "operator-session-recovery-copy")[0];
+}}
+function operatorSessionRecoveryRunButton() {{
+  return findByClass(byId("operator-session-trail"), "operator-session-recovery-run")[0];
+}}
 function productCompletionFollowupRecordButton() {{
   return findByClass(byId("product-completion-categories"), "closeout-followup-record")[0];
 }}
@@ -1932,6 +1938,40 @@ vm.runInThisContext({json.dumps(widget_script)});
           tool: "submission_evidence_activity_summary",
           message: "Recorded recovery refreshed",
           observed_at: "2026-01-02T03:04:05Z"
+        }}],
+        recovery_action_count: 2,
+        recovery_actions: [{{
+          action_id: "operator_refresh_1",
+          kind: "pending_refresh",
+          label: "Refresh get_product_console_map",
+          tool: "get_product_console_map",
+          arguments: {{ project_name: "demo-project" }},
+          mode: "read",
+          required_scope: "mcp:read",
+          gate_level: "read_only",
+          can_run_now: true,
+          copy_payload: {{
+            tool: "get_product_console_map",
+            arguments: {{ project_name: "demo-project" }},
+            source_action_key: "submission_evidence_activity|submission_evidence_activity_summary|read",
+            after_result_status: "updated"
+          }}
+        }}, {{
+          action_id: "operator_followup_submission_evidence_activity",
+          kind: "next_followup",
+          label: "Follow Evidence Activity",
+          tool: "record_product_console_action_result",
+          arguments: {{
+            action_id: "submission_evidence_activity",
+            tool: "submission_evidence_activity_summary",
+            mode: "read",
+            status: "updated",
+            message: "Submission evidence activity | get_submission_evidence_fill_preview via direct call | refreshed",
+            result_ok: true
+          }},
+          required_scope: "mcp:commit",
+          gate_level: "explicit_apply_or_run_required",
+          can_run_now: false
         }}]
       }},
       gaps: [{{
@@ -2037,6 +2077,10 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(operatorSessionTrailText().includes("records 1"), operatorSessionTrailText());
   assert(operatorSessionTrailText().includes("Latest Result updated submission_evidence_activity_summary"), operatorSessionTrailText());
   assert(operatorSessionTrailText().includes("next Evidence Activity"), operatorSessionTrailText());
+  assert(operatorSessionRecoveryCopyButton(), "operator recovery copy should render");
+  assert(operatorSessionRecoveryRunButton(), "operator recovery run should render");
+  assert.strictEqual(operatorSessionRecoveryRunButton().disabled, false);
+  const operatorRecoveryRun = operatorSessionRecoveryRunButton();
   assert(productCompletionCategoryText().includes("Product Readiness | ready"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("Evidence Activity | needs_attention"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("gaps 1"), productCompletionCategoryText());
@@ -2056,6 +2100,11 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(closeoutFollowupRecordButton(), "closeout follow-up record should render");
   assert(closeoutFollowupRefreshButton(), "closeout follow-up refresh should render");
 
+  operatorSessionRecoveryCopyButton().listeners.click[0]();
+  await flushPromises();
+  const operatorRecoveryCopyPayload = copiedText || byId("log").textContent;
+  assert(operatorRecoveryCopyPayload.includes('"tool": "get_product_console_map"'), operatorRecoveryCopyPayload);
+
   closeoutFollowupCopyButton().listeners.click[0]();
   await flushPromises();
   const closeoutCopyPayload = copiedText || byId("log").textContent;
@@ -2067,6 +2116,10 @@ vm.runInThisContext({json.dumps(widget_script)});
     "record_product_console_action_result",
     "get_product_console_map"
   ]);
+  toolCalls.length = 0;
+
+  await operatorRecoveryRun.listeners.click[0]();
+  assert.strictEqual(toolCalls[0].name, "get_product_console_map");
   toolCalls.length = 0;
 
   dispatchToolOutput({{

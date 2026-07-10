@@ -1137,6 +1137,10 @@ def _operator_session_trail(
         else []
     )
     next_item = followup_queue.get("next_item") if isinstance(followup_queue.get("next_item"), dict) else None
+    recovery_actions = _operator_session_recovery_actions(
+        pending_refreshes=pending_refreshes,
+        next_item=next_item,
+    )
     return {
         "source": "product_console_operator_session_trail",
         "schema_version": "product_console_operator_session_trail.v1",
@@ -1160,6 +1164,8 @@ def _operator_session_trail(
         "next_item": dict(next_item) if isinstance(next_item, dict) else None,
         "pending_refreshes": [_operator_session_refresh_item(item) for item in pending_refreshes[:5] if isinstance(item, dict)],
         "recent_events": recent_events,
+        "recovery_actions": recovery_actions,
+        "recovery_action_count": len(recovery_actions),
         "authority_boundary": {
             "read_only": True,
             "side_effects": False,
@@ -1225,6 +1231,74 @@ def _operator_session_refresh_item(value: dict[str, Any]) -> dict[str, Any]:
         "after_observed_at": _clean_optional_text(value.get("after_observed_at")),
         "requires_operator_or_agent_refresh": True,
     }
+
+
+def _operator_session_recovery_actions(
+    *,
+    pending_refreshes: list[dict[str, Any]],
+    next_item: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for index, refresh in enumerate(pending_refreshes[:3], start=1):
+        if not isinstance(refresh, dict):
+            continue
+        tool = _clean_optional_text(refresh.get("tool"))
+        if not tool:
+            continue
+        arguments = dict(refresh.get("arguments") or {}) if isinstance(refresh.get("arguments"), dict) else {}
+        actions.append(
+            {
+                "action_id": f"operator_refresh_{index}",
+                "kind": "pending_refresh",
+                "label": f"Refresh {tool}",
+                "tool": tool,
+                "arguments": arguments,
+                "mode": "read",
+                "required_scope": "mcp:read",
+                "gate_level": "read_only",
+                "can_run_now": True,
+                "copy_payload": {
+                    "tool": tool,
+                    "arguments": arguments,
+                    "source_action_key": _clean_optional_text(refresh.get("source_action_key")),
+                    "after_result_status": _clean_optional_text(refresh.get("after_result_status")),
+                },
+                "why": _clean_optional_text(refresh.get("why")) or "Refresh the read surface after a recorded action result.",
+            }
+        )
+    if isinstance(next_item, dict):
+        primary_action = next_item.get("primary_action") if isinstance(next_item.get("primary_action"), dict) else {}
+        tool = _clean_optional_text(primary_action.get("tool") or next_item.get("primary_tool"))
+        scope = _clean_optional_text(next_item.get("required_scope")) or _completion_action_scope(primary_action)
+        arguments = dict(primary_action.get("arguments") or {}) if isinstance(primary_action.get("arguments"), dict) else {}
+        if tool:
+            actions.append(
+                {
+                    "action_id": f"operator_followup_{next_item.get('item_id') or 'next'}",
+                    "kind": "next_followup",
+                    "label": f"Follow {next_item.get('label') or next_item.get('item_id') or 'next item'}",
+                    "tool": tool,
+                    "arguments": arguments,
+                    "action": _clean_optional_text(primary_action.get("action")),
+                    "mode": "read" if scope == "mcp:read" else "commit" if scope == "mcp:commit" else "preview",
+                    "required_scope": scope,
+                    "gate_level": _clean_optional_text(next_item.get("gate_level")) or _completion_followup_gate_level(scope),
+                    "can_run_now": scope == "mcp:read",
+                    "copy_payload": {
+                        "item_id": next_item.get("item_id"),
+                        "tool": tool,
+                        "arguments": arguments,
+                        "action": _clean_optional_text(primary_action.get("action")),
+                        "action_id": _clean_optional_text(primary_action.get("action_id")),
+                        "required_scope": scope,
+                        "gate_level": _clean_optional_text(next_item.get("gate_level")) or _completion_followup_gate_level(scope),
+                    },
+                    "why": _clean_optional_text(primary_action.get("why"))
+                    or _clean_optional_text(next_item.get("empty_state"))
+                    or "Follow the next Product Console closeout item.",
+                }
+            )
+    return actions[:5]
 
 
 def _operator_session_trail_status(
