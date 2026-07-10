@@ -72,17 +72,18 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .layout-center .service-copy-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .layout-center .service-copy-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 9px; border-radius: 6px; font-size: 11px; cursor: pointer; }
 .layout-center .service-copy-btn:hover { background: #30363d; }
-.layout-center .operator-inbox-list { display: grid; gap: 6px; margin-top: 8px; }
-.layout-center .operator-inbox-item { border: 1px solid #30363d; border-radius: 6px; padding: 8px; background: #0d1117; }
-.layout-center .operator-inbox-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.layout-center .operator-inbox-title { font-size: 12px; color: #f0f6fc; font-weight: 600; word-break: break-word; }
-.layout-center .operator-inbox-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
-.layout-center .operator-inbox-meta span { border: 1px solid #30363d; border-radius: 999px; padding: 1px 6px; color: #8b949e; font-size: 10px; }
-.layout-center .operator-inbox-why { color: #8b949e; font-size: 11px; margin-top: 5px; line-height: 1.4; }
-.layout-center .operator-inbox-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
-.layout-center .operator-inbox-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 9px; border-radius: 6px; font-size: 11px; cursor: pointer; }
-.layout-center .operator-inbox-btn:hover:not(:disabled) { background: #30363d; }
-.layout-center .operator-inbox-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.operator-inbox-list { display: grid; gap: 7px; margin-top: 8px; }
+.operator-inbox-item { border: 1px solid #30363d; border-radius: 6px; padding: 8px; background: #0d1117; }
+.operator-inbox-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.operator-inbox-title { font-size: 12px; color: #f0f6fc; font-weight: 600; word-break: break-word; }
+.operator-inbox-summary { color: #8b949e; font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
+.operator-inbox-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.operator-inbox-meta span { border: 1px solid #30363d; border-radius: 999px; padding: 1px 6px; color: #8b949e; font-size: 10px; }
+.operator-inbox-why { color: #8b949e; font-size: 11px; margin-top: 5px; line-height: 1.4; }
+.operator-inbox-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.operator-inbox-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 9px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.operator-inbox-btn:hover:not(:disabled) { background: #30363d; }
+.operator-inbox-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1295,7 +1296,6 @@ function renderServiceCapabilityCard(data) {{
   const trailNext = operatorTrail.next_item && (operatorTrail.next_item.label || operatorTrail.next_item.item_id) ? operatorTrail.next_item.label || operatorTrail.next_item.item_id : "-";
   const operatorTrailText = (operatorTrail.status || "-") + " ｜ refresh " + trailRefreshCount + " ｜ recovery " + trailRecoveryCount + " ｜ events " + trailEventCount + " ｜ next " + trailNext;
   const inboxText = (operatorInbox.status || "-") + " ｜ total " + (operatorInbox.total_count === 0 || operatorInbox.total_count ? operatorInbox.total_count : "-") + " ｜ read " + (operatorInbox.read_only_count === 0 || operatorInbox.read_only_count ? operatorInbox.read_only_count : "-") + " ｜ gated " + (operatorInbox.gated_count === 0 || operatorInbox.gated_count ? operatorInbox.gated_count : "-");
-  const inboxItems = Array.isArray(operatorInbox.items) ? operatorInbox.items : [];
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1321,30 +1321,6 @@ function renderServiceCapabilityCard(data) {{
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);
-
-  if (inboxItems.length) {{
-    h += `<div class="operator-inbox-list">`;
-    for (const item of inboxItems.slice(0, 6)) {{
-      const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
-      const nextAction = JSON.stringify({{
-        action: item.item_id || item.tool || "operator_inbox_item",
-        tool: item.tool || "",
-        arguments: item.arguments || {{}},
-        required_scope: item.required_scope || "mcp:read",
-        gate_level: item.gate_level || "read_only",
-      }});
-      const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
-      h += `<div class="operator-inbox-item">`;
-      h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(item.label || item.tool || item.item_id || "Inbox item")}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
-      h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
-      h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
-      h += `<div class="operator-inbox-actions">`;
-      h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}">Copy</button>`;
-      h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" ${{canRun ? "" : "disabled"}}>${{canRun ? "Run" : "Gate"}}</button>`;
-      h += `</div></div>`;
-    }}
-    h += `</div>`;
-  }}
 
   if (profiles.length) {{
     h += `<div class="service-profile-row">`;
@@ -1434,12 +1410,17 @@ function renderCenterColumn(data) {{
       copyTextToClipboard(this.getAttribute("data-copy-mcp-call") || "", this);
     }});
   }});
-  $("layout-center").querySelectorAll("[data-copy-operator-inbox]").forEach(function(btn) {{
+  bindOperatorInboxActions($("layout-center"));
+}}
+
+function bindOperatorInboxActions(root) {{
+  if (!root) return;
+  root.querySelectorAll("[data-copy-operator-inbox]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       copyTextToClipboard(this.getAttribute("data-copy-operator-inbox") || "", this);
     }});
   }});
-  $("layout-center").querySelectorAll("[data-run-operator-inbox]").forEach(function(btn) {{
+  root.querySelectorAll("[data-run-operator-inbox]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       if (this.disabled) return;
       try {{
@@ -1850,13 +1831,74 @@ function renderProjectManagement(data) {{
   return h;
 }}
 
+function renderOperatorInboxItem(item) {{
+  item = item || {{}};
+  const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
+  const nextAction = JSON.stringify({{
+    action: item.item_id || item.tool || "operator_inbox_item",
+    tool: item.tool || "",
+    arguments: item.arguments || {{}},
+    required_scope: item.required_scope || "mcp:read",
+    gate_level: item.gate_level || "read_only",
+  }});
+  const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
+  let h = `<div class="operator-inbox-item">`;
+  h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(item.label || item.tool || item.item_id || "Inbox item")}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
+  h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
+  h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
+  h += `<div class="operator-inbox-actions">`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}">Copy</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" ${{canRun ? "" : "disabled"}}>${{canRun ? "Run" : "Gate"}}</button>`;
+  h += `</div></div>`;
+  return h;
+}}
+
+function renderOperatorInboxPanel(data) {{
+  data = data || {{}};
+  const svc = data.web_commander_service || {{}};
+  const inbox = svc.operator_inbox || data.operator_inbox || {{}};
+  const items = Array.isArray(inbox.items) ? inbox.items : [];
+  const total = inbox.total_count === 0 || inbox.total_count ? inbox.total_count : items.length;
+  const readOnly = inbox.read_only_count === 0 || inbox.read_only_count ? inbox.read_only_count : "-";
+  const gated = inbox.gated_count === 0 || inbox.gated_count ? inbox.gated_count : "-";
+  const sources = [];
+  for (const item of items) {{
+    const source = item && item.source ? String(item.source) : "-";
+    if (!sources.includes(source)) sources.push(source);
+  }}
+
+  let h = `<div class="operator-inbox-summary">`;
+  h += `${{esc(inbox.status || "-")}} ｜ total ${{esc(total)}} ｜ read ${{esc(readOnly)}} ｜ gated ${{esc(gated)}}`;
+  if (inbox.authority_boundary) h += `<br>${{esc(inbox.authority_boundary)}}`;
+  h += `</div>`;
+  if (sources.length) {{
+    h += `<div class="operator-inbox-meta">`;
+    for (const source of sources.sort()) {{
+      const count = items.filter((item) => (item && item.source ? String(item.source) : "-") === source).length;
+      h += `<span>${{esc(source)}} ${{count}}</span>`;
+    }}
+    h += `</div>`;
+  }}
+  if (!items.length) {{
+    h += `<div class="empty-state">暂无 operator inbox 项</div>`;
+  }} else {{
+    h += `<div class="operator-inbox-list">`;
+    for (const item of items) {{
+      h += renderOperatorInboxItem(item);
+    }}
+    h += `</div>`;
+  }}
+  return h;
+}}
+
 function renderRightColumn(data) {{
   let h = "";
 
-  // Tabbed card: TODOLIST + DECISION + MEMORY
+  // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar">`;
   h += `<button class="tab-btn active" data-tab-button="todolist" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST</button>`;
+  h += `<button class="tab-btn" data-tab-button="operator-inbox" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX</button>`;
   h += `<button class="tab-btn" data-tab-button="decision" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION</button>`;
   h += `<button class="tab-btn" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
@@ -1895,6 +1937,11 @@ function renderRightColumn(data) {{
       h += `</div>`;
     }}
   }}
+  h += `</div>`;
+
+  // INBOX tab
+  h += `<div class="tab-content" data-tab="operator-inbox" style="display:none;">`;
+  h += renderOperatorInboxPanel(data);
   h += `</div>`;
 
   // DECISION tab
@@ -1957,6 +2004,7 @@ function renderRightColumn(data) {{
 
 
   $("layout-right").innerHTML = h;
+  bindOperatorInboxActions($("layout-right"));
   syncAdaptiveTodoPageSize();
 
   $("layout-right").querySelectorAll("[data-copy-todo-id]").forEach(function(btn) {{
