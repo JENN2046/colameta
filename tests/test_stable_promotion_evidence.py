@@ -570,6 +570,29 @@ def test_service_routed_readiness_preserves_project_name_in_recommended_preview(
     recommended = readiness["data"]["recommended_next_steps"][0]
     assert recommended["tool"] == "manage_stable_promotion_evidence"
     assert recommended["arguments"]["project_name"] == "demo-project"
+    evidence_action = readiness["data"]["promotion_artifact_evidence"]["safe_next_action"]
+    assert evidence_action["arguments"]["project_name"] == "demo-project"
     preview = server.call_tool_for_agent(recommended["tool"], recommended["arguments"])
     assert preview["ok"] is True
     assert preview["data"]["can_apply"] is True
+
+    refreshed = server.call_tool_for_agent(
+        "get_stable_promotion_readiness",
+        {"project_name": "demo-project"},
+    )
+    active_preview_action = refreshed["data"]["promotion_artifact_preview"]["safe_next_action"]
+    assert active_preview_action["arguments"] == {
+        "action": "apply",
+        "preview_id": preview["data"]["preview_id"],
+        "project_name": "demo-project",
+    }
+    assert refreshed["data"]["recommended_next_steps"][0]["arguments"] == active_preview_action["arguments"]
+    discarded = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {
+            "action": "discard",
+            "preview_id": preview["data"]["preview_id"],
+            "project_name": "demo-project",
+        },
+    )
+    assert discarded["ok"] is True

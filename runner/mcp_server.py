@@ -10849,6 +10849,11 @@ class MCPPlanningBridgeServer:
                 for action in recommended_next_steps:
                     if isinstance(action, dict):
                         _inject_project_name_into_action(action, project_name)
+            for packet_key in ("promotion_artifact_evidence", "promotion_artifact_preview"):
+                packet = result.get(packet_key)
+                safe_next_action = packet.get("safe_next_action") if isinstance(packet, dict) else None
+                if isinstance(safe_next_action, dict):
+                    _inject_project_name_into_action(safe_next_action, project_name)
         return result
 
     def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
