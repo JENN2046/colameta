@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+import runner.release_submission_readiness as release_submission_readiness
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
 from runner.release_submission_readiness import (
     DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
@@ -183,6 +185,30 @@ def test_ready_review_binds_every_manifest_ref_before_marking_one_key_ready(tmp_
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["logo_ready"] is False
 
     second_path.write_text(FINAL_LOGO_VARIANT, encoding="utf-8")
+    original_validate = release_submission_readiness._validate_ready_evidence_refs
+    validate_calls = 0
+
+    def mutate_during_final_write(*args, **kwargs):
+        nonlocal validate_calls
+        validate_calls += 1
+        if validate_calls == 2:
+            second_path.write_text(FINAL_LOGO_VARIANT + "changed during ready write\n", encoding="utf-8")
+        return original_validate(*args, **kwargs)
+
+    with patch(
+        "runner.release_submission_readiness._validate_ready_evidence_refs",
+        side_effect=mutate_during_final_write,
+    ):
+        raced = manager.ready_apply({"preview_id": preview["preview_id"], "key": "logo"})
+
+    assert raced["ok"] is False
+    assert raced["error_code"] == "SUBMISSION_EVIDENCE_REVIEWED_CONTENT_CHANGED_DURING_WRITE"
+    assert raced["rollback_receipt"]["status"] == "committed"
+    rolled_back_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert rolled_back_manifest["logo_ready"] is False
+    assert rolled_back_manifest["notes"] == "Keep this operator-authored submission note unchanged."
+
+    second_path.write_text(FINAL_LOGO_VARIANT, encoding="utf-8")
     applied = manager.ready_apply({"preview_id": preview["preview_id"], "key": "logo"})
     assert applied["ok"] is True
     assert applied["status"] == "ready_marked"
@@ -193,6 +219,7 @@ def test_ready_review_binds_every_manifest_ref_before_marking_one_key_ready(tmp_
     assert updated_manifest["notes"] == "Keep this operator-authored submission note unchanged."
     assert applied["notes_updated"] is False
     assert applied["manifest_notes_preserved"] is True
+    assert applied["expected_digests_enforced"] is True
 
 
 def test_ready_review_workflow_risk_levels_match_preview_and_write_authority() -> None:

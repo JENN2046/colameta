@@ -298,6 +298,8 @@ class MCPSubmissionEvidenceRevisionManager:
             keys=[key],
             review_confirmation="human_reviewed",
             update_notes=False,
+            expected_manifest_sha256=str(record["manifest_sha256"]),
+            expected_ref_sha256_by_key={key: current_by_ref},
         )
         if result.get("ok") is not True:
             return result

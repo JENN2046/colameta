@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from runner.production_ops import DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS, DEFAULT_PUBLIC_BASE_URL
 from runner.product_readiness import build_product_readiness_packet
+from runner.file_transaction import FileTransaction, FileTransactionError
 
 
 RELEASE_SUBMISSION_SOURCE = "release_submission_readiness"
@@ -611,11 +613,40 @@ def mark_submission_evidence_ready_fields(
     review_confirmation: str,
     now: datetime | None = None,
     update_notes: bool = True,
+    expected_manifest_sha256: str | None = None,
+    expected_ref_sha256_by_key: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     root = os.path.abspath(os.path.expanduser(project_root))
     manifest_rel_path = DEFAULT_SUBMISSION_MATERIALS_REL_PATH
     manifest_path = os.path.join(root, manifest_rel_path)
-    manifest, load_error = load_submission_materials_file(manifest_path)
+    manifest_preimage_text: str | None = None
+    if expected_manifest_sha256:
+        try:
+            with open(manifest_path, "rb") as handle:
+                manifest_preimage_bytes = handle.read(RELEASE_SUBMISSION_MATERIALS_MAX_BYTES + 1)
+            if len(manifest_preimage_bytes) > RELEASE_SUBMISSION_MATERIALS_MAX_BYTES:
+                raise ValueError("submission materials manifest exceeds the size limit")
+            manifest_preimage_text = manifest_preimage_bytes.decode("utf-8")
+            manifest = json.loads(manifest_preimage_text)
+            load_error = None if isinstance(manifest, dict) else {"error_code": "SUBMISSION_MATERIALS_SCHEMA_INVALID"}
+            if not isinstance(manifest, dict):
+                manifest = None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            manifest = None
+            load_error = {"error_code": "SUBMISSION_MATERIALS_READ_FAILED", "error_type": exc.__class__.__name__}
+        if manifest is not None and hashlib.sha256(manifest_preimage_bytes).hexdigest() != expected_manifest_sha256:
+            return {
+                "ok": False,
+                "source": SUBMISSION_EVIDENCE_MARK_READY_SOURCE,
+                "schema_version": SUBMISSION_EVIDENCE_MARK_READY_VERSION,
+                "project_root": root,
+                "observed_at": _iso_now(now),
+                "error_code": "SUBMISSION_EVIDENCE_MANIFEST_CHANGED",
+                "message": "Submission materials changed after ready review; no ready fields were changed.",
+                "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=keys),
+            }
+    else:
+        manifest, load_error = load_submission_materials_file(manifest_path)
     if manifest is None:
         return {
             "ok": False,
@@ -662,7 +693,24 @@ def mark_submission_evidence_ready_fields(
     reviewed_refs_by_key: list[dict[str, Any]] = []
     for key in normalized_keys:
         refs = _coerce_evidence_refs(evidence.get(key))
-        ref_errors, reviewed_refs = _validate_ready_evidence_refs(root, key, refs)
+        expected_ref_digests = None
+        if isinstance(expected_ref_sha256_by_key, Mapping):
+            candidate_digests = expected_ref_sha256_by_key.get(key)
+            if not isinstance(candidate_digests, Mapping):
+                proof_errors.append(
+                    {
+                        "key": key,
+                        "error_code": "SUBMISSION_EVIDENCE_REVIEWED_DIGESTS_REQUIRED",
+                    }
+                )
+                continue
+            expected_ref_digests = candidate_digests
+        ref_errors, reviewed_refs = _validate_ready_evidence_refs(
+            root,
+            key,
+            refs,
+            expected_sha256_by_ref=expected_ref_digests,
+        )
         proof_errors.extend(ref_errors)
         if ref_errors:
             continue
@@ -695,10 +743,59 @@ def mark_submission_evidence_ready_fields(
             "Submission evidence ready fields were marked after human review. "
             "Re-run release readiness before Dashboard submission."
         )
-    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    with open(manifest_path, "w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
+    manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    transaction = FileTransaction(root, label="mark_submission_evidence_ready_fields")
+    transaction.write_text(manifest_rel_path, manifest_text)
+    try:
+        transaction_receipt = transaction.commit()
+    except FileTransactionError as exc:
+        return {
+            "ok": False,
+            "source": SUBMISSION_EVIDENCE_MARK_READY_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_MARK_READY_VERSION,
+            "project_root": root,
+            "observed_at": _iso_now(now),
+            "error_code": "SUBMISSION_EVIDENCE_READY_TRANSACTION_FAILED",
+            "message": str(exc),
+            "transaction_receipt": exc.receipt,
+            "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=normalized_keys),
+        }
+
+    if expected_ref_sha256_by_key:
+        post_write_errors: list[dict[str, Any]] = []
+        for key in normalized_keys:
+            expected_ref_digests = expected_ref_sha256_by_key.get(key)
+            refs = _coerce_evidence_refs(evidence.get(key))
+            ref_errors, _ = _validate_ready_evidence_refs(
+                root,
+                key,
+                refs,
+                expected_sha256_by_ref=expected_ref_digests if isinstance(expected_ref_digests, Mapping) else None,
+            )
+            post_write_errors.extend(ref_errors)
+        if post_write_errors:
+            rollback_receipt: dict[str, Any] | None = None
+            if manifest_preimage_text is not None:
+                rollback = FileTransaction(root, label="mark_submission_evidence_ready_fields.rollback")
+                rollback.write_text(manifest_rel_path, manifest_preimage_text)
+                try:
+                    rollback_receipt = rollback.commit()
+                except FileTransactionError as exc:
+                    rollback_receipt = exc.receipt
+            return {
+                "ok": False,
+                "source": SUBMISSION_EVIDENCE_MARK_READY_SOURCE,
+                "schema_version": SUBMISSION_EVIDENCE_MARK_READY_VERSION,
+                "project_root": root,
+                "observed_at": _iso_now(now),
+                "error_code": "SUBMISSION_EVIDENCE_REVIEWED_CONTENT_CHANGED_DURING_WRITE",
+                "message": "Reviewed evidence changed during the ready write; the manifest write was rolled back.",
+                "validation_errors": post_write_errors,
+                "ready_fields_marked": [],
+                "transaction_receipt": transaction_receipt,
+                "rollback_receipt": rollback_receipt,
+                "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=normalized_keys),
+            }
 
     return {
         "ok": True,
@@ -713,12 +810,14 @@ def mark_submission_evidence_ready_fields(
         "already_ready_fields": sorted(already_ready_fields),
         "review_confirmation": review_confirmation,
         "notes_updated": update_notes,
+        "expected_digests_enforced": bool(expected_manifest_sha256 or expected_ref_sha256_by_key),
         "reviewed_refs_by_key": reviewed_refs_by_key,
         "next_step": {
             "tool": "get_release_submission_readiness",
             "arguments": {"project_path": root},
             "why": "Confirm submission readiness after marking reviewed evidence fields ready.",
         },
+        "transaction_receipt": transaction_receipt,
     }
 
 
@@ -1097,7 +1196,12 @@ def _submission_evidence_progress(project_root: str, materials: dict[str, Any], 
     }
 
 
-def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any]:
+def _submission_evidence_ref_state(
+    project_root: str,
+    ref: str,
+    *,
+    include_sha256: bool = False,
+) -> dict[str, Any]:
     normalized = _normalize_evidence_ref(project_root, ref)
     if normalized.get("ok") is not True:
         return {
@@ -1110,6 +1214,7 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
         return {"ref": rel_path, "status": "missing"}
     if _is_placeholder_evidence_ref(rel_path):
         return {"ref": rel_path, "status": "placeholder"}
+    current_sha256 = ""
     if rel_path.lower().endswith((".md", ".markdown")):
         path_error = _submission_evidence_markdown_path_error(
             project_root,
@@ -1150,14 +1255,19 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
                 "error_code": "SUBMISSION_EVIDENCE_FILE_UNREADABLE",
                 "error_type": exc.__class__.__name__,
             }
+        current_sha256 = hashlib.sha256(content_bytes).hexdigest()
         reason_codes = _submission_evidence_unfinished_content_reason_codes(content)
         if reason_codes:
             return {
                 "ref": rel_path,
                 "status": "review_required",
                 "reason_codes": reason_codes,
+                **({"current_sha256": current_sha256} if include_sha256 else {}),
             }
-    return {"ref": rel_path, "status": "present"}
+    result = {"ref": rel_path, "status": "present"}
+    if include_sha256 and current_sha256:
+        result["current_sha256"] = current_sha256
+    return result
 
 
 def _submission_evidence_markdown_path_error(project_root: str, rel_path: str, abs_path: str) -> str | None:
@@ -1259,13 +1369,23 @@ def _validate_submission_evidence_ready_keys(keys: list[str]) -> tuple[list[str]
     return normalized, errors
 
 
-def _validate_ready_evidence_refs(root: str, key: str, refs: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+def _validate_ready_evidence_refs(
+    root: str,
+    key: str,
+    refs: list[str],
+    *,
+    expected_sha256_by_ref: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     if not refs:
         return [{"key": key, "error_code": "SUBMISSION_EVIDENCE_REFS_REQUIRED"}], []
     errors: list[dict[str, Any]] = []
     reviewed_refs: list[str] = []
     for ref in refs:
-        state = _submission_evidence_ref_state(root, ref)
+        state = _submission_evidence_ref_state(
+            root,
+            ref,
+            include_sha256=expected_sha256_by_ref is not None,
+        )
         rel_path = str(state.get("ref") or ref)
         state_status = str(state.get("status") or "invalid")
         if state_status == "invalid":
@@ -1293,6 +1413,20 @@ def _validate_ready_evidence_refs(root: str, key: str, refs: list[str]) -> tuple
                 }
             )
             continue
+        if expected_sha256_by_ref is not None:
+            expected_sha256 = str(expected_sha256_by_ref.get(rel_path) or "")
+            current_sha256 = str(state.get("current_sha256") or "")
+            if not expected_sha256 or current_sha256 != expected_sha256:
+                errors.append(
+                    {
+                        "key": key,
+                        "ref": rel_path,
+                        "error_code": "SUBMISSION_EVIDENCE_REVIEWED_DIGEST_MISMATCH",
+                        "expected_sha256": expected_sha256,
+                        "current_sha256": current_sha256,
+                    }
+                )
+                continue
         reviewed_refs.append(rel_path)
     return errors, reviewed_refs
 
