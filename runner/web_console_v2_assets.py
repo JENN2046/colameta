@@ -1347,7 +1347,9 @@ function renderServiceCapabilityCard(data) {{
     h += `<div class="service-copy-row">`;
     for (const call of calls.slice(0, 8)) {{
       const payload = JSON.stringify({{ name: call.tool || "", arguments: call.arguments || {{}} }}, null, 2);
-      h += `<button type="button" class="service-copy-btn" data-copy-mcp-call="${{escAttr(payload)}}">${{esc(call.label || call.tool || "复制调用")}}</button>`;
+      const callLabel = call.label || call.tool || "复制调用";
+      const copyLabel = "复制 MCP 调用：" + callLabel;
+      h += `<button type="button" class="service-copy-btn" data-copy-mcp-call="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">${{esc(callLabel)}}</button>`;
     }}
     h += `</div>`;
   }}
@@ -1963,6 +1965,7 @@ function renderProjectManagement(data) {{
 
 function renderOperatorInboxItem(item) {{
   item = item || {{}};
+  const itemLabel = item.label || item.tool || item.item_id || "Inbox item";
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
   const nextAction = JSON.stringify({{
     action: item.item_id || item.tool || "operator_inbox_item",
@@ -1972,13 +1975,17 @@ function renderOperatorInboxItem(item) {{
     gate_level: item.gate_level || "read_only",
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
+  const copyLabel = "复制 operator inbox 调用：" + itemLabel;
+  const runLabel = canRun
+    ? "运行只读 operator inbox 项：" + itemLabel
+    : "需要更高权限，不能在 Web Console 直接运行：" + itemLabel;
   let h = `<div class="operator-inbox-item">`;
-  h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(item.label || item.tool || item.item_id || "Inbox item")}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
+  h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(itemLabel)}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
   h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
   h += `<div class="operator-inbox-actions">`;
-  h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}">Copy</button>`;
-  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" ${{canRun ? "" : "disabled"}}>${{canRun ? "Run" : "Gate"}}</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-disabled="${{canRun ? "false" : "true"}}" ${{canRun ? "" : "disabled"}}>${{canRun ? "Run" : "Gate"}}</button>`;
   h += `</div></div>`;
   return h;
 }}
@@ -2088,10 +2095,11 @@ function renderRightColumn(data) {{
       for (const item of pageItems) {{
         const todoId = item && item.id != null ? String(item.id) : "";
         const todoContent = item && item.content != null ? String(item.content) : "";
+        const todoCopyLabel = "复制 TODO ID " + (todoId || "-");
         h += `<div class="todo-item">`;
         h += `<div class="todo-id-row">`;
         h += `<div class="key">ID ${{esc(todoId)}}</div>`;
-        h += `<button type="button" class="todo-copy-btn" data-copy-todo-id="${{escAttr(todoId)}}">复制</button>`;
+        h += `<button type="button" class="todo-copy-btn" data-copy-todo-id="${{escAttr(todoId)}}" aria-label="${{escAttr(todoCopyLabel)}}" title="${{escAttr(todoCopyLabel)}}">复制</button>`;
         h += `</div>`;
         h += `<div class="todo-content todo-content-preview" role="button" tabindex="0" title="点击查看完整内容" data-todo-id="${{escAttr(todoId)}}" data-todo-content="${{escAttr(todoContent)}}">${{esc(todoContent)}}</div>`;
         h += `</div>`;

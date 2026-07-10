@@ -865,6 +865,12 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operator-inbox-list" in page
         assert "data-copy-operator-inbox" in page
         assert "data-run-operator-inbox" in page
+        assert "复制 operator inbox 调用：" in page
+        assert "运行只读 operator inbox 项：" in page
+        assert "需要更高权限，不能在 Web Console 直接运行：" in page
+        assert "复制 MCP 调用：" in page
+        assert "复制 TODO ID " in page
+        assert 'aria-disabled="${canRun ? "false" : "true"}"' in page
         assert "runAction(action" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
