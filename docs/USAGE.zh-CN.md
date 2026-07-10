@@ -202,6 +202,11 @@ submission evidence 文件，并在 `evidence_context.entry_templates` 中给出
 状态、10 项 evidence 完成度、缺口摘要、下一步工具和可复制的 `draft_entries` 放在一起，
 方便操作者先审查再调用 `fill_submission_evidence_files`；它不写文件、不标 ready 字段、
 不创建 OpenAI App draft、不提交审核、不发布。
+当多项 evidence 文件都已存在、但 manifest ready 字段仍为 false 时，Product Console 会为
+每个 key 生成独立 fingerprint 的标记动作。每个动作只含一个 key，并明确列出应审核的文件和
+必查章节；completion surface 和默认 fill preview 只给出队首一项。操作者显式确认并标记该项
+后，应刷新 readiness 和 Product Console，再进入下一项。Product Console 不会推荐一次性批量
+确认全部剩余 evidence。
 Commander widget 会把 `recommended_first_actions` 渲染成动作卡片，显示 mode、scope、
 确认要求、副作用和 authority-boundary，并提供可复制的工具调用形状。`mode=read`
 的动作卡可以在 widget 内直接运行。服务端明确推荐、带当前 action fingerprint、声明
@@ -414,8 +419,9 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 必须由操作者审查并替换真实证据文本后，再显式调用 `fill_submission_evidence_files`。
 当 evidence 文件都已经存在、只剩 manifest ready 字段为 false 时，同一个 preview 会返回
 `copyable_tool_call.tool=mark_submission_evidence_ready_fields`，并带上
-`review_confirmation=human_reviewed`。只有人工确认这些 evidence 已经是最终版之后，才调用这个
-commit-scoped 工具标 ready。
+`review_confirmation=human_reviewed`。未传 `selected_keys` 时，preview 只返回队首 key；只有人工
+确认该 key 的 referenced evidence 已经是最终版之后，才调用这个 commit-scoped 工具标 ready，
+随后刷新再审核下一项。
 
 如果不走 connector，先用本地 CLI 做同一个只读 preview。它只返回下一步 copyable tool，
 不写文件：

@@ -5435,10 +5435,17 @@ class MCPPlanningBridgeServer:
       overflow-wrap: anywhere;
     }
     .recommended-action-meta,
-    .recommended-action-boundary {
+    .recommended-action-boundary,
+    .recommended-action-review-context {
       display: flex;
       flex-wrap: wrap;
       gap: 5px;
+    }
+    .recommended-action-review-context {
+      padding: 7px;
+      border: 1px solid #dbc7a2;
+      border-radius: 7px;
+      background: #fffaf0;
     }
     .action-chip {
       border: 1px solid #d8e0e6;
@@ -6877,6 +6884,26 @@ class MCPPlanningBridgeServer:
           var why = document.createElement("div");
           why.className = "recommended-action-why";
           why.textContent = action.why || "";
+          var reviewContext = document.createElement("div");
+          reviewContext.className = "recommended-action-review-context";
+          var evidenceContext = action.evidence_context || {};
+          if (evidenceContext.human_review_required === true) {
+            appendChip(reviewContext, "human review required", "commit");
+            appendChip(reviewContext, evidenceContext.key ? "key " + evidenceContext.key : "");
+            if (evidenceContext.review_sequence_position && evidenceContext.review_sequence_total) {
+              appendChip(
+                reviewContext,
+                "item " + evidenceContext.review_sequence_position + "/" + evidenceContext.review_sequence_total
+              );
+            }
+            (Array.isArray(evidenceContext.refs) ? evidenceContext.refs : []).forEach(function (ref) {
+              appendChip(reviewContext, "file " + ref);
+            });
+            (Array.isArray(evidenceContext.required_sections) ? evidenceContext.required_sections : []).forEach(function (section) {
+              appendChip(reviewContext, "check " + section);
+            });
+            appendChip(reviewContext, evidenceContext.marks_only_this_key === true ? "marks this key only" : "");
+          }
           var boundary = document.createElement("div");
           boundary.className = "recommended-action-boundary";
           var auth = action.authority_boundary || {};
@@ -6889,6 +6916,7 @@ class MCPPlanningBridgeServer:
           card.appendChild(runStatus);
           card.appendChild(recordStatus);
           if (refreshQueue.textContent) card.appendChild(refreshQueue);
+          if (reviewContext.textContent) card.appendChild(reviewContext);
           if (why.textContent) card.appendChild(why);
           card.appendChild(boundary);
           target.appendChild(card);

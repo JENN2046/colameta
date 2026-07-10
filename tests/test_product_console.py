@@ -58,14 +58,15 @@ def _release_with_materials(
     source: str = "default_manifest_file",
     evidence_status: str = "needs_attention",
 ) -> dict[str, object]:
-    entry_templates = [
-        {
-            "key": "logo",
-            "ready_field": "logo_ready",
-            "default_filename": "logo.md",
-            "content_prompt": "Record final logo evidence.",
-        }
-    ] if evidence_status == "needs_attention" else []
+    logo_template = {
+        "key": "logo",
+        "ready_field": "logo_ready",
+        "default_filename": "logo.md",
+        "default_path": "docs/submission/logo.md",
+        "content_prompt": "Record final logo evidence.",
+        "required_sections": ["asset_path", "dimensions", "review_notes"],
+    }
+    entry_templates = [logo_template] if evidence_status == "needs_attention" else []
     ready = evidence_status == "ready"
     filled_not_marked_ready = evidence_status == "filled_not_marked_ready"
     evidence_progress = {
@@ -91,6 +92,8 @@ def _release_with_materials(
                 "file_states": [{"ref": "docs/submission/logo.todo.md", "status": "placeholder"}]
                 if evidence_status == "needs_attention"
                 else [{"ref": "docs/submission/logo.md", "status": "present"}],
+                "default_path": "docs/submission/logo.md",
+                "template": logo_template,
             }
         ],
     }
@@ -911,7 +914,8 @@ def test_console_map_recommends_mark_ready_when_evidence_is_filled() -> None:
 
     first = packet["recommended_first_actions"][0]
     assert first["tool"] == "mark_submission_evidence_ready_fields"
-    assert first["action_id"] == "mark_submission_evidence_ready_fields"
+    assert first["action_id"] == "mark_submission_evidence_ready_logo"
+    assert first["label"] == "Review And Mark Logo Ready"
     assert first["mode"] == "commit"
     assert first["required_scope"] == "mcp:commit"
     assert first["requires_explicit_confirmation"] is True
@@ -922,10 +926,72 @@ def test_console_map_recommends_mark_ready_when_evidence_is_filled() -> None:
         "review_confirmation": "human_reviewed",
     }
     assert first["evidence_context"]["ready_fields"] == ["logo_ready"]
+    assert first["evidence_context"]["refs"] == ["docs/submission/logo.md"]
+    assert first["evidence_context"]["required_sections"] == ["asset_path", "dimensions", "review_notes"]
+    assert first["evidence_context"]["human_review_required"] is True
+    assert first["evidence_context"]["marks_only_this_key"] is True
+    assert first["evidence_context"]["bulk_mark_ready_recommended"] is False
+    assert first["evidence_context"]["review_sequence_position"] == 1
+    assert first["evidence_context"]["review_sequence_total"] == 1
     evidence_bundle = packet["release_submission_evidence_bundle"]
     assert evidence_bundle["fill_plan"]["status"] == "evidence_ready_for_review"
     assert evidence_bundle["fill_plan"]["next_tool"] == "mark_submission_evidence_ready_fields"
+    assert evidence_bundle["fill_plan"]["next_arguments"]["keys"] == ["logo"]
+    assert evidence_bundle["fill_plan"]["review_strategy"] == "one_item_then_refresh"
+    assert evidence_bundle["fill_plan"]["bulk_mark_ready_recommended"] is False
     assert evidence_bundle["fill_plan"]["review_entries"][0]["refs"] == ["docs/submission/logo.md"]
+    assert packet["completion_surface"]["safe_next_action"]["action_id"] == first["action_id"]
+    assert packet["completion_surface"]["safe_next_action"]["action_fingerprint"] == first["action_fingerprint"]
+
+
+def test_console_map_splits_multiple_ready_reviews_into_per_key_actions() -> None:
+    release = _release_with_materials(evidence_status="filled_not_marked_ready")
+    progress = release["submission_evidence_progress"]
+    progress["total_count"] = 2
+    progress["counts"]["filled_not_marked_ready"] = 2
+    progress["rows"].append(
+        {
+            "key": "screenshots",
+            "ready_field": "screenshots_ready",
+            "ready": False,
+            "status": "filled_not_marked_ready",
+            "refs": ["docs/submission/screenshot-1.md"],
+            "file_states": [{"ref": "docs/submission/screenshot-1.md", "status": "present"}],
+            "default_path": "docs/submission/screenshot-1.md",
+            "template": {
+                "key": "screenshots",
+                "ready_field": "screenshots_ready",
+                "purpose": "Record final screenshots.",
+                "required_sections": ["asset_paths", "viewport_or_device", "captions", "review_notes"],
+            },
+        }
+    )
+
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=release,
+    )
+
+    review_actions = [
+        action
+        for action in packet["recommended_first_actions"]
+        if action.get("tool") == "mark_submission_evidence_ready_fields"
+    ]
+    assert [action["arguments"]["keys"] for action in review_actions] == [["logo"], ["screenshots"]]
+    assert all(len(action["arguments"]["keys"]) == 1 for action in review_actions)
+    assert len({action["action_id"] for action in review_actions}) == 2
+    assert len({action["action_fingerprint"] for action in review_actions}) == 2
+    assert review_actions[1]["evidence_context"]["review_sequence_position"] == 2
+    assert review_actions[1]["evidence_context"]["review_sequence_total"] == 2
+    fill_plan = packet["release_submission_evidence_bundle"]["fill_plan"]
+    assert fill_plan["next_arguments"]["keys"] == ["logo"]
+    assert fill_plan["remaining_review_count"] == 2
+    safe_next = packet["completion_surface"]["safe_next_action"]
+    assert safe_next["arguments"]["keys"] == ["logo"]
+    assert safe_next["action_fingerprint"] == review_actions[0]["action_fingerprint"]
 
 
 def test_console_map_marks_full_loop_entries_preview_required_when_controls_ready() -> None:
@@ -1357,6 +1423,34 @@ def test_submission_evidence_fill_preview_filters_mark_ready_selected_keys() -> 
         "keys": ["logo"],
         "review_confirmation": "human_reviewed",
     }
+
+
+def test_submission_evidence_fill_preview_defaults_to_one_review_key() -> None:
+    release = _release_with_materials(evidence_status="filled_not_marked_ready")
+    progress = release["submission_evidence_progress"]
+    progress["total_count"] = 2
+    progress["counts"]["filled_not_marked_ready"] = 2
+    progress["rows"].append(
+        {
+            "key": "screenshots",
+            "ready_field": "screenshots_ready",
+            "ready": False,
+            "status": "filled_not_marked_ready",
+            "refs": ["docs/submission/screenshot-1.md"],
+            "file_states": [{"ref": "docs/submission/screenshot-1.md", "status": "present"}],
+        }
+    )
+
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        release_submission_readiness=release,
+    )
+
+    assert packet["status"] == "review_ready"
+    assert packet["review_entry_count"] == 1
+    assert packet["remaining_review_count"] == 2
+    assert packet["copyable_tool_call"]["arguments"]["keys"] == ["logo"]
 
 
 def test_submission_evidence_fill_preview_reports_unavailable_selected_review_key() -> None:

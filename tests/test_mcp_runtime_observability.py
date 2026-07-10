@@ -2695,12 +2695,28 @@ vm.runInThisContext({json.dumps(widget_script)});
       required_scope: "mcp:read",
       action_fingerprint: "abc123",
       last_action_result: {{ status: "not_recorded" }},
-      next_refresh_actions: []
+      next_refresh_actions: [],
+      evidence_context: {{
+        key: "logo",
+        refs: ["docs/submission/logo.md"],
+        required_sections: ["asset_path", "dimensions"],
+        human_review_required: true,
+        review_sequence_position: 1,
+        review_sequence_total: 2,
+        marks_only_this_key: true
+      }}
     }}]
   }};
 
   dispatch("openai:set_globals", {{ detail: {{ globals: {{ toolOutput: consoleMap }} }} }});
   assert.strictEqual(recommendedActionCount(), 1, "console map should render one action");
+  const reviewContext = findByClass(byId("recommended-actions"), "recommended-action-review-context")[0];
+  assert(reviewContext.textContent.includes("human review required"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("key logo"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("item 1/2"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("file docs/submission/logo.md"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("check dimensions"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("marks this key only"), reviewContext.textContent);
 
   dispatch("message", {{
     data: {{

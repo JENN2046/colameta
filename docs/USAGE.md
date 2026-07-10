@@ -306,6 +306,13 @@ needs work, `fill_plan.draft_entries[]` contains copyable
 the placeholder content with real reviewed evidence before writing files or
 marking ready fields. The bundle does not write files, mark ready fields, create
 an OpenAI App draft, submit review, publish, or read tokens/cookies.
+When several evidence files are present but their manifest ready fields are
+false, Product Console creates one independently fingerprinted mark-ready action
+per key. Every action names its evidence files and required review sections, and
+its arguments contain exactly one key. The completion surface and default fill
+preview use the first item only; after that item is explicitly confirmed and
+marked ready, refresh readiness and Product Console to advance the queue. Product
+Console never recommends bulk confirmation of all remaining evidence.
 In the Commander widget, the Release Evidence panel prefers these bundle draft
 entries after a `Console` read and falls back to release-readiness progress and
 templates after a `Submission` read.
@@ -426,8 +433,10 @@ does not write files, mark ready fields, create an OpenAI App draft, submit
 review, or publish. When every evidence file is already present but the
 manifest ready fields are still false, the same preview returns
 `copyable_tool_call.tool=mark_submission_evidence_ready_fields` with
-`review_confirmation=human_reviewed`; run that commit-scoped tool only after a
-human reviewer confirms the referenced evidence is final. The Commander widget
+`review_confirmation=human_reviewed`. With no `selected_keys`, it returns only
+the next review key; run that commit-scoped tool only after a human reviewer
+confirms that key's referenced evidence is final, then refresh before reviewing
+the next key. The Commander widget
 `Fill Preview` button calls this read-only preview.
 If `fill_submission_evidence_files` or
 `mark_submission_evidence_ready_fields` returns `ok=false`, inspect
