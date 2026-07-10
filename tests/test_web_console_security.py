@@ -801,6 +801,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert trail["status"] in {"not_started", "followup_pending", "refresh_pending", "recorded", "ready"}
         assert isinstance(trail["recent_events"], list)
         assert isinstance(trail["pending_refreshes"], list)
+        assert isinstance(trail["recovery_actions"], list)
+        assert trail["recovery_action_count"] == len(trail["recovery_actions"])
         assert payload["operator_session_trail"]["status"] == trail["status"]
         from runner.web_console_v2_assets import render_v2_index_page
 
@@ -811,6 +813,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "category.primary_tool" in page
         assert "Operator trail" in page
         assert "operatorTrailText" in page
+        assert "recovery_action_count" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"

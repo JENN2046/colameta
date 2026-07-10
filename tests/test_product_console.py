@@ -288,6 +288,12 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert trail["followup_count"] == 3
     assert trail["next_item"]["item_id"] == "release_submission"
     assert trail["recent_events"] == []
+    assert trail["recovery_action_count"] == 1
+    assert trail["recovery_actions"][0]["kind"] == "next_followup"
+    assert trail["recovery_actions"][0]["tool"] == "init_submission_evidence"
+    assert trail["recovery_actions"][0]["required_scope"] == "mcp:commit"
+    assert trail["recovery_actions"][0]["can_run_now"] is False
+    assert trail["recovery_actions"][0]["copy_payload"]["item_id"] == "release_submission"
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
@@ -358,6 +364,12 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     assert trail["recent_events"][0]["status"] == "updated"
     assert trail["recent_events"][0]["tool"] == "render_commander_app"
     assert "secret-value" not in trail["recent_events"][0]["message"]
+    assert trail["recovery_action_count"] == 2
+    assert trail["recovery_actions"][0]["kind"] == "pending_refresh"
+    assert trail["recovery_actions"][0]["tool"] == "get_product_console_map"
+    assert trail["recovery_actions"][0]["required_scope"] == "mcp:read"
+    assert trail["recovery_actions"][0]["can_run_now"] is True
+    assert trail["recovery_actions"][0]["copy_payload"]["tool"] == "get_product_console_map"
     assert commander_action["last_action_result"]["status"] == "updated"
     assert commander_action["last_action_result"]["result_ok"] is True
     assert commander_action["last_action_result"]["fingerprint_verified"] is True

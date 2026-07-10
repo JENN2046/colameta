@@ -1279,8 +1279,9 @@ function renderServiceCapabilityCard(data) {{
     : "-";
   const trailEventCount = Array.isArray(operatorTrail.recent_events) ? operatorTrail.recent_events.length : 0;
   const trailRefreshCount = operatorTrail.pending_refresh_count === 0 || operatorTrail.pending_refresh_count ? operatorTrail.pending_refresh_count : "-";
+  const trailRecoveryCount = operatorTrail.recovery_action_count === 0 || operatorTrail.recovery_action_count ? operatorTrail.recovery_action_count : Array.isArray(operatorTrail.recovery_actions) ? operatorTrail.recovery_actions.length : "-";
   const trailNext = operatorTrail.next_item && (operatorTrail.next_item.label || operatorTrail.next_item.item_id) ? operatorTrail.next_item.label || operatorTrail.next_item.item_id : "-";
-  const operatorTrailText = (operatorTrail.status || "-") + " ｜ refresh " + trailRefreshCount + " ｜ events " + trailEventCount + " ｜ next " + trailNext;
+  const operatorTrailText = (operatorTrail.status || "-") + " ｜ refresh " + trailRefreshCount + " ｜ recovery " + trailRecoveryCount + " ｜ events " + trailEventCount + " ｜ next " + trailNext;
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;

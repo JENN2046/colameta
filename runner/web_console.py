@@ -1917,6 +1917,20 @@ class WebConsoleServer:
                         },
                         "pending_refreshes": [],
                         "recent_events": [],
+                        "recovery_actions": [
+                            {
+                                "action_id": "operator_followup_product_console_map",
+                                "kind": "next_followup",
+                                "label": "Follow Product Console Map",
+                                "tool": "get_product_console_map",
+                                "arguments": {"project_name": project_name},
+                                "mode": "read",
+                                "required_scope": "mcp:read",
+                                "gate_level": "read_only",
+                                "can_run_now": True,
+                            }
+                        ],
+                        "recovery_action_count": 1,
                     },
                 },
             }

@@ -6201,7 +6201,53 @@ class MCPPlanningBridgeServer:
         card.appendChild(meta);
         card.appendChild(summary);
         card.appendChild(detail);
+        renderOperatorSessionRecoveryActions(card, trail);
         target.appendChild(card);
+      }
+      function renderOperatorSessionRecoveryActions(card, trail) {
+        var actions = trail && Array.isArray(trail.recovery_actions) ? trail.recovery_actions : [];
+        if (!actions.length) return;
+        var controls = document.createElement("div");
+        controls.className = "action-refresh-queue operator-session-recovery-actions";
+        actions.slice(0, 5).forEach(function (action, index) {
+          if (!action || typeof action !== "object") return;
+          var key = ["operator-trail", action.action_id || action.tool || index].join("|");
+          var copy = document.createElement("button");
+          copy.className = "action-copy secondary operator-session-recovery-copy";
+          copy.type = "button";
+          copy.textContent = "Copy";
+          copy.title = action.label || "Copy recovery action";
+          copy.addEventListener("click", function () {
+            copyText(JSON.stringify(action.copy_payload || {
+              tool: action.tool,
+              arguments: action.arguments || {},
+              action: action.action,
+              action_id: action.action_id,
+              required_scope: action.required_scope,
+              gate_level: action.gate_level
+            }, null, 2), "Copied operator recovery action.");
+          });
+          controls.appendChild(copy);
+          var canRun = action.can_run_now === true && action.required_scope === "mcp:read" && typeof action.tool === "string" && action.tool;
+          var run = document.createElement("button");
+          run.className = "action-run operator-session-recovery-run";
+          run.type = "button";
+          run.textContent = canRun ? "Run" : (action.required_scope === "mcp:commit" ? "Confirm required" : "Preview first");
+          run.disabled = !canRun;
+          var status = document.createElement("span");
+          status.className = "action-run-status operator-session-recovery-status";
+          renderRefreshStatus(status, key);
+          run.addEventListener("click", async function () {
+            if (!canRun) return;
+            rememberActionRunStatus(key, "pending", action.tool);
+            renderRefreshStatus(status, key);
+            var result = await callToolWithArgs(action.tool, action.arguments || {}, "operator trail recovery", key);
+            if (result && result.status) renderRefreshStatus(status, key);
+          });
+          controls.appendChild(run);
+          controls.appendChild(status);
+        });
+        card.appendChild(controls);
       }
       function renderProductCompletionCategories(completion) {
         var target = byId("product-completion-categories");
