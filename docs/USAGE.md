@@ -403,7 +403,9 @@ When multiple incomplete categories reference the exact same
 `action_fingerprint`, the Product follow-up queue keeps one shared action and
 uses `components`, `related_item_ids`, and merged `gap_codes` to identify every
 category it covers. Categories retain their separate status and gaps while
-sharing one `followup_position`, and progress counts unique executable actions.
+sharing one `followup_position`; each related category card exposes controls
+for that same queue item and fingerprint, while progress counts the executable
+action only once.
 In addition to an exact fingerprint match, the queue rechecks that the primary
 executable tool or runbook, arguments, and scope match the action reference that
 owns the fingerprint. A read-only pending refresh produced by a write therefore

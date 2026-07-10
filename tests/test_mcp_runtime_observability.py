@@ -1964,6 +1964,25 @@ vm.runInThisContext({json.dumps(widget_script)});
           required_scope: "mcp:commit",
           gate_level: "explicit_apply_or_run_required"
         }}, {{
+          category_id: "submission_evidence",
+          component: "submission_evidence",
+          label: "Submission Evidence",
+          status: "needs_attention",
+          ready: false,
+          severity: "needs_attention",
+          gap_codes: ["SUBMISSION_EVIDENCE_NOT_READY"],
+          message: "Submission evidence is waiting on the shared follow-up.",
+          next_step: "Use the shared Evidence Activity follow-up.",
+          display_order: 2,
+          followup_position: 1,
+          followup_item: {{
+            item_id: "submission_evidence_activity",
+            shared_by_component_count: 2
+          }},
+          primary_tool: "record_product_console_action_result",
+          required_scope: "mcp:commit",
+          gate_level: "explicit_apply_or_run_required"
+        }}, {{
           category_id: "product_readiness",
           component: "product_readiness",
           label: "Product Readiness",
@@ -2064,6 +2083,19 @@ vm.runInThisContext({json.dumps(widget_script)});
         }},
         action_refs: [],
         empty_state: "Record the latest submission evidence activity after refresh/recovery actions."
+      }}, {{
+        group_id: "submission_evidence",
+        label: "Submission Evidence",
+        status: "needs_attention",
+        component: "submission_evidence",
+        gap_codes: ["SUBMISSION_EVIDENCE_NOT_READY"],
+        primary_action: {{
+          action: "record_submission_evidence_activity",
+          tool: "record_product_console_action_result",
+          authority: "commit"
+        }},
+        action_refs: [],
+        empty_state: "Use the shared Evidence Activity follow-up."
       }}],
       followup_queue: {{
         source: "product_console_closeout_followup_queue",
@@ -2162,6 +2194,11 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(productCompletionFollowupCopyButton(), "product completion category copy should render");
   assert(productCompletionFollowupRecordButton(), "product completion category record should render");
   assert(productCompletionFollowupRefreshButton(), "product completion category refresh should render");
+  assert.strictEqual(
+    findByClass(byId("product-completion-categories"), "closeout-followup-copy").length,
+    2,
+    "both categories covered by a shared queue item must expose its controls"
+  );
   assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());
   assert(closeoutGroupText().includes("gaps 1"), closeoutGroupText());
   assert(closeoutGroupText().includes("followup 1"), closeoutGroupText());
@@ -2173,6 +2210,11 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(closeoutFollowupCopyButton(), "closeout follow-up copy should render");
   assert(closeoutFollowupRecordButton(), "closeout follow-up record should render");
   assert(closeoutFollowupRefreshButton(), "closeout follow-up refresh should render");
+  assert.strictEqual(
+    findByClass(byId("closeout-action-groups"), "closeout-followup-copy").length,
+    2,
+    "both action groups covered by a shared queue item must expose its controls"
+  );
 
   operatorSessionRecoveryCopyButton().listeners.click[0]();
   await flushPromises();

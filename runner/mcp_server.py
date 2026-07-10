@@ -6433,17 +6433,8 @@ class MCPPlanningBridgeServer:
         })[0] || null;
       }
       function renderCloseoutFollowupControls(card, completion, group) {
-        var items = completionFollowupItems(completion).filter(function (item) {
-          var groupId = group.group_id || group.category_id;
-          var groupComponent = group.component || group.category_id || group.group_id;
-          return item && typeof item === "object" && (
-            item.item_id === groupId ||
-            item.component === groupComponent ||
-            item.component === groupId
-          );
-        });
-        if (!items.length) return;
-        var item = items[0];
+        var item = completionFollowupItemForGroup(completion, group);
+        if (!item) return;
         var action = closeoutFollowupAction(item);
         var key = closeoutFollowupKey(item, action);
         var controls = document.createElement("div");
