@@ -1540,6 +1540,12 @@ function renderProductFollowupQueue(completion) {{
         h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy follow-up</button>`;
         h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(recordPayload)}}" aria-label="${{escAttr(recordLabel)}}" title="${{escAttr(recordLabel)}}">Copy record</button>`;
       }}
+      const directRecordAction = productFollowupDirectRecordAction(item, primary);
+      if (directRecordAction) {{
+        const directRecordPayload = JSON.stringify(directRecordAction);
+        const directRecordLabel = "显式确认并记录 Product follow-up 结果：" + label;
+        h += `<button type="button" class="operator-inbox-btn" data-record-product-followup="${{escAttr(directRecordPayload)}}" aria-label="${{escAttr(directRecordLabel)}}" title="${{escAttr(directRecordLabel)}}">Record result</button>`;
+      }}
       h += `</div>`;
       h += `</div>`;
     }}
@@ -1547,7 +1553,7 @@ function renderProductFollowupQueue(completion) {{
       h += `<div class="product-followup-meta">还有 ${{items.length - 3}} 个 follow-up 项，请在右侧 INBOX 查看。</div>`;
     }}
   }}
-  h += `<div class="product-followup-meta">队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。</div>`;
+  h += `<div class="product-followup-meta">队列读取与 Copy 本身只读；Record result 只写 runtime 摘要，必须经过 dangerous confirmation；其他 Run 入口仍受 INBOX scope gate 控制。</div>`;
   h += `</div>`;
   return h;
 }}
@@ -1587,6 +1593,30 @@ function productFollowupRecordPayload(item, primary, scope) {{
       action_fingerprint: item.action_fingerprint || primary.action_fingerprint || "",
     }},
   }}, actionKey);
+}}
+
+function productFollowupDirectRecordAction(item, primary) {{
+  item = item || {{}};
+  primary = primary || {{}};
+  const primaryTool = item.primary_tool || primary.tool || "";
+  if (primaryTool !== "record_product_console_action_result") return null;
+  const recordPayload = productFollowupRecordPayload(item, primary, item.required_scope || primary.required_scope || "mcp:commit");
+  const args = recordPayload && recordPayload.arguments && typeof recordPayload.arguments === "object"
+    ? Object.assign({{}}, recordPayload.arguments)
+    : {{}};
+  if (!args.action_id || !args.tool || !args.status) return null;
+  const message = String(args.message || "").trim();
+  if (!message || message.toLowerCase().startsWith("<operator-confirmed")) {{
+    args.message = "Recorded from Web Product follow-up after explicit operator confirmation.";
+  }}
+  if (typeof args.result_ok !== "boolean") args.result_ok = true;
+  return {{
+    action: "record_product_console_action_result",
+    params: args,
+    label: "Record Product Console action result",
+    target: [args.action_id, args.tool, args.status].filter(Boolean).join(" | "),
+    reason: "Persist this operator-confirmed runtime summary, then refresh Product Console closeout.",
+  }};
 }}
 
 function openProductFollowupInInbox(itemId) {{
@@ -1836,7 +1866,7 @@ function renderServiceCapabilityCard(data) {{
     }}
     h += `</div>`;
   }}
-  h += `<div class="service-boundary">网页只展示服务事实和复制 MCP 调用，不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
+  h += `<div class="service-boundary">网页主要展示服务事实和复制 MCP 调用；Product follow-up 的 Record result 只在 dangerous confirmation 后写 runtime 摘要；不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
   h += `</div>`;
   return h;
 }}
@@ -1923,6 +1953,40 @@ function bindOperatorInboxActions(root) {{
   root.querySelectorAll("[data-copy-operator-inbox]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       copyTextToClipboard(this.getAttribute("data-copy-operator-inbox") || "", this);
+    }});
+  }});
+  root.querySelectorAll("[data-record-product-followup]").forEach(function(btn) {{
+    btn.addEventListener("click", async function() {{
+      if (this.disabled) return;
+      const originalText = this.textContent;
+      this.disabled = true;
+      this.setAttribute("aria-busy", "true");
+      this.textContent = "Recording";
+      setGlobalLoading(true, "正在记录 Product follow-up 结果...");
+      clearGlobalError();
+      try {{
+        const nextAction = JSON.parse(this.getAttribute("data-record-product-followup") || "{{}}");
+        const payload = {{
+          next_action: nextAction,
+          client_context: {{
+            source_url: window.location.href,
+            timestamp: new Date().toISOString(),
+          }},
+        }};
+        const data = await dangerousPostAction("/api/v2/action", payload);
+        if (data && data.ok === false) {{
+          showError(data.message || data.error_code || "记录失败。");
+          return;
+        }}
+        render(data);
+      }} catch (e) {{
+        showError(String(e));
+      }} finally {{
+        this.disabled = false;
+        this.setAttribute("aria-busy", "false");
+        this.textContent = originalText;
+        setGlobalLoading(false);
+      }}
     }});
   }});
   root.querySelectorAll("[data-run-operator-inbox]").forEach(function(btn) {{

@@ -25,7 +25,7 @@ from runner.executor_registry import (
 )
 from runner.executor_inventory import get_executor_inventory_summary
 from runner.project_identity import build_project_identity
-from runner.product_console import build_product_console_map
+from runner.product_console import build_product_console_map, record_product_console_action_result
 from runner.execution_branch import ExecutionBranchController
 from runner.mcp_executor_workflow import (
     CLAIM_HEARTBEAT_INTERVAL_SECONDS,
@@ -191,6 +191,18 @@ DANGEROUS_REGISTRY_ACTIONS = frozenset({
     "project_registry_unregister",
     "project_registry_prune_unavailable",
     "project_registry_prune_temporary",
+})
+
+WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION = "record_product_console_action_result"
+WEB_V2_PRODUCT_CONSOLE_RECORD_STATUSES = frozenset({"updated", "blocked", "failed"})
+WEB_V2_PRODUCT_CONSOLE_RECORD_FIELDS = frozenset({
+    "action_id",
+    "tool",
+    "mode",
+    "status",
+    "message",
+    "result_ok",
+    "action_fingerprint",
 })
 
 REMOTE_GIT_WEB_MUTATION_ACTIONS = frozenset({
@@ -1031,6 +1043,30 @@ class WebConsoleServer:
             if not isinstance(next_action, dict):
                 return None
             action_name = str(next_action.get("action") or "").strip().lower()
+            if action_name == WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
+                params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
+                action_id = str(params.get("action_id") or "").strip()
+                tool = str(params.get("tool") or "").strip()
+                status = str(params.get("status") or "").strip().lower()
+                target = " | ".join(value for value in (action_id, tool, status) if value) or "Product Console action result"
+                return {
+                    "action_type": "web_v2_record_product_console_action_result",
+                    "risk_class": "runtime_summary_write",
+                    "target_summary": {
+                        "action_id": action_id,
+                        "tool": tool,
+                        "mode": str(params.get("mode") or "read").strip().lower(),
+                        "status": status,
+                        "result_ok": params.get("result_ok") if isinstance(params.get("result_ok"), bool) else None,
+                        "action_fingerprint_present": bool(str(params.get("action_fingerprint") or "").strip()),
+                        "writes_runtime_summary_only": True,
+                    },
+                    "display_summary": {
+                        "title": "Record Product Console action result",
+                        "target": target,
+                        "rollback_guidance": "Record a corrected result for the same action key, then refresh Product Console.",
+                    },
+                }
             if action_name not in DANGEROUS_REGISTRY_ACTIONS:
                 return None
             params = next_action.get("params") if isinstance(next_action.get("params"), dict) else {}
@@ -3996,6 +4032,8 @@ class WebConsoleServer:
         registry_result = self._handle_registry_action(action_name, next_action)
         if registry_result is not None:
             return registry_result
+        if action_name == WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
+            return self._handle_product_console_record_action(next_action)
 
         core_request = CoreRequest.from_web_action(
             next_action,
@@ -4034,6 +4072,158 @@ class WebConsoleServer:
         orchestrator = WorkflowOrchestrator(self.project_root)
         core_output = orchestrator.handle_request(core_request)
         return self._json_safe(core_output)
+
+    def _handle_product_console_record_action(self, next_action: dict[str, Any]) -> dict[str, Any]:
+        params = next_action.get("params")
+        if not isinstance(params, dict):
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_PARAMS_REQUIRED", "Record action params are required.")
+        unknown_fields = sorted(str(key) for key in params if key not in WEB_V2_PRODUCT_CONSOLE_RECORD_FIELDS)
+        if unknown_fields:
+            return self._product_console_record_error(
+                "PRODUCT_CONSOLE_RECORD_FIELDS_INVALID",
+                f"Unsupported record fields: {', '.join(unknown_fields)}.",
+            )
+        action_id = params.get("action_id")
+        tool = params.get("tool")
+        status = params.get("status")
+        message = params.get("message")
+        if not isinstance(action_id, str) or not action_id.strip():
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_ACTION_ID_REQUIRED", "action_id is required.")
+        if not isinstance(tool, str) or not tool.strip():
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_TOOL_REQUIRED", "tool is required.")
+        if not isinstance(status, str) or status.strip().lower() not in WEB_V2_PRODUCT_CONSOLE_RECORD_STATUSES:
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_STATUS_INVALID", "status is invalid.")
+        if not isinstance(message, str) or not message.strip():
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_MESSAGE_REQUIRED", "A short result summary is required.")
+        if "<operator-confirmed" in message.lower():
+            return self._product_console_record_error(
+                "PRODUCT_CONSOLE_RECORD_PLACEHOLDER_REJECTED",
+                "Replace the operator-confirmed placeholder before recording.",
+            )
+        mode = params.get("mode", "read")
+        if not isinstance(mode, str) or mode.strip().lower() not in {"read", "preview", "commit"}:
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_MODE_INVALID", "mode is invalid.")
+        result_ok = params.get("result_ok")
+        if not isinstance(result_ok, bool):
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_RESULT_OK_INVALID", "result_ok must be boolean.")
+        normalized_status = status.strip().lower()
+        if (normalized_status == "updated") != result_ok:
+            return self._product_console_record_error(
+                "PRODUCT_CONSOLE_RECORD_RESULT_CONFLICT",
+                "updated requires result_ok=true; blocked or failed requires result_ok=false.",
+            )
+        action_fingerprint = params.get("action_fingerprint")
+        if action_fingerprint is not None and not isinstance(action_fingerprint, str):
+            return self._product_console_record_error(
+                "PRODUCT_CONSOLE_RECORD_FINGERPRINT_INVALID",
+                "action_fingerprint must be a string.",
+            )
+        followup_error = self._current_product_console_record_followup_error(
+            action_id=action_id.strip(),
+            tool=tool.strip(),
+            mode=mode.strip().lower(),
+            status=normalized_status,
+            result_ok=result_ok,
+            action_fingerprint=action_fingerprint.strip() if isinstance(action_fingerprint, str) else "",
+        )
+        if followup_error is not None:
+            return self._product_console_record_error("PRODUCT_CONSOLE_RECORD_FOLLOWUP_MISMATCH", followup_error)
+
+        recorded = record_product_console_action_result(
+            self.project_root,
+            action_id=action_id.strip(),
+            tool=tool.strip(),
+            mode=mode.strip().lower(),
+            status=normalized_status,
+            message=message.strip(),
+            result_ok=result_ok,
+            action_fingerprint=action_fingerprint.strip() if isinstance(action_fingerprint, str) else None,
+        )
+        refreshed = self._api_v2_status()
+        refreshed["action"] = WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION
+        refreshed["message"] = "Product Console action result recorded; closeout status refreshed."
+        refreshed["action_outcome"] = {
+            "code": "SUCCESS",
+            "message": refreshed["message"],
+        }
+        refreshed["product_console_record_result"] = self._json_safe(recorded)
+        return refreshed
+
+    def _current_product_console_record_followup_error(
+        self,
+        *,
+        action_id: str,
+        tool: str,
+        mode: str,
+        status: str,
+        result_ok: bool,
+        action_fingerprint: str,
+    ) -> str | None:
+        try:
+            identity = build_project_identity(self.project_root)
+            project_name = str(identity.get("project_name") or "").strip() or None
+            packet = build_product_console_map(
+                self.project_root,
+                project_name=project_name,
+                include_readiness=False,
+                include_full_loop_authority=False,
+                include_release_submission=False,
+            )
+        except Exception:
+            return "Current Product Console follow-up queue is unavailable."
+        completion = packet.get("completion_surface") if isinstance(packet.get("completion_surface"), dict) else {}
+        queue = completion.get("followup_queue") if isinstance(completion.get("followup_queue"), dict) else {}
+        items = queue.get("items") if isinstance(queue.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            primary = item.get("primary_action") if isinstance(item.get("primary_action"), dict) else {}
+            primary_tool = str(item.get("primary_tool") or primary.get("tool") or "").strip()
+            if primary_tool != WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION:
+                continue
+            arguments = primary.get("arguments") if isinstance(primary.get("arguments"), dict) else {}
+            expected_fingerprint = str(
+                arguments.get("action_fingerprint")
+                or item.get("action_fingerprint")
+                or primary.get("action_fingerprint")
+                or ""
+            ).strip()
+            expected = {
+                "action_id": str(arguments.get("action_id") or "").strip(),
+                "tool": str(arguments.get("tool") or "").strip(),
+                "mode": str(arguments.get("mode") or "read").strip().lower(),
+                "status": str(arguments.get("status") or "").strip().lower(),
+                "result_ok": arguments.get("result_ok") if isinstance(arguments.get("result_ok"), bool) else None,
+                "action_fingerprint": expected_fingerprint,
+            }
+            actual = {
+                "action_id": action_id,
+                "tool": tool,
+                "mode": mode,
+                "status": status,
+                "result_ok": result_ok,
+                "action_fingerprint": action_fingerprint,
+            }
+            if actual == expected:
+                return None
+        return "Record payload does not match a current Product Console follow-up action."
+
+    @staticmethod
+    def _product_console_record_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "web_v2",
+            "action": WEB_V2_PRODUCT_CONSOLE_RECORD_ACTION,
+            "status": "failed",
+            "risk_level": "error",
+            "error_code": error_code,
+            "message": message,
+            "action_outcome": {
+                "code": "FAILED",
+                "message": message,
+                "error_code": error_code,
+            },
+        }
 
     @staticmethod
     def _api_v2_health() -> dict[str, Any]:

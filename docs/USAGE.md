@@ -354,6 +354,17 @@ runtime-summary write only; it is not automatic and it does not authorize the
 original action. After the record write and console refresh both complete, the
 card reports `recorded | refresh current` and disables the Record button until
 another local action result is produced.
+The Web v2 Product follow-up queue also exposes `Record result` when the
+follow-up action itself is `record_product_console_action_result`. This is the
+only Product Console write allowed through that queue: Web first creates a
+payload-bound dangerous-action preview, requires explicit browser confirmation,
+writes only the redacted runtime summary, and returns a freshly rebuilt v2
+status so closeout progress can advance immediately. Placeholder summaries are
+replaced by a bounded Web-confirmation summary before preview; the server still
+rejects missing/placeholder messages, unknown fields, invalid modes/statuses,
+and confirmation payload mismatches. All other Web v2 write intents remain
+blocked, and this path does not execute the original action or authorize
+submission, publish, commit, push, or stable replacement.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it

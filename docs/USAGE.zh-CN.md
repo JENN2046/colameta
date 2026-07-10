@@ -220,6 +220,14 @@ Commander 也会在 widget 内 read action 有本地结果后显示 `Record` 按
 call 或 bridge result path 成功，再刷新 `get_product_console_map`。这只是 runtime summary
 写入，不是自动记录，也不授权原 action。当记录写入和 console refresh 都完成后，卡片会显示
 `recorded | refresh current`，并禁用 Record 按钮，直到产生下一次本地 action result。
+Web v2 的 Product follow-up 队列在 follow-up 本身就是
+`record_product_console_action_result` 时也会显示 `Record result`。这是该队列唯一允许的
+Product Console 写入：Web 先生成与完整 payload 绑定的 dangerous-action preview，要求浏览器
+显式确认，只写经过脱敏和截断的 runtime 摘要，然后返回重新构建的 v2 状态，让 closeout
+进度立即推进。preview 前会把占位摘要替换成有边界的 Web 确认摘要；服务端仍会拒绝缺失或
+占位 message、未知字段、非法 mode/status 和 confirmation payload mismatch。其他 Web v2
+write intent 继续全部阻断；这条路径不会执行原动作，也不授权 submission、publish、commit、
+push 或 stable replacement。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 

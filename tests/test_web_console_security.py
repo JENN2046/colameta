@@ -214,10 +214,16 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'action_fingerprint: item.action_fingerprint || primary.action_fingerprint || ""' in page
         assert 'action_id: item.action_id || primary.action_id || ""' in page
         assert "productFollowupRecordPayload" in page
+        assert "productFollowupDirectRecordAction" in page
         assert "const recordPayload = JSON.stringify(productFollowupRecordPayload(item, primary, scope), null, 2)" in page
         assert "复制 Product follow-up 结果记录模板：" in page
         assert "Copy follow-up" in page
         assert "Copy record" in page
+        assert "Record result" in page
+        assert "data-record-product-followup" in page
+        assert 'dangerousPostAction("/api/v2/action", payload)' in page
+        assert "其他 Run 入口仍受 INBOX scope gate 控制" in page
+        assert "Record result 只在 dangerous confirmation 后写 runtime 摘要" in page
 
     def test_submission_activity_record_copy_uses_underlying_action_arguments(self) -> None:
         if shutil.which("node") is None:
@@ -236,7 +242,7 @@ const argumentsPayload = {
   tool: "submission_evidence_activity_summary",
   mode: "read",
   status: "updated",
-  message: "operator-confirmed evidence activity",
+  message: "<operator-confirmed evidence activity>",
   result_ok: true,
 };
 const result = productFollowupRecordPayload({
@@ -270,6 +276,22 @@ const fingerprintBound = productFollowupRecordPayload({
   },
 }, "mcp:commit");
 assert.strictEqual(fingerprintBound.arguments.action_fingerprint, "bound-fingerprint");
+const directRecord = productFollowupDirectRecordAction({
+  item_id: "submission_evidence_activity",
+  component: "submission_evidence_activity",
+  primary_tool: "record_product_console_action_result",
+  required_scope: "mcp:commit",
+}, {
+  action: "record_submission_evidence_activity",
+  tool: "record_product_console_action_result",
+  arguments: argumentsPayload,
+  required_scope: "mcp:commit",
+});
+assert.strictEqual(directRecord.action, "record_product_console_action_result");
+assert.strictEqual(directRecord.params.action_id, "submission_evidence_activity");
+assert.strictEqual(directRecord.params.tool, "submission_evidence_activity_summary");
+assert.strictEqual(directRecord.params.message, "Recorded from Web Product follow-up after explicit operator confirmation.");
+assert.strictEqual(directRecord.params.result_ok, true);
 '''
         completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
         assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -916,7 +938,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "showRightTab(\"operator-inbox\")" in page
         assert "data-operator-inbox-followup-item-id" in page
         assert "target-highlight" in page
-        assert "队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。" in page
+        assert "队列读取与 Copy 本身只读" in page
+        assert "Record result 只在 dangerous confirmation 后写 runtime 摘要" in page
         assert "Open INBOX" in page
         assert "Copy follow-up" in page
         assert "item_id: followupItemId" in page
@@ -1399,6 +1422,166 @@ class WebConsoleSecurityTests(unittest.TestCase):
             project.get("project_root") != str(other_project)
             for project in registry.get("projects", [])
         )
+
+    def test_v2_product_console_record_requires_confirmation_and_refreshes_closeout(self) -> None:
+        from runner.product_console import load_product_console_action_results
+
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        params = {
+            "action_id": "submission_evidence_activity",
+            "tool": "submission_evidence_activity_summary",
+            "mode": "read",
+            "status": "updated",
+            "message": "Recorded from Web Product follow-up after explicit operator confirmation.",
+            "result_ok": True,
+        }
+        request_body = {
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": params,
+                "label": "Record Product Console action result",
+            }
+        }
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload=request_body,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+        assert load_product_console_action_results(str(self.project))["results"] == []
+
+        confirmation_id = self.dangerous_preview("/api/v2/action", request_body)
+        preview = self.server.dangerous_action_guard.preview_snapshot(confirmation_id)
+        assert preview is not None
+        assert preview["action_type"] == "web_v2_record_product_console_action_result"
+        assert preview["risk_class"] == "runtime_summary_write"
+        assert preview["target_summary"]["action_id"] == "submission_evidence_activity"
+        assert preview["target_summary"]["action_fingerprint_present"] is False
+        assert "message" not in preview["target_summary"]
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={
+                **request_body,
+                "next_action": {
+                    **request_body["next_action"],
+                    "params": {**params, "message": "tampered summary"},
+                },
+                "confirmation_id": confirmation_id,
+            },
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+        assert load_product_console_action_results(str(self.project))["results"] == []
+
+        confirmation_id = self.dangerous_preview("/api/v2/action", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["action"] == "record_product_console_action_result"
+        assert payload["action_outcome"]["code"] == "SUCCESS"
+        recorded = payload["product_console_record_result"]["recorded_result"]
+        assert recorded["action_key"] == "submission_evidence_activity|submission_evidence_activity_summary|read"
+        assert payload["dangerous_action_receipt"]["confirmation_validated"] is True
+        assert payload["dangerous_action_receipt"]["confirmation_id"] == "REDACTED"
+        activity = payload["product_console_completion"]["components"]["submission_evidence_activity"]
+        assert activity["ready"] is True
+        stored = load_product_console_action_results(str(self.project))["results"][0]
+        assert stored["action_key"] == recorded["action_key"]
+        assert stored["message"] == params["message"]
+
+    def test_v2_product_console_record_rejects_placeholder_and_unknown_fields(self) -> None:
+        assert self.server is None
+        from runner.web_console import WebConsoleServer
+        from runner.product_console import load_product_console_action_results
+
+        server = WebConsoleServer(str(self.project))
+        base_params = {
+            "action_id": "submission_evidence_activity",
+            "tool": "submission_evidence_activity_summary",
+            "mode": "read",
+            "status": "updated",
+            "message": "<operator-confirmed submission evidence activity summary>",
+            "result_ok": True,
+        }
+
+        placeholder = server._api_v2_action({
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": base_params,
+            }
+        })
+        assert placeholder["ok"] is False
+        assert placeholder["error_code"] == "PRODUCT_CONSOLE_RECORD_PLACEHOLDER_REJECTED"
+
+        unknown = server._api_v2_action({
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": {**base_params, "message": "reviewed", "project_root": "/tmp/other"},
+            }
+        })
+        assert unknown["ok"] is False
+        assert unknown["error_code"] == "PRODUCT_CONSOLE_RECORD_FIELDS_INVALID"
+
+        conflict = server._api_v2_action({
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": {
+                    **base_params,
+                    "message": "reviewed",
+                    "status": "failed",
+                },
+            }
+        })
+        assert conflict["ok"] is False
+        assert conflict["error_code"] == "PRODUCT_CONSOLE_RECORD_RESULT_CONFLICT"
+
+        unexpected_fingerprint = server._api_v2_action({
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": {
+                    **base_params,
+                    "message": "reviewed",
+                    "action_fingerprint": "not-bound-by-current-followup",
+                },
+            }
+        })
+        assert unexpected_fingerprint["ok"] is False
+        assert unexpected_fingerprint["error_code"] == "PRODUCT_CONSOLE_RECORD_FOLLOWUP_MISMATCH"
+
+        mismatch = server._api_v2_action({
+            "next_action": {
+                "action": "record_product_console_action_result",
+                "params": {
+                    **base_params,
+                    "action_id": "not_the_current_followup",
+                    "message": "reviewed",
+                },
+            }
+        })
+        assert mismatch["ok"] is False
+        assert mismatch["error_code"] == "PRODUCT_CONSOLE_RECORD_FOLLOWUP_MISMATCH"
+        assert load_product_console_action_results(str(self.project))["results"] == []
 
     def test_switch_project_requires_correct_target_confirmation(self) -> None:
         self.start_web()
