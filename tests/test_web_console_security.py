@@ -874,6 +874,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "backgroundPollStatusText" in page
         assert "setRefreshStatus" in page
         assert "renderRefreshStatus" in page
+        assert "projectManagementSyncStatusText" in page
+        assert "项目登记数据：" in page
+        assert 'class="modal-sync-status" role="status" aria-live="polite"' in page
+        assert "renderProjectManagementModal(latestStatusData || {})" in page
         assert "最后刷新 " in page
         assert "后台轮询每 5 秒" in page
         assert "后台轮询正常，无变化" in page
