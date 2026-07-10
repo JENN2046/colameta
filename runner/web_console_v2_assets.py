@@ -1498,9 +1498,9 @@ function bindOperatorInboxActions(root) {{
         setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...");
         const data = await runAction(action, latestStatusData || {{}});
         if (data && data.ok === false) {{
-          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。");
+          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data);
         }} else {{
-          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。");
+          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data);
         }}
       }} catch (e) {{
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
@@ -1526,11 +1526,35 @@ function operatorInboxFeedbackFor(actionKey) {{
   return operatorInboxRunFeedback;
 }}
 
-function setOperatorInboxRunFeedback(actionKey, state, message) {{
+function operatorInboxSignature(data) {{
+  const inbox = operatorInboxFromData(data || {{}});
+  const items = Array.isArray(inbox.items) ? inbox.items : [];
+  return items.map(function(item) {{
+    item = item || {{}};
+    return [
+      operatorInboxActionKey(item),
+      item.can_run_now === true ? "run" : "gate",
+      item.required_scope || "",
+      item.gate_level || "",
+      item.tool || "",
+    ].join(":");
+  }}).join("|");
+}}
+
+function clearStaleOperatorInboxFeedback(data) {{
+  if (!operatorInboxRunFeedback || operatorInboxRunFeedback.state === "running") return;
+  const currentSignature = operatorInboxSignature(data || {{}});
+  if (operatorInboxRunFeedback.inboxSignature && operatorInboxRunFeedback.inboxSignature !== currentSignature) {{
+    operatorInboxRunFeedback = null;
+  }}
+}}
+
+function setOperatorInboxRunFeedback(actionKey, state, message, data) {{
   operatorInboxRunFeedback = {{
     actionKey: actionKey,
     state: state,
     message: message,
+    inboxSignature: operatorInboxSignature(data || latestStatusData || {{}}),
   }};
   if (latestStatusData) {{
     renderRightColumn(latestStatusData);
@@ -2184,6 +2208,7 @@ function renderOperatorInboxPanel(data) {{
 function renderRightColumn(data) {{
   let h = "";
   activeRightTab = normalizeRightTab(activeRightTab);
+  clearStaleOperatorInboxFeedback(data || {{}});
   const todoForBadge = (data || {{}}).todolist || {{}};
   const todoItemsForBadge = Array.isArray(todoForBadge.items) ? todoForBadge.items : [];
   const todoCount = todoForBadge.ok === false ? 0 : todoItemsForBadge.length;
