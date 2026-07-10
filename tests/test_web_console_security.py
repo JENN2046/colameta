@@ -856,6 +856,25 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'role="tablist"' in page
         assert 'role="tab"' in page
         assert 'role="tabpanel"' in page
+        assert 'role="dialog" aria-modal="true" aria-labelledby="project-management-modal-title" tabindex="-1"' in page
+        assert 'role="dialog" aria-modal="true" aria-labelledby="issue-detail-modal-title" tabindex="-1"' in page
+        assert 'role="dialog" aria-modal="true" aria-labelledby="todo-detail-modal-title" tabindex="-1"' in page
+        assert 'role="dialog" aria-modal="true" aria-labelledby="version-prompt-modal-title" tabindex="-1"' in page
+        assert 'aria-label="关闭项目登记管理"' in page
+        assert "activeModalId" in page
+        assert "modalReturnFocus" in page
+        assert "function openModal" in page
+        assert "function closeModal" in page
+        assert "function closeActiveModal" in page
+        assert "focusModal" in page
+        assert "document.addEventListener(\"keydown\"" in page
+        assert 'event.key === "Escape"' in page
+        assert "document.contains(returnFocus)" in page
+        assert 'openModal("project-management-modal")' in page
+        assert 'openModal("issue-detail-modal")' in page
+        assert 'openModal("todo-detail-modal")' in page
+        assert 'openModal("version-prompt-modal")' in page
+        assert 'closeModal("project-management-modal", event)' in page
         assert 'id="loading" role="status" aria-live="polite"' in page
         assert 'id="error" role="alert" aria-live="assertive"' in page
         assert "#loading[aria-hidden=\"true\"]" in page

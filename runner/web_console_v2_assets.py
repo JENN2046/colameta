@@ -240,37 +240,37 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
   <div id="loading" role="status" aria-live="polite" aria-busy="false" aria-hidden="true">加载中…</div>
   <div id="error" role="alert" aria-live="assertive" aria-hidden="true"></div>
   <div id="project-management-modal" class="modal-backdrop" onclick="closeProjectManagement(event)">
-    <div class="modal-panel" onclick="event.stopPropagation()">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="project-management-modal-title" tabindex="-1" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <div class="modal-title">项目登记管理</div>
-        <button type="button" class="modal-close" onclick="closeProjectManagement()">关闭</button>
+        <div id="project-management-modal-title" class="modal-title">项目登记管理</div>
+        <button type="button" class="modal-close" aria-label="关闭项目登记管理" onclick="closeProjectManagement()">关闭</button>
       </div>
       <div id="project-management-modal-body" class="modal-body"></div>
     </div>
   </div>
   <div id="issue-detail-modal" class="modal-backdrop" onclick="closeIssueModal(event)">
-    <div class="modal-panel" onclick="event.stopPropagation()">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="issue-detail-modal-title" tabindex="-1" onclick="event.stopPropagation()">
       <div class="modal-header">
         <div id="issue-detail-modal-title" class="modal-title">问题详情</div>
-        <button type="button" class="modal-close" onclick="closeIssueModal()">关闭</button>
+        <button type="button" class="modal-close" aria-label="关闭问题详情" onclick="closeIssueModal()">关闭</button>
       </div>
       <div id="issue-detail-modal-body" class="modal-body"></div>
     </div>
   </div>
   <div id="todo-detail-modal" class="modal-backdrop" onclick="closeTodoModal(event)">
-    <div class="modal-panel" onclick="event.stopPropagation()">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="todo-detail-modal-title" tabindex="-1" onclick="event.stopPropagation()">
       <div class="modal-header">
         <div id="todo-detail-modal-title" class="modal-title">TODO 详情</div>
-        <button type="button" class="modal-close" onclick="closeTodoModal()">关闭</button>
+        <button type="button" class="modal-close" aria-label="关闭 TODO 详情" onclick="closeTodoModal()">关闭</button>
       </div>
       <div id="todo-detail-modal-body" class="modal-body"></div>
     </div>
   </div>
   <div id="version-prompt-modal" class="modal-backdrop" onclick="closeVersionPromptModal(event)">
-    <div class="modal-panel" onclick="event.stopPropagation()">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="version-prompt-modal-title" tabindex="-1" onclick="event.stopPropagation()">
       <div class="modal-header">
         <div id="version-prompt-modal-title" class="modal-title">Prompt</div>
-        <button type="button" class="modal-close" onclick="closeVersionPromptModal()">关闭</button>
+        <button type="button" class="modal-close" aria-label="关闭 Prompt" onclick="closeVersionPromptModal()">关闭</button>
       </div>
       <div id="version-prompt-modal-body" class="modal-body"></div>
     </div>
@@ -387,6 +387,50 @@ const TODO_PAGE_SIZE_MAX = 20;
 let adaptiveTodoPageSize = TODO_PAGE_SIZE_DEFAULT;
 let adaptiveTodoPageSizeSyncing = false;
 const DECISION_PAGE_SIZE = 8;
+let activeModalId = "";
+let modalReturnFocus = null;
+
+function focusModal(modal) {{
+  if (!modal) return;
+  const closeButton = modal.querySelector(".modal-close");
+  const panel = modal.querySelector(".modal-panel");
+  const target = closeButton || panel || modal;
+  if (target && typeof target.focus === "function") target.focus();
+}}
+
+function openModal(modalId) {{
+  const modal = $(modalId);
+  if (!modal) return;
+  const active = document.activeElement;
+  modalReturnFocus = active && typeof active.focus === "function" ? active : null;
+  activeModalId = modalId;
+  modal.classList.add("open");
+  window.setTimeout(function() {{ focusModal(modal); }}, 0);
+}}
+
+function closeModal(modalId, event) {{
+  if (event && event.target && event.currentTarget && event.target !== event.currentTarget) return;
+  const modal = $(modalId);
+  if (modal) modal.classList.remove("open");
+  if (activeModalId === modalId) activeModalId = "";
+  const returnFocus = modalReturnFocus;
+  modalReturnFocus = null;
+  if (returnFocus && typeof returnFocus.focus === "function" && document.contains(returnFocus)) {{
+    returnFocus.focus();
+  }}
+}}
+
+function closeActiveModal() {{
+  if (!activeModalId) return;
+  closeModal(activeModalId);
+}}
+
+document.addEventListener("keydown", function(event) {{
+  if (event.key === "Escape" && activeModalId) {{
+    event.preventDefault();
+    closeActiveModal();
+  }}
+}});
 
 async function fetchStatus() {{
   const controller = new AbortController();
@@ -1809,14 +1853,11 @@ function applyProjectIdentity() {{
 
 function openProjectManagement() {{
   renderProjectManagementModal(latestStatusData || {{}});
-  const modal = $("project-management-modal");
-  if (modal) modal.classList.add("open");
+  openModal("project-management-modal");
 }}
 
 function closeProjectManagement(event) {{
-  if (event && event.target && event.currentTarget && event.target !== event.currentTarget) return;
-  const modal = $("project-management-modal");
-  if (modal) modal.classList.remove("open");
+  closeModal("project-management-modal", event);
 }}
 
 function openIssueModal(kind) {{
@@ -1833,14 +1874,11 @@ function openIssueModal(kind) {{
       body.innerHTML = `<div class="empty-state">暂无${{kind === "warnings" ? "警告" : "阻断问题"}}</div>`;
     }}
   }}
-  const modal = $("issue-detail-modal");
-  if (modal) modal.classList.add("open");
+  openModal("issue-detail-modal");
 }}
 
 function closeIssueModal(event) {{
-  if (event && event.target && event.currentTarget && event.target !== event.currentTarget) return;
-  const modal = $("issue-detail-modal");
-  if (modal) modal.classList.remove("open");
+  closeModal("issue-detail-modal", event);
 }}
 
 function openTodoModal(todoId, content) {{
@@ -1850,14 +1888,11 @@ function openTodoModal(todoId, content) {{
   if (body) {{
     body.innerHTML = `<div class="todo-detail-id">${{esc(todoId || "-")}}</div><div class="todo-detail-content">${{esc(content || "")}}</div>`;
   }}
-  const modal = $("todo-detail-modal");
-  if (modal) modal.classList.add("open");
+  openModal("todo-detail-modal");
 }}
 
 function closeTodoModal(event) {{
-  if (event && event.target && event.currentTarget && event.target !== event.currentTarget) return;
-  const modal = $("todo-detail-modal");
-  if (modal) modal.classList.remove("open");
+  closeModal("todo-detail-modal", event);
 }}
 
 let versionDetailModalData = null;
@@ -1911,8 +1946,7 @@ function openVersionPromptModal(version) {{
   versionDetailModalData = null;
   if (titleEl) titleEl.textContent = version;
   if (body) body.innerHTML = `<div class="empty-state">加载中…</div>`;
-  const modal = $("version-prompt-modal");
-  if (modal) modal.classList.add("open");
+  openModal("version-prompt-modal");
 
   fetch("/api/version-prompt?version=" + encodeURIComponent(version), {{ headers: readHeaders() }})
     .then(function(r) {{ return r.json(); }})
@@ -1930,9 +1964,7 @@ function openVersionPromptModal(version) {{
 }}
 
 function closeVersionPromptModal(event) {{
-  if (event && event.target && event.currentTarget && event.target !== event.currentTarget) return;
-  const modal = $("version-prompt-modal");
-  if (modal) modal.classList.remove("open");
+  closeModal("version-prompt-modal", event);
 }}
 
 function openDecisionModal(decisionId, title, decision, reason, relatedVersions, status) {{
@@ -1943,8 +1975,7 @@ function openDecisionModal(decisionId, title, decision, reason, relatedVersions,
     const versions = relatedVersions ? relatedVersions : "-";
     body.innerHTML = `<div class="todo-detail-id">${{esc(decisionId || "-")}} ｜ ${{esc(status || "-")}} ｜ 版本：${{esc(versions)}}</div><div class="todo-detail-content"><strong>${{esc(title || "")}}</strong>\n\n决策：${{esc(decision || "")}}\n\n原因：${{esc(reason || "")}}</div>`;
   }}
-  const modal = $("todo-detail-modal");
-  if (modal) modal.classList.add("open");
+  openModal("todo-detail-modal");
 }}
 
 function showRightTab(tabName) {{
