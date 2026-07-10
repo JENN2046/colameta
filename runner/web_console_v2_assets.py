@@ -1694,12 +1694,24 @@ function showRightTab(tabName) {{
   activeRightTab = tabName;
   const card = $("layout-right") && $("layout-right").querySelector(".card");
   if (card) {{
-    card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
+    card.querySelectorAll(".tab-btn").forEach(function(b) {{
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    }});
     const tabBtn = card.querySelector('[data-tab-button="' + tabName + '"]');
-    if (tabBtn) tabBtn.classList.add("active");
-    card.querySelectorAll(".tab-content").forEach(function(tc) {{ tc.style.display = "none"; }});
+    if (tabBtn) {{
+      tabBtn.classList.add("active");
+      tabBtn.setAttribute("aria-selected", "true");
+    }}
+    card.querySelectorAll(".tab-content").forEach(function(tc) {{
+      tc.style.display = "none";
+      tc.setAttribute("aria-hidden", "true");
+    }});
     const tabContent = card.querySelector('[data-tab="' + tabName + '"]');
-    if (tabContent) tabContent.style.display = "block";
+    if (tabContent) {{
+      tabContent.style.display = "block";
+      tabContent.setAttribute("aria-hidden", "false");
+    }}
   }}
 }}
 
@@ -1713,6 +1725,14 @@ function rightTabActiveClass(tabName) {{
 
 function rightTabDisplayStyle(tabName) {{
   return normalizeRightTab(activeRightTab) === tabName ? "" : ` style="display:none;"`;
+}}
+
+function rightTabAriaSelected(tabName) {{
+  return normalizeRightTab(activeRightTab) === tabName ? "true" : "false";
+}}
+
+function rightTabAriaHidden(tabName) {{
+  return normalizeRightTab(activeRightTab) === tabName ? "false" : "true";
 }}
 
 function rightTabCountBadge(count, activeClass) {{
@@ -1962,15 +1982,15 @@ function renderRightColumn(data) {{
 
   // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
-  h += `<div class="tab-bar">`;
-  h += `<button class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
-  h += `<button class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
-  h += `<button class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
-  h += `<button class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
+  h += `<div class="tab-bar" role="tablist" aria-label="Operator workspace">`;
+  h += `<button type="button" id="right-tab-todolist" role="tab" aria-selected="${{rightTabAriaSelected("todolist")}}" aria-controls="right-panel-todolist" aria-label="${{escAttr(todoTabTitle)}}" class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
+  h += `<button type="button" id="right-tab-operator-inbox" role="tab" aria-selected="${{rightTabAriaSelected("operator-inbox")}}" aria-controls="right-panel-operator-inbox" aria-label="${{escAttr(inboxTabTitle)}}" class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
+  h += `<button type="button" id="right-tab-decision" role="tab" aria-selected="${{rightTabAriaSelected("decision")}}" aria-controls="right-panel-decision" aria-label="${{escAttr(decisionTabTitle)}}" class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
+  h += `<button type="button" id="right-tab-memory" role="tab" aria-selected="${{rightTabAriaSelected("memory")}}" aria-controls="right-panel-memory" aria-label="MEMORY" class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
 
   // TODOLIST tab
-  h += `<div class="tab-content" data-tab="todolist"${{rightTabDisplayStyle("todolist")}}>`;
+  h += `<div id="right-panel-todolist" class="tab-content" role="tabpanel" aria-labelledby="right-tab-todolist" aria-hidden="${{rightTabAriaHidden("todolist")}}" tabindex="0" data-tab="todolist"${{rightTabDisplayStyle("todolist")}}>`;
   const todo = data.todolist || {{}};
   if (todo.ok === false) {{
     h += `<div class="empty-state">${{esc(todo.error_code || "读取失败")}}</div>`;
@@ -2006,12 +2026,12 @@ function renderRightColumn(data) {{
   h += `</div>`;
 
   // INBOX tab
-  h += `<div class="tab-content" data-tab="operator-inbox"${{rightTabDisplayStyle("operator-inbox")}}>`;
+  h += `<div id="right-panel-operator-inbox" class="tab-content" role="tabpanel" aria-labelledby="right-tab-operator-inbox" aria-hidden="${{rightTabAriaHidden("operator-inbox")}}" tabindex="0" data-tab="operator-inbox"${{rightTabDisplayStyle("operator-inbox")}}>`;
   h += renderOperatorInboxPanel(data);
   h += `</div>`;
 
   // DECISION tab
-  h += `<div class="tab-content" data-tab="decision"${{rightTabDisplayStyle("decision")}}>`;
+  h += `<div id="right-panel-decision" class="tab-content" role="tabpanel" aria-labelledby="right-tab-decision" aria-hidden="${{rightTabAriaHidden("decision")}}" tabindex="0" data-tab="decision"${{rightTabDisplayStyle("decision")}}>`;
   const decisionResult = data.decisions || {{}};
   if (decisionResult.ok === false) {{
     h += `<div class="empty-state">${{esc(decisionResult.error_code || "读取失败")}}</div>`;
@@ -2050,7 +2070,7 @@ function renderRightColumn(data) {{
   h += `</div>`;
 
   // MEMORY tab
-  h += `<div class="tab-content" data-tab="memory"${{rightTabDisplayStyle("memory")}}>`;
+  h += `<div id="right-panel-memory" class="tab-content" role="tabpanel" aria-labelledby="right-tab-memory" aria-hidden="${{rightTabAriaHidden("memory")}}" tabindex="0" data-tab="memory"${{rightTabDisplayStyle("memory")}}>`;
   const memoryResult = data.memory || {{}};
   if (memoryResult.ok === false) {{
     h += `<div class="empty-state">${{esc(memoryResult.error_code || "读取失败")}}</div>`;
@@ -2114,13 +2134,7 @@ function renderRightColumn(data) {{
 
 function switchActionTab(tabName, btn) {{
   tabName = normalizeRightTab(tabName);
-  activeRightTab = tabName;
-  const card = btn.closest(".card");
-  card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
-  btn.classList.add("active");
-  card.querySelectorAll(".tab-content").forEach(function(tc) {{ tc.style.display = "none"; }});
-  var content = card.querySelector('[data-tab="' + tabName + '"]');
-  if (content) content.style.display = "block";
+  showRightTab(tabName);
   if (tabName === "todolist") syncAdaptiveTodoPageSize();
 }}
 
