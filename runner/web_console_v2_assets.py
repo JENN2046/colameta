@@ -224,7 +224,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
     </div>
     <div class="project-switch">
       <span class="project-switch-label">切换项目</span>
-      <select id="project-select" aria-label="当前项目" disabled>
+      <select id="project-select" aria-label="当前项目" aria-busy="false" disabled>
         <option>加载中…</option>
       </select>
       <button id="project-manage-btn" onclick="openProjectManagement()">项目管理</button>
@@ -358,6 +358,7 @@ let pollTimer = null;
 let statusPollTimer = null;
 let statusPollInFlight = false;
 let refreshInFlight = false;
+let projectSwitchInFlight = false;
 let lastStatusRefreshText = "尚未刷新";
 let backgroundPollStatusText = "后台轮询未启动";
 let pollCount = 0;
@@ -735,8 +736,12 @@ async function runAction(nextAction, currentData) {{
 
 async function switchProject(projectRoot) {{
   if (!projectRoot) return;
+  if (projectSwitchInFlight) return;
+  projectSwitchInFlight = true;
+  setProjectSwitchBusy(true);
   setGlobalLoading(true, "正在切换项目...");
   clearGlobalError();
+  setRefreshStatus(null, "正在切换项目...");
   try {{
     const data = await dangerousPostAction("/api/switch-project", {{ project_root: projectRoot }});
     if (!data.ok) {{
@@ -749,7 +754,17 @@ async function switchProject(projectRoot) {{
     showError(String(e));
   }} finally {{
     setGlobalLoading(false);
+    setProjectSwitchBusy(false);
+    projectSwitchInFlight = false;
   }}
+}}
+
+function setProjectSwitchBusy(isBusy) {{
+  const select = $("project-select");
+  if (!select) return;
+  select.disabled = isBusy || select.options.length < 2;
+  select.setAttribute("aria-busy", isBusy ? "true" : "false");
+  select.setAttribute("aria-disabled", select.disabled ? "true" : "false");
 }}
 
 function sb(v) {{ return v != null && v !== false ? esc(String(v)) : "-"; }}
@@ -798,6 +813,7 @@ function renderProjectSwitcher(data) {{
     opt.textContent = "未登记";
     select.appendChild(opt);
     select.disabled = true;
+    select.setAttribute("aria-disabled", "true");
     return;
   }}
   for (const project of projects) {{
@@ -809,7 +825,9 @@ function renderProjectSwitcher(data) {{
     opt.title = root;
     select.appendChild(opt);
   }}
-  select.disabled = projects.length < 2;
+  select.disabled = projectSwitchInFlight || projects.length < 2;
+  select.setAttribute("aria-busy", projectSwitchInFlight ? "true" : "false");
+  select.setAttribute("aria-disabled", select.disabled ? "true" : "false");
   select.value = currentRoot;
   if (currentRoot && select.value !== currentRoot) {{
     const opt = document.createElement("option");

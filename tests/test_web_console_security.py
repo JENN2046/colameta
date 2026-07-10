@@ -859,6 +859,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'id="loading" role="status" aria-live="polite"' in page
         assert 'id="error" role="alert" aria-live="assertive"' in page
         assert "#loading[aria-hidden=\"true\"]" in page
+        assert 'id="project-select" aria-label="当前项目" aria-busy="false"' in page
+        assert "projectSwitchInFlight" in page
+        assert "setProjectSwitchBusy" in page
+        assert "select.setAttribute(\"aria-disabled\"" in page
         assert "setGlobalLoading" in page
         assert "clearGlobalError" in page
         assert 'id="refresh-status" class="refresh-status" role="status" aria-live="polite"' in page
