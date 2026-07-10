@@ -134,6 +134,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .toolbar button:hover { background: #30363d; }
 .project-switch { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .project-switch-label { color: #8b949e; font-size: 12px; }
+.refresh-status { flex-basis: 100%; text-align: right; color: #8b949e; font-size: 11px; min-height: 16px; }
 .project-switch select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; padding: 6px 28px 6px 10px; max-width: 360px; font-size: 13px; }
 .project-switch select:disabled { opacity: 0.7; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.58); z-index: 1000; display: none; align-items: flex-start; justify-content: center; padding: 72px 16px 24px; }
@@ -228,6 +229,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
       </select>
       <button id="project-manage-btn" onclick="openProjectManagement()">项目管理</button>
       <button onclick="refresh()">刷新</button>
+      <div id="refresh-status" class="refresh-status" role="status" aria-live="polite">尚未刷新 ｜ 后台轮询未启动</div>
     </div>
   </div>
   <div id="loading" role="status" aria-live="polite" aria-busy="false" aria-hidden="true">加载中…</div>
@@ -355,6 +357,8 @@ const BACKGROUND_STATUS_POLL_MS = 5000;
 let pollTimer = null;
 let statusPollTimer = null;
 let statusPollInFlight = false;
+let lastStatusRefreshText = "尚未刷新";
+let backgroundPollStatusText = "后台轮询未启动";
 let pollCount = 0;
 const POLL_MAX = 600;
 let liveRunActive = false;
@@ -391,9 +395,11 @@ async function fetchStatus() {{
 async function refresh() {{
   setGlobalLoading(true, "正在刷新状态...");
   clearGlobalError();
+  setRefreshStatus(null, "正在手动刷新...");
   $("content").style.display = "none";
   try {{
     const data = await fetchStatus();
+    setRefreshStatus("手动", "后台轮询启动中");
     render(data);
     startLiveRunPolling(data);
     startBackgroundStatusPolling();
@@ -402,6 +408,24 @@ async function refresh() {{
   }} finally {{
     setGlobalLoading(false);
   }}
+}}
+
+function refreshTimestamp() {{
+  return new Date().toLocaleTimeString([], {{ hour: "2-digit", minute: "2-digit", second: "2-digit" }});
+}}
+
+function renderRefreshStatus() {{
+  const el = $("refresh-status");
+  if (!el) return;
+  el.textContent = lastStatusRefreshText + " ｜ " + backgroundPollStatusText;
+}}
+
+function setRefreshStatus(source, pollStatus) {{
+  if (source) {{
+    lastStatusRefreshText = "最后刷新 " + refreshTimestamp() + "（" + source + "）";
+  }}
+  if (pollStatus) backgroundPollStatusText = pollStatus;
+  renderRefreshStatus();
 }}
 
 function isLiveRunRunning(lr) {{
@@ -446,8 +470,10 @@ function scheduleBackgroundStatusPoll() {{
     }}
     statusPollInFlight = true;
     try {{
+      setRefreshStatus(null, "后台轮询检查中...");
       const newData = await fetchStatus();
       const newSignature = statusSignature(newData);
+      setRefreshStatus("后台", newSignature !== latestStatusSignature ? "后台轮询已更新页面" : "后台轮询正常，无变化");
       if (newSignature !== latestStatusSignature) {{
         render(newData);
         startLiveRunPolling(newData);
@@ -455,6 +481,7 @@ function scheduleBackgroundStatusPoll() {{
     }} catch (e) {{
       // Background status polling is best-effort: keep the current page visible
       // and try again later instead of surfacing noisy transient errors.
+      setRefreshStatus(null, "后台轮询暂时失败，将重试");
     }} finally {{
       statusPollInFlight = false;
       scheduleBackgroundStatusPoll();
@@ -466,6 +493,7 @@ function startBackgroundStatusPolling() {{
   if (!latestStatusSignature && latestStatusData) {{
     latestStatusSignature = statusSignature(latestStatusData);
   }}
+  setRefreshStatus(null, "后台轮询每 5 秒");
   scheduleBackgroundStatusPoll();
 }}
 
@@ -722,6 +750,7 @@ function issueLink(label, count, kind) {{
 function render(data) {{
   latestStatusData = data || {{}};
   latestStatusSignature = statusSignature(latestStatusData);
+  renderRefreshStatus();
   renderProjectSwitcher(data);
   renderLeftColumn(data);
   renderCenterColumn(data);
