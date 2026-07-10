@@ -336,6 +336,10 @@ def test_release_submission_rejects_unfinished_content_when_manifest_marks_ready
         {"key": "logo", "ref": "docs/submission/logo.md", "reason_codes": ["FINAL_ASSET_MISSING"]}
     ]
     assert "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED" in packet["needs_attention_codes"]
+    logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
+    assert logo_row["ready"] is True
+    assert logo_row["status"] == "review_required"
+    assert logo_row["next_action"]["action"] == "review_evidence_content"
 
 
 def test_fill_submission_evidence_files_updates_manifest_refs_without_marking_ready(tmp_path) -> None:
@@ -411,6 +415,41 @@ def test_fill_submission_evidence_files_does_not_mark_explicit_draft_ready(tmp_p
     ]
     assert manifest_path.read_text(encoding="utf-8") == before
     assert not (tmp_path / "docs/submission/mcp-tool-info.md").exists()
+
+
+def test_fill_submission_evidence_files_does_not_retain_unfinished_ref_when_marking_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    old_path = tmp_path / "docs/submission/logo-old.md"
+    old_path.write_text("# Old logo\n\nDraft evidence only.\n", encoding="utf-8")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = "docs/submission/logo-old.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "logo",
+                "filename": "logo-new.md",
+                "content": "# New logo\n\nReviewed final logo asset.\n",
+            }
+        ],
+        mark_ready=True,
+    )
+
+    assert packet["ok"] is False
+    assert packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-old.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED",
+            "reason_codes": ["DRAFT_CONTENT"],
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "docs/submission/logo-new.md").exists()
 
 
 def test_fill_submission_evidence_files_rejects_unsafe_target_without_partial_write(tmp_path) -> None:

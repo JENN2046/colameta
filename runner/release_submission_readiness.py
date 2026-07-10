@@ -491,6 +491,8 @@ def fill_submission_evidence_files(
             "safe_recovery_actions": _submission_evidence_safe_recovery_actions(),
         }
 
+    evidence_raw = manifest.get("evidence")
+    evidence = dict(evidence_raw) if isinstance(evidence_raw, dict) else {}
     planned, validation_errors = _plan_submission_evidence_file_writes(root, entries)
     if mark_ready and not validation_errors:
         for item in planned:
@@ -504,6 +506,19 @@ def fill_submission_evidence_files(
                         "reason_codes": reason_codes,
                     }
                 )
+        if not validation_errors:
+            planned_refs_by_key: dict[str, set[str]] = {}
+            for item in planned:
+                planned_refs_by_key.setdefault(str(item["key"]), set()).add(str(item["rel_path"]))
+            for evidence_key, planned_refs in planned_refs_by_key.items():
+                retained_refs = [
+                    ref
+                    for ref in _coerce_evidence_refs(evidence.get(evidence_key))
+                    if not _is_placeholder_evidence_ref(ref) and ref not in planned_refs
+                ]
+                if retained_refs:
+                    ref_errors, _ = _validate_ready_evidence_refs(root, evidence_key, retained_refs)
+                    validation_errors.extend(ref_errors)
     if validation_errors:
         return {
             "ok": False,
@@ -520,12 +535,6 @@ def fill_submission_evidence_files(
                 selected_keys=_submission_evidence_keys_from_entries(entries),
             ),
         }
-
-    evidence = manifest.get("evidence")
-    if not isinstance(evidence, dict):
-        evidence = {}
-    else:
-        evidence = dict(evidence)
 
     created_files: list[str] = []
     existing_files: list[str] = []
@@ -1149,10 +1158,10 @@ def _submission_evidence_progress_status(ready: bool, refs: list[str], file_stat
     state_values = {str(item.get("status") or "unknown") for item in file_states}
     has_problem = bool(state_values & {"invalid", "missing", "placeholder", "review_required"})
     has_present = "present" in state_values
-    if ready:
-        return "needs_attention" if has_problem or not has_present else "ready"
     if "review_required" in state_values:
         return "review_required"
+    if ready:
+        return "needs_attention" if has_problem or not has_present else "ready"
     if has_present and not has_problem:
         return "filled_not_marked_ready"
     if "placeholder" in state_values:
