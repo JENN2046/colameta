@@ -389,13 +389,47 @@ let adaptiveTodoPageSizeSyncing = false;
 const DECISION_PAGE_SIZE = 8;
 let activeModalId = "";
 let modalReturnFocus = null;
+const MODAL_FOCUS_SELECTOR = "a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
+function modalFocusableElements(modal) {{
+  if (!modal) return [];
+  return Array.from(modal.querySelectorAll(MODAL_FOCUS_SELECTOR)).filter(function(el) {{
+    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  }});
+}}
 
 function focusModal(modal) {{
   if (!modal) return;
-  const closeButton = modal.querySelector(".modal-close");
+  const focusable = modalFocusableElements(modal);
+  const closeButton = focusable.find(function(el) {{ return el.classList && el.classList.contains("modal-close"); }});
   const panel = modal.querySelector(".modal-panel");
-  const target = closeButton || panel || modal;
+  const target = closeButton || focusable[0] || panel || modal;
   if (target && typeof target.focus === "function") target.focus();
+}}
+
+function trapModalFocus(event) {{
+  if (event.key !== "Tab" || !activeModalId) return;
+  const modal = $(activeModalId);
+  if (!modal || !modal.classList.contains("open")) return;
+  const focusable = modalFocusableElements(modal);
+  if (!focusable.length) {{
+    event.preventDefault();
+    focusModal(modal);
+    return;
+  }}
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const current = document.activeElement;
+  if (event.shiftKey && current === first) {{
+    event.preventDefault();
+    last.focus();
+  }} else if (!event.shiftKey && current === last) {{
+    event.preventDefault();
+    first.focus();
+  }} else if (!modal.contains(current)) {{
+    event.preventDefault();
+    first.focus();
+  }}
 }}
 
 function openModal(modalId) {{
@@ -429,7 +463,9 @@ document.addEventListener("keydown", function(event) {{
   if (event.key === "Escape" && activeModalId) {{
     event.preventDefault();
     closeActiveModal();
+    return;
   }}
+  trapModalFocus(event);
 }});
 
 async function fetchStatus() {{
