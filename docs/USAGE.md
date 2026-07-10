@@ -354,6 +354,17 @@ actual tool result, a compact `operator_inbox_run_result.evidence` summary, and
 a freshly rebuilt Web status. The INBOX card exposes that evidence and a
 `Copy result` control. This path cannot execute preview/commit tools or grant
 executor, commit, push, submission, or stable-replacement authority.
+After a real Web INBOX read returns, its result evidence also exposes
+`Record result`. The server, not the browser, creates a one-time signed run
+receipt containing the bound item/action identity, tool, success or failure
+outcome, current action fingerprint when available, and a fixed redacted
+summary; raw tool output is never placed in the record payload. Pressing the
+button creates a payload-bound dangerous-action preview and requires explicit
+browser confirmation before writing the runtime summary. A consumed receipt
+cannot be recorded again, and receipts from a previous service process are
+invalid. Successful records refresh Web and Product Console immediately; this
+write still does not repeat the read, execute another action, or authorize any
+preview, commit, push, submission, publish, or stable replacement.
 Commander renders those `next_refresh_actions` as read-only refresh buttons on
 the action card. They call the listed read surface and update the widget; they
 do not re-run the original action, confirm preview/commit work, or grant write

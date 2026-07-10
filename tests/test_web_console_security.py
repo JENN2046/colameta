@@ -223,7 +223,7 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert "data-record-product-followup" in page
         assert 'dangerousPostAction("/api/v2/action", payload)' in page
         assert "其他 Run 入口仍受 INBOX scope gate 控制" in page
-        assert "Record result 只在 dangerous confirmation 后写 runtime 摘要" in page
+        assert "Record result 只写 runtime 摘要，必须经过 dangerous confirmation" in page
 
     def test_submission_activity_record_copy_uses_underlying_action_arguments(self) -> None:
         if shutil.which("node") is None:
@@ -913,6 +913,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert len(runnable_items) == inbox["runnable_read_count"]
         assert all(len(item.get("item_signature") or "") == 64 for item in runnable_items)
         assert all(isinstance(item.get("run_arguments"), dict) for item in runnable_items)
+        assert all(isinstance(item.get("record_action_id"), str) and item["record_action_id"] for item in runnable_items)
+        assert all(isinstance(item.get("action_fingerprint"), str) for item in runnable_items)
         apps_smoke = next(item for item in inbox["items"] if item.get("item_id") == "apps_connector_smoke")
         assert "tunnel_client" in apps_smoke["copy_payload"]["arguments"]
         assert set(apps_smoke["run_arguments"]) == {"project_name"}
@@ -949,7 +951,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "data-operator-inbox-followup-item-id" in page
         assert "target-highlight" in page
         assert "队列读取与 Copy 本身只读" in page
-        assert "Record result 只在 dangerous confirmation 后写 runtime 摘要" in page
+        assert "Record result 只写 runtime 摘要，必须经过 dangerous confirmation" in page
         assert "Open INBOX" in page
         assert "Copy follow-up" in page
         assert "item_id: followupItemId" in page
@@ -1155,9 +1157,17 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "run_arguments" in page
         assert "item_signature" in page
         assert "operator_inbox_run_result" in page
+        assert "data-record-operator-inbox-result" in page
+        assert "record_available" in page
+        assert "record_action" in page
         assert "Result evidence" in page
         assert "Copy result" in page
+        assert "Record result" in page
+        assert "Recorded" in page
+        assert "正在记录已签名的 INBOX read 结果" in page
+        assert "已记录签名 read 结果并刷新状态" in page
         assert "复制本次只读工具结果：" in page
+        assert "显式确认并记录本次 INBOX read 结果：" in page
         assert "网页可执行服务端绑定且 MCP policy 仍判定为 mcp:read 的 INBOX 工具" in page
         assert "复制 MCP 调用：" in page
         assert "复制 TODO ID " in page
@@ -1460,6 +1470,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
             "required_scope": item["required_scope"],
             "gate_level": item["gate_level"],
             "item_signature": item["item_signature"],
+            "record_action_id": item["record_action_id"],
+            "action_fingerprint": item["action_fingerprint"],
         }
 
         status, payload = json_request(
@@ -1486,8 +1498,47 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert run_result["tool_result"]["data"]["source"] == "stable_replacement_cadence"
         assert run_result["evidence"]["source"] == "stable_replacement_cadence"
         assert run_result["evidence"]["read_only"] is True
+        assert run_result["record_available"] is True
+        assert run_result["record_action"]["action"] == "operator_inbox_record_result"
+        assert run_result["record_action"]["params"]["action_id"] == "stable_replacement_cadence"
+        assert run_result["record_action"]["params"]["tool"] == "get_stable_replacement_cadence"
+        assert run_result["record_action"]["params"]["status"] == "updated"
+        assert run_result["record_action"]["params"]["result_ok"] is True
+        assert len(run_result["record_action"]["params"]["run_receipt_signature"]) == 64
         assert "product_status" not in run_result["tool_result"]["data"]
         assert payload["operator_inbox"]["status"] in {"ready", "empty"}
+
+        product_item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("source") == "product_console" and candidate.get("action_fingerprint")
+        )
+        product_params = {
+            "item_id": product_item["item_id"],
+            "source": product_item["source"],
+            "component": product_item["component"],
+            "tool": product_item["tool"],
+            "arguments": product_item["run_arguments"],
+            "required_scope": product_item["required_scope"],
+            "gate_level": product_item["gate_level"],
+            "item_signature": product_item["item_signature"],
+            "record_action_id": product_item["record_action_id"],
+            "action_fingerprint": product_item["action_fingerprint"],
+        }
+        product_status, product_payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={"next_action": {"action": "operator_inbox_read", "params": product_params}},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            timeout=8,
+        )
+        assert product_status == 200
+        assert product_payload["ok"] is True
+        product_record = product_payload["operator_inbox_run_result"]["record_action"]["params"]
+        assert product_record["action_id"] == product_item["record_action_id"]
+        assert product_record["action_fingerprint"] == product_item["action_fingerprint"]
 
     def test_v2_operator_inbox_run_rejects_unbound_or_non_read_payloads(self) -> None:
         assert self.server is None
@@ -1509,6 +1560,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
             "required_scope": item["required_scope"],
             "gate_level": item["gate_level"],
             "item_signature": item["item_signature"],
+            "record_action_id": item["record_action_id"],
+            "action_fingerprint": item["action_fingerprint"],
         }
 
         placeholder_item = server._web_commander_inbox_item(
@@ -1591,6 +1644,330 @@ class WebConsoleSecurityTests(unittest.TestCase):
             })
         assert policy_denied["ok"] is False
         assert policy_denied["error_code"] == "OPERATOR_INBOX_READ_POLICY_DENIED"
+
+        valid_run = server._api_v2_action({
+            "next_action": {"action": "operator_inbox_read", "params": params}
+        })
+        assert valid_run["ok"] is True
+        record_action = valid_run["operator_inbox_run_result"]["record_action"]
+
+        tampered_record = server._api_v2_action({
+            "next_action": {
+                **record_action,
+                "params": {**record_action["params"], "action_id": "forged_action"},
+            }
+        })
+        assert tampered_record["ok"] is False
+        assert tampered_record["error_code"] == "OPERATOR_INBOX_RECORD_RECEIPT_MISMATCH"
+
+        malformed_record = server._api_v2_action({
+            "next_action": {
+                **record_action,
+                "params": {**record_action["params"], "run_receipt_signature": "签名无效"},
+            }
+        })
+        assert malformed_record["ok"] is False
+        assert malformed_record["error_code"] == "OPERATOR_INBOX_RECORD_RECEIPT_MISMATCH"
+
+        unknown_record = server._api_v2_action({
+            "next_action": {
+                **record_action,
+                "params": {**record_action["params"], "project_root": "/tmp/other"},
+            }
+        })
+        assert unknown_record["ok"] is False
+        assert unknown_record["error_code"] == "OPERATOR_INBOX_RECORD_FIELDS_INVALID"
+
+    def test_v2_operator_inbox_run_result_record_requires_confirmation_and_is_single_use(self) -> None:
+        from runner.product_console import load_product_console_action_results
+
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        current = self.server._api_v2_status()
+        item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("tool") == "get_stable_replacement_cadence"
+        )
+        run_params = {
+            "item_id": item["item_id"],
+            "source": item["source"],
+            "component": item["component"],
+            "tool": item["tool"],
+            "arguments": item["run_arguments"],
+            "required_scope": item["required_scope"],
+            "gate_level": item["gate_level"],
+            "item_signature": item["item_signature"],
+            "record_action_id": item["record_action_id"],
+            "action_fingerprint": item["action_fingerprint"],
+        }
+        status, run_payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={"next_action": {"action": "operator_inbox_read", "params": run_params}},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            timeout=8,
+        )
+        assert status == 200
+        assert run_payload["ok"] is True
+        record_action = run_payload["operator_inbox_run_result"]["record_action"]
+        request_body = {"next_action": record_action}
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload=request_body,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_REQUIRED"
+        assert load_product_console_action_results(str(self.project))["results"] == []
+
+        confirmation_id = self.dangerous_preview("/api/v2/action", request_body)
+        preview = self.server.dangerous_action_guard.preview_snapshot(confirmation_id)
+        assert preview is not None
+        assert preview["action_type"] == "web_v2_record_operator_inbox_read_result"
+        assert preview["risk_class"] == "runtime_summary_write"
+        assert preview["target_summary"]["item_id"] == "stable_replacement_cadence"
+        assert preview["target_summary"]["run_receipt_present"] is True
+        assert "message" not in preview["target_summary"]
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={
+                "next_action": {
+                    **record_action,
+                    "params": {**record_action["params"], "message": "tampered result"},
+                },
+                "confirmation_id": confirmation_id,
+            },
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 403
+        assert payload["error_code"] == "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH"
+        assert load_product_console_action_results(str(self.project))["results"] == []
+
+        confirmation_id = self.dangerous_preview("/api/v2/action", request_body)
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={**request_body, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            timeout=8,
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["action"] == "operator_inbox_record_result"
+        assert payload["action_outcome"]["code"] == "SUCCESS"
+        assert payload["dangerous_action_receipt"]["confirmation_validated"] is True
+        assert payload["dangerous_action_receipt"]["confirmation_id"] == "REDACTED"
+        record_result = payload["operator_inbox_record_result"]
+        assert record_result["writes_runtime_summary_only"] is True
+        assert record_result["run_receipt_id"] == "REDACTED"
+        recorded = record_result["record_result"]["recorded_result"]
+        assert recorded["action_id"] == "stable_replacement_cadence"
+        assert recorded["tool"] == "get_stable_replacement_cadence"
+        assert recorded["mode"] == "read"
+        assert recorded["status"] == "updated"
+        assert recorded["result_ok"] is True
+        assert recorded["message"] == record_action["params"]["message"]
+        stored = load_product_console_action_results(str(self.project))["results"]
+        assert len(stored) == 1
+        assert stored[0]["action_key"] == recorded["action_key"]
+
+        replay_confirmation = self.dangerous_preview("/api/v2/action", request_body)
+        status, replay = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={**request_body, "confirmation_id": replay_confirmation},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        assert status == 200
+        assert replay["ok"] is False
+        assert replay["error_code"] == "OPERATOR_INBOX_RECORD_RECEIPT_REUSED"
+        assert len(load_product_console_action_results(str(self.project))["results"]) == 1
+
+    def test_v2_status_snapshot_is_serialized_with_project_switch(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        other_project = self.tmp_path / "status-switch-project"
+        other_project.mkdir()
+        snapshot_started = threading.Event()
+        release_snapshot = threading.Event()
+        switch_done = threading.Event()
+        observed_roots: list[str] = []
+        snapshot_result: dict[str, Any] = {}
+        original_bound_status = server._api_v2_status_bound_to_project
+
+        def blocking_bound_status() -> dict[str, Any]:
+            observed_roots.append(server.project_root)
+            snapshot_started.set()
+            assert release_snapshot.wait(timeout=5)
+            result = original_bound_status()
+            observed_roots.append(server.project_root)
+            return result
+
+        def snapshot_worker() -> None:
+            snapshot_result.update(server._api_v2_status())
+
+        def switch_worker() -> None:
+            server._set_project_root(str(other_project))
+            switch_done.set()
+
+        with patch.object(server, "_api_v2_status_bound_to_project", side_effect=blocking_bound_status):
+            snapshot_thread = threading.Thread(target=snapshot_worker, daemon=True)
+            snapshot_thread.start()
+            assert snapshot_started.wait(timeout=5)
+            switch_thread = threading.Thread(target=switch_worker, daemon=True)
+            switch_thread.start()
+            try:
+                assert switch_done.wait(timeout=0.2) is False
+            finally:
+                release_snapshot.set()
+            snapshot_thread.join(timeout=8)
+            switch_thread.join(timeout=8)
+
+        assert snapshot_result["ok"] is True
+        assert observed_roots == [str(self.project), str(self.project)]
+        assert switch_done.is_set() is True
+        assert server.project_root == str(other_project)
+
+    def test_v2_operator_inbox_failed_run_receipt_records_failed_result(self) -> None:
+        from runner.product_console import load_product_console_action_results
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        current = server._api_v2_status()
+        item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("tool") == "get_stable_replacement_cadence"
+        )
+        params = {
+            "item_id": item["item_id"],
+            "source": item["source"],
+            "component": item["component"],
+            "tool": item["tool"],
+            "arguments": item["run_arguments"],
+            "required_scope": item["required_scope"],
+            "gate_level": item["gate_level"],
+            "item_signature": item["item_signature"],
+            "record_action_id": item["record_action_id"],
+            "action_fingerprint": item["action_fingerprint"],
+        }
+        with patch(
+            "runner.mcp_server.MCPPlanningBridgeServer.call_tool_for_agent",
+            return_value={
+                "ok": False,
+                "tool": "get_stable_replacement_cadence",
+                "error_code": "TEST_READ_FAILED",
+                "message": "test read failed",
+            },
+        ):
+            run_result = server._api_v2_action({
+                "next_action": {"action": "operator_inbox_read", "params": params}
+            })
+        assert run_result["ok"] is False
+        receipt = run_result["operator_inbox_run_result"]
+        assert receipt["status"] == "failed"
+        assert receipt["record_available"] is True
+        record_action = receipt["record_action"]
+        assert record_action["params"]["status"] == "failed"
+        assert record_action["params"]["result_ok"] is False
+
+        recorded = server._api_v2_action({"next_action": record_action})
+        assert recorded["ok"] is True
+        stored = load_product_console_action_results(str(self.project))["results"]
+        assert len(stored) == 1
+        assert stored[0]["status"] == "failed"
+        assert stored[0]["result_ok"] is False
+
+    def test_v2_operator_inbox_record_is_serialized_with_project_switch(self) -> None:
+        from runner.mcp_runner_plan import ensure_minimal_runner_managed_project
+        from runner.product_console import (
+            load_product_console_action_results,
+            record_product_console_action_result as actual_record_action_result,
+        )
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        current = server._api_v2_status()
+        item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("tool") == "get_stable_replacement_cadence"
+        )
+        run_params = {
+            "item_id": item["item_id"],
+            "source": item["source"],
+            "component": item["component"],
+            "tool": item["tool"],
+            "arguments": item["run_arguments"],
+            "required_scope": item["required_scope"],
+            "gate_level": item["gate_level"],
+            "item_signature": item["item_signature"],
+            "record_action_id": item["record_action_id"],
+            "action_fingerprint": item["action_fingerprint"],
+        }
+        run_result = server._api_v2_action({
+            "next_action": {"action": "operator_inbox_read", "params": run_params}
+        })
+        assert run_result["ok"] is True
+        record_action = run_result["operator_inbox_run_result"]["record_action"]
+
+        other_project = self.tmp_path / "switch-race-project"
+        other_project.mkdir()
+        assert ensure_minimal_runner_managed_project(str(other_project))["ok"] is True
+        record_started = threading.Event()
+        release_record = threading.Event()
+        switch_done = threading.Event()
+        record_response: dict[str, Any] = {}
+        captured_roots: list[str] = []
+
+        def blocking_record(project_root: str, **kwargs: Any) -> dict[str, Any]:
+            captured_roots.append(project_root)
+            record_started.set()
+            assert release_record.wait(timeout=5)
+            return actual_record_action_result(project_root, **kwargs)
+
+        def record_worker() -> None:
+            record_response.update(server._api_v2_action({"next_action": record_action}))
+
+        def switch_worker() -> None:
+            server._set_project_root(str(other_project))
+            switch_done.set()
+
+        with patch("runner.web_console.record_product_console_action_result", side_effect=blocking_record):
+            record_thread = threading.Thread(target=record_worker, daemon=True)
+            record_thread.start()
+            assert record_started.wait(timeout=5)
+            switch_thread = threading.Thread(target=switch_worker, daemon=True)
+            switch_thread.start()
+            try:
+                assert switch_done.wait(timeout=0.2) is False
+            finally:
+                release_record.set()
+            record_thread.join(timeout=8)
+            switch_thread.join(timeout=8)
+
+        assert record_response["ok"] is True
+        assert captured_roots == [str(self.project)]
+        assert switch_done.is_set() is True
+        assert server.project_root == str(other_project)
+        assert len(load_product_console_action_results(str(self.project))["results"]) == 1
+        assert load_product_console_action_results(str(other_project))["results"] == []
 
     def test_v2_product_console_record_requires_confirmation_and_refreshes_closeout(self) -> None:
         from runner.product_console import load_product_console_action_results
