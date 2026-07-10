@@ -837,9 +837,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "normalizeRightTab" in page
         assert "rightTabActiveClass" in page
         assert "rightTabDisplayStyle" in page
+        assert "rightTabAriaSelected" in page
+        assert "rightTabAriaHidden" in page
         assert "rightTabCountBadge" in page
         assert "TODOLIST: " in page
         assert "DECISION: " in page
+        assert 'role="tablist"' in page
+        assert 'role="tab"' in page
+        assert 'role="tabpanel"' in page
+        assert 'aria-controls="right-panel-operator-inbox"' in page
+        assert 'aria-labelledby="right-tab-operator-inbox"' in page
         assert "renderOperatorInboxPanel" in page
         assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page
