@@ -90,6 +90,10 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-action-status.failed { color: #f85149; }
 .operator-inbox-action-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
 .modal-sync-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin-bottom: 10px; min-height: 16px; }
+.registry-action-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin: 8px 0 10px; min-height: 16px; }
+.registry-action-status.running { color: #d29922; }
+.registry-action-status.completed { color: #3fb950; }
+.registry-action-status.failed { color: #f85149; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1636,10 +1640,28 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data) {{
   }}
 }}
 
+let registryActionInFlight = false;
+let registryActionStatusState = "idle";
+let registryActionStatusMessage = "项目管理操作就绪。";
+
+function setRegistryActionStatus(state, message) {{
+  registryActionStatusState = state || "idle";
+  registryActionStatusMessage = String(message || "");
+  const el = $("registry-action-status");
+  if (el) {{
+    el.textContent = registryActionStatusMessage;
+    el.className = "registry-action-status " + registryActionStatusState;
+  }}
+}}
+
 function registryAction(actionName, params) {{
+  if (registryActionInFlight) return;
+  registryActionInFlight = true;
   setGlobalLoading(true, "正在执行项目管理操作...");
   clearGlobalError();
   const actionMeta = registryActionMeta(actionName, params || {{}});
+  setRegistryActionStatus("running", "正在执行项目管理操作：" + (actionMeta.label || actionName));
+  renderProjectManagementModal(latestStatusData || {{}});
   const payload = {{
     next_action: {{
       action: actionName,
@@ -1655,10 +1677,20 @@ function registryAction(actionName, params) {{
   }};
   dangerousPostAction("/api/v2/action", payload)
     .then(function(data) {{
+      registryActionInFlight = false;
+      const failed = data && data.ok === false;
+      const message = data && (data.message || data.error_code)
+        ? String(data.message || data.error_code)
+        : "项目管理操作完成，状态已刷新。";
+      setRegistryActionStatus(failed ? "failed" : "completed", failed ? ("项目管理操作失败：" + message) : message);
       render(data);
+      if (failed) showError(message);
       setGlobalLoading(false);
     }})
     .catch(function(e) {{
+      registryActionInFlight = false;
+      setRegistryActionStatus("failed", "项目管理操作失败：" + String(e));
+      renderProjectManagementModal(latestStatusData || {{}});
       showError(String(e));
       setGlobalLoading(false);
     }});
@@ -2121,10 +2153,13 @@ function renderProjectManagement(data) {{
   const registry = data.project_registry || {{}};
   const projects = Array.isArray(registry.projects) ? registry.projects : [];
   const currentRoot = currentProjectRootForSwitcher(data || {{}});
+  const registryBusyAttr = registryActionInFlight ? " disabled" : "";
+  const registryBusyAria = registryActionInFlight ? "true" : "false";
   let h = "";
   h += `<div class="card"><div class="card-title">项目登记管理</div>`;
   h += `<div class="modal-sync-status" role="status" aria-live="polite">${{esc(projectManagementSyncStatusText())}}</div>`;
   h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">这里管理项目登记元数据。移出/清理只修改登记记录，不会删除磁盘文件；应用迁移会按预览修改 registry / plan / state / settings。当前项目会标注“当前”，/mnt/... 会标注为 Windows 挂载路径。</div>`;
+  h += `<div id="registry-action-status" class="registry-action-status ${{escAttr(registryActionStatusState)}}" role="status" aria-live="polite">${{esc(registryActionStatusMessage)}}</div>`;
 
   if (projects.length === 0) {{
     h += `<div class="empty-state">无登记项目</div>`;
@@ -2156,7 +2191,7 @@ function renderProjectManagement(data) {{
       h += `<button class="action-btn" title="编辑登记元数据，不修改磁盘文件。" style="width:auto;padding:3px 10px;font-size:11px;margin:0;" data-project-id="${{escAttr(projectId)}}" data-project-name="${{escAttr(p.project_name || "")}}" data-display-name="${{escAttr(p.display_name || p.project_name || "")}}" data-project-root="${{escAttr(root)}}" onclick="openProjectIdentityEditor(this)">编辑登记</button>`;
       const unregisterParams = {{ project_root: root }};
       const unregisterLabel = registryActionButtonLabel("project_registry_unregister", unregisterParams);
-      h += `<button class="action-btn" title="${{escAttr(unregisterLabel)}}" aria-label="${{escAttr(unregisterLabel)}}" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})">移出登记</button>`;
+      h += `<button class="action-btn" title="${{escAttr(unregisterLabel)}}" aria-label="${{escAttr(unregisterLabel)}}" aria-busy="${{registryBusyAria}}" aria-disabled="${{registryBusyAria}}" style="width:auto;padding:3px 10px;font-size:11px;margin:0;flex:0 0 auto;" onclick="registryAction('project_registry_unregister',{{project_root:'${{escAttr(root)}}'}})"${{registryBusyAttr}}>移出登记</button>`;
       h += `</div>`;
       h += `</div>`;
       if (isEditing) {{
@@ -2183,8 +2218,8 @@ function renderProjectManagement(data) {{
   h += `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">`;
   const pruneUnavailableLabel = registryActionButtonLabel("project_registry_prune_unavailable", {{}});
   const pruneTemporaryLabel = registryActionButtonLabel("project_registry_prune_temporary", {{}});
-  h += `<button class="action-btn" title="${{escAttr(pruneUnavailableLabel)}}" aria-label="${{escAttr(pruneUnavailableLabel)}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})">清理不可用登记</button>`;
-  h += `<button class="action-btn" title="${{escAttr(pruneTemporaryLabel)}}" aria-label="${{escAttr(pruneTemporaryLabel)}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})">清理临时登记</button>`;
+  h += `<button class="action-btn" title="${{escAttr(pruneUnavailableLabel)}}" aria-label="${{escAttr(pruneUnavailableLabel)}}" aria-busy="${{registryBusyAria}}" aria-disabled="${{registryBusyAria}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_unavailable',{{}})"${{registryBusyAttr}}>清理不可用登记</button>`;
+  h += `<button class="action-btn" title="${{escAttr(pruneTemporaryLabel)}}" aria-label="${{escAttr(pruneTemporaryLabel)}}" aria-busy="${{registryBusyAria}}" aria-disabled="${{registryBusyAria}}" style="width:auto;padding:4px 12px;font-size:12px;" onclick="registryAction('project_registry_prune_temporary',{{}})"${{registryBusyAttr}}>清理临时登记</button>`;
   h += `</div>`;
   h += `</div>`;
   return h;

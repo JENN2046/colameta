@@ -878,6 +878,14 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "项目登记数据：" in page
         assert 'class="modal-sync-status" role="status" aria-live="polite"' in page
         assert "renderProjectManagementModal(latestStatusData || {})" in page
+        assert "registryActionInFlight" in page
+        assert "setRegistryActionStatus" in page
+        assert "项目管理操作就绪。" in page
+        assert "项目管理操作完成，状态已刷新。" in page
+        assert 'id="registry-action-status"' in page
+        assert 'class="registry-action-status ${escAttr(registryActionStatusState)}" role="status" aria-live="polite"' in page
+        assert 'aria-busy="${registryBusyAria}" aria-disabled="${registryBusyAria}"' in page
+        assert "if (registryActionInFlight) return" in page
         assert "最后刷新 " in page
         assert "后台轮询每 5 秒" in page
         assert "后台轮询正常，无变化" in page
