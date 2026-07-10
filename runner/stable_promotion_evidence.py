@@ -143,7 +143,8 @@ def get_stable_promotion_evidence_status(
             "Stable promotion evidence storage resolves outside the project Runner runtime directory.",
         )
     if not os.path.isfile(receipt_path):
-        freshness = _candidate_freshness(_git_snapshot(root), resolved_head)
+        snapshot = _git_snapshot(root)
+        freshness = _candidate_freshness(snapshot, resolved_head)
         return {
             "ok": True,
             "source": "stable_promotion_artifact_evidence",
@@ -156,6 +157,7 @@ def get_stable_promotion_evidence_status(
             "freshness": freshness,
             "candidate_head": resolved_head,
             "receipt_path": _relative_runner_path(root, receipt_path),
+            "worktree_isolation": _worktree_isolation(snapshot),
             "safe_next_action": {
                 "tool": "manage_stable_promotion_evidence",
                 "arguments": {"action": "preview", "candidate_head": resolved_head},
@@ -174,6 +176,13 @@ def get_stable_promotion_evidence_status(
     expected_receipt_digest = _receipt_digest(receipt)
     if not secrets.compare_digest(str(receipt.get("receipt_digest") or ""), expected_receipt_digest):
         return _status_error("RECEIPT_DIGEST_MISMATCH", "Stable promotion artifact receipt digest does not match.")
+    recorded_snapshot = receipt.get("git_snapshot") if isinstance(receipt.get("git_snapshot"), dict) else {}
+    recorded_isolation = receipt.get("worktree_isolation")
+    if recorded_isolation is not None and recorded_isolation != _worktree_isolation(recorded_snapshot):
+        return _status_error(
+            "RECEIPT_WORKTREE_ISOLATION_MISMATCH",
+            "Recorded worktree isolation does not match the receipt Git snapshot.",
+        )
 
     persisted_manifest = receipt.get("artifact_manifest")
     if not isinstance(persisted_manifest, dict) or not isinstance(persisted_manifest.get("files"), list):
@@ -201,6 +210,10 @@ def get_stable_promotion_evidence_status(
         "receipt_id": receipt.get("receipt_id"),
         "receipt_digest": receipt.get("receipt_digest"),
         "receipt_path": _relative_runner_path(root, receipt_path),
+        "worktree_isolation": _worktree_isolation(snapshot),
+        "recorded_worktree_isolation": (
+            recorded_isolation if isinstance(recorded_isolation, dict) else _worktree_isolation(recorded_snapshot)
+        ),
         "authority_boundary": _authority_boundary(),
     }
 
@@ -258,6 +271,7 @@ class MCPStablePromotionEvidenceManager:
             "project_root": self.project_root,
             "candidate_head": candidate_head,
             "git_snapshot": snapshot,
+            "worktree_isolation": _worktree_isolation(snapshot),
             "artifact_manifest": manifest,
             "blockers": blockers,
             "created_at": _iso(now),
@@ -284,6 +298,7 @@ class MCPStablePromotionEvidenceManager:
             "candidate_head": candidate_head,
             "manifest": _manifest_summary(manifest),
             "preconditions": snapshot,
+            "worktree_isolation": artifact["worktree_isolation"],
             "blockers": blockers,
             "can_apply": not blockers,
             "expires_at": artifact["expires_at"],
@@ -365,6 +380,7 @@ class MCPStablePromotionEvidenceManager:
             "preview_id": preview_id,
             "preview_digest": artifact.get("preview_digest"),
             "git_snapshot": snapshot,
+            "worktree_isolation": _worktree_isolation(snapshot),
             "artifact_manifest": manifest,
             "authority_boundary": _authority_boundary(),
         }
@@ -400,6 +416,7 @@ class MCPStablePromotionEvidenceManager:
             "receipt_digest": receipt["receipt_digest"],
             "receipt_path": _relative_runner_path(self.project_root, receipt_path),
             "manifest": _manifest_summary(manifest),
+            "worktree_isolation": receipt["worktree_isolation"],
             "evidence_status": verified,
             "authority_boundary": _authority_boundary(),
         }
@@ -436,6 +453,13 @@ class MCPStablePromotionEvidenceManager:
         expected = _canonical_sha256({key: value for key, value in artifact.items() if key != "preview_digest"})
         if not secrets.compare_digest(str(artifact.get("preview_digest") or ""), expected):
             return _manager_error("apply", "PREVIEW_DIGEST_MISMATCH", "Stable promotion evidence preview digest is invalid.")
+        snapshot = artifact.get("git_snapshot") if isinstance(artifact.get("git_snapshot"), dict) else {}
+        if artifact.get("worktree_isolation") != _worktree_isolation(snapshot):
+            return _manager_error(
+                "apply",
+                "PREVIEW_WORKTREE_ISOLATION_MISMATCH",
+                "Stable promotion evidence preview worktree isolation is invalid.",
+            )
         return None
 
     def _preview_path(self, preview_id: str) -> str:
@@ -597,11 +621,30 @@ def _apply_blockers(snapshot: dict[str, Any], candidate_head: str, manifest: dic
         blockers.append(_blocker("ORIGIN_MAIN_UNAVAILABLE", "origin/main could not be resolved."))
     elif snapshot.get("origin_main_head") != candidate_head:
         blockers.append(_blocker("CANDIDATE_NOT_ORIGIN_MAIN", "Candidate commit is not aligned with origin/main."))
-    if snapshot.get("worktree_clean") is not True:
-        blockers.append(_blocker("WORKTREE_NOT_CLEAN", "Worktree must be clean before persisting promotion evidence."))
     if manifest.get("available") is not True:
         blockers.append(_blocker("CANDIDATE_MANIFEST_UNAVAILABLE", "Exact candidate manifest could not be generated."))
     return blockers
+
+
+def _worktree_isolation(snapshot: dict[str, Any]) -> dict[str, Any]:
+    clean_state = snapshot.get("worktree_clean")
+    clean = clean_state is True
+    status = (
+        "clean"
+        if clean
+        else "changes_excluded_from_exact_commit_evidence"
+        if clean_state is False
+        else "worktree_state_unavailable_but_content_not_used"
+    )
+    return {
+        "status": status,
+        "worktree_clean": clean_state,
+        "dirty_entry_count": snapshot.get("dirty_entry_count"),
+        "candidate_source": "git_object_database",
+        "worktree_content_used": False,
+        "worktree_changes_block_artifact_receipt": False,
+        "worktree_changes_still_block_promotion_review": not clean,
+    }
 
 
 def _candidate_freshness(snapshot: dict[str, Any], candidate_head: str) -> dict[str, bool]:
@@ -745,6 +788,7 @@ def _authority_boundary() -> dict[str, bool]:
     return {
         "writes_runner_runtime_evidence_only": True,
         "does_not_read_worktree_file_content": True,
+        "worktree_changes_excluded_from_candidate_manifest": True,
         "does_not_replace_stable_service": True,
         "does_not_restart_services": True,
         "does_not_modify_git": True,

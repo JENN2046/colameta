@@ -906,10 +906,12 @@ does not authorize or request stable replacement.
 Stable promotion artifact evidence is prepared with
 `manage_stable_promotion_evidence`. `preview` computes a complete SHA-256
 manifest from the exact candidate Git commit object database, not from current
-worktree file content. It fails closed unless the candidate is current `HEAD`,
-matches `origin/main`, and the worktree is clean. Confirmed `apply` recomputes
-the immutable commit manifest, compares it with the preview, and persists a
-full receipt under `.colameta/runtime/stable-promotion-evidence/`; `status`
+worktree file content. It fails closed unless the candidate is current `HEAD`
+and matches `origin/main`. Worktree changes are reported by
+`worktree_isolation` and excluded from this exact-commit receipt; they still
+block `stable_promotion_review_candidate`. Confirmed `apply` recomputes the
+immutable commit manifest, compares it with the preview, and persists a full
+receipt under `.colameta/runtime/stable-promotion-evidence/`; `status`
 recomputes and verifies the receipt. Invalid existing receipts are preserved
 for investigation instead of overwritten. These actions never replace or
 restart stable, modify Git, push, release, or deploy.
