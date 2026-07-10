@@ -5654,6 +5654,7 @@ class MCPPlanningBridgeServer:
       var seq = 1;
       var activeProjectName = "";
       var actionRunStatus = {};
+      var previewActionConfirmations = {};
       var pendingBridgeCalls = {};
       function byId(id) { return document.getElementById(id); }
       function text(id, value) { byId(id).textContent = value || "-"; }
@@ -6522,7 +6523,44 @@ class MCPPlanningBridgeServer:
       }
       function actionKey(action) {
         if (!action || typeof action !== "object") return "unknown";
-        return [action.action_id, action.tool, action.runbook, action.mode].filter(Boolean).join("|") || actionText(action);
+        return [action.action_id, action.tool, action.runbook, action.mode, action.action_fingerprint].filter(Boolean).join("|") || actionText(action);
+      }
+      function previewActionFingerprint(action) {
+        if (!action || typeof action !== "object") return "";
+        return typeof action.action_fingerprint === "string" ? action.action_fingerprint : "";
+      }
+      function stablePreviewActionIsRunnable(action) {
+        if (!action || typeof action !== "object") return false;
+        var args = action.arguments && typeof action.arguments === "object" ? action.arguments : {};
+        var boundary = action.authority_boundary && typeof action.authority_boundary === "object" ? action.authority_boundary : {};
+        var resultContract = action.result_contract && typeof action.result_contract === "object" ? action.result_contract : {};
+        return action.mode === "preview"
+          && action.tool === "manage_stable_promotion_evidence"
+          && args.action === "preview"
+          && typeof args.candidate_head === "string"
+          && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(args.candidate_head)
+          && action.required_scope === "mcp:preview"
+          && action.requires_preview_confirm === true
+          && action.requires_explicit_confirmation === true
+          && action.side_effects === true
+          && resultContract.expected_result_kind === "preview_packet"
+          && boundary.does_not_execute_now === true
+          && boundary.does_not_authorize_stable_replacement === true
+          && !!previewActionFingerprint(action);
+      }
+      function previewActionIsConfirmed(key, action) {
+        var fingerprint = previewActionFingerprint(action);
+        return !!fingerprint && previewActionConfirmations[key] === fingerprint;
+      }
+      function stablePreviewConfirmationMessage(action) {
+        var args = action && action.arguments && typeof action.arguments === "object" ? action.arguments : {};
+        return [
+          "Review exact call",
+          action && action.tool,
+          "action=" + (args.action || ""),
+          "candidate_head=" + (args.candidate_head || ""),
+          "project_name=" + (args.project_name || activeProjectName || "")
+        ].filter(Boolean).join(" | ");
       }
       function rememberActionRunStatus(key, status, message) {
         if (!key) return;
@@ -6541,6 +6579,10 @@ class MCPPlanningBridgeServer:
         var item = actionRunStatus[key] || (action && action.last_action_result);
         if (!item || item.status === "not_recorded") {
           node.textContent = "";
+          return;
+        }
+        if (item.status === "confirmation_required") {
+          node.textContent = ["Confirmation required", item.message].filter(Boolean).join(" | ");
           return;
         }
         var observed = item.at || item.observed_at;
@@ -6610,7 +6652,7 @@ class MCPPlanningBridgeServer:
         var current = actionRunStatus[key];
         var recordStatus = actionRunStatus[recordKey(action)];
         var recorded = !!(recordStatus && recordStatus.status === "recorded");
-        button.disabled = !current || current.status === "pending" || recorded;
+        button.disabled = !current || current.status === "pending" || current.status === "confirmation_required" || recorded;
         statusNode.textContent = recordStatus ? [recordStatus.status, recordStatus.message].filter(Boolean).join(" | ") : "";
       }
       function renderActionRefreshQueue(node, action) {
@@ -6693,9 +6735,17 @@ class MCPPlanningBridgeServer:
           var run = document.createElement("button");
           run.className = "action-run";
           run.type = "button";
-          var runnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
-          run.textContent = runnable ? "Run" : (action.mode === "commit" ? "Confirm outside" : "Preview first");
-          run.disabled = !runnable;
+          var readRunnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
+          var previewRunnable = stablePreviewActionIsRunnable(action);
+          var previewConfirmed = previewRunnable && previewActionIsConfirmed(key, action);
+          run.textContent = readRunnable
+            ? "Run"
+            : previewRunnable
+            ? (previewConfirmed ? "Confirm preview" : "Review preview")
+            : action.mode === "commit"
+            ? "Confirm outside"
+            : "Preview outside";
+          run.disabled = !(readRunnable || previewRunnable);
           var runStatus = document.createElement("div");
           runStatus.className = "action-run-status";
           renderActionRunStatus(runStatus, key, action);
@@ -6711,7 +6761,16 @@ class MCPPlanningBridgeServer:
           refreshQueue.className = "action-refresh-queue";
           renderActionRefreshQueue(refreshQueue, action);
           run.addEventListener("click", async function () {
-            if (!runnable) return;
+            if (!readRunnable && !previewRunnable) return;
+            if (previewRunnable && !previewActionIsConfirmed(key, action)) {
+              previewActionConfirmations[key] = previewActionFingerprint(action);
+              rememberActionRunStatus(key, "confirmation_required", stablePreviewConfirmationMessage(action));
+              run.textContent = "Confirm preview";
+              renderActionRunStatus(runStatus, key, action);
+              renderRecordButton(record, recordStatus, action, key);
+              return;
+            }
+            if (previewRunnable) delete previewActionConfirmations[key];
             rememberActionRunStatus(key, "pending", action.tool);
             renderActionRunStatus(runStatus, key, action);
             renderRecordButton(record, recordStatus, action, key);

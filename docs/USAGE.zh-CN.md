@@ -199,8 +199,13 @@ submission evidence 文件，并在 `evidence_context.entry_templates` 中给出
 不创建 OpenAI App draft、不提交审核、不发布。
 Commander widget 会把 `recommended_first_actions` 渲染成动作卡片，显示 mode、scope、
 确认要求、副作用和 authority-boundary，并提供可复制的工具调用形状。`mode=read`
-的动作卡可以在 widget 内直接运行；`mode=preview` 或 `mode=commit` 的动作不会在 widget
-里直接执行，操作者需要复制调用并走显式 preview 或确认流程。可运行卡片会在卡片内记录
+的动作卡可以在 widget 内直接运行。服务端明确推荐、带当前 action fingerprint、声明
+`mcp:preview`、显式确认和 runtime 副作用边界的 stable artifact preview，可以在 widget 内走
+`Review preview -> Confirm preview` 两次点击；第一次只锁定当前 fingerprint，不调用工具，
+如果 HEAD、参数或 fingerprint 改变就必须重新确认。成功生成 preview 后可记录结果并刷新
+Product Console，随后显示精确 `preview_id` 的 apply 卡。`mode=commit` 始终不能在 widget 内
+执行，操作者仍需复制调用并走外部显式确认流程；其他 preview 动作也保持复制交接。
+可运行卡片会在卡片内记录
 最近一次请求状态，例如 pending、updated、requested 或 blocked。widget 会维护一个持续合并
 的当前视图状态，所以 Product Console actions、release evidence 和后续 action-result payload
 会一起保留在操作台里。如果 ChatGPT Apps direct tool call 失败并退回 MCP bridge，卡片会先
