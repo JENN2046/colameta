@@ -941,7 +941,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "data-copy-operator-inbox" in page
         assert "data-run-operator-inbox" in page
         assert "operatorInboxRunFeedback" in page
+        assert "operatorInboxRunTrail" in page
+        assert "OPERATOR_INBOX_RUN_TRAIL_LIMIT" in page
         assert "setOperatorInboxRunFeedback" in page
+        assert "pushOperatorInboxRunTrail" in page
+        assert "renderOperatorInboxRunTrail" in page
         assert "operatorInboxFeedbackFor" in page
         assert "operatorInboxSignature" in page
         assert "clearStaleOperatorInboxFeedback" in page
@@ -949,6 +953,12 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operatorInboxRunFeedback.inboxSignature" in page
         assert "operatorInboxFeedbackTimestamp" in page
         assert "来自刚才的 Run 操作" in page
+        assert "最近 Run" in page
+        assert "暂无最近 Run。" in page
+        assert 'class="operator-inbox-run-trail"' in page
+        assert "operatorInboxRunTrail.slice(0, OPERATOR_INBOX_RUN_TRAIL_LIMIT)" in page
+        assert "data-operator-inbox-action-label" in page
+        assert "pushOperatorInboxRunTrail(actionKey, state, message, actionLabel)" in page
         assert "operator-inbox-action-meta" in page
         assert "data-operator-inbox-action-key" in page
         assert "operator-inbox-action-status" in page
