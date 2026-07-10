@@ -225,6 +225,24 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert completion["progress_state"]["gap_count"] == 3
     assert completion["progress_state"]["followup_count"] == 3
     assert completion["progress_state"]["pending_refresh_count"] == 0
+    overview = completion["product_completion_overview"]
+    assert packet["product_completion_overview"] == overview
+    assert overview["source"] == "product_completion_overview"
+    assert overview["status"] == "needs_attention"
+    assert overview["ready"] is False
+    assert overview["ready_category_count"] == 2
+    assert overview["total_category_count"] == 5
+    assert overview["blocker_category_count"] == 0
+    assert overview["needs_attention_category_count"] == 3
+    assert overview["primary_gap_category"]["category_id"] == "release_submission"
+    assert overview["recommended_action"]["tool"] == "init_submission_evidence"
+    assert [item["category_id"] for item in overview["categories"]] == [
+        "product_readiness",
+        "release_submission",
+        "submission_evidence",
+        "submission_evidence_activity",
+        "action_refresh",
+    ]
     assert completion["needs_attention_codes"] == [
         "RELEASE_SUBMISSION_NOT_READY",
         "SUBMISSION_EVIDENCE_NOT_READY",
@@ -478,6 +496,14 @@ def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(
     assert completion["progress_state"]["ready"] is True
     assert completion["progress_state"]["pending_refresh_count"] == 0
     assert completion["progress_state"]["submission_evidence_activity_recorded"] is True
+    overview = completion["product_completion_overview"]
+    assert packet["product_completion_overview"] == overview
+    assert overview["status"] == "ready"
+    assert overview["ready"] is True
+    assert overview["summary"] == "Product completion is ready: 5/5 categories are ready."
+    assert overview["ready_category_count"] == 5
+    assert overview["primary_gap_category"] is None
+    assert all(item["severity"] == "ready" for item in overview["categories"])
     assert completion["gap_count"] == 0
     assert completion["gaps"] == []
     assert completion["blocker_codes"] == []

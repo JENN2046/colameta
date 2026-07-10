@@ -1851,6 +1851,17 @@ vm.runInThisContext({json.dumps(widget_script)});
         stored_result_count: 1,
         submission_evidence_activity_recorded: true
       }},
+      product_completion_overview: {{
+        source: "product_completion_overview",
+        status: "needs_attention",
+        ready: false,
+        summary: "Product completion needs attention: 4/5 categories ready, 0 blocker category(s), 1 attention category(s).",
+        ready_category_count: 4,
+        total_category_count: 5,
+        blocker_category_count: 0,
+        needs_attention_category_count: 1,
+        next_step: "Review remaining closeout gaps and follow the next Product Console action group."
+      }},
       gaps: [{{
         component: "submission_evidence_activity",
         status: "not_recorded",
@@ -1944,6 +1955,7 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceActivityText().includes("recorded | updated | Recorded recovery refreshed | 2026-01-02T03:04:05Z"), evidenceActivityText());
   assert.strictEqual(evidenceActivityRecordButton().disabled, false);
   assert(byId("closeout-status").textContent.includes("needs_attention"), byId("closeout-status").textContent);
+  assert(byId("closeout-status").textContent.includes("4/5 categories ready"), byId("closeout-status").textContent);
   assert(byId("closeout-status").textContent.includes("Recorded, Needs Review"), byId("closeout-status").textContent);
   assert(byId("closeout-status").textContent.includes("Review remaining closeout gaps"), byId("closeout-status").textContent);
   assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);

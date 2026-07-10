@@ -68,6 +68,14 @@ def build_product_console_map(
         project_args={"project_name": project_name} if project_name else {},
         release_submission=release,
     )
+    completion_surface = _completion_surface(
+        status=status,
+        readiness=readiness,
+        release_submission=release,
+        action_result_state=action_result_state,
+        release_evidence_bundle=release_evidence_bundle,
+        recommended_actions=recommended_actions,
+    )
     return {
         "ok": True,
         "source": PRODUCT_CONSOLE_SOURCE,
@@ -105,14 +113,8 @@ def build_product_console_map(
         "entries": entries,
         "recommended_first_actions": recommended_actions,
         "action_result_state": action_result_state,
-        "completion_surface": _completion_surface(
-            status=status,
-            readiness=readiness,
-            release_submission=release,
-            action_result_state=action_result_state,
-            release_evidence_bundle=release_evidence_bundle,
-            recommended_actions=recommended_actions,
-        ),
+        "completion_surface": completion_surface,
+        "product_completion_overview": completion_surface.get("product_completion_overview"),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
@@ -816,6 +818,23 @@ def _completion_surface(
         recommended_actions=recommended_actions,
         safe_next_action=safe_next_action,
     )
+    progress_state = _completion_progress_state(
+        status=completion_status,
+        gaps=gaps,
+        action_result_state=action_result_state,
+        followup_count=len(action_groups),
+    )
+    followup_queue = _completion_followup_queue(
+        status=completion_status,
+        action_groups=action_groups,
+    )
+    product_completion_overview = _product_completion_overview(
+        status=completion_status,
+        components=components,
+        gaps=gaps,
+        progress_state=progress_state,
+        safe_next_action=safe_next_action,
+    )
     return {
         "source": "product_console_completion_surface",
         "schema_version": "product_console_completion_surface.v1",
@@ -825,12 +844,8 @@ def _completion_surface(
         "console_status": status,
         "ready": completion_status == "ready",
         "summary": _completion_summary(completion_status, gaps),
-        "progress_state": _completion_progress_state(
-            status=completion_status,
-            gaps=gaps,
-            action_result_state=action_result_state,
-            followup_count=len(action_groups),
-        ),
+        "progress_state": progress_state,
+        "product_completion_overview": product_completion_overview,
         "components": components,
         "gap_count": len(gaps),
         "gaps": gaps,
@@ -838,10 +853,7 @@ def _completion_surface(
         "needs_attention_codes": needs_attention_codes,
         "safe_next_action": safe_next_action,
         "action_groups": action_groups,
-        "followup_queue": _completion_followup_queue(
-            status=completion_status,
-            action_groups=action_groups,
-        ),
+        "followup_queue": followup_queue,
         "authority_boundary": {
             "read_only": True,
             "side_effects": False,
@@ -901,6 +913,140 @@ def _completion_gaps(components: dict[str, dict[str, Any]]) -> list[dict[str, An
             }
         )
     return gaps
+
+
+def _product_completion_overview(
+    *,
+    status: str,
+    components: dict[str, dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    progress_state: dict[str, Any],
+    safe_next_action: dict[str, Any],
+) -> dict[str, Any]:
+    categories = [
+        _product_completion_category(component_id=component_id, component=component, gaps=gaps)
+        for component_id, component in components.items()
+    ]
+    ready_count = sum(1 for item in categories if item["ready"])
+    blocker_count = sum(1 for item in categories if item["severity"] == "blocker")
+    needs_attention_count = sum(1 for item in categories if item["severity"] == "needs_attention")
+    total_count = len(categories)
+    first_gap = next((item for item in categories if not item["ready"]), None)
+    return {
+        "source": "product_completion_overview",
+        "schema_version": "product_completion_overview.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": "ready" if status == "ready" else "blocked" if blocker_count else "needs_attention",
+        "ready": status == "ready",
+        "summary": _product_completion_overview_summary(
+            ready_count=ready_count,
+            total_count=total_count,
+            blocker_count=blocker_count,
+            needs_attention_count=needs_attention_count,
+        ),
+        "ready_category_count": ready_count,
+        "total_category_count": total_count,
+        "blocker_category_count": blocker_count,
+        "needs_attention_category_count": needs_attention_count,
+        "primary_gap_category": first_gap,
+        "categories": categories,
+        "progress_state": {
+            "status": progress_state.get("status"),
+            "label": progress_state.get("label"),
+            "severity": progress_state.get("severity"),
+            "next_step": progress_state.get("next_step"),
+        },
+        "next_step": progress_state.get("next_step") or "Read Product Console and follow the first incomplete category.",
+        "recommended_action": {
+            "action": safe_next_action.get("action"),
+            "tool": safe_next_action.get("tool") or safe_next_action.get("runbook"),
+            "arguments": dict(safe_next_action.get("arguments") or {}),
+            "authority": safe_next_action.get("authority") or safe_next_action.get("required_scope") or "read_only",
+            "why": safe_next_action.get("why") or "Follow the first incomplete product completion category.",
+        },
+        "authority_boundary": {
+            "read_only": True,
+            "side_effects": False,
+            "does_not_execute_actions": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_authorize_stable_replacement": True,
+        },
+    }
+
+
+def _product_completion_category(
+    *,
+    component_id: str,
+    component: dict[str, Any],
+    gaps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    component_gaps = [gap for gap in gaps if gap.get("component") == component_id]
+    severity = "ready"
+    if any(gap.get("severity") == "blocker" for gap in component_gaps):
+        severity = "blocker"
+    elif component_gaps:
+        severity = "needs_attention"
+    guidance = _product_completion_category_guidance(component_id, severity)
+    return {
+        "category_id": component_id,
+        "label": _completion_group_label(component_id),
+        "status": component.get("status") or "unknown",
+        "ready": component.get("ready") is True,
+        "severity": severity,
+        "gap_codes": [str(gap.get("code")) for gap in component_gaps if gap.get("code")],
+        "message": guidance["message"],
+        "next_step": guidance["next_step"],
+    }
+
+
+def _product_completion_category_guidance(component_id: str, severity: str) -> dict[str, str]:
+    if severity == "ready":
+        return {
+            "message": "This category is ready.",
+            "next_step": "Keep this evidence current while resolving remaining categories.",
+        }
+    guidance = {
+        "product_readiness": {
+            "message": "Product readiness is not yet public-beta ready.",
+            "next_step": "Read product readiness and resolve the primary service or connector blocker.",
+        },
+        "release_submission": {
+            "message": "Release submission readiness still has local gaps.",
+            "next_step": "Read release submission readiness and complete the missing local submission material.",
+        },
+        "submission_evidence": {
+            "message": "Submission evidence is incomplete or not marked ready.",
+            "next_step": "Use the submission evidence preview/fill flow, then review and mark evidence ready.",
+        },
+        "submission_evidence_activity": {
+            "message": "Submission evidence activity has not been recorded as current closeout evidence.",
+            "next_step": "Record a concise, redacted submission evidence activity result.",
+        },
+        "action_refresh": {
+            "message": "Recorded action results require a read-only refresh.",
+            "next_step": "Run the pending refresh action before accepting the closeout state.",
+        },
+    }
+    return guidance.get(component_id) or {
+        "message": "This category needs operator attention.",
+        "next_step": "Read Product Console and follow the category-specific action group.",
+    }
+
+
+def _product_completion_overview_summary(
+    *,
+    ready_count: int,
+    total_count: int,
+    blocker_count: int,
+    needs_attention_count: int,
+) -> str:
+    if ready_count == total_count:
+        return f"Product completion is ready: {ready_count}/{total_count} categories are ready."
+    return (
+        f"Product completion needs attention: {ready_count}/{total_count} categories ready, "
+        f"{blocker_count} blocker category(s), {needs_attention_count} attention category(s)."
+    )
 
 
 def _completion_progress_state(

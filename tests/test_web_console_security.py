@@ -777,6 +777,14 @@ class WebConsoleSecurityTests(unittest.TestCase):
             "closeout_ready",
         }
         assert payload["product_console_completion"]["status"] == service["product_console_completion"]["status"]
+        overview = service["product_completion_overview"]
+        assert overview["source"] == "product_completion_overview"
+        assert overview["read_only"] is True
+        assert overview["side_effects"] is False
+        assert overview["status"] in {"ready", "needs_attention", "blocked"}
+        assert overview["total_category_count"] >= overview["ready_category_count"]
+        assert isinstance(overview["categories"], list)
+        assert payload["product_completion_overview"]["status"] == overview["status"]
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
