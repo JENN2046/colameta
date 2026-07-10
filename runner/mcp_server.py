@@ -6358,6 +6358,9 @@ class MCPPlanningBridgeServer:
           appendChip(meta, gaps.length ? "gaps " + gaps.length : "no gaps", gaps.length ? "commit" : "read");
           appendChip(meta, category.primary_tool || "");
           appendChip(meta, category.required_scope || "");
+          var categoryFollowup = category.followup_item && typeof category.followup_item === "object" ? category.followup_item : {};
+          appendChip(meta, category.followup_position ? "followup " + category.followup_position : "");
+          appendChip(meta, categoryFollowup.shared_by_component_count > 1 ? "shared action " + categoryFollowup.shared_by_component_count : "");
           var message = document.createElement("div");
           message.className = "recommended-action-why product-completion-message";
           message.textContent = category.message || "";
@@ -6395,6 +6398,9 @@ class MCPPlanningBridgeServer:
           appendChip(meta, group.component || group.group_id || "");
           var gaps = Array.isArray(group.gap_codes) ? group.gap_codes : [];
           appendChip(meta, gaps.length ? "gaps " + gaps.length : "no gaps", gaps.length ? "commit" : "read");
+          var groupFollowup = completionFollowupItemForGroup(completion, group);
+          appendChip(meta, groupFollowup && groupFollowup.position ? "followup " + groupFollowup.position : "");
+          appendChip(meta, groupFollowup && groupFollowup.shared_by_component_count > 1 ? "shared action " + groupFollowup.shared_by_component_count : "");
           var action = document.createElement("div");
           action.className = "recommended-action-why closeout-group-action";
           action.textContent = completionActionText(group.primary_action);
@@ -6412,18 +6418,23 @@ class MCPPlanningBridgeServer:
           target.appendChild(card);
         });
       }
-      function renderCloseoutFollowupControls(card, completion, group) {
-        var items = completionFollowupItems(completion).filter(function (item) {
-          var groupId = group.group_id || group.category_id;
-          var groupComponent = group.component || group.category_id || group.group_id;
+      function completionFollowupItemForGroup(completion, group) {
+        var groupId = group && (group.group_id || group.category_id);
+        var groupComponent = group && (group.component || group.category_id || group.group_id);
+        return completionFollowupItems(completion).filter(function (item) {
+          var components = item && Array.isArray(item.components) ? item.components : [];
           return item && typeof item === "object" && (
             item.item_id === groupId ||
             item.component === groupComponent ||
-            item.component === groupId
+            item.component === groupId ||
+            components.indexOf(groupComponent) >= 0 ||
+            components.indexOf(groupId) >= 0
           );
-        });
-        if (!items.length) return;
-        var item = items[0];
+        })[0] || null;
+      }
+      function renderCloseoutFollowupControls(card, completion, group) {
+        var item = completionFollowupItemForGroup(completion, group);
+        if (!item) return;
         var action = closeoutFollowupAction(item);
         var key = closeoutFollowupKey(item, action);
         var controls = document.createElement("div");

@@ -267,6 +267,14 @@ Product Console 写入：Web 先生成与完整 payload 绑定的 dangerous-acti
 占位 message、未知字段、非法 mode/status 和 confirmation payload mismatch。其他 Web v2
 write intent 继续全部阻断；这条路径不会执行原动作，也不授权 submission、publish、commit、
 push 或 stable replacement。
+当多个未完成类别引用完全相同的 `action_fingerprint` 时，Product follow-up 队列只保留一条
+共享动作，并通过 `components`、`related_item_ids` 和合并后的 `gap_codes` 标出它覆盖的所有类别。
+各类别仍分别保留状态和缺口，但共享同一个 `followup_position`；进度中的 follow-up 数量按实际
+唯一动作计数。每个相关类别卡片都提供同一个 queue item 与 fingerprint 的操作控件，用户无需跳回
+主类别。除了 fingerprint 完全相同，队列还会再次核对实际 primary action 的 tool/runbook、
+参数和 scope 与该 fingerprint 的 action ref 一致；写动作产生的只读 pending refresh 因此不会被
+折叠回源写动作。参数、scope、result contract 或实际执行入口不同的动作仍保持独立，避免把不同
+授权边界误折叠成一次操作。
 
 Release / ChatGPT App submission 的只读准备状态入口是：
 
