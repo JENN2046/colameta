@@ -22,6 +22,7 @@ SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED = "SUBMISSION_EVIDENCE_CONTENT_REVIE
 DEFAULT_SUBMISSION_MATERIALS_REL_PATH = "docs/chatgpt-app-submission-materials.json"
 RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES = 32768
+SUBMISSION_EVIDENCE_CONTENT_ROOT = "docs/submission/"
 READY = "ready"
 NEEDS_ATTENTION = "needs_attention"
 BLOCKED = "blocked"
@@ -1106,6 +1107,13 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
     if _is_placeholder_evidence_ref(rel_path):
         return {"ref": rel_path, "status": "placeholder"}
     if rel_path.lower().endswith((".md", ".markdown")):
+        if not rel_path.startswith(SUBMISSION_EVIDENCE_CONTENT_ROOT):
+            return {
+                "ref": rel_path,
+                "status": "invalid",
+                "error_code": "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED",
+                "allowed_root": SUBMISSION_EVIDENCE_CONTENT_ROOT,
+            }
         try:
             with open(str(normalized["abs_path"]), "rb") as handle:
                 content_bytes = handle.read(SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES + 1)
