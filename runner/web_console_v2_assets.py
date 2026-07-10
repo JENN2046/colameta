@@ -113,6 +113,13 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .local-trail-clear:hover:not(:disabled) { background: #30363d; }
 .local-trail-clear:disabled { opacity: 0.45; cursor: not-allowed; }
 .local-trail-feedback { color: #3fb950; font-size: 10px; line-height: 1.4; margin-bottom: 6px; min-height: 14px; }
+.product-followup-queue { border-top: 1px solid #30363d55; margin-top: 8px; padding-top: 8px; display: grid; gap: 6px; }
+.product-followup-title { color: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.product-followup-item { display: grid; gap: 3px; padding: 6px 0; border-top: 1px solid #21262d; }
+.product-followup-item:first-of-type { border-top: none; padding-top: 0; }
+.product-followup-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.product-followup-label { color: #c9d1d9; font-size: 12px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-followup-meta { color: #8b949e; font-size: 10px; line-height: 1.4; word-break: break-word; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1473,6 +1480,42 @@ function renderThinGovernedLoopPreview(data) {{
   return h;
 }}
 
+function renderProductFollowupQueue(completion) {{
+  completion = completion || {{}};
+  const queue = completion.followup_queue && typeof completion.followup_queue === "object" ? completion.followup_queue : {{}};
+  const items = Array.isArray(queue.items) ? queue.items : [];
+  let h = `<div class="product-followup-queue" aria-label="Product closeout follow-up queue">`;
+  h += `<div class="product-followup-title">Product follow-up queue</div>`;
+  if (!items.length) {{
+    h += `<div class="product-followup-meta">暂无 closeout follow-up 项。</div>`;
+  }} else {{
+    for (const item of items.slice(0, 3)) {{
+      const primary = item.primary_action && typeof item.primary_action === "object" ? item.primary_action : {{}};
+      const label = item.label || primary.label || item.item_id || "Follow-up";
+      const status = item.status || queue.status || "-";
+      const scope = item.required_scope || primary.required_scope || "-";
+      const gate = item.gate_level || primary.gate_level || "-";
+      const tool = item.primary_tool || primary.tool || "";
+      const position = item.position === 0 || item.position ? String(item.position) : "-";
+      h += `<div class="product-followup-item">`;
+      h += `<div class="product-followup-head"><div class="product-followup-label">${{esc(position)}}. ${{esc(label)}}</div><span class="badge ${{scope === "mcp:read" ? "badge-ok" : "badge-warn"}}">${{esc(scope)}}</span></div>`;
+      h += `<div class="product-followup-meta">${{esc(status)}} ｜ ${{esc(gate)}} ｜ ${{esc(tool || "manual")}}</div>`;
+      if (tool) {{
+        const payload = JSON.stringify({{ tool: tool, arguments: primary.arguments || {{}} }}, null, 2);
+        const copyLabel = "复制 Product follow-up 调用：" + label;
+        h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy follow-up</button>`;
+      }}
+      h += `</div>`;
+    }}
+    if (items.length > 3) {{
+      h += `<div class="product-followup-meta">还有 ${{items.length - 3}} 个 follow-up 项，请在右侧 INBOX 查看。</div>`;
+    }}
+  }}
+  h += `<div class="product-followup-meta">队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。</div>`;
+  h += `</div>`;
+  return h;
+}}
+
 function renderServiceCapabilityCard(data) {{
   data = data || {{}};
   const svc = data.web_commander_service || {{}};
@@ -1563,6 +1606,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);
+  h += renderProductFollowupQueue(completion);
 
   if (profiles.length) {{
     h += `<div class="service-profile-row">`;
