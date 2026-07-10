@@ -393,11 +393,15 @@ def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path)
     server = MCPPlanningBridgeServer(str(repo), service_mode=True)
     server.project_registry = registry
 
-    preview = server.call_tool_for_agent(
+    status = server.call_tool_for_agent(
         "manage_stable_promotion_evidence",
-        {"action": "preview", "candidate_head": head, "project_name": "demo-project"},
+        {"action": "status", "candidate_head": head, "project_name": "demo-project"},
     )
 
+    assert status["ok"] is True
+    preview_arguments = status["data"]["safe_next_action"]["arguments"]
+    assert preview_arguments["project_name"] == "demo-project"
+    preview = server.call_tool_for_agent("manage_stable_promotion_evidence", preview_arguments)
     assert preview["ok"] is True
     next_arguments = preview["data"]["next_action"]["arguments"]
     assert next_arguments["project_name"] == "demo-project"

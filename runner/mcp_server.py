@@ -248,11 +248,6 @@ _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
 _normalize_run_mcp_workflow_name = normalize_workflow_name
 
 
-def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Extract next_actions from flat or data-wrapped tool results."""
-    return _find_action_list(result, "next_actions")
-
-
 def _find_action_list(result: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
     actions = result.get(key)
     if isinstance(actions, list):
@@ -265,16 +260,16 @@ def _find_action_list(result: dict[str, Any], key: str) -> list[dict[str, Any]] 
     return None
 
 
-def _find_next_action(result: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract a singular next_action from flat or data-wrapped tool results."""
-    next_action = result.get("next_action")
-    if isinstance(next_action, dict):
-        return next_action
+def _find_action(result: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """Extract a singular action field from flat or data-wrapped tool results."""
+    action = result.get(key)
+    if isinstance(action, dict):
+        return action
     data = result.get("data")
     if isinstance(data, dict):
-        next_action = data.get("next_action")
-        if isinstance(next_action, dict):
-            return next_action
+        action = data.get(key)
+        if isinstance(action, dict):
+            return action
     return None
 
 
@@ -8673,19 +8668,22 @@ class MCPPlanningBridgeServer:
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
             clean_project_name = original_project_name.strip()
             self._inject_project_name_into_routed_result(result, clean_project_name)
-            next_action = _find_next_action(result)
-            if next_action is not None:
-                _inject_project_name_into_action(next_action, clean_project_name)
-            next_actions = _find_next_actions(result)
-            if next_actions is not None:
-                for action in next_actions:
-                    if isinstance(action, dict):
-                        _inject_project_name_into_action(action, clean_project_name)
-            recommended_next_steps = _find_action_list(result, "recommended_next_steps")
-            if recommended_next_steps is not None:
-                for action in recommended_next_steps:
-                    if isinstance(action, dict):
-                        _inject_project_name_into_action(action, clean_project_name)
+            for key in (
+                "next_action",
+                "safe_next_action",
+                "recommended_next_action",
+                "primary_next_action",
+                "copyable_tool_call",
+            ):
+                action = _find_action(result, key)
+                if action is not None:
+                    _inject_project_name_into_action(action, clean_project_name)
+            for key in ("next_actions", "safe_next_actions", "recommended_next_steps", "recommended_next_actions"):
+                actions = _find_action_list(result, key)
+                if actions is not None:
+                    for action in actions:
+                        if isinstance(action, dict):
+                            _inject_project_name_into_action(action, clean_project_name)
         return result
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
