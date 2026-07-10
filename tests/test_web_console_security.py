@@ -837,6 +837,9 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "normalizeRightTab" in page
         assert "rightTabActiveClass" in page
         assert "rightTabDisplayStyle" in page
+        assert "rightTabCountBadge" in page
+        assert "TODOLIST: " in page
+        assert "DECISION: " in page
         assert "renderOperatorInboxPanel" in page
         assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page
