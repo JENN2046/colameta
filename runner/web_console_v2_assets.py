@@ -136,6 +136,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .product-completion-categories { display: grid; gap: 4px; }
 .product-completion-category { display: flex; justify-content: space-between; gap: 8px; align-items: center; color: #8b949e; font-size: 10px; border-top: 1px solid #21262d; padding-top: 4px; }
 .product-completion-category:first-child { border-top: none; padding-top: 0; }
+.product-completion-category-actions { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1633,6 +1634,8 @@ function renderProductCompletionOverview(completionOverview) {{
   const attention = completionOverview.needs_attention_category_count === 0 || completionOverview.needs_attention_category_count ? completionOverview.needs_attention_category_count : 0;
   const primary = completionOverview.primary_gap_category && typeof completionOverview.primary_gap_category === "object" ? completionOverview.primary_gap_category : null;
   const primaryLabel = primary ? (primary.label || primary.category_id || "-") : "无";
+  const primaryFollowup = primary && primary.followup_item && typeof primary.followup_item === "object" ? primary.followup_item : null;
+  const primaryFollowupId = primaryFollowup && primaryFollowup.item_id ? String(primaryFollowup.item_id) : "";
   const nextStep = completionOverview.next_step || (primary && primary.next_step) || "Read Product Console and follow the first incomplete category.";
   let h = `<div class="product-completion-overview" aria-label="Product completion overview">`;
   h += `<div class="product-completion-head"><div class="product-completion-title">Product completion</div><span class="badge ${{productCompletionBadgeClass(status)}}">${{esc(status)}}</span></div>`;
@@ -1642,6 +1645,9 @@ function renderProductCompletionOverview(completionOverview) {{
   h += `<span class="badge ${{blockers ? "badge-err" : "badge-info"}}">blocker ${{esc(blockers)}}</span>`;
   h += `</div>`;
   h += `<div class="product-completion-next">第一缺口：${{esc(primaryLabel)}} ｜ 下一步：${{esc(nextStep)}}</div>`;
+  if (primaryFollowupId) {{
+    h += `<div class="product-followup-actions"><button type="button" class="operator-inbox-btn" data-open-product-followup="${{escAttr(primaryFollowupId)}}" aria-label="${{escAttr("在 INBOX 中查看第一缺口：" + primaryLabel)}}" title="${{escAttr("在 INBOX 中查看第一缺口：" + primaryLabel)}}">Open first gap</button></div>`;
+  }}
   if (categories.length) {{
     h += `<div class="product-completion-categories">`;
     for (const category of categories.slice(0, 5)) {{
@@ -1649,7 +1655,13 @@ function renderProductCompletionOverview(completionOverview) {{
       const severity = category.severity || category.status || "-";
       const gapCount = Array.isArray(category.gap_codes) ? category.gap_codes.length : 0;
       const tool = category.primary_tool || (category.primary_action && category.primary_action.tool) || "";
-      h += `<div class="product-completion-category"><span>${{esc(label)}}</span><span class="badge ${{productCompletionBadgeClass(severity)}}">${{esc(severity)}}${{gapCount ? " · gaps " + esc(gapCount) : ""}}${{tool ? " · " + esc(tool) : ""}}</span></div>`;
+      const followup = category.followup_item && typeof category.followup_item === "object" ? category.followup_item : null;
+      const followupId = followup && followup.item_id ? String(followup.item_id) : "";
+      h += `<div class="product-completion-category"><span>${{esc(label)}}</span><span class="product-completion-category-actions"><span class="badge ${{productCompletionBadgeClass(severity)}}">${{esc(severity)}}${{gapCount ? " · gaps " + esc(gapCount) : ""}}${{tool ? " · " + esc(tool) : ""}}</span>`;
+      if (followupId) {{
+        h += `<button type="button" class="operator-inbox-btn" data-open-product-followup="${{escAttr(followupId)}}" aria-label="${{escAttr("在 INBOX 中查看：" + label)}}" title="${{escAttr("在 INBOX 中查看：" + label)}}">Open</button>`;
+      }}
+      h += `</span></div>`;
     }}
     h += `</div>`;
   }}
