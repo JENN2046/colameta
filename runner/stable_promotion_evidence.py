@@ -17,6 +17,7 @@ from runner.runner_paths import resolve_project_runner_path
 
 
 PREVIEW_TTL_SECONDS = 3600
+MAX_ACTIVE_PREVIEW_SCAN = 100
 PREVIEWS_DIR = os.path.join("runtime", "stable-promotion-evidence-previews")
 RECEIPTS_DIR = os.path.join("runtime", "stable-promotion-evidence")
 MANIFEST_VERSION = 2
@@ -218,6 +219,16 @@ def get_stable_promotion_evidence_status(
     }
 
 
+def get_stable_promotion_preview_status(
+    project_root: str,
+    *,
+    candidate_head: str | None = None,
+) -> dict[str, Any]:
+    """Return the newest still-applicable preview for an exact candidate commit."""
+    manager = MCPStablePromotionEvidenceManager(project_root)
+    return manager.active_preview_status(candidate_head=candidate_head)
+
+
 class MCPStablePromotionEvidenceManager:
     def __init__(self, project_root: str):
         self.project_root = _normalize_project_root(project_root)
@@ -241,12 +252,102 @@ class MCPStablePromotionEvidenceManager:
         }
 
     def status(self, params: dict[str, Any]) -> dict[str, Any]:
+        evidence = get_stable_promotion_evidence_status(
+            self.project_root,
+            candidate_head=_clean_optional_text(params.get("candidate_head")),
+        )
         return {
             "action": "status",
-            **get_stable_promotion_evidence_status(
-                self.project_root,
-                candidate_head=_clean_optional_text(params.get("candidate_head")),
-            ),
+            **evidence,
+            "active_preview": self.active_preview_status(candidate_head=evidence.get("candidate_head")),
+        }
+
+    def active_preview_status(self, *, candidate_head: str | None = None) -> dict[str, Any]:
+        resolved_head = _resolve_commit(self.project_root, candidate_head)
+        if not resolved_head:
+            return _preview_status_unavailable(
+                "CANDIDATE_COMMIT_UNAVAILABLE",
+                "Candidate commit could not be resolved for preview recovery.",
+            )
+        if not self._runtime_storage_is_safe():
+            return _preview_status_unavailable(
+                "RUNTIME_STORAGE_UNSAFE",
+                "Stable promotion evidence preview storage is unsafe.",
+                candidate_head=resolved_head,
+            )
+
+        candidates: list[dict[str, Any]] = []
+        try:
+            preview_paths = [
+                path
+                for path in Path(self.previews_root).glob("*.json")
+                if _is_safe_runtime_artifact_path(self.project_root, str(path))
+            ]
+            preview_paths.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        except OSError:
+            preview_paths = []
+        for path in preview_paths[:MAX_ACTIVE_PREVIEW_SCAN]:
+            preview_id = _valid_preview_id(path.stem)
+            if not preview_id:
+                continue
+            artifact = self._read_preview(preview_id)
+            if artifact is None or artifact.get("candidate_head") != resolved_head:
+                continue
+            if self._validate_preview_artifact(artifact, preview_id) is not None:
+                continue
+            if _is_expired(artifact.get("expires_at")) or artifact.get("blockers"):
+                continue
+            candidates.append(artifact)
+
+        if not candidates:
+            return {
+                "ok": True,
+                "source": "stable_promotion_artifact_preview_status",
+                "schema_version": "stable_promotion_artifact_preview_status.v1",
+                "status": "missing",
+                "read_only": True,
+                "side_effects": False,
+                "candidate_head": resolved_head,
+                "can_apply": False,
+            }
+
+        artifact = max(candidates, key=lambda item: str(item.get("created_at") or ""))
+        manifest = build_candidate_artifact_manifest(self.project_root, resolved_head, include_entries=True)
+        blockers = _apply_blockers(_git_snapshot(self.project_root), resolved_head, manifest)
+        if blockers or artifact.get("artifact_manifest") != manifest:
+            return {
+                "ok": True,
+                "source": "stable_promotion_artifact_preview_status",
+                "schema_version": "stable_promotion_artifact_preview_status.v1",
+                "status": "stale",
+                "read_only": True,
+                "side_effects": False,
+                "candidate_head": resolved_head,
+                "preview_id": artifact.get("preview_id"),
+                "can_apply": False,
+                "blockers": blockers or [_blocker("MANIFEST_CHANGED", "Exact candidate manifest differs from the preview.")],
+            }
+
+        preview_id = str(artifact["preview_id"])
+        return {
+            "ok": True,
+            "source": "stable_promotion_artifact_preview_status",
+            "schema_version": "stable_promotion_artifact_preview_status.v1",
+            "status": "ready_to_apply",
+            "read_only": True,
+            "side_effects": False,
+            "candidate_head": resolved_head,
+            "preview_id": preview_id,
+            "preview_digest": artifact.get("preview_digest"),
+            "created_at": artifact.get("created_at"),
+            "expires_at": artifact.get("expires_at"),
+            "can_apply": True,
+            "safe_next_action": {
+                "tool": "manage_stable_promotion_evidence",
+                "arguments": {"action": "apply", "preview_id": preview_id},
+                "required_scope": "mcp:commit",
+            },
+            "authority_boundary": _authority_boundary(),
         }
 
     def preview(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -489,8 +590,11 @@ class MCPStablePromotionEvidenceManager:
         }
 
     def _read_preview(self, preview_id: str) -> dict[str, Any] | None:
+        preview_path = self._preview_path(preview_id)
+        if not _is_safe_runtime_artifact_path(self.project_root, preview_path):
+            return None
         try:
-            with open(self._preview_path(preview_id), "r", encoding="utf-8") as handle:
+            with open(preview_path, "r", encoding="utf-8") as handle:
                 value = json.load(handle)
         except Exception:
             return None
@@ -767,6 +871,26 @@ def _status_error(error_code: str, message: str) -> dict[str, Any]:
         "status": "invalid",
         "verified": False,
         "current": False,
+        "error_code": error_code,
+        "message": message,
+    }
+
+
+def _preview_status_unavailable(
+    error_code: str,
+    message: str,
+    *,
+    candidate_head: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "source": "stable_promotion_artifact_preview_status",
+        "schema_version": "stable_promotion_artifact_preview_status.v1",
+        "status": "unavailable",
+        "read_only": True,
+        "side_effects": False,
+        "candidate_head": candidate_head,
+        "can_apply": False,
         "error_code": error_code,
         "message": message,
     }

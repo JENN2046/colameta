@@ -181,6 +181,13 @@ stable_and_release: stable promotion readiness、release/submission readiness
 `authority_boundary`、`result_contract`、`last_action_result` 和
 `next_refresh_actions`。`mode=commit` 表示调用该工具会写入本地项目状态，必须显式确认；
 console map 本身仍然只读，不执行该动作。
+当产品 readiness 要求检查 stable promotion 时，MCP 版 console map 会在同一次只读构建中
+装载 `stable_promotion_readiness_snapshot`，并把第一动作直接推进到精确候选 HEAD 的
+`manage_stable_promotion_evidence(action=preview)`。preview 只写短期 Runner runtime 证据；
+刷新后，如果预览的 digest、HEAD、origin/main 和 manifest 仍匹配，Console 才会显示带
+`preview_id` 的 `action=apply`，并明确标为 `mcp:commit`、要求显式确认。预览过期、被篡改、
+HEAD 变化或 manifest 变化时不会恢复 apply。这个闭环只持久化 artifact receipt，仍不授权
+重启、替换 stable、切换路由或发布。
 当 release/submission 缺少真实 manifest 时，`recommended_first_actions` 会推荐 MCP 工具
 `init_submission_evidence`；当 manifest 已存在但 evidence 文件缺失或仍是
 `.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐

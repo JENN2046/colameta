@@ -941,6 +941,104 @@ def test_console_map_routes_public_stale_runtime_to_promotion_readiness() -> Non
     assert packet["readiness_snapshot"]["stable_delivery_decision"]["status"] == "promotion_review_required"
 
 
+def test_console_map_advances_loaded_stable_readiness_to_artifact_preview() -> None:
+    readiness = _readiness(
+        "blocked",
+        safe_next_action={
+            "action": "inspect_stable_promotion_readiness",
+            "tool": "get_stable_promotion_readiness",
+            "why": "Inspect exact-head promotion evidence.",
+        },
+    )
+    stable = {
+        "readiness_status": "not_ready_for_stable_promotion_review",
+        "stable_promotion_review_candidate": False,
+        "stable_production_ready": False,
+        "project": {"head": "a" * 40},
+        "promotion_artifact_evidence": {"status": "missing"},
+        "promotion_artifact_preview": {"status": "missing"},
+        "recommended_next_steps": [
+            {
+                "step": "persist_artifact_manifest",
+                "description": "Preview exact-HEAD artifact evidence.",
+                "tool": "manage_stable_promotion_evidence",
+                "arguments": {"action": "preview", "candidate_head": "a" * 40},
+                "required_scope": "mcp:preview",
+            }
+        ],
+        "safety_boundary": {"does_not_authorize_stable_replacement": True},
+    }
+
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=readiness,
+        stable_promotion_readiness=stable,
+        full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release("blocked"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["tool"] == "manage_stable_promotion_evidence"
+    assert first["mode"] == "preview"
+    assert first["required_scope"] == "mcp:preview"
+    assert first["arguments"] == {
+        "project_name": "demo-project",
+        "action": "preview",
+        "candidate_head": "a" * 40,
+    }
+    assert first["result_contract"]["refresh_after"] == [
+        {"tool": "get_stable_promotion_readiness", "why": "Refresh exact-HEAD stable promotion evidence state."},
+        {"tool": "get_product_console_map", "why": "Advance the Product Console stable promotion action."},
+    ]
+    assert packet["stable_promotion_readiness_snapshot"]["artifact_preview_status"] == "missing"
+
+
+def test_console_map_advances_active_stable_preview_to_explicit_apply() -> None:
+    readiness = _readiness(
+        "blocked",
+        safe_next_action={"tool": "get_stable_promotion_readiness"},
+    )
+    stable = {
+        "readiness_status": "not_ready_for_stable_promotion_review",
+        "stable_promotion_review_candidate": False,
+        "stable_production_ready": False,
+        "project": {"head": "a" * 40},
+        "promotion_artifact_evidence": {"status": "missing"},
+        "promotion_artifact_preview": {"status": "ready_to_apply"},
+        "recommended_next_steps": [
+            {
+                "step": "persist_artifact_manifest",
+                "description": "Apply the current exact-HEAD preview.",
+                "tool": "manage_stable_promotion_evidence",
+                "arguments": {"action": "apply", "preview_id": "preview_1234"},
+                "required_scope": "mcp:commit",
+            }
+        ],
+    }
+
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=readiness,
+        stable_promotion_readiness=stable,
+        full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release("blocked"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["tool"] == "manage_stable_promotion_evidence"
+    assert first["label"] == "Apply Stable Promotion Artifact Evidence"
+    assert first["mode"] == "commit"
+    assert first["required_scope"] == "mcp:commit"
+    assert first["requires_explicit_confirmation"] is True
+    assert first["arguments"] == {
+        "project_name": "demo-project",
+        "action": "apply",
+        "preview_id": "preview_1234",
+    }
+
+
 def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:
     _write_evidence_files(tmp_path)
     manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH

@@ -9953,7 +9953,19 @@ class MCPPlanningBridgeServer:
     def _tool_get_product_console_map(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
-        return build_product_console_map(project_root, project_name=project_name)
+        readiness = build_product_readiness_packet(project_root, project_name=project_name)
+        safe_next_action = readiness.get("safe_next_action") if isinstance(readiness.get("safe_next_action"), dict) else {}
+        stable_promotion = (
+            self._build_stable_promotion_readiness_packet(project_root, project_name)
+            if safe_next_action.get("tool") == "get_stable_promotion_readiness"
+            else None
+        )
+        return build_product_console_map(
+            project_root,
+            project_name=project_name,
+            readiness_packet=readiness,
+            stable_promotion_readiness=stable_promotion,
+        )
 
     def _tool_record_product_console_action_result(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
@@ -10811,6 +10823,18 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = (
+            self._project_name_for_context(project_root, project_record, params)
+            if params.get("project_name") is not None
+            else None
+        )
+        return self._build_stable_promotion_readiness_packet(project_root, project_name)
+
+    def _build_stable_promotion_readiness_packet(
+        self,
+        project_root: str,
+        project_name: str | None,
+    ) -> dict[str, Any]:
         result = get_stable_promotion_readiness(
             project_root,
             visible_tool_names=self._visible_tool_names(),
@@ -10819,8 +10843,7 @@ class MCPPlanningBridgeServer:
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
         )
-        if params.get("project_name") is not None:
-            project_name = self._project_name_for_context(project_root, project_record, params)
+        if project_name:
             recommended_next_steps = _find_action_list(result, "recommended_next_steps")
             if recommended_next_steps is not None:
                 for action in recommended_next_steps:
