@@ -888,6 +888,12 @@ a productization batch is complete and Jenn chooses to promote it
 Use `get_stable_replacement_cadence(project_name=...)` or Web
 `/api/v2/status.stable_replacement_cadence` for this read-only judgment.
 `colameta status --json` also returns the same cadence packet.
+
+Product readiness also returns `stable_delivery_decision`. Ordinary HEAD drift
+remains `deferred_batch`, but if the public MCP health evidence proves that the
+endpoint is serving a runtime other than the candidate, the decision becomes
+`promotion_review_required` and routes to `get_stable_promotion_readiness`.
+This escalation requests evidence review only; it never authorizes replacement.
 When dev is ahead of stable, the cadence packet includes `dev_batch_summary`
 with the commit count since stable, recent commit subjects, `batch_size`, and
 `promotion_posture`. This is evidence for later batch review, not a replacement

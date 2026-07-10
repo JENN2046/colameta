@@ -906,6 +906,41 @@ def test_console_map_surfaces_stable_cadence_as_first_action_for_stable_blocker(
     assert packet["recommended_first_actions"][1]["tool"] == "init_submission_evidence"
 
 
+def test_console_map_routes_public_stale_runtime_to_promotion_readiness() -> None:
+    readiness = _readiness(
+        "blocked",
+        safe_next_action={
+            "action": "inspect_stable_promotion_readiness",
+            "tool": "get_stable_promotion_readiness",
+            "arguments": {},
+            "why": "Public runtime provenance is stale; inspect exact-head promotion evidence.",
+        },
+    )
+    readiness["primary_blocker"] = {"check": "stable_runtime"}
+    readiness["stable_delivery_decision"] = {
+        "status": "promotion_review_required",
+        "stable_replacement_authorized": False,
+    }
+
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=readiness,
+        full_loop_authority=_full_loop("ready"),
+        release_submission_readiness=_release("blocked"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["tool"] == "get_stable_promotion_readiness"
+    assert first["arguments"] == {"project_name": "demo-project"}
+    assert first["required_scope"] == "mcp:read"
+    assert first["result_contract"]["refresh_after"] == [
+        {"tool": "get_product_console_map", "why": "Refresh console guidance after stable promotion preflight."}
+    ]
+    assert packet["readiness_snapshot"]["safe_next_action"]["tool"] == "get_stable_promotion_readiness"
+    assert packet["readiness_snapshot"]["stable_delivery_decision"]["status"] == "promotion_review_required"
+
+
 def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:
     _write_evidence_files(tmp_path)
     manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH

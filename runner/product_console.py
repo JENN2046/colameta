@@ -44,7 +44,7 @@ def build_product_console_map(
 ) -> dict[str, Any]:
     readiness = readiness_packet if isinstance(readiness_packet, dict) else None
     if readiness is None and include_readiness:
-        readiness = build_product_readiness_packet(project_root, now=now)
+        readiness = build_product_readiness_packet(project_root, project_name=project_name, now=now)
     full_loop = full_loop_authority if isinstance(full_loop_authority, dict) else None
     if full_loop is None and include_full_loop_authority:
         full_loop = build_full_loop_authority_status(project_root, now=now)
@@ -846,6 +846,8 @@ def _refresh_after_for_tool(tool: str | None) -> list[dict[str, Any]]:
         return [{"tool": "get_product_readiness_status", "why": "Refresh product readiness after connector smoke evidence."}]
     if tool == "get_stable_replacement_cadence":
         return [{"tool": "get_product_console_map", "why": "Refresh console guidance after stable cadence review."}]
+    if tool == "get_stable_promotion_readiness":
+        return [{"tool": "get_product_console_map", "why": "Refresh console guidance after stable promotion preflight."}]
     if tool == "render_commander_app":
         return [{"tool": "get_product_console_map", "why": "Refresh console action cards after entering Commander."}]
     return []
@@ -2401,6 +2403,7 @@ def _readiness_snapshot(readiness: dict[str, Any] | None) -> dict[str, Any]:
         "ready": readiness.get("ready") is True,
         "primary_blocker": readiness.get("primary_blocker"),
         "safe_next_action": readiness.get("safe_next_action"),
+        "stable_delivery_decision": readiness.get("stable_delivery_decision"),
     }
 
 

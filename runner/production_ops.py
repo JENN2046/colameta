@@ -658,7 +658,11 @@ def _detect_sensitive_content(value: Any) -> dict[str, Any]:
             for key, child in item.items():
                 key_text = str(key)
                 child_path = f"{path}.{key_text}" if path else key_text
-                if SENSITIVE_KEY_RE.search(key_text) and child not in (None, "", [], {}):
+                if (
+                    SENSITIVE_KEY_RE.search(key_text)
+                    and child not in (None, "", [], {})
+                    and not _safe_public_metadata_field(path, key_text, child)
+                ):
                     findings.append(child_path)
                 walk(child, child_path)
         elif isinstance(item, list):
@@ -674,6 +678,17 @@ def _detect_sensitive_content(value: Any) -> dict[str, Any]:
     if findings:
         return _check(BLOCKED, "SECRET_LIKE_CONTENT_DETECTED", "Secret-like content was detected in the packet.", finding_paths=sorted(set(findings))[:10])
     return _check(READY, "NO_SECRET_LIKE_CONTENT_DETECTED", "No secret-like content was detected in the packet.")
+
+
+def _safe_public_metadata_field(path: str, key: str, value: Any) -> bool:
+    """Allow sanitized public endpoint metadata without weakening secret scans."""
+    return (
+        (path == "responses" or path.endswith(".responses"))
+        and key == "authorization_server"
+        and isinstance(value, dict)
+        and set(value) <= {"status"}
+        and type(value.get("status")) is int
+    )
 
 
 def needs_attention_codes_for_ops(checks: dict[str, dict[str, Any]]) -> list[str]:

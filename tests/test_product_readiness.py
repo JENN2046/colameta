@@ -67,6 +67,7 @@ def test_product_readiness_picks_primary_blocker_and_runbook() -> None:
 
     packet = build_product_readiness_packet(
         "/tmp/project",
+        project_name="demo-project",
         ops_packet_builder=lambda *args, **kwargs: ops,
     )
 
@@ -85,6 +86,7 @@ def test_product_readiness_routes_missing_connector_smoke_to_apps_tool() -> None
 
     packet = build_product_readiness_packet(
         "/tmp/project",
+        project_name="demo-project",
         ops_packet_builder=lambda *args, **kwargs: ops,
     )
 
@@ -98,7 +100,10 @@ def test_product_readiness_routes_stable_runtime_blocker_to_cadence_tool() -> No
     ops["checks"]["stable_runtime"] = {
         "status": "blocked",
         "reason_codes": ["STABLE_RUNTIME_HEAD_MISMATCH"],
+        "head": "b" * 40,
     }
+    ops["candidate_head"] = "a" * 40
+    ops["stable_runtime_dir"] = "/tmp/stable"
     ops["blocker_codes"] = ["STABLE_RUNTIME_HEAD_MISMATCH"]
 
     packet = build_product_readiness_packet(
@@ -111,7 +116,97 @@ def test_product_readiness_routes_stable_runtime_blocker_to_cadence_tool() -> No
     assert packet["safe_next_action"]["action"] == "inspect_stable_replacement_cadence"
     assert packet["safe_next_action"]["tool"] == "get_stable_replacement_cadence"
     assert packet["chatgpt_app"]["stable_replacement_cadence_tool"] == "get_stable_replacement_cadence"
+    assert packet["stable_delivery_decision"]["status"] == "deferred_batch"
     assert packet["authority_boundary"]["does_not_authorize_stable_replacement"] is True
+
+
+def test_product_readiness_escalates_public_stale_runtime_to_promotion_preflight() -> None:
+    ops = _ops_packet(status="blocked")
+    ops["candidate_head"] = "a" * 40
+    ops["stable_runtime_dir"] = "/tmp/stable"
+    ops["checks"]["stable_runtime"] = {
+        "status": "blocked",
+        "reason_codes": ["STABLE_RUNTIME_HEAD_MISMATCH"],
+        "head": "b" * 40,
+    }
+    ops["checks"]["remote_https_mcp_preflight"] = {
+        "status": "blocked",
+        "reason_codes": ["REMOTE_PREFLIGHT_FAILED"],
+        "expected_runtime_head": "a" * 40,
+        "healthz_runtime": {"loaded_runtime_head": "b" * 40},
+    }
+    ops["blocker_codes"] = ["STABLE_RUNTIME_HEAD_MISMATCH", "REMOTE_PREFLIGHT_FAILED"]
+
+    packet = build_product_readiness_packet(
+        "/tmp/project",
+        project_name="demo-project",
+        ops_packet_builder=lambda *args, **kwargs: ops,
+    )
+
+    decision = packet["stable_delivery_decision"]
+    assert decision["status"] == "promotion_review_required"
+    assert decision["public_endpoint_stale"] is True
+    assert decision["stable_promotion_review_required"] is True
+    assert decision["stable_replacement_authorized"] is False
+    assert decision["authority_boundary"]["does_not_authorize_stable_replacement"] is True
+    assert packet["safe_next_action"]["tool"] == "get_stable_promotion_readiness"
+    assert packet["safe_next_action"]["action"] == "inspect_stable_promotion_readiness"
+    assert packet["safe_next_action"]["arguments"] == {"project_name": "demo-project"}
+    assert decision["safe_next_action"]["arguments"] == {"project_name": "demo-project"}
+
+
+def test_product_readiness_does_not_defer_unverified_public_runtime() -> None:
+    ops = _ops_packet(status="blocked")
+    ops["candidate_head"] = "a" * 40
+    ops["stable_runtime_dir"] = "/tmp/stable"
+    ops["checks"]["stable_runtime"] = {
+        "status": "blocked",
+        "reason_codes": ["STABLE_RUNTIME_HEAD_MISMATCH"],
+        "head": "b" * 40,
+    }
+    ops["checks"]["remote_https_mcp_preflight"] = {
+        "status": "blocked",
+        "reason_codes": ["REMOTE_PREFLIGHT_FAILED"],
+    }
+    ops["blocker_codes"] = ["STABLE_RUNTIME_HEAD_MISMATCH", "REMOTE_PREFLIGHT_FAILED"]
+
+    packet = build_product_readiness_packet(
+        "/tmp/project",
+        ops_packet_builder=lambda *args, **kwargs: ops,
+    )
+
+    assert packet["stable_delivery_decision"]["status"] == "preflight_required"
+    assert packet["stable_delivery_decision"]["public_endpoint_proven_current"] is False
+    assert packet["safe_next_action"]["action"] == "recheck_product_readiness"
+
+
+def test_product_readiness_routes_aligned_checkout_stale_process_to_runtime_status() -> None:
+    ops = _ops_packet(status="blocked")
+    ops["candidate_head"] = "a" * 40
+    ops["stable_runtime_dir"] = "/tmp/stable"
+    ops["checks"]["stable_runtime"] = {
+        "status": "ready",
+        "reason_codes": ["STABLE_RUNTIME_ALIGNED"],
+        "head": "a" * 40,
+    }
+    ops["checks"]["remote_https_mcp_preflight"] = {
+        "status": "blocked",
+        "reason_codes": ["REMOTE_PREFLIGHT_FAILED"],
+        "expected_runtime_head": "a" * 40,
+        "healthz_runtime": {"loaded_runtime_head": "b" * 40},
+    }
+    ops["blocker_codes"] = ["REMOTE_PREFLIGHT_FAILED"]
+
+    packet = build_product_readiness_packet(
+        "/tmp/project",
+        ops_packet_builder=lambda *args, **kwargs: ops,
+    )
+
+    decision = packet["stable_delivery_decision"]
+    assert decision["status"] == "runtime_reload_review_required"
+    assert decision["candidate_differs_from_stable"] is False
+    assert packet["primary_blocker"]["check"] == "remote_https_mcp_preflight"
+    assert packet["safe_next_action"]["tool"] == "get_runtime_version_status"
 
 
 def test_product_readiness_routes_local_stable_health_blocker_to_cadence_tool() -> None:
