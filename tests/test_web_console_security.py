@@ -907,6 +907,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "renderProjectManagementModal(latestStatusData || {})" in page
         assert "registryActionInFlight" in page
         assert "setRegistryActionStatus" in page
+        assert "registryActionTrail" in page
+        assert "REGISTRY_ACTION_TRAIL_LIMIT" in page
+        assert "pushRegistryActionTrail" in page
+        assert "renderRegistryActionTrail" in page
+        assert "最近项目管理操作" in page
+        assert "暂无最近操作。" in page
+        assert 'class="registry-action-trail"' in page
+        assert "registryActionTrail.slice(0, REGISTRY_ACTION_TRAIL_LIMIT)" in page
+        assert 'pushRegistryActionTrail("running", actionMeta, runningMessage)' in page
+        assert 'pushRegistryActionTrail(failed ? "failed" : "completed", actionMeta, trailMessage)' in page
         assert "项目管理操作就绪。" in page
         assert "项目管理操作完成，状态已刷新。" in page
         assert 'id="registry-action-status"' in page
