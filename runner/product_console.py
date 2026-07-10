@@ -437,7 +437,11 @@ def build_submission_evidence_fill_preview(
     if status == "review_ready":
         copyable_tool = "mark_submission_evidence_ready_fields"
         review_keys = [str(entry.get("key")) for entry in filtered_review_entries if isinstance(entry, dict) and entry.get("key")]
-        copyable_arguments = {**dict(fill_plan.get("next_arguments") or project_args), "keys": review_keys}
+        copyable_arguments = {
+            **project_args,
+            "keys": review_keys,
+            "review_confirmation": "human_reviewed",
+        }
         copyable_mode = "commit"
     elif status == "content_review_required":
         first_entry = filtered_content_review_entries[0] if filtered_content_review_entries else {}
@@ -3236,6 +3240,8 @@ def _submission_evidence_fill_preview_status(
     if fill_plan_status == "evidence_content_review_required":
         if content_review_entries:
             return "content_review_required"
+        if review_entries:
+            return "review_ready"
         if selected_keys:
             return "selected_keys_not_available"
         return "no_preview_entries"
