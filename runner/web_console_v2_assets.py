@@ -112,6 +112,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .local-trail-clear { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; border-radius: 999px; font-size: 10px; cursor: pointer; margin-bottom: 6px; }
 .local-trail-clear:hover:not(:disabled) { background: #30363d; }
 .local-trail-clear:disabled { opacity: 0.45; cursor: not-allowed; }
+.local-trail-feedback { color: #3fb950; font-size: 10px; line-height: 1.4; margin-bottom: 6px; min-height: 14px; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -400,6 +401,7 @@ const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
 let activeRightTab = RIGHT_TAB_DEFAULT;
 let operatorInboxRunFeedback = null;
 let operatorInboxRunTrail = [];
+let operatorInboxRunTrailFeedback = "";
 const OPERATOR_INBOX_RUN_TRAIL_LIMIT = 5;
 const LOCAL_TRAIL_BOUNDARY_TEXT = "仅本会话显示；只保存操作摘要，不保存 payload 或 arguments。";
 const TODO_PAGE_SIZE_DEFAULT = 8;
@@ -1729,6 +1731,7 @@ function operatorInboxFeedbackTimestamp() {{
 }}
 
 function pushOperatorInboxRunTrail(actionKey, state, message, actionLabel) {{
+  operatorInboxRunTrailFeedback = "";
   operatorInboxRunTrail.unshift({{
     actionKey: actionKey || "operator_inbox_item",
     label: actionLabel || actionKey || "operator inbox 项",
@@ -1758,6 +1761,7 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabe
 
 function clearOperatorInboxRunTrail() {{
   operatorInboxRunTrail = [];
+  operatorInboxRunTrailFeedback = "已清空本会话 operator inbox Run 记录；未触发后端请求。";
   if (latestStatusData) {{
     renderRightColumn(latestStatusData);
     showRightTab("operator-inbox");
@@ -1768,6 +1772,7 @@ let registryActionInFlight = false;
 let registryActionStatusState = "idle";
 let registryActionStatusMessage = "项目管理操作就绪。";
 let registryActionTrail = [];
+let registryActionTrailFeedback = "";
 const REGISTRY_ACTION_TRAIL_LIMIT = 5;
 
 function setRegistryActionStatus(state, message) {{
@@ -1782,6 +1787,7 @@ function setRegistryActionStatus(state, message) {{
 
 function pushRegistryActionTrail(state, actionMeta, message) {{
   actionMeta = actionMeta || {{}};
+  registryActionTrailFeedback = "";
   registryActionTrail.unshift({{
     state: state || "idle",
     label: actionMeta.label || "项目管理操作",
@@ -1794,6 +1800,7 @@ function pushRegistryActionTrail(state, actionMeta, message) {{
 
 function clearRegistryActionTrail() {{
   registryActionTrail = [];
+  registryActionTrailFeedback = "已清空本会话项目管理操作记录；未触发后端请求。";
   renderProjectManagementModal(latestStatusData || {{}});
 }}
 
@@ -2290,6 +2297,7 @@ function renderRegistryActionTrail() {{
   h += `<div class="registry-action-trail-title">最近项目管理操作</div>`;
   h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
   h += `<button type="button" class="local-trail-clear" aria-label="清空最近项目管理操作记录" aria-disabled="${{registryActionTrail.length ? "false" : "true"}}" onclick="clearRegistryActionTrail()"${{registryActionTrail.length ? "" : " disabled"}}>清空本会话记录</button>`;
+  h += `<div class="local-trail-feedback" role="status" aria-live="polite">${{esc(registryActionTrailFeedback)}}</div>`;
   if (!registryActionTrail.length) {{
     h += `<div class="registry-action-trail-item">暂无最近操作。</div>`;
   }} else {{
@@ -2443,6 +2451,7 @@ function renderOperatorInboxRunTrail() {{
   h += `<div class="operator-inbox-run-trail-title">最近 Run</div>`;
   h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
   h += `<button type="button" class="local-trail-clear" aria-label="清空最近 operator inbox Run 记录" aria-disabled="${{operatorInboxRunTrail.length ? "false" : "true"}}" onclick="clearOperatorInboxRunTrail()"${{operatorInboxRunTrail.length ? "" : " disabled"}}>清空本会话记录</button>`;
+  h += `<div class="local-trail-feedback" role="status" aria-live="polite">${{esc(operatorInboxRunTrailFeedback)}}</div>`;
   if (!operatorInboxRunTrail.length) {{
     h += `<div class="operator-inbox-run-trail-item">暂无最近 Run。</div>`;
   }} else {{

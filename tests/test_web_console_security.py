@@ -908,11 +908,13 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "registryActionInFlight" in page
         assert "setRegistryActionStatus" in page
         assert "registryActionTrail" in page
+        assert "registryActionTrailFeedback" in page
         assert "REGISTRY_ACTION_TRAIL_LIMIT" in page
         assert "LOCAL_TRAIL_BOUNDARY_TEXT" in page
         assert "仅本会话显示；只保存操作摘要，不保存 payload 或 arguments。" in page
         assert 'class="local-trail-boundary"' in page
         assert 'class="local-trail-clear"' in page
+        assert 'class="local-trail-feedback" role="status" aria-live="polite"' in page
         assert "清空本会话记录" in page
         assert "pushRegistryActionTrail" in page
         assert "clearRegistryActionTrail" in page
@@ -924,6 +926,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'pushRegistryActionTrail("running", actionMeta, runningMessage)' in page
         assert 'pushRegistryActionTrail(failed ? "failed" : "completed", actionMeta, trailMessage)' in page
         assert 'onclick="clearRegistryActionTrail()"' in page
+        assert "已清空本会话项目管理操作记录；未触发后端请求。" in page
+        assert 'registryActionTrailFeedback = ""' in page
         assert "项目管理操作就绪。" in page
         assert "项目管理操作完成，状态已刷新。" in page
         assert 'id="registry-action-status"' in page
@@ -949,6 +953,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "data-run-operator-inbox" in page
         assert "operatorInboxRunFeedback" in page
         assert "operatorInboxRunTrail" in page
+        assert "operatorInboxRunTrailFeedback" in page
         assert "OPERATOR_INBOX_RUN_TRAIL_LIMIT" in page
         assert "LOCAL_TRAIL_BOUNDARY_TEXT" in page
         assert "setOperatorInboxRunFeedback" in page
@@ -970,6 +975,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "pushOperatorInboxRunTrail(actionKey, state, message, actionLabel)" in page
         assert 'onclick="clearOperatorInboxRunTrail()"' in page
         assert 'aria-disabled="${operatorInboxRunTrail.length ? "false" : "true"}"' in page
+        assert "已清空本会话 operator inbox Run 记录；未触发后端请求。" in page
+        assert 'operatorInboxRunTrailFeedback = ""' in page
         assert "operator-inbox-action-meta" in page
         assert "data-operator-inbox-action-key" in page
         assert "operator-inbox-action-status" in page
