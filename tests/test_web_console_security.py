@@ -872,6 +872,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "复制 TODO ID " in page
         assert 'aria-disabled="${canRun ? "false" : "true"}"' in page
         assert "runAction(action" in page
+        assert "REGISTRY_ACTION_META" in page
+        assert "registryActionMeta" in page
+        assert "registryActionButtonLabel" in page
+        assert "移出项目登记" in page
+        assert "清理不可用项目登记" in page
+        assert "清理临时项目登记" in page
+        assert "需要危险操作确认" in page
+        assert "target: actionMeta.target" in page
+        assert "reason: actionMeta.description" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
