@@ -856,6 +856,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'role="tablist"' in page
         assert 'role="tab"' in page
         assert 'role="tabpanel"' in page
+        assert 'id="loading" role="status" aria-live="polite"' in page
+        assert 'id="error" role="alert" aria-live="assertive"' in page
+        assert "#loading[aria-hidden=\"true\"]" in page
+        assert "setGlobalLoading" in page
+        assert "clearGlobalError" in page
+        assert "正在刷新状态" in page
+        assert "正在执行操作" in page
+        assert "正在切换项目" in page
+        assert "正在执行项目管理操作" in page
         assert 'aria-controls="right-panel-operator-inbox"' in page
         assert 'aria-labelledby="right-tab-operator-inbox"' in page
         assert 'aria-controls="left-panel-versionplan"' in page

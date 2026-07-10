@@ -122,6 +122,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .issue-count-link:hover { text-decoration: underline; }
 
 #loading { text-align: center; padding: 60px 20px; color: #8b949e; }
+#loading[aria-hidden="true"] { display: none; }
 #error { display: none; background: #da363322; border: 1px solid #da363344; border-radius: 8px; padding: 16px; margin: 12px 0; }
 .toolbar { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 16px; }
 .toolbar button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; margin-top: 2px; }
@@ -224,8 +225,8 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
       <button onclick="refresh()">刷新</button>
     </div>
   </div>
-  <div id="loading">加载中…</div>
-  <div id="error"></div>
+  <div id="loading" role="status" aria-live="polite" aria-busy="false" aria-hidden="true">加载中…</div>
+  <div id="error" role="alert" aria-live="assertive" aria-hidden="true"></div>
   <div id="project-management-modal" class="modal-backdrop" onclick="closeProjectManagement(event)">
     <div class="modal-panel" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -382,8 +383,8 @@ async function fetchStatus() {{
 }}
 
 async function refresh() {{
-  $("loading").style.display = "block";
-  $("error").style.display = "none";
+  setGlobalLoading(true, "正在刷新状态...");
+  clearGlobalError();
   $("content").style.display = "none";
   try {{
     const data = await fetchStatus();
@@ -393,7 +394,7 @@ async function refresh() {{
   }} catch (e) {{
     showError(String(e));
   }} finally {{
-    $("loading").style.display = "none";
+    setGlobalLoading(false);
   }}
 }}
 
@@ -513,8 +514,27 @@ function startLiveRunPolling(data, fromPoll) {{
 
 function showError(msg) {{
   const el = $("error");
+  if (!el) return;
   el.textContent = "错误：" + msg;
   el.style.display = "block";
+  el.setAttribute("aria-hidden", "false");
+}}
+
+function clearGlobalError() {{
+  const el = $("error");
+  if (!el) return;
+  el.textContent = "";
+  el.style.display = "none";
+  el.setAttribute("aria-hidden", "true");
+}}
+
+function setGlobalLoading(isLoading, message) {{
+  const el = $("loading");
+  if (!el) return;
+  if (message) el.textContent = message;
+  el.style.display = isLoading ? "block" : "none";
+  el.setAttribute("aria-busy", isLoading ? "true" : "false");
+  el.setAttribute("aria-hidden", isLoading ? "false" : "true");
 }}
 
 function esc(v) {{
@@ -632,8 +652,8 @@ function riskLabel(level) {{
 }}
 
 async function runAction(nextAction, currentData) {{
-  $("loading").style.display = "block";
-  $("error").style.display = "none";
+  setGlobalLoading(true, "正在执行操作...");
+  clearGlobalError();
   try {{
     const payload = {{
       next_action: nextAction,
@@ -658,14 +678,14 @@ async function runAction(nextAction, currentData) {{
   }} catch (e) {{
     showError(String(e));
   }} finally {{
-    $("loading").style.display = "none";
+    setGlobalLoading(false);
   }}
 }}
 
 async function switchProject(projectRoot) {{
   if (!projectRoot) return;
-  $("loading").style.display = "block";
-  $("error").style.display = "none";
+  setGlobalLoading(true, "正在切换项目...");
+  clearGlobalError();
   try {{
     const data = await dangerousPostAction("/api/switch-project", {{ project_root: projectRoot }});
     if (!data.ok) {{
@@ -677,7 +697,7 @@ async function switchProject(projectRoot) {{
   }} catch (e) {{
     showError(String(e));
   }} finally {{
-    $("loading").style.display = "none";
+    setGlobalLoading(false);
   }}
 }}
 
@@ -1476,8 +1496,8 @@ function bindOperatorInboxActions(root) {{
 }}
 
 function registryAction(actionName, params) {{
-  $("loading").style.display = "block";
-  $("error").style.display = "none";
+  setGlobalLoading(true, "正在执行项目管理操作...");
+  clearGlobalError();
   const actionMeta = registryActionMeta(actionName, params || {{}});
   const payload = {{
     next_action: {{
@@ -1495,11 +1515,11 @@ function registryAction(actionName, params) {{
   dangerousPostAction("/api/v2/action", payload)
     .then(function(data) {{
       render(data);
-      $("loading").style.display = "none";
+      setGlobalLoading(false);
     }})
     .catch(function(e) {{
       showError(String(e));
-      $("loading").style.display = "none";
+      setGlobalLoading(false);
     }});
 }}
 
