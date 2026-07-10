@@ -202,6 +202,22 @@ class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
         assert "不删除磁盘文件" in policy["display_summary"]["target"]
 
 
+class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
+    def test_product_followup_copy_payloads_preserve_action_binding(self) -> None:
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+
+        assert 'action_key: item.action_key || primary.action_key || ""' in page
+        assert 'action_fingerprint: item.action_fingerprint || primary.action_fingerprint || ""' in page
+        assert 'action_id: item.action_id || primary.action_id || ""' in page
+        assert "productFollowupRecordPayload" in page
+        assert "const recordPayload = JSON.stringify(productFollowupRecordPayload(item, primary, scope), null, 2)" in page
+        assert "复制 Product follow-up 结果记录模板：" in page
+        assert "Copy follow-up" in page
+        assert "Copy record" in page
+
+
 def free_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((HOST, 0))
@@ -849,7 +865,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "item_id: followupItemId" in page
         assert "component: item.component" in page
         assert "action: primary.action" in page
-        assert "action_id: primary.action_id" in page
+        assert 'action_id: item.action_id || primary.action_id || ""' in page
         assert "required_scope: scope" in page
         assert "gate_level: gate" in page
         assert "Operator trail" in page

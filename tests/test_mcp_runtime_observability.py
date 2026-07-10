@@ -1189,6 +1189,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "clearStaleEvidenceState" in widget_html
         assert "submissionPreviewCardModels" in widget_html
         assert "copy_payload" in widget_html
+        assert "primary.action_key = item.action_key" in widget_html
+        assert "primary.action_fingerprint = item.action_fingerprint" in widget_html
+        assert "action_key: action.action_key" in widget_html
+        assert "action_fingerprint: action.action_fingerprint" in widget_html
         assert "renderEvidenceRefreshQueue" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
