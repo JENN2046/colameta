@@ -982,6 +982,10 @@ def test_console_map_advances_loaded_stable_readiness_to_artifact_preview() -> N
     assert first["tool"] == "manage_stable_promotion_evidence"
     assert first["mode"] == "preview"
     assert first["required_scope"] == "mcp:preview"
+    assert first["side_effects"] is True
+    assert first["authority_boundary"]["side_effects_if_invoked"] is True
+    assert first["authority_boundary"]["does_not_execute_now"] is True
+    assert first["authority_boundary"]["does_not_authorize_stable_replacement"] is True
     assert first["arguments"] == {
         "project_name": "demo-project",
         "action": "preview",

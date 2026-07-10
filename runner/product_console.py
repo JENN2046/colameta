@@ -838,7 +838,9 @@ def _recommended_action(
 ) -> dict[str, Any]:
     normalized_mode = mode if mode in {"read", "preview", "commit"} else "read"
     requires_confirmation = normalized_mode != "read"
-    side_effects = normalized_mode == "commit"
+    side_effects = normalized_mode == "commit" or (
+        tool == "manage_stable_promotion_evidence" and action in {"preview", "discard"}
+    )
     item: dict[str, Any] = {
         "action_id": action_id,
         "label": label,
