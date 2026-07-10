@@ -6741,7 +6741,7 @@ class MCPPlanningBridgeServer:
           var readRunnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
           var previewRunnable = stablePreviewActionIsRunnable(action);
           var previewConfirmed = previewRunnable && previewActionIsConfirmed(key, action);
-          var previewRunState = previewRunnable ? actionRunStatus[key] : null;
+          var previewRunState = previewRunnable ? (actionRunStatus[key] || action.last_action_result) : null;
           var previewRunLocked = !!(previewRunState && ["pending", "updated", "requested"].indexOf(previewRunState.status) >= 0);
           if (readRunnable) {
             run.textContent = "Run";

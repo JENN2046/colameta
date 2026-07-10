@@ -3595,6 +3595,12 @@ global.window = {{
 vm.runInThisContext({json.dumps(widget_script)});
 
 (async function () {{
+  const completedPreview = previewAction("preview-completed", "a".repeat(40));
+  completedPreview.last_action_result = {{ status: "updated", message: "preview already created" }};
+  dispatchAction(completedPreview);
+  assert.strictEqual(runButton().disabled, true, "recorded preview result must remain locked after rerender");
+  assert.strictEqual(runButton().textContent, "Preview created");
+
   const unsafePreview = previewAction("preview-unsafe", "a".repeat(40));
   unsafePreview.side_effects = false;
   dispatchAction(unsafePreview);
