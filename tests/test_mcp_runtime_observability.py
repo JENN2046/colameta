@@ -3499,6 +3499,7 @@ function previewAction(fingerprint, head) {{
     action_id: "persist_artifact_manifest",
     label: "Preview Stable Promotion Artifact Evidence",
     mode: "preview",
+    status: "available",
     tool: "manage_stable_promotion_evidence",
     arguments: {{ action: "preview", candidate_head: head, project_name: "demo-project" }},
     required_scope: "mcp:preview",
@@ -3622,6 +3623,8 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
     "manage_stable_promotion_evidence"
   ]);
+  assert.strictEqual(runButton().disabled, true, "successful preview is locked until record and refresh");
+  assert.strictEqual(runButton().textContent, "Preview created");
   assert.strictEqual(recordButton().disabled, false, "successful preview can be recorded");
 
   await recordButton().listeners.click[0]();

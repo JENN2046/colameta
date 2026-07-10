@@ -6539,6 +6539,9 @@ class MCPPlanningBridgeServer:
           && args.action === "preview"
           && typeof args.candidate_head === "string"
           && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(args.candidate_head)
+          && typeof args.project_name === "string"
+          && !!args.project_name
+          && action.status === "available"
           && action.required_scope === "mcp:preview"
           && action.requires_preview_confirm === true
           && action.requires_explicit_confirmation === true
@@ -6738,14 +6741,18 @@ class MCPPlanningBridgeServer:
           var readRunnable = action.mode === "read" && typeof action.tool === "string" && action.tool;
           var previewRunnable = stablePreviewActionIsRunnable(action);
           var previewConfirmed = previewRunnable && previewActionIsConfirmed(key, action);
-          run.textContent = readRunnable
-            ? "Run"
-            : previewRunnable
-            ? (previewConfirmed ? "Confirm preview" : "Review preview")
-            : action.mode === "commit"
-            ? "Confirm outside"
-            : "Preview outside";
-          run.disabled = !(readRunnable || previewRunnable);
+          var previewRunState = previewRunnable ? actionRunStatus[key] : null;
+          var previewRunLocked = !!(previewRunState && ["pending", "updated", "requested"].indexOf(previewRunState.status) >= 0);
+          if (readRunnable) {
+            run.textContent = "Run";
+          } else if (previewRunnable && previewRunLocked) {
+            run.textContent = previewRunState.status === "updated" ? "Preview created" : "Preview requested";
+          } else if (previewRunnable) {
+            run.textContent = previewConfirmed ? "Confirm preview" : "Review preview";
+          } else {
+            run.textContent = action.mode === "commit" ? "Confirm outside" : "Preview outside";
+          }
+          run.disabled = !(readRunnable || previewRunnable) || previewRunLocked;
           var runStatus = document.createElement("div");
           runStatus.className = "action-run-status";
           renderActionRunStatus(runStatus, key, action);
@@ -6770,7 +6777,11 @@ class MCPPlanningBridgeServer:
               renderRecordButton(record, recordStatus, action, key);
               return;
             }
-            if (previewRunnable) delete previewActionConfirmations[key];
+            if (previewRunnable) {
+              delete previewActionConfirmations[key];
+              run.disabled = true;
+              run.textContent = "Running preview";
+            }
             rememberActionRunStatus(key, "pending", action.tool);
             renderActionRunStatus(runStatus, key, action);
             renderRecordButton(record, recordStatus, action, key);
