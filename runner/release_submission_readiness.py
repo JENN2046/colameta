@@ -1114,6 +1114,15 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
                 "error_code": "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED",
                 "allowed_root": SUBMISSION_EVIDENCE_CONTENT_ROOT,
             }
+        expected_real_path = os.path.abspath(os.path.join(os.path.realpath(project_root), rel_path))
+        actual_real_path = os.path.realpath(str(normalized["abs_path"]))
+        if actual_real_path != expected_real_path:
+            return {
+                "ref": rel_path,
+                "status": "invalid",
+                "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+                "allowed_root": SUBMISSION_EVIDENCE_CONTENT_ROOT,
+            }
         try:
             with open(str(normalized["abs_path"]), "rb") as handle:
                 content_bytes = handle.read(SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES + 1)

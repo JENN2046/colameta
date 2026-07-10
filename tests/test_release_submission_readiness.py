@@ -273,6 +273,50 @@ def test_release_submission_rejects_markdown_outside_submission_root_before_cont
     assert manifest_path.read_text(encoding="utf-8") == before
 
 
+def test_release_submission_rejects_symlinked_markdown_before_content_read(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    private_path = tmp_path / "private/provider-config.md"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text("private provider notes\n", encoding="utf-8")
+    private_path.chmod(0o000)
+    linked_path = tmp_path / "docs/submission/logo-linked.md"
+    linked_path.symlink_to("../../private/provider-config.md")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["logo_ready"] = True
+    manifest["evidence"]["logo"] = "docs/submission/logo-linked.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    evidence_check = packet["checks"]["submission_evidence_references"]
+    assert evidence_check["invalid_refs"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
+    assert logo_row["file_states"][0]["error_code"] == "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED"
+
+    mark_packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+    assert mark_packet["ok"] is False
+    assert mark_packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+
 def test_submission_evidence_scaffold_creates_manifest_and_placeholders(tmp_path) -> None:
     packet = init_submission_evidence_scaffold(str(tmp_path), app_name="Demo App")
 
