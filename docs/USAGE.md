@@ -464,6 +464,14 @@ atomically replaces the evidence and manifest, and keeps the corresponding
 ready field false. Refresh readiness, review the final
 file, and only then use `mark_submission_evidence_ready_fields`. Changing
 `review_confirmation` cannot bypass this content gate.
+The local Web Console **EVIDENCE** workspace closes both steps without exposing
+the body in public status packets. Completed refs remain visible even while
+other keys still need revision. Before marking one key ready, the operator must
+open and explicitly confirm every manifest-bound ref for that key. ColaMeta then
+binds every reviewed file digest plus the manifest digest into a short-lived
+ready preview; any content or manifest change invalidates apply, and a separate
+one-use dangerous confirmation is still required. Apply changes only the one
+ready field and refreshes the queue.
 
 ```text
 manage_submission_evidence_revision(

@@ -103,6 +103,7 @@ SENSITIVE_WEB_GET_PATHS = frozenset({
     "/api/job-status",
     "/api/project-registry",
     "/api/submission-evidence/revision/context",
+    "/api/submission-evidence/ready/context",
 })
 PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/jobs/start",
@@ -123,6 +124,8 @@ PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/dangerous-action/preview",
     "/api/submission-evidence/revision/preview",
     "/api/submission-evidence/revision/apply",
+    "/api/submission-evidence/ready/preview",
+    "/api/submission-evidence/ready/apply",
 })
 
 DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
@@ -140,6 +143,7 @@ DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
     "/api/project-identity/apply",
     "/api/v2/action",
     "/api/submission-evidence/revision/apply",
+    "/api/submission-evidence/ready/apply",
 })
 
 DANGEROUS_DIRECT_EXECUTOR_ROUTES = {
@@ -648,6 +652,13 @@ class WebConsoleServer:
                         "ref": query.get("ref", [""])[0],
                     }))
                     return
+                if path == "/api/submission-evidence/ready/context":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    self._send_json(server._api_submission_evidence_ready_context({
+                        "key": query.get("key", [""])[0],
+                        "ref": query.get("ref", [""])[0],
+                    }))
+                    return
                 if path == "/v2/":
                     self._send_html(server._render_v2_index_html(active_web_read_token if embed_web_read_token else ""))
                     return
@@ -768,6 +779,15 @@ class WebConsoleServer:
                 if path == "/api/submission-evidence/revision/apply":
                     self._send_json(server._with_dangerous_action_receipt(
                         server._api_submission_evidence_revision("apply", body or {}),
+                        dangerous_receipt,
+                    ))
+                    return
+                if path == "/api/submission-evidence/ready/preview":
+                    self._send_json(server._api_submission_evidence_ready("preview", body or {}))
+                    return
+                if path == "/api/submission-evidence/ready/apply":
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_submission_evidence_ready("apply", body or {}),
                         dangerous_receipt,
                     ))
                     return
@@ -1152,6 +1172,25 @@ class WebConsoleServer:
                     "title": "Apply submission evidence revision",
                     "target": "preview-bound manifest evidence Markdown",
                     "rollback_guidance": "Review the changed evidence and manifest, then use Git to restore them if the revision is incorrect.",
+                },
+            }
+        if route == "/api/submission-evidence/ready/apply":
+            preview_id = str(payload.get("preview_id") or "").strip()
+            key = str(payload.get("key") or "").strip()
+            return {
+                "action_type": "submission_evidence_ready_apply",
+                "risk_class": "submission_evidence_ready_field_write",
+                "target_summary": {
+                    "key": key,
+                    "preview_id_present": bool(preview_id),
+                    "preview_id": "REDACTED" if preview_id else "",
+                    "marks_one_ready_field": True,
+                    "evidence_content_unchanged": True,
+                },
+                "display_summary": {
+                    "title": "Mark reviewed submission evidence ready",
+                    "target": key or "one preview-bound evidence key",
+                    "rollback_guidance": "Set the corresponding ready field false and repeat human review if the confirmation was incorrect.",
                 },
             }
         if route == "/api/v2/action":
@@ -3941,6 +3980,16 @@ class WebConsoleServer:
                 MCPSubmissionEvidenceRevisionManager(self.project_root).editor_context(params)
             )
 
+    def _api_submission_evidence_ready_context(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            return self._json_safe(
+                MCPSubmissionEvidenceRevisionManager(self.project_root).ready_review_context(params)
+            )
+
     def _api_submission_evidence_revision(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         project_lock = getattr(self, "_project_context_lock", None)
         if not hasattr(project_lock, "acquire"):
@@ -3954,6 +4003,42 @@ class WebConsoleServer:
                 record = record_tool_call(
                     self.project_root,
                     "manage_submission_evidence_revision",
+                    action,
+                    clean_params,
+                    result,
+                )
+                warning = record.get("warning")
+                if warning:
+                    result["workflow_record_warning"] = str(warning)
+                workflow_id = record.get("workflow_id")
+                if isinstance(workflow_id, str) and workflow_id.strip():
+                    result["workflow_id"] = workflow_id.strip()
+            return self._json_safe(result)
+
+    def _api_submission_evidence_ready(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            clean_params = dict(params)
+            clean_params.pop("confirmation_id", None)
+            manager = MCPSubmissionEvidenceRevisionManager(self.project_root)
+            result = (
+                manager.ready_preview(clean_params)
+                if action == "preview"
+                else manager.ready_apply(clean_params)
+                if action == "apply"
+                else {
+                    "ok": False,
+                    "error_code": "INVALID_ACTION",
+                    "message": "submission evidence ready action must be preview or apply.",
+                }
+            )
+            if should_record_tool("mark_submission_evidence_ready_fields", action):
+                record = record_tool_call(
+                    self.project_root,
+                    "mark_submission_evidence_ready_fields",
                     action,
                     clean_params,
                     result,

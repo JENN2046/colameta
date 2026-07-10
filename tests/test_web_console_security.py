@@ -218,6 +218,51 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'id="evidence-revision-content"' in page
         assert "正文已修改；请重新生成预览后再应用。" in page
         assert "ready 字段保持 false" in page
+        assert "/api/submission-evidence/ready/context" in page
+        assert "/api/submission-evidence/ready/preview" in page
+        assert 'dangerousPostAction("/api/submission-evidence/ready/apply"' in page
+        assert 'id="evidence-ready-confirm-ref"' in page
+        assert "Ready 必须显式查看当前 key 的全部文件" in page
+
+    def test_evidence_workspace_keeps_revision_and_ready_review_entries_in_one_queue(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for evidence workspace queue behavior smoke")
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+        function_source = page.split("function evidenceRevisionEntries", 1)[1].split(
+            "async function openEvidenceRevisionEditor", 1
+        )[0]
+        script = "function evidenceRevisionEntries" + function_source + r'''
+const assert = require("assert");
+const entries = evidenceRevisionEntries({
+  web_commander_service: {
+    product_console_map: {
+      release_submission_evidence_bundle: {
+        fill_plan: {
+          content_review_entries: [{
+            key: "logo",
+            ready_field: "logo_ready",
+            refs: ["docs/submission/logo.md"],
+            file_states: [{ref: "docs/submission/logo.md", status: "review_required", reason_codes: ["DRAFT_CONTENT"]}],
+          }],
+          review_entries: [{
+            key: "screenshots",
+            ready_field: "screenshots_ready",
+            refs: ["docs/submission/screenshot-1.md", "docs/submission/screenshot-2.md"],
+          }],
+        },
+      },
+    },
+  },
+});
+assert.strictEqual(entries.length, 3);
+assert.strictEqual(entries[0].mode, "revise");
+assert.deepStrictEqual(entries.slice(1).map((entry) => entry.mode), ["review", "review"]);
+assert.deepStrictEqual(entries[1].keyRefs, ["docs/submission/screenshot-1.md", "docs/submission/screenshot-2.md"]);
+'''
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
     def test_product_followup_copy_payloads_preserve_action_binding(self) -> None:
         from runner.web_console_v2_assets import render_v2_index_page
@@ -617,6 +662,99 @@ The release operator reviewed the final exported asset in the local Web Console.
             path.read_text(encoding="utf-8")
             for path in workflow_paths
         )
+        self.assertNotIn(final.strip(), workflow_text)
+
+    def test_submission_evidence_ready_review_is_digest_bound_and_dangerous_confirmed(self) -> None:
+        _, final = self.prepare_submission_evidence_revision()
+        evidence_path = self.project / "docs/submission/logo.md"
+        evidence_path.write_text(final, encoding="utf-8")
+        self.start_web()
+        read_token = self.read_token_from_page()
+        csrf = self.csrf_token_from_page()
+        context_url = (
+            f"http://{HOST}:{self.port}/api/submission-evidence/ready/context"
+            "?key=logo&ref=docs%2Fsubmission%2Flogo.md"
+        )
+
+        status, denied = json_request(context_url)
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+        status, context = json_request(context_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(context["ok"])
+        self.assertEqual(context["current_content"], final)
+        self.assertEqual(context["key_refs"], ["docs/submission/logo.md"])
+
+        preview_payload = {
+            "key": "logo",
+            "reviewed_refs": [{"ref": context["ref"], "current_sha256": context["current_sha256"]}],
+        }
+        preview_url = f"http://{HOST}:{self.port}/api/submission-evidence/ready/preview"
+        status, preview = json_request(
+            preview_url,
+            method="POST",
+            payload=preview_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(preview["ok"])
+        self.assertEqual(preview["reviewed_ref_count"], 1)
+        self.assertFalse(preview["content_included"])
+        self.assertNotIn(final.strip(), json.dumps(preview))
+
+        apply_url = f"http://{HOST}:{self.port}/api/submission-evidence/ready/apply"
+        apply_payload = {"preview_id": preview["preview_id"], "key": "logo"}
+        status, unconfirmed = json_request(
+            apply_url,
+            method="POST",
+            payload=apply_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(unconfirmed["error_code"], "DANGEROUS_CONFIRMATION_REQUIRED")
+
+        confirmation_id = self.dangerous_preview("/api/submission-evidence/ready/apply", apply_payload)
+        evidence_path.write_text(final + "changed after review\n", encoding="utf-8")
+        status, changed = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(changed["ok"])
+        self.assertEqual(changed["error_code"], "SUBMISSION_EVIDENCE_REVIEWED_CONTENT_CHANGED")
+        self.assertTrue(changed["dangerous_action_receipt"]["confirmation_validated"])
+
+        evidence_path.write_text(final, encoding="utf-8")
+        confirmation_id = self.dangerous_preview("/api/submission-evidence/ready/apply", apply_payload)
+        status, applied = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["status"], "ready_marked")
+        self.assertEqual(applied["ready_fields_marked"], ["logo_ready"])
+        self.assertFalse(applied["content_included"])
+        manifest = json.loads((self.project / "docs/chatgpt-app-submission-materials.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["logo_ready"])
+        assert self.server is not None
+        workflow_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (Path(self.server.runner_dir) / "runtime/workflows").glob("*.json")
+        )
+        self.assertIn("mark_submission_evidence_ready_fields", workflow_text)
         self.assertNotIn(final.strip(), workflow_text)
 
     def install_api_stub(self, method_name: str) -> list[dict[str, Any]]:

@@ -427,6 +427,7 @@ def should_record_tool(tool_name: str, action: str) -> bool:
         "init_submission_evidence": {"apply"},
         "fill_submission_evidence_files": {"apply"},
         "manage_submission_evidence_revision": {"preview", "apply", "discard"},
+        "mark_submission_evidence_ready_fields": {"preview", "apply"},
         "todo_read": {"todo_read"},
         "todo_add": {"todo_add"},
         "todo_update": {"update"},

@@ -2975,6 +2975,12 @@ def _release_submission_fill_plan(
                 }
                 for ref in _content_review_targets(entry)
             ]
+        ready_review_keys = _filled_not_marked_ready_keys_from_rows(progress)
+        review_entries = _review_entries_for_keys(
+            progress,
+            ready_review_keys,
+            templates=release_submission.get("submission_evidence_entry_templates"),
+        )
         next_entry = content_review_entries[0] if content_review_entries else {}
         next_targets = _content_review_targets(next_entry)
         next_ref = next_targets[0] if next_targets else str(next_entry.get("default_path") or "")
@@ -2990,6 +2996,8 @@ def _release_submission_fill_plan(
             },
             "draft_entries": [],
             "content_review_entries": content_review_entries,
+            "review_entries": review_entries,
+            "ready_for_review_count": len(review_entries),
             "next_review_key": content_review_keys[0],
             "remaining_review_count": len(content_review_entries),
             "human_review_required": True,
@@ -3087,7 +3095,11 @@ def _filled_not_marked_ready_keys(progress: Any) -> list[str]:
         for key in ("needs_attention", "review_required", "placeholder", "not_started")
     ):
         return []
-    rows = progress.get("rows")
+    return _filled_not_marked_ready_keys_from_rows(progress)
+
+
+def _filled_not_marked_ready_keys_from_rows(progress: Any) -> list[str]:
+    rows = progress.get("rows") if isinstance(progress, dict) else []
     if not isinstance(rows, list):
         return []
     return [

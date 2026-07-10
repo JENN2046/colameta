@@ -36,6 +36,18 @@ docs/assets/app-logo.png
 The release operator compared the exported asset with the submission preview on 2026-07-11.
 """
 
+FINAL_LOGO_VARIANT = """# Logo Variant Evidence
+
+## asset_path
+docs/assets/app-logo-dark.png
+
+## dimensions
+1024x1024 RGBA PNG
+
+## review_notes
+The release operator reviewed the final dark-mode asset in the local Web Console.
+"""
+
 
 def _project(tmp_path: Path, *, ready: bool = False) -> tuple[Path, Path]:
     init_submission_evidence_scaffold(str(tmp_path))
@@ -112,6 +124,70 @@ def test_editor_context_exposes_only_manifest_bound_unfinished_content_for_local
     missing = manager.editor_context({"key": "logo", "ref": "docs/submission/not-bound.md"})
     assert missing["ok"] is False
     assert missing["content_included"] is False
+
+
+def test_ready_review_binds_every_manifest_ref_before_marking_one_key_ready(tmp_path: Path) -> None:
+    _, manifest_path = _project(tmp_path)
+    first_path = tmp_path / "docs/submission/logo.md"
+    second_path = tmp_path / "docs/submission/logo-dark.md"
+    first_path.write_text(FINAL_LOGO, encoding="utf-8")
+    second_path.write_text(FINAL_LOGO_VARIANT, encoding="utf-8")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = ["docs/submission/logo.md", "docs/submission/logo-dark.md"]
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manager = MCPSubmissionEvidenceRevisionManager(str(tmp_path))
+
+    first = manager.ready_review_context({"key": "logo", "ref": "docs/submission/logo.md"})
+    second = manager.ready_review_context({"key": "logo", "ref": "docs/submission/logo-dark.md"})
+
+    assert first["ok"] is True
+    assert first["current_content"] == FINAL_LOGO
+    assert first["key_refs"] == ["docs/submission/logo.md", "docs/submission/logo-dark.md"]
+    assert first["local_web_only"] is True
+    incomplete = manager.ready_preview({
+        "key": "logo",
+        "reviewed_refs": [{"ref": first["ref"], "current_sha256": first["current_sha256"]}],
+    })
+    assert incomplete["ok"] is False
+    assert incomplete["error_code"] == "SUBMISSION_EVIDENCE_READY_REVIEW_INCOMPLETE"
+    assert incomplete["missing_or_changed_refs"] == ["docs/submission/logo-dark.md"]
+
+    preview = manager.ready_preview({
+        "key": "logo",
+        "reviewed_refs": [
+            {"ref": first["ref"], "current_sha256": first["current_sha256"]},
+            {"ref": second["ref"], "current_sha256": second["current_sha256"]},
+        ],
+    })
+    assert preview["ok"] is True
+    assert preview["reviewed_ref_count"] == 2
+    assert preview["content_included"] is False
+    assert FINAL_LOGO.strip() not in json.dumps(preview)
+    artifact_path = next((tmp_path / ".colameta/runtime/submission-evidence-revision-previews").glob("evidence_ready_*.json"))
+    artifact_text = artifact_path.read_text(encoding="utf-8")
+    assert FINAL_LOGO.strip() not in artifact_text
+    assert FINAL_LOGO_VARIANT.strip() not in artifact_text
+    missing_key = manager.ready_apply({"preview_id": preview["preview_id"]})
+    assert missing_key["ok"] is False
+    assert missing_key["error_code"] == "SUBMISSION_EVIDENCE_READY_PREVIEW_KEY_MISMATCH"
+    mismatched_key = manager.ready_apply({"preview_id": preview["preview_id"], "key": "screenshots"})
+    assert mismatched_key["ok"] is False
+    assert mismatched_key["error_code"] == "SUBMISSION_EVIDENCE_READY_PREVIEW_KEY_MISMATCH"
+
+    second_path.write_text(FINAL_LOGO_VARIANT + "changed\n", encoding="utf-8")
+    changed = manager.ready_apply({"preview_id": preview["preview_id"], "key": "logo"})
+    assert changed["ok"] is False
+    assert changed["error_code"] == "SUBMISSION_EVIDENCE_REVIEWED_CONTENT_CHANGED"
+    assert changed["changed_refs"] == ["docs/submission/logo-dark.md"]
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["logo_ready"] is False
+
+    second_path.write_text(FINAL_LOGO_VARIANT, encoding="utf-8")
+    applied = manager.ready_apply({"preview_id": preview["preview_id"], "key": "logo"})
+    assert applied["ok"] is True
+    assert applied["status"] == "ready_marked"
+    assert applied["ready_fields_marked"] == ["logo_ready"]
+    assert applied["content_included"] is False
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["logo_ready"] is True
 
 
 def test_preview_rejects_replacement_that_is_still_unfinished_without_artifact(tmp_path: Path) -> None:
