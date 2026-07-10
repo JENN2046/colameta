@@ -804,6 +804,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert isinstance(trail["recovery_actions"], list)
         assert trail["recovery_action_count"] == len(trail["recovery_actions"])
         assert payload["operator_session_trail"]["status"] == trail["status"]
+        inbox = service["operator_inbox"]
+        assert inbox["source"] == "web_commander_operator_inbox"
+        assert inbox["read_only"] is True
+        assert inbox["side_effects"] is False
+        assert inbox["total_count"] == len(inbox["items"])
+        assert inbox["read_only_count"] + inbox["gated_count"] == inbox["total_count"]
+        inbox_sources = {item["source"] for item in inbox["items"]}
+        assert {"product_console", "apps_connector", "stable_cadence"} <= inbox_sources
+        assert all("tool" in item and "required_scope" in item and "gate_level" in item for item in inbox["items"])
+        assert payload["operator_inbox"]["status"] == inbox["status"]
         from runner.web_console_v2_assets import render_v2_index_page
 
         page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
@@ -814,6 +824,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "Operator trail" in page
         assert "operatorTrailText" in page
         assert "recovery_action_count" in page
+        assert "Operator inbox" in page
+        assert "operatorInbox" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
