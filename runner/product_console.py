@@ -1212,9 +1212,14 @@ def _product_completion_overview(
         },
         "next_step": progress_state.get("next_step") or "Read Product Console and follow the first incomplete category.",
         "recommended_action": {
+            "action_id": safe_next_action.get("action_id"),
+            "action_key": safe_next_action.get("action_key"),
+            "action_fingerprint": safe_next_action.get("action_fingerprint"),
             "action": safe_next_action.get("action"),
             "tool": safe_next_action.get("tool") or safe_next_action.get("runbook"),
             "arguments": dict(safe_next_action.get("arguments") or {}),
+            "mode": safe_next_action.get("mode"),
+            "required_scope": safe_next_action.get("required_scope"),
             "authority": safe_next_action.get("authority") or safe_next_action.get("required_scope") or "read_only",
             "why": safe_next_action.get("why") or "Follow the first incomplete product completion category.",
         },
@@ -1714,6 +1719,16 @@ def _completion_safe_next_action(
             "why": "Closeout surface is ready; continue through Commander without granting write authority.",
         }
     component = first_gap.get("component")
+    recommended_action = _completion_recommended_action_for_component(
+        str(component or ""),
+        recommended_actions,
+    )
+    if (
+        component == "product_readiness"
+        and recommended_action is not None
+        and recommended_action.get("source") == "stable_promotion_readiness"
+    ):
+        return _completion_primary_action_from_recommended(recommended_action)
     if component == "product_readiness" and isinstance(readiness, dict) and isinstance(readiness.get("safe_next_action"), dict):
         return {
             **readiness["safe_next_action"],
@@ -1920,7 +1935,12 @@ def _completion_action_matches_component(component: str, action: dict[str, Any])
     action_id = str(action.get("action_id") or "")
     source = str(action.get("source") or "")
     if component == "product_readiness":
-        return tool in {"get_product_readiness_status", "get_apps_connector_smoke_packet", "get_stable_replacement_cadence"} or source == "readiness_safe_next_action"
+        return tool in {
+            "get_product_readiness_status",
+            "get_apps_connector_smoke_packet",
+            "get_stable_replacement_cadence",
+            "manage_stable_promotion_evidence",
+        } or source in {"readiness_safe_next_action", "stable_promotion_readiness"}
     if component in {"release_submission", "submission_evidence"}:
         return tool in {
             "get_release_submission_readiness",
@@ -1936,6 +1956,30 @@ def _completion_action_matches_component(component: str, action: dict[str, Any])
     if component == "closeout_ready":
         return tool == "render_commander_app" or action_id == "operator_flow"
     return False
+
+
+def _completion_recommended_action_for_component(
+    component: str,
+    recommended_actions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    return next(
+        (action for action in recommended_actions if _completion_action_matches_component(component, action)),
+        None,
+    )
+
+
+def _completion_primary_action_from_recommended(action: dict[str, Any]) -> dict[str, Any]:
+    primary = _completion_action_ref(action)
+    primary.update(
+        {
+            "authority": action.get("required_scope") or action.get("mode") or "mcp:read",
+            "why": action.get("why") or "Follow the matching Product Console recommendation.",
+            "source": action.get("source"),
+            "requires_explicit_confirmation": action.get("requires_explicit_confirmation") is True,
+            "side_effects": action.get("side_effects") is True,
+        }
+    )
+    return {key: value for key, value in primary.items() if value not in (None, "", {})}
 
 
 def _completion_action_ref(action: dict[str, Any]) -> dict[str, Any]:
