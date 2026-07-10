@@ -821,6 +821,13 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "completionCategoryText" in page
         assert "completionOverview.categories" in page
         assert "category.primary_tool" in page
+        assert "renderProductCompletionOverview" in page
+        assert "productCompletionBadgeClass" in page
+        assert 'class="product-completion-overview" aria-label="Product completion overview"' in page
+        assert "Product completion" in page
+        assert "ready ${esc(ready)}/${esc(total)}" in page
+        assert "第一缺口：" in page
+        assert "只读概览；不执行提交、发布、stable replacement 或 app submission。" in page
         assert "Product follow-up queue" in page
         assert "renderProductFollowupQueue" in page
         assert "completion.followup_queue" in page
