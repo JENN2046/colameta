@@ -4625,6 +4625,15 @@ vm.runInThisContext({json.dumps(widget_script)});
             "action": "preview",
             "preview_id": "evidence_revision_demo",
             "content_included": False,
+            "copyable_apply_call": {
+                "tool": "manage_submission_evidence_revision",
+                "arguments": {
+                    "action": "apply",
+                    "preview_id": "evidence_revision_demo",
+                    "content": "<resubmit exact content>",
+                },
+                "required_scope": "mcp:commit",
+            },
         }
 
         with patch("runner.mcp_server.MCPSubmissionEvidenceRevisionManager") as manager_cls:
@@ -4643,6 +4652,7 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert result["ok"] is True
         assert result["tool"] == "manage_submission_evidence_revision"
         assert result["data"]["preview_id"] == "evidence_revision_demo"
+        assert result["data"]["copyable_apply_call"]["arguments"]["project_name"] == "demo-project"
         manager_cls.assert_called_once_with(str(project))
         assert manager_cls.return_value.handle.call_args.args[0] == "preview"
         assert manager_cls.return_value.handle.call_args.args[1]["content"] == "# Logo Evidence\n"

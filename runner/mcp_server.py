@@ -8960,6 +8960,7 @@ class MCPPlanningBridgeServer:
             "recommended_next_action",
             "primary_next_action",
             "copyable_tool_call",
+            "copyable_apply_call",
         }
         plural_action_keys = {
             "next_actions",
