@@ -84,6 +84,10 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 9px; border-radius: 6px; font-size: 11px; cursor: pointer; }
 .operator-inbox-btn:hover:not(:disabled) { background: #30363d; }
 .operator-inbox-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.operator-inbox-action-status { color: #8b949e; font-size: 11px; margin-top: 6px; min-height: 16px; }
+.operator-inbox-action-status.running { color: #d29922; }
+.operator-inbox-action-status.completed { color: #3fb950; }
+.operator-inbox-action-status.failed { color: #f85149; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -364,6 +368,7 @@ let activeLeftTab = LEFT_TAB_DEFAULT;
 const RIGHT_TAB_DEFAULT = "todolist";
 const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
 let activeRightTab = RIGHT_TAB_DEFAULT;
+let operatorInboxRunFeedback = null;
 const TODO_PAGE_SIZE_DEFAULT = 8;
 const TODO_PAGE_SIZE_MIN = 3;
 const TODO_PAGE_SIZE_MAX = 20;
@@ -675,8 +680,10 @@ async function runAction(nextAction, currentData) {{
           return await resp.json();
         }})();
     render(data);
+    return data;
   }} catch (e) {{
     showError(String(e));
+    return {{ ok: false, error_code: "ACTION_FAILED", message: String(e) }};
   }} finally {{
     setGlobalLoading(false);
   }}
@@ -1483,16 +1490,52 @@ function bindOperatorInboxActions(root) {{
     }});
   }});
   root.querySelectorAll("[data-run-operator-inbox]").forEach(function(btn) {{
-    btn.addEventListener("click", function() {{
+    btn.addEventListener("click", async function() {{
       if (this.disabled) return;
       try {{
         const action = JSON.parse(this.getAttribute("data-run-operator-inbox") || "{{}}");
-        runAction(action, latestStatusData || {{}});
+        const actionKey = this.getAttribute("data-operator-inbox-action-key") || operatorInboxActionKeyFromAction(action);
+        setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...");
+        const data = await runAction(action, latestStatusData || {{}});
+        if (data && data.ok === false) {{
+          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。");
+        }} else {{
+          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。");
+        }}
       }} catch (e) {{
+        const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
+        if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e));
         showError(String(e));
       }}
     }});
   }});
+}}
+
+function operatorInboxActionKey(item) {{
+  item = item || {{}};
+  return String(item.item_id || item.tool || item.label || "operator_inbox_item");
+}}
+
+function operatorInboxActionKeyFromAction(action) {{
+  action = action || {{}};
+  return String(action.action || action.tool || "operator_inbox_item");
+}}
+
+function operatorInboxFeedbackFor(actionKey) {{
+  if (!operatorInboxRunFeedback || operatorInboxRunFeedback.actionKey !== actionKey) return null;
+  return operatorInboxRunFeedback;
+}}
+
+function setOperatorInboxRunFeedback(actionKey, state, message) {{
+  operatorInboxRunFeedback = {{
+    actionKey: actionKey,
+    state: state,
+    message: message,
+  }};
+  if (latestStatusData) {{
+    renderRightColumn(latestStatusData);
+    showRightTab("operator-inbox");
+  }}
 }}
 
 function registryAction(actionName, params) {{
@@ -2050,6 +2093,8 @@ function renderProjectManagement(data) {{
 function renderOperatorInboxItem(item) {{
   item = item || {{}};
   const itemLabel = item.label || item.tool || item.item_id || "Inbox item";
+  const actionKey = operatorInboxActionKey(item);
+  const feedback = operatorInboxFeedbackFor(actionKey);
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
   const nextAction = JSON.stringify({{
     action: item.item_id || item.tool || "operator_inbox_item",
@@ -2059,8 +2104,11 @@ function renderOperatorInboxItem(item) {{
     gate_level: item.gate_level || "read_only",
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
+  const isRunning = feedback && feedback.state === "running";
   const copyLabel = "复制 operator inbox 调用：" + itemLabel;
-  const runLabel = canRun
+  const runLabel = isRunning
+    ? "正在运行只读 operator inbox 项：" + itemLabel
+    : canRun
     ? "运行只读 operator inbox 项：" + itemLabel
     : "需要更高权限，不能在 Web Console 直接运行：" + itemLabel;
   let h = `<div class="operator-inbox-item">`;
@@ -2069,8 +2117,12 @@ function renderOperatorInboxItem(item) {{
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
   h += `<div class="operator-inbox-actions">`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
-  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-disabled="${{canRun ? "false" : "true"}}" ${{canRun ? "" : "disabled"}}>${{canRun ? "Run" : "Gate"}}</button>`;
-  h += `</div></div>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
+  h += `</div>`;
+  if (feedback) {{
+    h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
+  }}
+  h += `</div>`;
   return h;
 }}
 

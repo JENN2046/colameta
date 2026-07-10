@@ -874,12 +874,20 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operator-inbox-list" in page
         assert "data-copy-operator-inbox" in page
         assert "data-run-operator-inbox" in page
+        assert "operatorInboxRunFeedback" in page
+        assert "setOperatorInboxRunFeedback" in page
+        assert "operatorInboxFeedbackFor" in page
+        assert "data-operator-inbox-action-key" in page
+        assert "operator-inbox-action-status" in page
+        assert "正在运行 operator inbox 项" in page
+        assert "运行完成，状态已刷新。" in page
+        assert 'aria-busy="${isRunning ? "true" : "false"}"' in page
         assert "复制 operator inbox 调用：" in page
         assert "运行只读 operator inbox 项：" in page
         assert "需要更高权限，不能在 Web Console 直接运行：" in page
         assert "复制 MCP 调用：" in page
         assert "复制 TODO ID " in page
-        assert 'aria-disabled="${canRun ? "false" : "true"}"' in page
+        assert 'aria-disabled="${canRun && !isRunning ? "false" : "true"}"' in page
         assert "runAction(action" in page
         assert "REGISTRY_ACTION_META" in page
         assert "registryActionMeta" in page
