@@ -1844,7 +1844,7 @@ def _completion_followup_queue(
         if not isinstance(group, dict):
             continue
         item = _completion_followup_item(index=len(items), group=group)
-        fingerprint = str(item.get("action_fingerprint") or "")
+        fingerprint = str(item.pop("_dedupe_fingerprint", "") or "")
         existing_index = item_index_by_fingerprint.get(fingerprint) if fingerprint else None
         if existing_index is not None:
             items[existing_index] = _completion_merge_shared_followup_item(items[existing_index], item)
@@ -1954,7 +1954,27 @@ def _completion_followup_item(*, index: int, group: dict[str, Any]) -> dict[str,
             result["action_key"] = primary_ref.get("action_key")
         if primary_ref.get("action_fingerprint"):
             result["action_fingerprint"] = primary_ref.get("action_fingerprint")
+            if _completion_primary_action_matches_ref(primary_action, primary_ref):
+                result["_dedupe_fingerprint"] = primary_ref.get("action_fingerprint")
     return {key: value for key, value in result.items() if value not in (None, "", {})}
+
+
+def _completion_primary_action_matches_ref(
+    primary_action: dict[str, Any],
+    action_ref: dict[str, Any],
+) -> bool:
+    primary_tool = str(primary_action.get("tool") or "")
+    ref_tool = str(action_ref.get("tool") or "")
+    primary_runbook = str(primary_action.get("runbook") or "")
+    ref_runbook = str(action_ref.get("runbook") or "")
+    if (primary_tool, primary_runbook) != (ref_tool, ref_runbook):
+        return False
+    primary_arguments = primary_action.get("arguments") if isinstance(primary_action.get("arguments"), dict) else {}
+    ref_arguments = action_ref.get("arguments") if isinstance(action_ref.get("arguments"), dict) else {}
+    return (
+        primary_arguments == ref_arguments
+        and _completion_action_scope(primary_action) == _completion_action_scope(action_ref)
+    )
 
 
 def _completion_action_scope(action: dict[str, Any]) -> str:

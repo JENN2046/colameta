@@ -367,6 +367,55 @@ def test_completion_followup_queue_keeps_different_fingerprints_separate() -> No
     assert all("components" not in item for item in queue["items"])
 
 
+def test_completion_followup_queue_keeps_source_write_and_pending_refresh_separate(tmp_path) -> None:
+    initial_packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release("blocked"),
+    )
+    write_action = _action_by_tool(initial_packet, "init_submission_evidence")
+    record_product_console_action_result(
+        str(tmp_path),
+        action_id=write_action["action_id"],
+        tool=write_action["tool"],
+        mode=write_action["mode"],
+        status="updated",
+        message="submission manifest initialized",
+        project_name="demo-project",
+        result_ok=True,
+        action_fingerprint=write_action["action_fingerprint"],
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+
+    packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release("blocked"),
+    )
+
+    completion = packet["completion_surface"]
+    queue = completion["followup_queue"]
+    items = {item["item_id"]: item for item in queue["items"]}
+    assert queue["total_count"] == 3
+    assert completion["progress_state"]["followup_count"] == 3
+    assert items["release_submission"]["components"] == ["release_submission", "submission_evidence"]
+    assert items["release_submission"]["required_scope"] == "mcp:commit"
+    assert items["action_refresh"]["primary_tool"] == "get_release_submission_readiness"
+    assert items["action_refresh"]["required_scope"] == "mcp:read"
+    assert items["action_refresh"]["action_fingerprint"] == write_action["action_fingerprint"]
+    assert "components" not in items["action_refresh"]
+    categories = {
+        item["category_id"]: item
+        for item in completion["product_completion_overview"]["categories"]
+    }
+    assert categories["action_refresh"]["primary_tool"] == "get_release_submission_readiness"
+    assert categories["action_refresh"]["required_scope"] == "mcp:read"
+
+
 def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     initial_packet = build_product_console_map(
         str(tmp_path),

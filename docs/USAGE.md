@@ -404,7 +404,10 @@ When multiple incomplete categories reference the exact same
 uses `components`, `related_item_ids`, and merged `gap_codes` to identify every
 category it covers. Categories retain their separate status and gaps while
 sharing one `followup_position`, and progress counts unique executable actions.
-Only exact fingerprint matches are folded together; actions with different
+In addition to an exact fingerprint match, the queue rechecks that the primary
+executable tool or runbook, arguments, and scope match the action reference that
+owns the fingerprint. A read-only pending refresh produced by a write therefore
+cannot fold back into its source write action. Different executable targets,
 arguments, scopes, or result contracts remain separate so authorization
 boundaries cannot be collapsed accidentally.
 Use `get_submission_evidence_fill_preview` to review the generated
