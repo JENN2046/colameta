@@ -1197,6 +1197,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "shared_by_component_count" in widget_html
         assert "stablePreviewActionIsRunnable" in widget_html
         assert "stablePreviewConfirmationMessage" in widget_html
+        assert "stablePreviewToolCall" in widget_html
+        assert "stablePreviewResultCanAdvance" in widget_html
+        assert "stablePreviewConsoleRefreshArgs" in widget_html
+        assert "stable preview refresh" in widget_html
         assert "previewActionConfirmations" in widget_html
         assert "Review preview" in widget_html
         assert "Confirm preview" in widget_html
@@ -3584,6 +3588,8 @@ function dispatchAction(action) {{
 
 const listeners = {{}};
 const calls = [];
+const parentMessages = [];
+function flushPromises() {{ return new Promise(function (resolve) {{ setImmediate(resolve); }}); }}
 global.document = {{
   getElementById: byId,
   createElement: function (tagName) {{ return new Element(tagName); }},
@@ -3591,7 +3597,7 @@ global.document = {{
 }};
 global.navigator = {{}};
 global.window = {{
-  parent: {{ postMessage: function () {{ throw new Error("direct path should not use bridge"); }} }},
+  parent: {{ postMessage: function (message) {{ parentMessages.push(message); }} }},
   addEventListener: function (name, fn) {{
     if (!listeners[name]) listeners[name] = [];
     listeners[name].push(fn);
@@ -3683,20 +3689,101 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(actionStatusText().includes("project_name=demo-project"), actionStatusText());
   await runButton().listeners.click[0]();
   assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
-    "manage_stable_promotion_evidence"
-  ]);
-  assert.strictEqual(runButton().disabled, true, "successful preview is locked until record and refresh");
-  assert.strictEqual(runButton().textContent, "Preview created");
-  assert.strictEqual(recordButton().disabled, false, "successful preview can be recorded");
-
-  await recordButton().listeners.click[0]();
-  assert.deepStrictEqual(calls.map(function (call) {{ return call.name; }}), [
     "manage_stable_promotion_evidence",
-    "record_product_console_action_result",
     "get_product_console_map"
   ]);
   assert.strictEqual(runButton().textContent, "Confirm outside");
   assert.strictEqual(runButton().disabled, true, "commit-scoped apply remains unavailable in the widget");
+  assert.strictEqual(recordButton().disabled, true, "auto-refresh replaces the preview card without a record write");
+  assert.strictEqual(parentMessages.length, 0, "successful direct preview refresh stays on the direct path");
+
+  window.openai.callTool = async function () {{ throw new Error("direct unavailable"); }};
+  dispatchAction(previewAction("preview-bridge", "c".repeat(40)));
+  await runButton().listeners.click[0]();
+  await runButton().listeners.click[0]();
+  assert.strictEqual(parentMessages.length, 1, "preview fallback should post one bridge request");
+  assert.strictEqual(parentMessages[0].params.name, "manage_stable_promotion_evidence");
+  dispatch("message", {{ data: {{
+    id: parentMessages[0].id,
+    result: {{ structuredContent: {{
+      source: "stable_promotion_artifact_evidence",
+      action: "preview",
+      preview_id: "preview_bridge",
+      can_apply: true
+    }} }}
+  }} }});
+  await flushPromises();
+  assert.strictEqual(parentMessages.length, 2, "successful preview result should request a read-only console refresh");
+  assert.strictEqual(parentMessages[1].params.name, "get_product_console_map");
+  assert.deepStrictEqual(parentMessages[1].params.arguments, {{ project_name: "demo-project" }});
+  dispatch("message", {{ data: {{
+    id: parentMessages[1].id,
+    result: {{ structuredContent: {{
+      source: "product_console_map",
+      project_name: "demo-project",
+      recommended_first_actions: [{{
+        action_id: "persist_artifact_manifest",
+        label: "Apply Stable Promotion Artifact Evidence",
+        mode: "commit",
+        tool: "manage_stable_promotion_evidence",
+        arguments: {{ action: "apply", preview_id: "preview_bridge", project_name: "demo-project" }},
+        required_scope: "mcp:commit",
+        action_fingerprint: "apply-bridge",
+        last_action_result: {{ status: "not_recorded" }},
+        next_refresh_actions: []
+      }}]
+    }} }}
+  }} }});
+  assert.strictEqual(runButton().textContent, "Confirm outside");
+  assert.strictEqual(runButton().disabled, true, "bridge refresh also advances to the external apply handoff");
+
+  const failedDirectCalls = [];
+  window.openai.callTool = async function (name) {{
+    failedDirectCalls.push(name);
+    return {{ structuredContent: {{
+      source: "stable_promotion_artifact_evidence",
+      status: "failed",
+      ok: false,
+      error: "preview rejected"
+    }} }};
+  }};
+  dispatchAction(previewAction("preview-direct-failed", "d".repeat(40)));
+  await runButton().listeners.click[0]();
+  await runButton().listeners.click[0]();
+  assert.deepStrictEqual(failedDirectCalls, ["manage_stable_promotion_evidence"]);
+  assert.strictEqual(parentMessages.length, 2, "failed direct preview must not refresh or fall back");
+
+  const malformedDirectCalls = [];
+  window.openai.callTool = async function (name) {{
+    malformedDirectCalls.push(name);
+    return {{ structuredContent: {{
+      source: "stable_promotion_artifact_evidence",
+      action: "preview",
+      can_apply: true
+    }} }};
+  }};
+  dispatchAction(previewAction("preview-direct-malformed", "f".repeat(40)));
+  await runButton().listeners.click[0]();
+  await runButton().listeners.click[0]();
+  assert.deepStrictEqual(malformedDirectCalls, ["manage_stable_promotion_evidence"]);
+  assert.strictEqual(parentMessages.length, 2, "preview without preview_id must not refresh");
+
+  window.openai.callTool = async function () {{ throw new Error("direct unavailable"); }};
+  dispatchAction(previewAction("preview-bridge-failed", "e".repeat(40)));
+  await runButton().listeners.click[0]();
+  await runButton().listeners.click[0]();
+  assert.strictEqual(parentMessages.length, 3, "failed bridge scenario starts with only the preview request");
+  dispatch("message", {{ data: {{
+    id: parentMessages[2].id,
+    result: {{ structuredContent: {{
+      source: "stable_promotion_artifact_evidence",
+      status: "failed",
+      ok: false,
+      error: "preview rejected"
+    }} }}
+  }} }});
+  await flushPromises();
+  assert.strictEqual(parentMessages.length, 3, "failed bridge preview must not request a console refresh");
 }})().catch(function (err) {{
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
