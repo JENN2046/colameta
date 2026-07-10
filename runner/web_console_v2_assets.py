@@ -1555,11 +1555,27 @@ function renderProductFollowupQueue(completion) {{
 function productFollowupRecordPayload(item, primary, scope) {{
   item = item || {{}};
   primary = primary || {{}};
+  const primaryTool = item.primary_tool || primary.tool || "";
+  const primaryArguments = primary.arguments && typeof primary.arguments === "object" ? primary.arguments : {{}};
+  if (primaryTool === "record_product_console_action_result" && (primaryArguments.action_id || primaryArguments.tool)) {{
+    const recordArguments = Object.assign({{}}, primaryArguments);
+    const underlyingMode = recordArguments.mode || "read";
+    const underlyingActionKey = item.action_key || primary.action_key || [recordArguments.action_id, recordArguments.tool, underlyingMode].filter(Boolean).join("|");
+    return {{
+      tool: "record_product_console_action_result",
+      arguments: recordArguments,
+      source_action_key: underlyingActionKey,
+      source_item_id: item.item_id || "",
+      source_component: item.component || "",
+      required_scope: "mcp:commit",
+      gate_level: "explicit_operator_record_required",
+    }};
+  }}
   const actionKey = item.action_key || primary.action_key || "";
   return operatorInboxRecordPayload({{
     item_id: item.item_id || "",
     component: item.component || "",
-    tool: item.primary_tool || primary.tool || "",
+    tool: primaryTool,
     required_scope: scope || item.required_scope || primary.required_scope || "mcp:read",
     action_fingerprint: item.action_fingerprint || primary.action_fingerprint || "",
     copy_payload: {{

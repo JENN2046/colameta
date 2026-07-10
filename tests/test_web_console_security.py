@@ -8,6 +8,8 @@ import os
 import re
 import socket
 import secrets
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -216,6 +218,45 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert "复制 Product follow-up 结果记录模板：" in page
         assert "Copy follow-up" in page
         assert "Copy record" in page
+
+    def test_submission_activity_record_copy_uses_underlying_action_arguments(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for product follow-up payload behavior smoke")
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+        function_source = page.split("function productFollowupRecordPayload", 1)[1].split(
+            "function openProductFollowupInInbox", 1
+        )[0]
+        script = "function productFollowupRecordPayload" + function_source + r'''
+const assert = require("assert");
+function operatorInboxRecordPayload() { throw new Error("generic record wrapper must not be used"); }
+const argumentsPayload = {
+  action_id: "submission_evidence_activity",
+  tool: "submission_evidence_activity_summary",
+  mode: "read",
+  status: "updated",
+  message: "operator-confirmed evidence activity",
+  result_ok: true,
+};
+const result = productFollowupRecordPayload({
+  item_id: "submission_evidence_activity",
+  component: "submission_evidence_activity",
+  primary_tool: "record_product_console_action_result",
+  required_scope: "mcp:commit",
+}, {
+  action: "record_submission_evidence_activity",
+  tool: "record_product_console_action_result",
+  arguments: argumentsPayload,
+  required_scope: "mcp:commit",
+}, "mcp:commit");
+assert.deepStrictEqual(result.arguments, argumentsPayload);
+assert.strictEqual(result.source_action_key, "submission_evidence_activity|submission_evidence_activity_summary|read");
+assert.strictEqual(result.required_scope, "mcp:commit");
+assert.strictEqual(result.gate_level, "explicit_operator_record_required");
+'''
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def free_tcp_port() -> int:
