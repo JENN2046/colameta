@@ -94,6 +94,13 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .registry-action-status.running { color: #d29922; }
 .registry-action-status.completed { color: #3fb950; }
 .registry-action-status.failed { color: #f85149; }
+.registry-action-trail { border-top: 1px solid #30363d55; margin: 8px 0 10px; padding-top: 8px; }
+.registry-action-trail-title { color: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
+.registry-action-trail-list { display: grid; gap: 5px; }
+.registry-action-trail-item { color: #8b949e; font-size: 11px; line-height: 1.4; }
+.registry-action-trail-item.running { color: #d29922; }
+.registry-action-trail-item.completed { color: #3fb950; }
+.registry-action-trail-item.failed { color: #f85149; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1723,6 +1730,8 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data) {{
 let registryActionInFlight = false;
 let registryActionStatusState = "idle";
 let registryActionStatusMessage = "项目管理操作就绪。";
+let registryActionTrail = [];
+const REGISTRY_ACTION_TRAIL_LIMIT = 5;
 
 function setRegistryActionStatus(state, message) {{
   registryActionStatusState = state || "idle";
@@ -1734,13 +1743,27 @@ function setRegistryActionStatus(state, message) {{
   }}
 }}
 
+function pushRegistryActionTrail(state, actionMeta, message) {{
+  actionMeta = actionMeta || {{}};
+  registryActionTrail.unshift({{
+    state: state || "idle",
+    label: actionMeta.label || "项目管理操作",
+    target: actionMeta.target || "",
+    message: String(message || ""),
+    timestamp: operatorInboxFeedbackTimestamp(),
+  }});
+  registryActionTrail = registryActionTrail.slice(0, REGISTRY_ACTION_TRAIL_LIMIT);
+}}
+
 function registryAction(actionName, params) {{
   if (registryActionInFlight) return;
   registryActionInFlight = true;
   setGlobalLoading(true, "正在执行项目管理操作...");
   clearGlobalError();
   const actionMeta = registryActionMeta(actionName, params || {{}});
-  setRegistryActionStatus("running", "正在执行项目管理操作：" + (actionMeta.label || actionName));
+  const runningMessage = "正在执行项目管理操作：" + (actionMeta.label || actionName);
+  setRegistryActionStatus("running", runningMessage);
+  pushRegistryActionTrail("running", actionMeta, runningMessage);
   renderProjectManagementModal(latestStatusData || {{}});
   const payload = {{
     next_action: {{
@@ -1762,14 +1785,18 @@ function registryAction(actionName, params) {{
       const message = data && (data.message || data.error_code)
         ? String(data.message || data.error_code)
         : "项目管理操作完成，状态已刷新。";
-      setRegistryActionStatus(failed ? "failed" : "completed", failed ? ("项目管理操作失败：" + message) : message);
+      const trailMessage = failed ? ("项目管理操作失败：" + message) : message;
+      setRegistryActionStatus(failed ? "failed" : "completed", trailMessage);
+      pushRegistryActionTrail(failed ? "failed" : "completed", actionMeta, trailMessage);
       render(data);
       if (failed) showError(message);
       setGlobalLoading(false);
     }})
     .catch(function(e) {{
       registryActionInFlight = false;
-      setRegistryActionStatus("failed", "项目管理操作失败：" + String(e));
+      const failedMessage = "项目管理操作失败：" + String(e);
+      setRegistryActionStatus("failed", failedMessage);
+      pushRegistryActionTrail("failed", actionMeta, failedMessage);
       renderProjectManagementModal(latestStatusData || {{}});
       showError(String(e));
       setGlobalLoading(false);
@@ -2216,6 +2243,23 @@ function renderProjectManagementModal(data) {{
   if (body) body.innerHTML = renderProjectManagement(data);
 }}
 
+function renderRegistryActionTrail() {{
+  let h = `<div class="registry-action-trail" aria-label="最近项目管理操作">`;
+  h += `<div class="registry-action-trail-title">最近项目管理操作</div>`;
+  if (!registryActionTrail.length) {{
+    h += `<div class="registry-action-trail-item">暂无最近操作。</div>`;
+  }} else {{
+    h += `<div class="registry-action-trail-list">`;
+    for (const item of registryActionTrail) {{
+      const target = item.target ? " ｜ 目标：" + item.target : "";
+      h += `<div class="registry-action-trail-item ${{escAttr(item.state || "")}}">${{esc(item.timestamp || "-")}} ｜ ${{esc(item.label || "项目管理操作")}}${{esc(target)}} ｜ ${{esc(item.message || "")}}</div>`;
+    }}
+    h += `</div>`;
+  }}
+  h += `</div>`;
+  return h;
+}}
+
 function renderProjectManagement(data) {{
   const registry = data.project_registry || {{}};
   const projects = Array.isArray(registry.projects) ? registry.projects : [];
@@ -2227,6 +2271,7 @@ function renderProjectManagement(data) {{
   h += `<div class="modal-sync-status" role="status" aria-live="polite">${{esc(projectManagementSyncStatusText())}}</div>`;
   h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">这里管理项目登记元数据。移出/清理只修改登记记录，不会删除磁盘文件；应用迁移会按预览修改 registry / plan / state / settings。当前项目会标注“当前”，/mnt/... 会标注为 Windows 挂载路径。</div>`;
   h += `<div id="registry-action-status" class="registry-action-status ${{escAttr(registryActionStatusState)}}" role="status" aria-live="polite">${{esc(registryActionStatusMessage)}}</div>`;
+  h += renderRegistryActionTrail();
 
   if (projects.length === 0) {{
     h += `<div class="empty-state">无登记项目</div>`;
