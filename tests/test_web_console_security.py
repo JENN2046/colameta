@@ -844,11 +844,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "pending refresh，请优先运行或复制刷新项" in page
         assert "Product closeout 将在结果返回后刷新。" in page
         assert "Product closeout 未被推进，请查看 INBOX 项或复制调用手动处理。" in page
+        assert "刷新已收口；Product closeout 当前为 current。" in page
         assert "renderCenterColumn(latestStatusData)" in page
         assert "openPendingRefreshInInbox" in page
         assert 'data-open-pending-refresh="true"' in page
         assert "Open refresh" in page
         assert 'data-operator-inbox-component="${escAttr(itemComponent)}"' in page
+        assert "component: actionComponent || \"\"" in page
+        assert "action.component || \"\"" in page
+        assert "setOperatorInboxRunFeedback(actionKey, \"completed\", \"运行完成，状态已刷新。\", data, actionLabel, actionComponent)" in page
+        assert "component === \"pending_refresh\"" in page
         assert '[data-operator-inbox-component="pending_refresh"]' in page
         assert "Operator inbox" in page
         assert "operatorInbox" in page

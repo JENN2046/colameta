@@ -1584,6 +1584,7 @@ function renderOperatorInboxRunImpact(completion, operatorTrail) {{
     : 0;
   const state = operatorInboxRunFeedback.state || "idle";
   const label = operatorInboxRunFeedback.label || operatorInboxRunFeedback.actionKey || "operator inbox 项";
+  const component = operatorInboxRunFeedback.component || "";
   const progressLabel = progress.label || progress.status || completion.status || "-";
   let guidance = "Product closeout 状态以刷新后的服务数据为准。";
   if (state === "running") {{
@@ -1592,6 +1593,8 @@ function renderOperatorInboxRunImpact(completion, operatorTrail) {{
     guidance = "Run 未完成；Product closeout 未被推进，请查看 INBOX 项或复制调用手动处理。";
   }} else if (pendingRefresh > 0) {{
     guidance = "Run 已返回；Product closeout 仍有 " + pendingRefresh + " 个 pending refresh，请优先运行或复制刷新项。";
+  }} else if (state === "completed" && component === "pending_refresh") {{
+    guidance = "刷新已收口；Product closeout 当前为 current。";
   }} else if (state === "completed") {{
     guidance = "Run 已返回；Product closeout 当前未报告 pending refresh。";
   }}
@@ -1815,17 +1818,19 @@ function bindOperatorInboxActions(root) {{
         const action = JSON.parse(this.getAttribute("data-run-operator-inbox") || "{{}}");
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || operatorInboxActionKeyFromAction(action);
         const actionLabel = this.getAttribute("data-operator-inbox-action-label") || actionKey;
-        setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...", null, actionLabel);
+        const actionComponent = this.getAttribute("data-operator-inbox-component") || action.component || "";
+        setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...", null, actionLabel, actionComponent);
         const data = await runAction(action, latestStatusData || {{}});
         if (data && data.ok === false) {{
-          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data, actionLabel);
+          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data, actionLabel, actionComponent);
         }} else {{
-          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data, actionLabel);
+          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data, actionLabel, actionComponent);
         }}
       }} catch (e) {{
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
         const actionLabel = this.getAttribute("data-operator-inbox-action-label") || actionKey;
-        if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e), null, actionLabel);
+        const actionComponent = this.getAttribute("data-operator-inbox-component") || "";
+        if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e), null, actionLabel, actionComponent);
         showError(String(e));
       }}
     }});
@@ -1886,11 +1891,12 @@ function pushOperatorInboxRunTrail(actionKey, state, message, actionLabel) {{
   operatorInboxRunTrail = operatorInboxRunTrail.slice(0, OPERATOR_INBOX_RUN_TRAIL_LIMIT);
 }}
 
-function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabel) {{
+function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabel, actionComponent) {{
   const timestamp = operatorInboxFeedbackTimestamp();
   operatorInboxRunFeedback = {{
     actionKey: actionKey,
     label: actionLabel || actionKey || "operator inbox 项",
+    component: actionComponent || "",
     state: state,
     message: message,
     source: "来自刚才的 Run 操作",
@@ -2549,6 +2555,7 @@ function renderOperatorInboxItem(item) {{
     arguments: item.arguments || {{}},
     required_scope: item.required_scope || "mcp:read",
     gate_level: item.gate_level || "read_only",
+    component: itemComponent,
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
   const isRunning = feedback && feedback.state === "running";
@@ -2564,7 +2571,7 @@ function renderOperatorInboxItem(item) {{
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
   h += `<div class="operator-inbox-actions">`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
-  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" data-operator-inbox-action-label="${{escAttr(itemLabel)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" data-operator-inbox-action-label="${{escAttr(itemLabel)}}" data-operator-inbox-component="${{escAttr(itemComponent)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
   h += `</div>`;
   if (feedback) {{
     h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
