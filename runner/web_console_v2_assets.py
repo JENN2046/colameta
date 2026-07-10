@@ -327,6 +327,9 @@ let latestStatusData = null;
 let latestStatusSignature = "";
 let todoPage = 1;
 let decisionPage = 1;
+const LEFT_TAB_DEFAULT = "overview";
+const LEFT_TAB_NAMES = ["overview", "versionplan"];
+let activeLeftTab = LEFT_TAB_DEFAULT;
 const RIGHT_TAB_DEFAULT = "todolist";
 const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
 let activeRightTab = RIGHT_TAB_DEFAULT;
@@ -720,6 +723,7 @@ function renderProjectSwitcher(data) {{
 }}
 
 function renderLeftColumn(data) {{
+  activeLeftTab = normalizeLeftTab(activeLeftTab);
   const fs = data.fact_snapshot || {{}};
   const pi = fs.project_identity || {{}};
   const gs = fs.git_status || {{}};
@@ -742,12 +746,12 @@ function renderLeftColumn(data) {{
 
   let h = "";
   h += `<div class="card left-tab-card">`;
-  h += `<div class="tab-bar">`;
-  h += `<button class="tab-btn active" data-left-tab-button="overview" onclick="switchLeftTab('overview', this)"><span class="tab-icon">◉</span>项目总览</button>`;
-  h += `<button class="tab-btn" data-left-tab-button="versionplan" onclick="switchLeftTab('versionplan', this)"><span class="tab-icon">☰</span>版本计划</button>`;
+  h += `<div class="tab-bar" role="tablist" aria-label="Project workspace">`;
+  h += `<button type="button" id="left-tab-overview" role="tab" aria-selected="${{leftTabAriaSelected("overview")}}" aria-controls="left-panel-overview" aria-label="项目总览" class="tab-btn${{leftTabActiveClass("overview")}}" data-left-tab-button="overview" onclick="switchLeftTab('overview', this)" onkeydown="handleLeftTabKeydown(event, 'overview')"><span class="tab-icon">◉</span>项目总览</button>`;
+  h += `<button type="button" id="left-tab-versionplan" role="tab" aria-selected="${{leftTabAriaSelected("versionplan")}}" aria-controls="left-panel-versionplan" aria-label="版本计划" class="tab-btn${{leftTabActiveClass("versionplan")}}" data-left-tab-button="versionplan" onclick="switchLeftTab('versionplan', this)" onkeydown="handleLeftTabKeydown(event, 'versionplan')"><span class="tab-icon">☰</span>版本计划</button>`;
   h += `</div>`;
 
-  h += `<div class="tab-content" data-left-tab="overview">`;
+  h += `<div id="left-panel-overview" class="tab-content" role="tabpanel" aria-labelledby="left-tab-overview" aria-hidden="${{leftTabAriaHidden("overview")}}" tabindex="0" data-left-tab="overview"${{leftTabDisplayStyle("overview")}}>`;
   h += `<div class="compact-card" style="margin-bottom:0;">`;
   h += r("项目", pi.project_name || "-");
   h += `<div class="compact-row"><span class="key">代码：</span><span class="val">分支 ${{sb(pi.git_branch)}} ｜ 提交 ${{sb(pi.git_head_short)}}</span></div>`;
@@ -771,7 +775,7 @@ function renderLeftColumn(data) {{
   h += `</div>`;
   h += `</div>`;
 
-  h += `<div class="tab-content" data-left-tab="versionplan" style="display:none;">`;
+  h += `<div id="left-panel-versionplan" class="tab-content" role="tabpanel" aria-labelledby="left-tab-versionplan" aria-hidden="${{leftTabAriaHidden("versionplan")}}" tabindex="0" data-left-tab="versionplan"${{leftTabDisplayStyle("versionplan")}}>`;
   h += renderVersionPlan(data);
   h += `</div>`;
   h += `</div>`;
@@ -1715,6 +1719,52 @@ function showRightTab(tabName) {{
   }}
 }}
 
+function showLeftTab(tabName) {{
+  tabName = normalizeLeftTab(tabName);
+  activeLeftTab = tabName;
+  const card = $("layout-left") && $("layout-left").querySelector(".card");
+  if (card) {{
+    card.querySelectorAll(".tab-btn").forEach(function(b) {{
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    }});
+    const tabBtn = card.querySelector('[data-left-tab-button="' + tabName + '"]');
+    if (tabBtn) {{
+      tabBtn.classList.add("active");
+      tabBtn.setAttribute("aria-selected", "true");
+    }}
+    card.querySelectorAll('[data-left-tab]').forEach(function(tc) {{
+      tc.style.display = "none";
+      tc.setAttribute("aria-hidden", "true");
+    }});
+    const tabContent = card.querySelector('[data-left-tab="' + tabName + '"]');
+    if (tabContent) {{
+      tabContent.style.display = "block";
+      tabContent.setAttribute("aria-hidden", "false");
+    }}
+  }}
+}}
+
+function normalizeLeftTab(tabName) {{
+  return LEFT_TAB_NAMES.includes(tabName) ? tabName : LEFT_TAB_DEFAULT;
+}}
+
+function leftTabActiveClass(tabName) {{
+  return normalizeLeftTab(activeLeftTab) === tabName ? " active" : "";
+}}
+
+function leftTabDisplayStyle(tabName) {{
+  return normalizeLeftTab(activeLeftTab) === tabName ? "" : ` style="display:none;"`;
+}}
+
+function leftTabAriaSelected(tabName) {{
+  return normalizeLeftTab(activeLeftTab) === tabName ? "true" : "false";
+}}
+
+function leftTabAriaHidden(tabName) {{
+  return normalizeLeftTab(activeLeftTab) === tabName ? "false" : "true";
+}}
+
 function normalizeRightTab(tabName) {{
   return RIGHT_TAB_NAMES.includes(tabName) ? tabName : RIGHT_TAB_DEFAULT;
 }}
@@ -1761,13 +1811,25 @@ function handleRightTabKeydown(event, tabName) {{
   if (nextTab === "todolist") syncAdaptiveTodoPageSize();
 }}
 
+function handleLeftTabKeydown(event, tabName) {{
+  const key = event.key;
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(key)) return;
+  event.preventDefault();
+  const current = normalizeLeftTab(tabName || activeLeftTab);
+  let index = LEFT_TAB_NAMES.indexOf(current);
+  if (index < 0) index = 0;
+  if (key === "ArrowRight") index = (index + 1) % LEFT_TAB_NAMES.length;
+  else if (key === "ArrowLeft") index = (index - 1 + LEFT_TAB_NAMES.length) % LEFT_TAB_NAMES.length;
+  else if (key === "Home") index = 0;
+  else if (key === "End") index = LEFT_TAB_NAMES.length - 1;
+  const nextTab = LEFT_TAB_NAMES[index];
+  showLeftTab(nextTab);
+  const nextButton = $("layout-left") && $("layout-left").querySelector('[data-left-tab-button="' + nextTab + '"]');
+  if (nextButton) nextButton.focus();
+}}
+
 function switchLeftTab(tabName, btn) {{
-  const card = btn.closest(".card");
-  card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
-  btn.classList.add("active");
-  card.querySelectorAll('[data-left-tab]').forEach(function(tc) {{ tc.style.display = "none"; }});
-  const content = card.querySelector('[data-left-tab="' + tabName + '"]');
-  if (content) content.style.display = "block";
+  showLeftTab(tabName);
 }}
 
 function clampTodoPageSize(size) {{

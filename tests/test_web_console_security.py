@@ -841,6 +841,12 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "rightTabAriaHidden" in page
         assert "rightTabCountBadge" in page
         assert "handleRightTabKeydown" in page
+        assert "activeLeftTab" in page
+        assert "normalizeLeftTab" in page
+        assert "leftTabActiveClass" in page
+        assert "leftTabAriaSelected" in page
+        assert "leftTabAriaHidden" in page
+        assert "handleLeftTabKeydown" in page
         assert "ArrowRight" in page
         assert "ArrowLeft" in page
         assert "Home" in page
@@ -852,6 +858,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'role="tabpanel"' in page
         assert 'aria-controls="right-panel-operator-inbox"' in page
         assert 'aria-labelledby="right-tab-operator-inbox"' in page
+        assert 'aria-controls="left-panel-versionplan"' in page
+        assert 'aria-labelledby="left-tab-versionplan"' in page
         assert "renderOperatorInboxPanel" in page
         assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page
