@@ -5698,6 +5698,10 @@ class MCPPlanningBridgeServer:
         if (!primary.mode && item && item.required_scope === "mcp:preview") primary.mode = "preview";
         if (!primary.mode && item && item.required_scope === "mcp:commit") primary.mode = "commit";
         if (!primary.required_scope && item && item.required_scope) primary.required_scope = item.required_scope;
+        if (primary.tool === "record_product_console_action_result" && primary.action_fingerprint) {
+          primary.arguments = primary.arguments && typeof primary.arguments === "object" ? Object.assign({}, primary.arguments) : {};
+          if (!primary.arguments.action_fingerprint) primary.arguments.action_fingerprint = primary.action_fingerprint;
+        }
         return primary;
       }
       function closeoutFollowupKey(item, action) {
