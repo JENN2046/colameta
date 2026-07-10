@@ -6576,6 +6576,27 @@ class MCPPlanningBridgeServer:
           "project_name=" + (args.project_name || activeProjectName || "")
         ].filter(Boolean).join(" | ");
       }
+      function stablePreviewToolCall(name, args) {
+        return name === "manage_stable_promotion_evidence"
+          && args && typeof args === "object"
+          && args.action === "preview"
+          && typeof args.candidate_head === "string"
+          && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(args.candidate_head)
+          && typeof args.project_name === "string"
+          && !!args.project_name;
+      }
+      function stablePreviewResultCanAdvance(data) {
+        return data && typeof data === "object"
+          && !resultFailed(data)
+          && data.source === "stable_promotion_artifact_evidence"
+          && data.action === "preview"
+          && typeof data.preview_id === "string"
+          && !!data.preview_id
+          && data.can_apply === true;
+      }
+      function stablePreviewConsoleRefreshArgs(args) {
+        return { project_name: args && args.project_name ? args.project_name : activeProjectName };
+      }
       function rememberActionRunStatus(key, status, message) {
         if (!key) return;
         actionRunStatus[key] = {
@@ -6660,7 +6681,21 @@ class MCPPlanningBridgeServer:
         var status = resultFailed(normalized) ? "failed" : "updated";
         var payloadStatus = normalized && normalized.status ? " | " + normalized.status : "";
         rememberActionRunStatus(pending.statusKey, status, pending.name + " via bridge" + payloadStatus);
+        var stablePreviewRefreshArgs = status === "updated" && stablePreviewResultCanAdvance(normalized)
+          ? pending.stablePreviewRefreshArgs
+          : null;
+        var stablePreviewStatusKey = pending.statusKey;
         delete pendingBridgeCalls[id];
+        if (stablePreviewRefreshArgs) {
+          callToolWithArgs(
+            "get_product_console_map",
+            stablePreviewRefreshArgs,
+            "stable preview refresh",
+            "stable-preview-refresh|" + stablePreviewStatusKey
+          ).catch(function (err) {
+            text("log", "Stable preview refresh failed: " + errorSummary(err));
+          });
+        }
       }
       function renderRecordButton(button, statusNode, action, key) {
         var current = actionRunStatus[key];
@@ -6967,6 +7002,18 @@ class MCPPlanningBridgeServer:
             rememberActionRunStatus(statusKey, directStatus, name + " via direct call" + payloadStatus);
             if (payload) render(payload);
             text("log", "Updated from " + (sourceLabel || name) + ".");
+            if (
+              directStatus === "updated"
+              && stablePreviewToolCall(name, callArgs)
+              && stablePreviewResultCanAdvance(normalized)
+            ) {
+              await callToolWithArgs(
+                "get_product_console_map",
+                stablePreviewConsoleRefreshArgs(callArgs),
+                "stable preview refresh",
+                "stable-preview-refresh|" + statusKey
+              );
+            }
             return {
               status: directStatus,
               result_status: normalized && normalized.status,
@@ -6979,7 +7026,14 @@ class MCPPlanningBridgeServer:
           }
         }
         var requestId = "colameta-commander-" + (seq++);
-        pendingBridgeCalls[requestId] = { name: name, statusKey: statusKey, timeoutId: null };
+        pendingBridgeCalls[requestId] = {
+          name: name,
+          statusKey: statusKey,
+          timeoutId: null,
+          stablePreviewRefreshArgs: stablePreviewToolCall(name, callArgs)
+            ? stablePreviewConsoleRefreshArgs(callArgs)
+            : null
+        };
         var timerFn = window.setTimeout || (typeof setTimeout === "function" ? setTimeout : null);
         if (timerFn) {
           pendingBridgeCalls[requestId].timeoutId = timerFn(function () {

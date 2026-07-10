@@ -312,9 +312,16 @@ templates after a `Submission` read.
 The Commander widget also renders `recommended_first_actions` as action cards
 with mode, scope, confirmation, side-effect, and authority-boundary badges, plus
 a copyable tool call shape for operators. Read-mode action cards can run their
-tool directly from the widget. Preview or commit-mode cards remain non-running
-inside the widget; operators must copy the call and use the explicit preview or
-confirmation flow. Each runnable card records its latest request state on the
+tool directly from the widget. An exact, server-recommended stable artifact
+preview can run through the fingerprint-bound `Review preview -> Confirm
+preview` flow. After either a direct call or bridge result succeeds, Commander
+automatically performs a read-only `get_product_console_map` refresh and shows
+the exact `preview_id` apply handoff without first writing an action-result
+record. Auto-refresh requires a successful stable-evidence result with
+`action=preview`, a non-empty `preview_id`, and `can_apply=true`; failed or
+malformed results do not advance. The refresh does not repeat the preview or execute apply. Commit-mode
+and all other preview cards remain non-running inside the widget; operators
+must copy the call and use their explicit confirmation flow. Each runnable card records its latest request state on the
 card, such as pending, updated, requested, or blocked. The widget keeps a
 persistent merged view state, so Product Console actions, release evidence, and
 later action-result payloads remain visible together across reads. If a direct
