@@ -136,6 +136,7 @@ class MCPSubmissionEvidenceRevisionManager:
             "ready_field": target["ready_field"],
             "current_sha256": current_sha256,
             "current_size_bytes": preview_record["current_size_bytes"],
+            "manifest_sha256": target["manifest_sha256"],
             "proposed_sha256": proposed_sha256,
             "proposed_size_bytes": preview_record["proposed_size_bytes"],
             "prior_reason_codes": target["reason_codes"],
@@ -260,6 +261,8 @@ class MCPSubmissionEvidenceRevisionManager:
             "ready_field_value": False,
             "previous_sha256": record["current_sha256"],
             "applied_sha256": record["proposed_sha256"],
+            "manifest_sha256_before": record["manifest_sha256"],
+            "manifest_sha256_after": _sha256_text(manifest_text),
             "changed_files": [ref, DEFAULT_SUBMISSION_MATERIALS_REL_PATH],
             "content_included": False,
             "mark_ready": False,
@@ -373,11 +376,7 @@ class MCPSubmissionEvidenceRevisionManager:
         rel_path = str(normalized["rel_path"])
         evidence = manifest.get("evidence")
         manifest_refs = _coerce_evidence_refs(evidence.get(key)) if isinstance(evidence, dict) else []
-        normalized_manifest_refs: list[str] = []
-        for manifest_ref in manifest_refs:
-            manifest_normalized = _normalize_evidence_ref(self.project_root, manifest_ref)
-            if manifest_normalized.get("ok") is True:
-                normalized_manifest_refs.append(str(manifest_normalized["rel_path"]))
+        normalized_manifest_refs = self._normalized_manifest_refs(manifest_refs)
         if rel_path not in normalized_manifest_refs:
             return self._error(
                 "SUBMISSION_EVIDENCE_REF_NOT_BOUND_TO_KEY",
@@ -385,6 +384,22 @@ class MCPSubmissionEvidenceRevisionManager:
                 key=key,
                 ref=rel_path,
                 manifest_refs=normalized_manifest_refs,
+            )
+        bound_keys = [
+            evidence_key
+            for evidence_key in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY
+            if rel_path
+            in self._normalized_manifest_refs(
+                _coerce_evidence_refs(evidence.get(evidence_key)) if isinstance(evidence, dict) else []
+            )
+        ]
+        if set(bound_keys) != {key}:
+            return self._error(
+                "SUBMISSION_EVIDENCE_REF_SHARED_ACROSS_KEYS",
+                "A controlled evidence revision requires a ref bound to exactly one evidence key.",
+                key=key,
+                ref=rel_path,
+                bound_keys=bound_keys,
             )
         evidence_snapshot = self._read_bound_file_bytes(
             rel_path,
@@ -469,6 +484,17 @@ class MCPSubmissionEvidenceRevisionManager:
                 max_bytes=max_bytes,
             )
         return {"ok": True, "content_bytes": content_bytes}
+
+    def _normalized_manifest_refs(self, refs: list[str]) -> list[str]:
+        normalized_refs: list[str] = []
+        for ref in refs:
+            normalized = _normalize_evidence_ref(self.project_root, ref)
+            if normalized.get("ok") is not True:
+                continue
+            rel_path = str(normalized["rel_path"])
+            if rel_path not in normalized_refs:
+                normalized_refs.append(rel_path)
+        return normalized_refs
 
     def _validate_proposed_content(self, key: str, content: Any) -> dict[str, Any] | None:
         if not isinstance(content, str) or not content.strip():

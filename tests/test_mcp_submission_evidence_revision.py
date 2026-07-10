@@ -71,6 +71,7 @@ def test_preview_and_apply_revise_bound_evidence_without_returning_content(tmp_p
     assert preview["content_included"] is False
     assert preview["prior_reason_codes"] == ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"]
     assert preview["current_sha256"] != preview["proposed_sha256"]
+    assert len(preview["manifest_sha256"]) == 64
     assert FINAL_LOGO.strip() not in json.dumps(preview)
     assert evidence_path.read_text(encoding="utf-8") == DRAFT_LOGO
     artifact_path = next((tmp_path / ".colameta/runtime/submission-evidence-revision-previews").glob("*.json"))
@@ -83,6 +84,8 @@ def test_preview_and_apply_revise_bound_evidence_without_returning_content(tmp_p
     assert applied["ok"] is True
     assert applied["status"] == "applied"
     assert applied["content_included"] is False
+    assert applied["manifest_sha256_before"] == preview["manifest_sha256"]
+    assert len(applied["manifest_sha256_after"]) == 64
     assert FINAL_LOGO.strip() not in json.dumps(applied)
     assert evidence_path.read_text(encoding="utf-8") == FINAL_LOGO
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -130,6 +133,24 @@ def test_preview_rejects_ref_not_bound_to_selected_key(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["error_code"] == "SUBMISSION_EVIDENCE_REF_NOT_BOUND_TO_KEY"
     assert other.read_text(encoding="utf-8") == DRAFT_LOGO
+
+
+def test_preview_rejects_ref_shared_across_evidence_keys(tmp_path: Path) -> None:
+    evidence_path, manifest_path = _project(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["screenshots"] = ["docs/submission/logo.md"]
+    manifest["screenshots_ready"] = True
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+    manager = MCPSubmissionEvidenceRevisionManager(str(tmp_path))
+
+    result = _preview(manager)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "SUBMISSION_EVIDENCE_REF_SHARED_ACROSS_KEYS"
+    assert result["bound_keys"] == ["logo", "screenshots"]
+    assert evidence_path.read_text(encoding="utf-8") == DRAFT_LOGO
+    assert manifest_path.read_text(encoding="utf-8") == manifest_before
 
 
 def test_apply_blocks_when_evidence_changes_after_preview(tmp_path: Path) -> None:
@@ -241,6 +262,9 @@ def test_workflow_record_hashes_revision_content_instead_of_storing_it(tmp_path:
         "status": "preview_ready",
         "preview_id": "evidence_revision_record_test",
         "content_included": False,
+        "current_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "proposed_sha256": "c" * 64,
     }
 
     recorded = record_tool_call(
@@ -264,3 +288,6 @@ def test_workflow_record_hashes_revision_content_instead_of_storing_it(tmp_path:
     assert content_summary["present"] is True
     assert content_summary["length"] == len(secret_content)
     assert len(content_summary["sha256"]) == 64
+    assert run["outputs_summary"]["current_sha256"] == "a" * 64
+    assert run["outputs_summary"]["manifest_sha256"] == "b" * 64
+    assert run["outputs_summary"]["proposed_sha256"] == "c" * 64

@@ -50,6 +50,9 @@ SAFE_OUTPUT_FIELDS = {
     "scope", "target_files", "strategy", "command_count", "can_run",
     "validation_groups", "run_id", "run_file", "passed", "failed_command_index",
     "candidate_head", "receipt_id", "receipt_path", "already_recorded",
+    "current_sha256", "manifest_sha256", "proposed_sha256",
+    "previous_sha256", "applied_sha256",
+    "manifest_sha256_before", "manifest_sha256_after", "received_sha256",
 }
 
 

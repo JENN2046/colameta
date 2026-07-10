@@ -434,7 +434,8 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 ref 给出可复制的 `manage_submission_evidence_revision(action=preview)` 调用。操作者先把其中的
 content 占位符替换为完整 Markdown。这个 preview 只接受 manifest 已绑定、当前确实是
 `review_required` 的 `docs/submission/*.md`；若正文仍含 unfinished marker 或缺少 required section
-就直接拒绝。公开结果只返回当前/拟议 digest、大小、路径和短时 `preview_id`，不会回传新旧正文。
+就直接拒绝；同一 ref 被多个 evidence key 共用时也会拒绝，避免替换后留下其他 key 的陈旧 ready 状态。
+公开结果只返回当前/拟议/manifest digest、大小、路径和短时 `preview_id`，不会回传新旧正文。
 apply 必须使用这个 `preview_id`，并重新提交与 preview 完全相同的 replacement Markdown；preview
 工件只保存正文 digest，不保存正文。落盘前会重新检查 proposed digest、evidence digest、manifest
 digest、绑定关系、路径和 symlink 状态，再以文件事务原子替换 evidence 与 manifest，并继续保持对应 ready 字段为

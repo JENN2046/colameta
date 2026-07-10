@@ -454,7 +454,8 @@ and a copyable `manage_submission_evidence_revision(action=preview)` call for
 the first blocked ref. Replace its content placeholder with complete Markdown.
 The preview accepts only a manifest-bound `docs/submission/*.md` file that is
 currently `review_required`, rejects unfinished markers or missing required
-sections, and returns only the current/proposed digests, sizes, path, and a
+sections, and rejects a ref shared by multiple evidence keys. It returns only
+the current/proposed/manifest digests, sizes, path, and a
 short-lived `preview_id`—never either evidence body. Apply with that exact
 `preview_id` and resubmit the identical replacement Markdown; the preview
 artifact stores only its digest, never the body. ColaMeta rechecks the proposed
