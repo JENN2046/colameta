@@ -1743,6 +1743,24 @@ function rightTabCountBadge(count, activeClass) {{
   return `<span class="${{escAttr(badgeClass)}}">${{esc(badgeText)}}</span>`;
 }}
 
+function handleRightTabKeydown(event, tabName) {{
+  const key = event.key;
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(key)) return;
+  event.preventDefault();
+  const current = normalizeRightTab(tabName || activeRightTab);
+  let index = RIGHT_TAB_NAMES.indexOf(current);
+  if (index < 0) index = 0;
+  if (key === "ArrowRight") index = (index + 1) % RIGHT_TAB_NAMES.length;
+  else if (key === "ArrowLeft") index = (index - 1 + RIGHT_TAB_NAMES.length) % RIGHT_TAB_NAMES.length;
+  else if (key === "Home") index = 0;
+  else if (key === "End") index = RIGHT_TAB_NAMES.length - 1;
+  const nextTab = RIGHT_TAB_NAMES[index];
+  showRightTab(nextTab);
+  const nextButton = $("layout-right") && $("layout-right").querySelector('[data-tab-button="' + nextTab + '"]');
+  if (nextButton) nextButton.focus();
+  if (nextTab === "todolist") syncAdaptiveTodoPageSize();
+}}
+
 function switchLeftTab(tabName, btn) {{
   const card = btn.closest(".card");
   card.querySelectorAll(".tab-btn").forEach(function(b) {{ b.classList.remove("active"); }});
@@ -1983,10 +2001,10 @@ function renderRightColumn(data) {{
   // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar" role="tablist" aria-label="Operator workspace">`;
-  h += `<button type="button" id="right-tab-todolist" role="tab" aria-selected="${{rightTabAriaSelected("todolist")}}" aria-controls="right-panel-todolist" aria-label="${{escAttr(todoTabTitle)}}" class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
-  h += `<button type="button" id="right-tab-operator-inbox" role="tab" aria-selected="${{rightTabAriaSelected("operator-inbox")}}" aria-controls="right-panel-operator-inbox" aria-label="${{escAttr(inboxTabTitle)}}" class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
-  h += `<button type="button" id="right-tab-decision" role="tab" aria-selected="${{rightTabAriaSelected("decision")}}" aria-controls="right-panel-decision" aria-label="${{escAttr(decisionTabTitle)}}" class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
-  h += `<button type="button" id="right-tab-memory" role="tab" aria-selected="${{rightTabAriaSelected("memory")}}" aria-controls="right-panel-memory" aria-label="MEMORY" class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)"><span class="tab-icon">◎</span>MEMORY</button>`;
+  h += `<button type="button" id="right-tab-todolist" role="tab" aria-selected="${{rightTabAriaSelected("todolist")}}" aria-controls="right-panel-todolist" aria-label="${{escAttr(todoTabTitle)}}" class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)" onkeydown="handleRightTabKeydown(event, 'todolist')"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
+  h += `<button type="button" id="right-tab-operator-inbox" role="tab" aria-selected="${{rightTabAriaSelected("operator-inbox")}}" aria-controls="right-panel-operator-inbox" aria-label="${{escAttr(inboxTabTitle)}}" class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)" onkeydown="handleRightTabKeydown(event, 'operator-inbox')"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
+  h += `<button type="button" id="right-tab-decision" role="tab" aria-selected="${{rightTabAriaSelected("decision")}}" aria-controls="right-panel-decision" aria-label="${{escAttr(decisionTabTitle)}}" class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)" onkeydown="handleRightTabKeydown(event, 'decision')"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
+  h += `<button type="button" id="right-tab-memory" role="tab" aria-selected="${{rightTabAriaSelected("memory")}}" aria-controls="right-panel-memory" aria-label="MEMORY" class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)" onkeydown="handleRightTabKeydown(event, 'memory')"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
 
   // TODOLIST tab

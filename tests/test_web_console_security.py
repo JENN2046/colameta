@@ -840,6 +840,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "rightTabAriaSelected" in page
         assert "rightTabAriaHidden" in page
         assert "rightTabCountBadge" in page
+        assert "handleRightTabKeydown" in page
+        assert "ArrowRight" in page
+        assert "ArrowLeft" in page
+        assert "Home" in page
+        assert "End" in page
         assert "TODOLIST: " in page
         assert "DECISION: " in page
         assert 'role="tablist"' in page
