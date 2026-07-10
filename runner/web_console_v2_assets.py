@@ -1505,15 +1505,38 @@ function registryAction(actionName, params) {{
 
 let projectIdentityPreviewId = "";
 let projectIdentityEditor = null;
+let projectIdentityStatusMessage = "请先预览迁移，预览通过后才能应用。";
 
-function clearProjectIdentityPreview() {{
-  projectIdentityPreviewId = "";
+function setProjectIdentityControls(state, message) {{
+  const previewBtn = $("project-identity-preview");
   const applyBtn = $("project-identity-apply");
-  if (applyBtn) applyBtn.disabled = true;
+  const result = $("project-identity-result");
+  const busy = state === "previewing" || state === "applying";
+  if (previewBtn) {{
+    previewBtn.disabled = busy;
+    previewBtn.textContent = state === "previewing" ? "预览中..." : "预览迁移";
+    previewBtn.setAttribute("aria-busy", state === "previewing" ? "true" : "false");
+  }}
+  if (applyBtn) {{
+    const canApply = !!projectIdentityPreviewId && !busy;
+    applyBtn.disabled = !canApply;
+    applyBtn.textContent = state === "applying" ? "应用中..." : "应用迁移";
+    applyBtn.setAttribute("aria-busy", state === "applying" ? "true" : "false");
+    applyBtn.setAttribute("aria-disabled", canApply ? "false" : "true");
+  }}
+  if (message != null) {{
+    projectIdentityStatusMessage = String(message);
+    if (result) result.textContent = projectIdentityStatusMessage;
+  }}
+}}
+
+function clearProjectIdentityPreview(message) {{
+  projectIdentityPreviewId = "";
+  setProjectIdentityControls("idle", message || "请先预览迁移，预览通过后才能应用。");
 }}
 
 function openProjectIdentityEditor(button) {{
-  clearProjectIdentityPreview();
+  clearProjectIdentityPreview("请先预览迁移，预览通过后才能应用。");
   projectIdentityEditor = {{
     project_id: button.dataset.projectId || "",
     project_name: button.dataset.projectName || "",
@@ -1526,11 +1549,11 @@ function openProjectIdentityEditor(button) {{
 function updateProjectIdentityDraft(field, value) {{
   if (!projectIdentityEditor) return;
   projectIdentityEditor[field] = value;
-  clearProjectIdentityPreview();
+  clearProjectIdentityPreview("草稿已修改，请重新预览迁移。");
 }}
 
 function cancelProjectIdentityEdit() {{
-  clearProjectIdentityPreview();
+  clearProjectIdentityPreview("请先预览迁移，预览通过后才能应用。");
   projectIdentityEditor = null;
   renderProjectManagementModal(latestStatusData || {{}});
 }}
@@ -1540,8 +1563,8 @@ function previewProjectIdentity() {{
   const projectName = $("project-identity-name");
   const displayName = $("project-identity-display");
   const projectRoot = $("project-identity-root");
-  const result = $("project-identity-result");
   projectIdentityPreviewId = "";
+  setProjectIdentityControls("previewing", "正在生成迁移预览...");
   fetch("/api/project-identity/preview", {{
     method: "POST",
     headers: jsonHeaders(),
@@ -1555,38 +1578,40 @@ function previewProjectIdentity() {{
   }})
     .then(function(r) {{ return r.json(); }})
     .then(function(data) {{
-      if (result) {{
-        const blockers = Array.isArray(data.blockers) ? data.blockers : [];
-        const changes = Array.isArray(data.changes) ? data.changes : [];
-        result.textContent = data.ok
-          ? "预览完成，将修改：" + changes.map(function(item) {{ return item.target; }}).join("、")
-          : "预览阻断：" + blockers.join("；");
-      }}
       projectIdentityPreviewId = data.ok ? (data.preview_id || "") : "";
-      const applyBtn = $("project-identity-apply");
-      if (applyBtn) applyBtn.disabled = !projectIdentityPreviewId;
+      const blockers = Array.isArray(data.blockers) ? data.blockers : [];
+      const changes = Array.isArray(data.changes) ? data.changes : [];
+      const message = data.ok && projectIdentityPreviewId
+        ? "预览完成，将修改：" + changes.map(function(item) {{ return item.target; }}).join("、")
+        : "预览阻断：" + (blockers.length ? blockers.join("；") : "未返回有效预览 ID。");
+      setProjectIdentityControls("idle", message);
     }})
-    .catch(function(e) {{ if (result) result.textContent = String(e); }});
+    .catch(function(e) {{
+      projectIdentityPreviewId = "";
+      setProjectIdentityControls("idle", "预览失败：" + String(e));
+    }});
 }}
 
 function applyProjectIdentity() {{
-  const result = $("project-identity-result");
   if (!projectIdentityPreviewId) {{
-    if (result) result.textContent = "请先生成有效预览。";
+    setProjectIdentityControls("idle", "请先生成有效预览。");
     return;
   }}
+  setProjectIdentityControls("applying", "正在应用迁移...");
   dangerousPostAction("/api/project-identity/apply", {{ preview_id: projectIdentityPreviewId }})
     .then(function(data) {{
-      if (result) result.textContent = data.message || (data.ok ? "迁移完成，请刷新页面。" : "迁移失败。");
+      const message = data.message || (data.ok ? "迁移完成，请刷新页面。" : "迁移失败。");
       if (data.ok) {{
-        clearProjectIdentityPreview();
+        clearProjectIdentityPreview(message);
         projectIdentityEditor = null;
         refresh();
       }} else {{
-        clearProjectIdentityPreview();
+        clearProjectIdentityPreview(message);
       }}
     }})
-    .catch(function(e) {{ if (result) result.textContent = String(e); }});
+    .catch(function(e) {{
+      clearProjectIdentityPreview("迁移失败：" + String(e));
+    }});
 }}
 
 function openProjectManagement() {{
@@ -1981,8 +2006,10 @@ function renderProjectManagement(data) {{
         h += `<label style="font-size:11px;color:#8b949e;">项目名称<input id="project-identity-name" value="${{escAttr(editor.project_name || "")}}" oninput="updateProjectIdentityDraft('project_name',this.value)" style="display:block;width:100%;box-sizing:border-box;margin-top:3px;"></label>`;
         h += `<label style="font-size:11px;color:#8b949e;">显示名称<input id="project-identity-display" value="${{escAttr(editor.display_name || "")}}" oninput="updateProjectIdentityDraft('display_name',this.value)" style="display:block;width:100%;box-sizing:border-box;margin-top:3px;"></label>`;
         h += `<label style="font-size:11px;color:#8b949e;">项目路径<input id="project-identity-root" value="${{escAttr(editor.project_root || "")}}" oninput="updateProjectIdentityDraft('project_root',this.value)" style="display:block;width:100%;box-sizing:border-box;margin-top:3px;"></label>`;
-        h += `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="action-btn" style="width:auto;" onclick="previewProjectIdentity()">预览迁移</button><button id="project-identity-apply" class="action-btn" style="width:auto;" onclick="applyProjectIdentity()" disabled>应用迁移</button><button class="action-btn" style="width:auto;" onclick="cancelProjectIdentityEdit()">取消</button></div>`;
-        h += `<div id="project-identity-result" style="font-size:11px;color:#8b949e;white-space:pre-wrap;"></div>`;
+        const applyDisabled = projectIdentityPreviewId ? "" : " disabled";
+        const applyAriaDisabled = projectIdentityPreviewId ? "false" : "true";
+        h += `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button id="project-identity-preview" class="action-btn" style="width:auto;" aria-busy="false" onclick="previewProjectIdentity()">预览迁移</button><button id="project-identity-apply" class="action-btn" style="width:auto;" aria-busy="false" aria-disabled="${{applyAriaDisabled}}" onclick="applyProjectIdentity()"${{applyDisabled}}>应用迁移</button><button class="action-btn" style="width:auto;" onclick="cancelProjectIdentityEdit()">取消</button></div>`;
+        h += `<div id="project-identity-result" role="status" aria-live="polite" style="font-size:11px;color:#8b949e;white-space:pre-wrap;">${{esc(projectIdentityStatusMessage)}}</div>`;
         h += `<div style="font-size:11px;color:#8b949e;">应用成功后请刷新页面；项目路径变化时请重启或重新选择项目。</div>`;
         h += `</div></div>`;
       }}

@@ -881,6 +881,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "需要危险操作确认" in page
         assert "target: actionMeta.target" in page
         assert "reason: actionMeta.description" in page
+        assert "setProjectIdentityControls" in page
+        assert 'id="project-identity-preview"' in page
+        assert 'role="status"' in page
+        assert 'aria-live="polite"' in page
+        assert 'aria-busy="false"' in page
+        assert "预览中..." in page
+        assert "应用中..." in page
+        assert "正在生成迁移预览" in page
+        assert "正在应用迁移" in page
+        assert "草稿已修改，请重新预览迁移。" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
