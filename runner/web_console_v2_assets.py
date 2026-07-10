@@ -3039,6 +3039,8 @@ async function applyEvidenceRevision() {{
     }});
     if (!result.ok) throw new Error(result.message || result.error_code || "证据应用失败。");
     evidenceRevisionEditor.preview = null;
+    evidenceRevisionEditor.content = "";
+    evidenceRevisionEditor.context = null;
     evidenceRevisionEditor.state = "applied";
     evidenceRevisionEditor.message = "证据已应用，ready 字段保持 false；状态已自动刷新，请完成人工复核后再标记 ready。";
     try {{
@@ -3151,6 +3153,10 @@ async function applyEvidenceReady() {{
     }});
     if (!result.ok) throw new Error(result.message || result.error_code || "标记 ready 失败。");
     evidenceReadyReview.preview = null;
+    evidenceReadyReview.content = "";
+    evidenceReadyReview.context = null;
+    evidenceReadyReview.refs = [];
+    evidenceReadyReview.reviewed = {{}};
     evidenceReadyReview.state = "ready_marked";
     evidenceReadyReview.message = "当前证据 key 已标记 ready；状态已刷新到下一项。";
     try {{

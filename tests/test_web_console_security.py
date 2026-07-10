@@ -218,11 +218,13 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'id="evidence-revision-content"' in page
         assert "正文已修改；请重新生成预览后再应用。" in page
         assert "ready 字段保持 false" in page
+        assert 'evidenceRevisionEditor.content = ""' in page
         assert "/api/submission-evidence/ready/context" in page
         assert "/api/submission-evidence/ready/preview" in page
         assert 'dangerousPostAction("/api/submission-evidence/ready/apply"' in page
         assert 'id="evidence-ready-confirm-ref"' in page
         assert "Ready 必须显式查看当前 key 的全部文件" in page
+        assert 'evidenceReadyReview.content = ""' in page
 
     def test_evidence_workspace_keeps_revision_and_ready_review_entries_in_one_queue(self) -> None:
         if shutil.which("node") is None:
