@@ -90,6 +90,11 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-action-status.completed { color: #3fb950; }
 .operator-inbox-action-status.failed { color: #f85149; }
 .operator-inbox-action-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
+.operator-inbox-run-impact { border-top: 1px solid #30363d55; margin-top: 8px; padding-top: 8px; color: #8b949e; font-size: 11px; line-height: 1.45; }
+.operator-inbox-run-impact.running { color: #d29922; }
+.operator-inbox-run-impact.completed { color: #3fb950; }
+.operator-inbox-run-impact.failed { color: #f85149; }
+.operator-inbox-run-impact .impact-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
 .operator-inbox-run-trail { border-top: 1px solid #30363d55; margin: 8px 0 10px; padding-top: 8px; }
 .operator-inbox-run-trail-title { color: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
 .operator-inbox-run-trail-list { display: grid; gap: 5px; }
@@ -901,6 +906,7 @@ function issueLink(label, count, kind) {{
 function render(data) {{
   latestStatusData = data || {{}};
   latestStatusSignature = statusSignature(latestStatusData);
+  clearStaleOperatorInboxFeedback(latestStatusData);
   renderRefreshStatus();
   renderProjectSwitcher(data);
   renderLeftColumn(data);
@@ -1547,6 +1553,36 @@ function openProductFollowupInInbox(itemId) {{
   }}
 }}
 
+function renderOperatorInboxRunImpact(completion, operatorTrail) {{
+  if (!operatorInboxRunFeedback) return "";
+  completion = completion || {{}};
+  operatorTrail = operatorTrail || {{}};
+  const progress = completion.progress_state || {{}};
+  const pendingRefresh = progress.pending_refresh_count === 0 || progress.pending_refresh_count
+    ? progress.pending_refresh_count
+    : operatorTrail.pending_refresh_count === 0 || operatorTrail.pending_refresh_count
+    ? operatorTrail.pending_refresh_count
+    : 0;
+  const state = operatorInboxRunFeedback.state || "idle";
+  const label = operatorInboxRunFeedback.label || operatorInboxRunFeedback.actionKey || "operator inbox 项";
+  const progressLabel = progress.label || progress.status || completion.status || "-";
+  let guidance = "Product closeout 状态以刷新后的服务数据为准。";
+  if (state === "running") {{
+    guidance = "Run 正在执行；Product closeout 将在结果返回后刷新。";
+  }} else if (state === "failed") {{
+    guidance = "Run 未完成；Product closeout 未被推进，请查看 INBOX 项或复制调用手动处理。";
+  }} else if (pendingRefresh > 0) {{
+    guidance = "Run 已返回；Product closeout 仍有 " + pendingRefresh + " 个 pending refresh，请优先运行或复制刷新项。";
+  }} else if (state === "completed") {{
+    guidance = "Run 已返回；Product closeout 当前未报告 pending refresh。";
+  }}
+  let h = `<div class="operator-inbox-run-impact ${{escAttr(state)}}" role="status" aria-live="polite">`;
+  h += `刚才 INBOX Run：${{esc(label)}} ｜ ${{esc(operatorInboxRunFeedback.message || state)}}`;
+  h += `<div class="impact-meta">${{esc(operatorInboxRunFeedback.timestamp || "-")}} ｜ closeout ${{esc(progressLabel)}} ｜ ${{esc(guidance)}}</div>`;
+  h += `</div>`;
+  return h;
+}}
+
 function renderServiceCapabilityCard(data) {{
   data = data || {{}};
   const svc = data.web_commander_service || {{}};
@@ -1631,6 +1667,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Product closeout", completionText);
+  h += renderOperatorInboxRunImpact(completion, operatorTrail);
   h += r("Product categories", completionCategoryText);
   h += r("Operator trail", operatorTrailText);
   h += r("Operator inbox", inboxText);
@@ -1826,6 +1863,7 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabe
   const timestamp = operatorInboxFeedbackTimestamp();
   operatorInboxRunFeedback = {{
     actionKey: actionKey,
+    label: actionLabel || actionKey || "operator inbox 项",
     state: state,
     message: message,
     source: "来自刚才的 Run 操作",
@@ -1834,6 +1872,7 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabe
   }};
   pushOperatorInboxRunTrail(actionKey, state, message, actionLabel);
   if (latestStatusData) {{
+    renderCenterColumn(latestStatusData);
     renderRightColumn(latestStatusData);
     showRightTab("operator-inbox");
   }}
