@@ -400,6 +400,8 @@ def build_submission_evidence_fill_preview(
         review_entries = []
     filtered_entries = _filter_draft_entries(draft_entries, selected)
     filtered_review_entries = _filter_review_entries(review_entries, selected)
+    if not selected and filtered_review_entries:
+        filtered_review_entries = filtered_review_entries[:1]
     fill_entries = [
         dict(entry.get("copyable_entry_shape") or {})
         for entry in filtered_entries
@@ -453,6 +455,7 @@ def build_submission_evidence_fill_preview(
         "fill_plan_status": fill_plan.get("status"),
         "draft_entry_count": len(filtered_entries),
         "review_entry_count": len(filtered_review_entries),
+        "remaining_review_count": len(review_entries),
         "copyable_tool_call": {
             "tool": copyable_tool,
             "arguments": copyable_arguments,
@@ -1732,6 +1735,8 @@ def _completion_safe_next_action(
             "why": readiness["safe_next_action"].get("why") or "Resolve product readiness before claiming closeout ready.",
         }
     if component in {"release_submission", "submission_evidence"}:
+        if recommended_action is not None:
+            return _completion_primary_action_from_recommended(recommended_action)
         fill_plan = release_evidence_bundle.get("fill_plan") if isinstance(release_evidence_bundle, dict) else None
         if isinstance(fill_plan, dict) and isinstance(fill_plan.get("next_tool"), str):
             return {
@@ -2499,6 +2504,11 @@ def _release_submission_recommended_actions(
     manifest_check = checks.get("submission_materials_manifest") if isinstance(checks, dict) else None
     progress = release_submission.get("submission_evidence_progress")
     review_keys = _filled_not_marked_ready_keys(progress)
+    review_entries = _review_entries_for_keys(
+        progress,
+        review_keys,
+        templates=release_submission.get("submission_evidence_entry_templates"),
+    )
     if source in {"unknown", "parameters_only"}:
         return [
             _recommended_action(
@@ -2549,26 +2559,43 @@ def _release_submission_recommended_actions(
             )
         ]
     if review_keys:
-        return [
-            _recommended_action(
-                "mark_submission_evidence_ready_fields",
-                label="Mark Submission Evidence Ready",
-                mode="commit",
-                source="release_submission_readiness",
-                tool="mark_submission_evidence_ready_fields",
-                arguments={
-                    **project_args,
-                    "keys": review_keys,
-                    "review_confirmation": "human_reviewed",
-                },
-                evidence_context={
-                    "keys": review_keys,
-                    "ready_fields": _ready_fields_for_keys(progress, review_keys),
-                    "refs_by_key": _refs_by_key(progress, review_keys),
-                },
-                why="All selected evidence files are present; review them and mark the corresponding ready fields true.",
+        actions: list[dict[str, Any]] = []
+        for index, entry in enumerate(review_entries, start=1):
+            key = str(entry.get("key") or "")
+            if not key:
+                continue
+            refs = list(entry.get("refs") or [])
+            actions.append(
+                _recommended_action(
+                    f"mark_submission_evidence_ready_{_action_id_from(key, None, 'item')}",
+                    label=f"Review And Mark {key.replace('_', ' ').title()} Ready",
+                    mode="commit",
+                    source="release_submission_readiness",
+                    tool="mark_submission_evidence_ready_fields",
+                    arguments={
+                        **project_args,
+                        "keys": [key],
+                        "review_confirmation": "human_reviewed",
+                    },
+                    evidence_context={
+                        **entry,
+                        "keys": [key],
+                        "ready_fields": [entry.get("ready_field")] if entry.get("ready_field") else [],
+                        "refs_by_key": [{"key": key, "refs": refs}],
+                        "human_review_required": True,
+                        "review_sequence_position": index,
+                        "review_sequence_total": len(review_entries),
+                        "marks_only_this_key": True,
+                        "bulk_mark_ready_recommended": False,
+                    },
+                    why=(
+                        f"Review only the referenced evidence for {key}; after human confirmation, "
+                        "mark only its ready field true, then refresh before continuing."
+                    ),
+                )
             )
-        ]
+        if actions:
+            return actions
     return [
         _recommended_action(
             "release_submission_readiness",
@@ -2828,18 +2855,31 @@ def _release_submission_fill_plan(
         }
     review_keys = _filled_not_marked_ready_keys(progress)
     if review_keys:
+        review_entries = _review_entries_for_keys(
+            progress,
+            review_keys,
+            templates=release_submission.get("submission_evidence_entry_templates"),
+        )
+        next_key = str(review_entries[0].get("key")) if review_entries else review_keys[0]
         return {
             "status": "evidence_ready_for_review",
             "next_tool": "mark_submission_evidence_ready_fields",
             "next_arguments": {
                 **project_args,
-                "keys": review_keys,
+                "keys": [next_key],
                 "review_confirmation": "human_reviewed",
             },
             "draft_entries": [],
-            "review_entries": _review_entries_for_keys(progress, review_keys),
+            "review_entries": review_entries,
+            "next_review_key": next_key,
+            "remaining_review_count": len(review_entries),
+            "review_strategy": "one_item_then_refresh",
+            "bulk_mark_ready_recommended": False,
             "human_review_required": True,
-            "why": "Evidence files are present; human review is required before setting manifest ready fields true.",
+            "why": (
+                "Evidence files are present; review and mark one evidence item ready, then refresh "
+                "before continuing to the next item."
+            ),
         }
     draft_entries = _release_submission_draft_entries(release_submission, progress)
     return {
@@ -2912,41 +2952,42 @@ def _count_value(value: Any) -> int:
     return value if isinstance(value, int) else 0
 
 
-def _review_entries_for_keys(progress: Any, keys: list[str]) -> list[dict[str, Any]]:
+def _review_entries_for_keys(
+    progress: Any,
+    keys: list[str],
+    *,
+    templates: Any = None,
+) -> list[dict[str, Any]]:
     key_set = set(keys)
     rows = progress.get("rows") if isinstance(progress, dict) else []
     if not isinstance(rows, list):
         return []
+    templates_by_key = {
+        str(item.get("key")): item
+        for item in templates
+        if isinstance(item, dict) and item.get("key")
+    } if isinstance(templates, list) else {}
     entries: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or str(row.get("key") or "") not in key_set:
             continue
+        key = str(row.get("key"))
+        row_template = row.get("template") if isinstance(row.get("template"), dict) else {}
+        template = templates_by_key.get(key) or row_template
         entries.append(
             {
-                "key": row.get("key"),
+                "key": key,
                 "ready_field": row.get("ready_field"),
                 "refs": list(row.get("refs") or []) if isinstance(row.get("refs"), list) else [],
+                "default_path": row.get("default_path") or template.get("default_path"),
+                "purpose": template.get("purpose") or template.get("content_prompt"),
+                "required_sections": list(template.get("required_sections") or []),
+                "file_states": list(row.get("file_states") or []) if isinstance(row.get("file_states"), list) else [],
                 "current_status": row.get("status"),
                 "next_action": row.get("next_action"),
             }
         )
     return entries
-
-
-def _ready_fields_for_keys(progress: Any, keys: list[str]) -> list[str]:
-    return [
-        str(item.get("ready_field"))
-        for item in _review_entries_for_keys(progress, keys)
-        if item.get("ready_field")
-    ]
-
-
-def _refs_by_key(progress: Any, keys: list[str]) -> list[dict[str, Any]]:
-    return [
-        {"key": item["key"], "refs": item["refs"]}
-        for item in _review_entries_for_keys(progress, keys)
-        if item.get("key")
-    ]
 
 
 def _release_submission_evidence_bundle_summary(
