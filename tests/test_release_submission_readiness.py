@@ -231,6 +231,113 @@ def test_release_submission_rejects_evidence_paths_outside_project(tmp_path) -> 
     ]
 
 
+def test_release_submission_rejects_markdown_outside_submission_root_before_content_read(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    private_path = tmp_path / "private/provider-config.md"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text("private provider notes\n", encoding="utf-8")
+    private_path.chmod(0o000)
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["logo_ready"] = True
+    manifest["evidence"]["logo"] = "private/provider-config.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    evidence_check = packet["checks"]["submission_evidence_references"]
+    assert evidence_check["invalid_refs"] == [
+        {
+            "key": "logo",
+            "ref": "private/provider-config.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED",
+        }
+    ]
+    logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
+    assert logo_row["file_states"][0]["error_code"] == "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED"
+
+    mark_packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+    assert mark_packet["ok"] is False
+    assert mark_packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "private/provider-config.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+def test_release_submission_rejects_symlinked_markdown_before_content_read(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    private_path = tmp_path / "private/provider-config.md"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text("private provider notes\n", encoding="utf-8")
+    private_path.chmod(0o000)
+    linked_path = tmp_path / "docs/submission/logo-linked.md"
+    linked_path.symlink_to("../../private/provider-config.md")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["logo_ready"] = True
+    manifest["evidence"]["logo"] = "docs/submission/logo-linked.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    evidence_check = packet["checks"]["submission_evidence_references"]
+    assert evidence_check["invalid_refs"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
+    assert logo_row["file_states"][0]["error_code"] == "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED"
+
+    mark_packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+    assert mark_packet["ok"] is False
+    assert mark_packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+    fill_packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "logo",
+                "filename": "logo-linked.md",
+                "content": "private provider notes\n",
+            }
+        ],
+        mark_ready=True,
+    )
+    assert fill_packet["ok"] is False
+    assert fill_packet["validation_errors"] == [
+        {
+            "index": 0,
+            "key": "logo",
+            "ref": "logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+
 def test_submission_evidence_scaffold_creates_manifest_and_placeholders(tmp_path) -> None:
     packet = init_submission_evidence_scaffold(str(tmp_path), app_name="Demo App")
 
@@ -285,6 +392,63 @@ def test_release_submission_rejects_placeholder_evidence_when_marked_ready(tmp_p
     assert progress["counts"]["placeholder"] == 9
 
 
+def test_release_submission_progress_flags_explicitly_unfinished_evidence(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    logo_path = tmp_path / "docs/submission/logo.md"
+    logo_path.write_text(
+        "# Logo Evidence\n\nDraft evidence only. A human reviewer still needs to approve the final asset.\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = "docs/submission/logo.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    progress = packet["submission_evidence_progress"]
+    logo_row = next(row for row in progress["rows"] if row["key"] == "logo")
+    assert logo_row["status"] == "review_required"
+    assert logo_row["file_states"] == [
+        {
+            "ref": "docs/submission/logo.md",
+            "status": "review_required",
+            "reason_codes": ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"],
+        }
+    ]
+    assert logo_row["next_action"]["action"] == "review_evidence_content"
+    assert logo_row["next_action"]["mark_ready"] is False
+    assert progress["counts"]["review_required"] == 1
+    assert progress["counts"]["filled_not_marked_ready"] == 0
+
+
+def test_release_submission_rejects_unfinished_content_when_manifest_marks_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    logo_path = tmp_path / "docs/submission/logo.md"
+    logo_path.write_text("# Logo Evidence\n\nIt is not a final asset.\n", encoding="utf-8")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["logo_ready"] = True
+    manifest["evidence"]["logo"] = "docs/submission/logo.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    packet = build_release_submission_readiness(str(tmp_path), readiness_packet=_readiness())
+
+    evidence_check = packet["checks"]["submission_evidence_references"]
+    assert evidence_check["status"] == "needs_attention"
+    assert evidence_check["reason_codes"] == ["SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED"]
+    assert evidence_check["incomplete_keys"] == ["logo"]
+    assert evidence_check["content_review_files"] == ["docs/submission/logo.md"]
+    assert evidence_check["content_review_files_by_key"] == [
+        {"key": "logo", "ref": "docs/submission/logo.md", "reason_codes": ["FINAL_ASSET_MISSING"]}
+    ]
+    assert "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED" in packet["needs_attention_codes"]
+    logo_row = next(row for row in packet["submission_evidence_progress"]["rows"] if row["key"] == "logo")
+    assert logo_row["ready"] is True
+    assert logo_row["status"] == "review_required"
+    assert logo_row["next_action"]["action"] == "review_evidence_content"
+
+
 def test_fill_submission_evidence_files_updates_manifest_refs_without_marking_ready(tmp_path) -> None:
     init_submission_evidence_scaffold(str(tmp_path))
 
@@ -328,6 +492,71 @@ def test_fill_submission_evidence_files_can_mark_reviewed_key_ready(tmp_path) ->
     manifest = json.loads((tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH).read_text(encoding="utf-8"))
     assert manifest["mcp_tool_info_ready"] is True
     assert manifest["evidence"]["mcp_tool_info"] == "docs/submission/mcp-tool-info.md"
+
+
+def test_fill_submission_evidence_files_does_not_mark_explicit_draft_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "mcp_tool_info",
+                "content": "# MCP Tool Info\n\nThis evidence draft is generated for later review.\n",
+            }
+        ],
+        mark_ready=True,
+    )
+
+    assert packet["ok"] is False
+    assert packet["error_code"] == "SUBMISSION_EVIDENCE_INPUT_INVALID"
+    assert packet["validation_errors"] == [
+        {
+            "key": "mcp_tool_info",
+            "ref": "docs/submission/mcp-tool-info.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED",
+            "reason_codes": ["DRAFT_CONTENT"],
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "docs/submission/mcp-tool-info.md").exists()
+
+
+def test_fill_submission_evidence_files_does_not_retain_unfinished_ref_when_marking_ready(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    old_path = tmp_path / "docs/submission/logo-old.md"
+    old_path.write_text("# Old logo\n\nDraft evidence only.\n", encoding="utf-8")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = "docs/submission/logo-old.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "logo",
+                "filename": "logo-new.md",
+                "content": "# New logo\n\nReviewed final logo asset.\n",
+            }
+        ],
+        mark_ready=True,
+    )
+
+    assert packet["ok"] is False
+    assert packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo-old.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED",
+            "reason_codes": ["DRAFT_CONTENT"],
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "docs/submission/logo-new.md").exists()
 
 
 def test_fill_submission_evidence_files_rejects_unsafe_target_without_partial_write(tmp_path) -> None:
@@ -399,6 +628,35 @@ def test_mark_submission_evidence_ready_fields_marks_existing_reviewed_refs(tmp_
     updated = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert updated["logo_ready"] is True
     assert logo_path.read_text(encoding="utf-8") == "# Logo\n\nReviewed.\n"
+
+
+def test_mark_submission_evidence_ready_fields_rejects_explicitly_unfinished_content_without_write(tmp_path) -> None:
+    init_submission_evidence_scaffold(str(tmp_path))
+    logo_path = tmp_path / "docs/submission/logo.md"
+    logo_path.write_text("# Logo\n\nNot yet confirmed. It is not a final asset.\n", encoding="utf-8")
+    manifest_path = tmp_path / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence"]["logo"] = "docs/submission/logo.md"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_text(encoding="utf-8")
+
+    packet = mark_submission_evidence_ready_fields(
+        str(tmp_path),
+        keys=["logo"],
+        review_confirmation="human_reviewed",
+    )
+
+    assert packet["ok"] is False
+    assert packet["error_code"] == "SUBMISSION_EVIDENCE_READY_PROOF_INVALID"
+    assert packet["validation_errors"] == [
+        {
+            "key": "logo",
+            "ref": "docs/submission/logo.md",
+            "error_code": "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED",
+            "reason_codes": ["FINAL_ASSET_MISSING", "CONFIRMATION_PENDING"],
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
 
 
 def test_mark_submission_evidence_ready_fields_requires_confirmation_without_write(tmp_path) -> None:

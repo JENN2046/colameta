@@ -207,6 +207,13 @@ submission evidence 文件，并在 `evidence_context.entry_templates` 中给出
 必查章节；completion surface 和默认 fill preview 只给出队首一项。操作者显式确认并标记该项
 后，应刷新 readiness 和 Product Console，再进入下一项。Product Console 不会推荐一次性批量
 确认全部剩余 evidence。
+系统还会检查 Markdown evidence 是否明确声明“仍未完成”。稳定 reason code 会区分草稿内容、
+缺少最终资产、待人工审核、待确认、Dashboard 权限未证明和已声明的测试覆盖缺口。命中时该文件
+状态为 `review_required`；输出只包含路径和 reason code，不回传正文。Product Console 会显示
+只读的内容审核动作，并在操作者修改文件、刷新 readiness 之前阻止 mark-ready。
+`mark_submission_evidence_ready_fields` 与
+`fill_submission_evidence_files(mark_ready=true)` 使用同一检查，失败时不会部分写入 manifest 或
+evidence 文件。
 Commander widget 会把 `recommended_first_actions` 渲染成动作卡片，显示 mode、scope、
 确认要求、副作用和 authority-boundary，并提供可复制的工具调用形状。`mode=read`
 的动作卡可以在 widget 内直接运行。服务端明确推荐、带当前 action fingerprint、声明
@@ -422,6 +429,10 @@ get_submission_evidence_fill_preview(project_name="colameta-self-dev", selected_
 `review_confirmation=human_reviewed`。未传 `selected_keys` 时，preview 只返回队首 key；只有人工
 确认该 key 的 referenced evidence 已经是最终版之后，才调用这个 commit-scoped 工具标 ready，
 随后刷新再审核下一项。
+如果 referenced Markdown 仍写明它是草稿、并非最终版、等待人工确认、缺少必须资产/权限，或
+明确承认存在必需覆盖缺口，preview 会改为返回 `status=content_review_required` 和只读 readiness
+刷新调用。操作者必须先修改对应文件并消除 reason code；修改 `review_confirmation` 不能绕过
+这个内容门槛。
 
 如果不走 connector，先用本地 CLI 做同一个只读 preview。它只返回下一步 copyable tool，
 不写文件：

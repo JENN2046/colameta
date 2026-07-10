@@ -5854,6 +5854,27 @@ class MCPPlanningBridgeServer:
         if (!data || typeof data !== "object") return {};
         return data.source === "submission_evidence_fill_preview" ? data : {};
       }
+      function contentReviewCardModels(fillPlan) {
+        if (!fillPlan || !Array.isArray(fillPlan.content_review_entries)) return [];
+        return fillPlan.content_review_entries.map(function (entry) {
+          var reasonCodes = [];
+          (Array.isArray(entry.file_states) ? entry.file_states : []).forEach(function (state) {
+            if (!state || !Array.isArray(state.reason_codes)) return;
+            state.reason_codes.forEach(function (reason) {
+              if (reasonCodes.indexOf(reason) < 0) reasonCodes.push(reason);
+            });
+          });
+          return {
+            key: entry.key,
+            title: entry.key,
+            status: entry.current_status || fillPlan.status,
+            default_path: Array.isArray(entry.refs) ? entry.refs.join(", ") : entry.default_path,
+            content_prompt: fillPlan.why,
+            purpose: fillPlan.why,
+            required_sections: reasonCodes.concat(entry.required_sections || [])
+          };
+        });
+      }
       function submissionPreviewCardModels(data) {
         var preview = submissionPreview(data);
         if (!preview.source) return [];
@@ -5895,6 +5916,10 @@ class MCPPlanningBridgeServer:
             };
           });
         }
+        if (preview.status === "content_review_required") {
+          var previewBundle = preview.evidence_bundle || {};
+          return contentReviewCardModels(previewBundle.fill_plan || {});
+        }
         return [];
       }
       function evidenceCardModels(data) {
@@ -5902,6 +5927,9 @@ class MCPPlanningBridgeServer:
         if (previewCards.length) return previewCards;
         var bundle = evidenceBundle(data);
         var fillPlan = bundle.fill_plan || {};
+        if (Array.isArray(fillPlan.content_review_entries) && fillPlan.content_review_entries.length) {
+          return contentReviewCardModels(fillPlan);
+        }
         if (Array.isArray(fillPlan.draft_entries) && fillPlan.draft_entries.length) {
           return fillPlan.draft_entries.map(function (entry) {
             return {
@@ -5962,20 +5990,24 @@ class MCPPlanningBridgeServer:
         if (fillPlan.status && bundle.progress_summary && typeof bundle.progress_summary === "object") {
           var summary = bundle.progress_summary;
           var counts = summary.counts || {};
-          return [
+          var bundleParts = [
             "plan " + fillPlan.status,
             "ready " + (summary.complete_count || 0) + "/" + (summary.total_count || 0),
             "attention " + (counts.needs_attention || 0),
             "placeholder " + (counts.placeholder || 0)
-          ].join(" | ");
+          ];
+          if (counts.review_required) bundleParts.push("review " + counts.review_required);
+          return bundleParts.join(" | ");
         }
         var progress = evidenceProgress(data);
         if (progress.counts && typeof progress.counts === "object") {
-          return [
+          var progressParts = [
             "ready " + (progress.complete_count || 0) + "/" + (progress.total_count || 0),
             "attention " + (progress.counts.needs_attention || 0),
             "placeholder " + (progress.counts.placeholder || 0)
-          ].join(" | ");
+          ];
+          if (progress.counts.review_required) progressParts.push("review " + progress.counts.review_required);
+          return progressParts.join(" | ");
         }
         var snapshot = releaseSnapshot(data);
         var materials = snapshot.submission_materials || {};
@@ -6902,6 +6934,10 @@ class MCPPlanningBridgeServer:
             (Array.isArray(evidenceContext.required_sections) ? evidenceContext.required_sections : []).forEach(function (section) {
               appendChip(reviewContext, "check " + section);
             });
+            (Array.isArray(evidenceContext.unfinished_reason_codes) ? evidenceContext.unfinished_reason_codes : []).forEach(function (reason) {
+              appendChip(reviewContext, "blocked " + reason, "commit");
+            });
+            appendChip(reviewContext, evidenceContext.mark_ready_blocked === true ? "mark ready blocked" : "");
             appendChip(reviewContext, evidenceContext.marks_only_this_key === true ? "marks this key only" : "");
           }
           var boundary = document.createElement("div");
@@ -10971,6 +11007,12 @@ class MCPPlanningBridgeServer:
             for row in rows:
                 if not isinstance(row, dict):
                     continue
+                next_action = row.get("next_action") if isinstance(row.get("next_action"), dict) else {}
+                compact_next_action = {
+                    key: next_action.get(key)
+                    for key in ("action", "tool", "mark_ready")
+                    if next_action.get(key) not in (None, "")
+                }
                 compact_rows.append(
                     {
                         "key": row.get("key"),
@@ -10979,7 +11021,7 @@ class MCPPlanningBridgeServer:
                         "status": row.get("status"),
                         "refs": row.get("refs") if isinstance(row.get("refs"), list) else [],
                         "default_path": row.get("default_path"),
-                        "next_action": row.get("next_action") if isinstance(row.get("next_action"), dict) else None,
+                        "next_action": compact_next_action or None,
                     }
                 )
         return {

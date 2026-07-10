@@ -2380,6 +2380,42 @@ vm.runInThisContext({json.dumps(widget_script)});
   dispatchToolOutput({{
     source: "product_console_map",
     project_name: "demo-project",
+    release_submission_evidence_bundle: {{
+      progress_summary: {{
+        complete_count: 0,
+        total_count: 1,
+        counts: {{ needs_attention: 0, placeholder: 0, review_required: 1 }}
+      }},
+      fill_plan: {{
+        status: "evidence_content_review_required",
+        why: "Edit unfinished evidence before marking ready.",
+        content_review_entries: [{{
+          key: "logo",
+          current_status: "review_required",
+          refs: ["docs/submission/logo.md"],
+          required_sections: ["asset_path"],
+          file_states: [{{
+            ref: "docs/submission/logo.md",
+            status: "review_required",
+            reason_codes: ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"]
+          }}]
+        }}]
+      }}
+    }}
+  }});
+  assert.strictEqual(
+    byId("submission-blockers").textContent,
+    "plan evidence_content_review_required | ready 0/1 | attention 0 | placeholder 0 | review 1"
+  );
+  assert.strictEqual(evidenceCards().length, 1, "content review plan should render the blocked evidence file");
+  assert(evidenceText("evidence-title").includes("logo | review_required"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-tag").includes("DRAFT_CONTENT"), evidenceText("evidence-tag"));
+  assert(evidenceText("evidence-tag").includes("HUMAN_REVIEW_PENDING"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "product_console_map",
+    project_name: "demo-project",
     recommended_first_actions: [{{
       action_id: "read_submission_context",
       label: "Read submission context",
@@ -2489,6 +2525,46 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
   assert(evidenceText("evidence-purpose").includes("ready-field marking payload"), evidenceText("evidence-purpose"));
   assert(evidenceText("evidence-tag").includes("human_reviewed"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
+    source: "submission_evidence_fill_preview",
+    project_name: "demo-project",
+    status: "content_review_required",
+    summary: "Unfinished evidence blocks mark-ready.",
+    copyable_tool_call: {{
+      tool: "get_release_submission_readiness",
+      arguments: {{ project_name: "demo-project" }},
+      required_scope: "mcp:read"
+    }},
+    evidence_bundle: {{
+      fill_plan: {{
+        status: "evidence_content_review_required",
+        why: "Edit unfinished evidence before marking ready.",
+        content_review_entries: [{{
+          key: "logo",
+          current_status: "review_required",
+          refs: ["docs/submission/logo.md"],
+          required_sections: ["asset_path"],
+          file_states: [{{
+            ref: "docs/submission/logo.md",
+            status: "review_required",
+            reason_codes: ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"]
+          }}]
+        }}]
+      }}
+    }},
+    operator_instructions: ["Edit the referenced file before refreshing readiness."]
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "content_review_required");
+  assert.strictEqual(
+    byId("submission-blockers").textContent,
+    "preview content_review_required | tool get_release_submission_readiness"
+  );
+  assert.strictEqual(evidenceCards().length, 1, "content-review preview should render the nested evidence entry");
+  assert(evidenceText("evidence-title").includes("logo | review_required"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-tag").includes("DRAFT_CONTENT"), evidenceText("evidence-tag"));
+  assert(evidenceText("evidence-tag").includes("HUMAN_REVIEW_PENDING"), evidenceText("evidence-tag"));
 
   dispatchToolOutput({{
     source: "submission_evidence_fill",
@@ -2701,6 +2777,9 @@ vm.runInThisContext({json.dumps(widget_script)});
         refs: ["docs/submission/logo.md"],
         required_sections: ["asset_path", "dimensions"],
         human_review_required: true,
+        content_review_required: true,
+        mark_ready_blocked: true,
+        unfinished_reason_codes: ["DRAFT_CONTENT"],
         review_sequence_position: 1,
         review_sequence_total: 2,
         marks_only_this_key: true
@@ -2716,6 +2795,8 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(reviewContext.textContent.includes("item 1/2"), reviewContext.textContent);
   assert(reviewContext.textContent.includes("file docs/submission/logo.md"), reviewContext.textContent);
   assert(reviewContext.textContent.includes("check dimensions"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("blocked DRAFT_CONTENT"), reviewContext.textContent);
+  assert(reviewContext.textContent.includes("mark ready blocked"), reviewContext.textContent);
   assert(reviewContext.textContent.includes("marks this key only"), reviewContext.textContent);
 
   dispatch("message", {{
