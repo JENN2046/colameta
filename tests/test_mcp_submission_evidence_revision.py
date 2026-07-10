@@ -94,6 +94,26 @@ def test_preview_and_apply_revise_bound_evidence_without_returning_content(tmp_p
     assert manager.handle("apply", {"preview_id": preview["preview_id"]})["error_code"] == "PREVIEW_NOT_FOUND"
 
 
+def test_editor_context_exposes_only_manifest_bound_unfinished_content_for_local_web(tmp_path: Path) -> None:
+    _project(tmp_path)
+    manager = MCPSubmissionEvidenceRevisionManager(str(tmp_path))
+
+    context = manager.editor_context({"key": "logo", "ref": "docs/submission/logo.md"})
+
+    assert context["ok"] is True
+    assert context["action"] == "editor_context"
+    assert context["current_content"] == DRAFT_LOGO
+    assert context["content_included"] is True
+    assert context["local_web_only"] is True
+    assert context["reason_codes"] == ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"]
+    assert context["required_sections"] == ["asset_path", "dimensions", "review_notes"]
+    assert len(context["current_sha256"]) == 64
+
+    missing = manager.editor_context({"key": "logo", "ref": "docs/submission/not-bound.md"})
+    assert missing["ok"] is False
+    assert missing["content_included"] is False
+
+
 def test_preview_rejects_replacement_that_is_still_unfinished_without_artifact(tmp_path: Path) -> None:
     _project(tmp_path)
     manager = MCPSubmissionEvidenceRevisionManager(str(tmp_path))
