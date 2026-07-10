@@ -821,6 +821,13 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "completionCategoryText" in page
         assert "completionOverview.categories" in page
         assert "category.primary_tool" in page
+        assert "Product follow-up queue" in page
+        assert "renderProductFollowupQueue" in page
+        assert "completion.followup_queue" in page
+        assert 'class="product-followup-queue" aria-label="Product closeout follow-up queue"' in page
+        assert "data-copy-operator-inbox" in page
+        assert "队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。" in page
+        assert "Copy follow-up" in page
         assert "Operator trail" in page
         assert "operatorTrailText" in page
         assert "recovery_action_count" in page
