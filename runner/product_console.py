@@ -1272,6 +1272,9 @@ def _operator_session_recovery_actions(
         scope = _clean_optional_text(next_item.get("required_scope")) or _completion_action_scope(primary_action)
         arguments = dict(primary_action.get("arguments") or {}) if isinstance(primary_action.get("arguments"), dict) else {}
         if tool:
+            action_key = _clean_optional_text(next_item.get("action_key"))
+            action_fingerprint = _clean_optional_text(next_item.get("action_fingerprint"))
+            action_id = _clean_optional_text(next_item.get("action_id")) or _clean_optional_text(primary_action.get("action_id"))
             actions.append(
                 {
                     "action_id": f"operator_followup_{next_item.get('item_id') or 'next'}",
@@ -1289,7 +1292,9 @@ def _operator_session_recovery_actions(
                         "tool": tool,
                         "arguments": arguments,
                         "action": _clean_optional_text(primary_action.get("action")),
-                        "action_id": _clean_optional_text(primary_action.get("action_id")),
+                        "action_id": action_id,
+                        "action_key": action_key,
+                        "action_fingerprint": action_fingerprint,
                         "required_scope": scope,
                         "gate_level": _clean_optional_text(next_item.get("gate_level")) or _completion_followup_gate_level(scope),
                     },
@@ -1632,6 +1637,7 @@ def _completion_followup_queue(
 def _completion_followup_item(*, index: int, group: dict[str, Any]) -> dict[str, Any]:
     primary_action = group.get("primary_action") if isinstance(group.get("primary_action"), dict) else {}
     action_refs = group.get("action_refs") if isinstance(group.get("action_refs"), list) else []
+    primary_ref = next((item for item in action_refs if isinstance(item, dict)), {})
     scope = _completion_action_scope(primary_action)
     result = {
         "item_id": group.get("group_id") or f"closeout_step_{index + 1}",
@@ -1648,6 +1654,13 @@ def _completion_followup_item(*, index: int, group: dict[str, Any]) -> dict[str,
         "action_ref_count": len([item for item in action_refs if isinstance(item, dict)]),
         "empty_state": group.get("empty_state"),
     }
+    if isinstance(primary_ref, dict):
+        if primary_ref.get("action_id"):
+            result["action_id"] = primary_ref.get("action_id")
+        if primary_ref.get("action_key"):
+            result["action_key"] = primary_ref.get("action_key")
+        if primary_ref.get("action_fingerprint"):
+            result["action_fingerprint"] = primary_ref.get("action_fingerprint")
     return {key: value for key, value in result.items() if value not in (None, "", {})}
 
 
@@ -1710,6 +1723,8 @@ def _completion_action_matches_component(component: str, action: dict[str, Any])
 def _completion_action_ref(action: dict[str, Any]) -> dict[str, Any]:
     ref = {
         "action_id": action.get("action_id"),
+        "action_key": action.get("action_key"),
+        "action_fingerprint": action.get("action_fingerprint"),
         "label": action.get("label"),
         "tool": action.get("tool"),
         "action": action.get("action"),
