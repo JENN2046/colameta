@@ -1522,7 +1522,16 @@ function renderProductFollowupQueue(completion) {{
       h += `<div class="product-followup-actions">`;
       h += `<button type="button" class="operator-inbox-btn" data-open-product-followup="${{escAttr(followupItemId)}}" aria-label="${{escAttr("在 INBOX 中查看：" + label)}}" title="${{escAttr("在 INBOX 中查看：" + label)}}">Open INBOX</button>`;
       if (tool) {{
-        const payload = JSON.stringify({{ tool: tool, arguments: primary.arguments || {{}} }}, null, 2);
+        const payload = JSON.stringify({{
+          item_id: followupItemId,
+          component: item.component || "",
+          tool: tool,
+          action: primary.action || "",
+          action_id: primary.action_id || "",
+          arguments: primary.arguments || {{}},
+          required_scope: scope,
+          gate_level: gate,
+        }}, null, 2);
         const copyLabel = "复制 Product follow-up 调用：" + label;
         h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy follow-up</button>`;
       }}

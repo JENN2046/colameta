@@ -846,6 +846,12 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。" in page
         assert "Open INBOX" in page
         assert "Copy follow-up" in page
+        assert "item_id: followupItemId" in page
+        assert "component: item.component" in page
+        assert "action: primary.action" in page
+        assert "action_id: primary.action_id" in page
+        assert "required_scope: scope" in page
+        assert "gate_level: gate" in page
         assert "Operator trail" in page
         assert "operatorTrailText" in page
         assert "recovery_action_count" in page
