@@ -26,7 +26,11 @@ from runner.executor_registry import (
 )
 from runner.executor_inventory import get_executor_inventory_summary
 from runner.project_identity import build_project_identity
-from runner.product_console import build_product_console_map, record_product_console_action_result
+from runner.product_console import (
+    build_product_console_map,
+    record_product_console_action_result,
+    record_product_console_refresh_result,
+)
 from runner.execution_branch import ExecutionBranchController
 from runner.mcp_executor_workflow import (
     CLAIM_HEARTBEAT_INTERVAL_SECONDS,
@@ -218,6 +222,9 @@ WEB_V2_OPERATOR_INBOX_READ_FIELDS = frozenset({
     "item_signature",
     "record_action_id",
     "action_fingerprint",
+    "source_action_key",
+    "source_observed_at",
+    "source_action_fingerprint",
 })
 WEB_V2_OPERATOR_INBOX_READ_TOOLS = frozenset({
     "get_agent_operator_flow_packet",
@@ -246,6 +253,10 @@ WEB_V2_OPERATOR_INBOX_RECORD_FIELDS = frozenset({
     "message",
     "result_ok",
     "action_fingerprint",
+    "source_action_key",
+    "source_observed_at",
+    "source_action_fingerprint",
+    "refresh_arguments",
 })
 WEB_V2_OPERATOR_INBOX_RECORD_RECEIPT_LIMIT = 128
 
@@ -1121,6 +1132,10 @@ class WebConsoleServer:
                         "status": status,
                         "result_ok": params.get("result_ok") if isinstance(params.get("result_ok"), bool) else None,
                         "action_fingerprint_present": bool(str(params.get("action_fingerprint") or "").strip()),
+                        "refresh_source_bound": bool(
+                            str(params.get("source_action_key") or "").strip()
+                            and str(params.get("source_observed_at") or "").strip()
+                        ),
                         "run_receipt_present": bool(str(params.get("run_receipt_signature") or "").strip()),
                         "writes_runtime_summary_only": True,
                     },
@@ -2425,6 +2440,9 @@ class WebConsoleServer:
         direct_arguments = run_arguments if isinstance(run_arguments, dict) else args
         record_action_id = str(payload.get("action_id") or payload.get("action") or item_id).strip()
         action_fingerprint = str(payload.get("action_fingerprint") or "").strip()
+        source_action_key = str(payload.get("source_action_key") or "").strip()
+        source_observed_at = str(payload.get("after_observed_at") or "").strip()
+        source_action_fingerprint = str(payload.get("source_action_fingerprint") or "").strip()
         runnable = (
             can_run_now
             and scope == "mcp:read"
@@ -2444,6 +2462,9 @@ class WebConsoleServer:
             "run_arguments": dict(direct_arguments),
             "record_action_id": record_action_id,
             "action_fingerprint": action_fingerprint,
+            "source_action_key": source_action_key,
+            "source_observed_at": source_observed_at,
+            "source_action_fingerprint": source_action_fingerprint,
             "copy_payload": dict(payload),
             "why": why if isinstance(why, str) and why else "Review this operator inbox item.",
         }
@@ -2464,6 +2485,9 @@ class WebConsoleServer:
             "gate_level": item.get("gate_level"),
             "record_action_id": item.get("record_action_id"),
             "action_fingerprint": item.get("action_fingerprint"),
+            "source_action_key": item.get("source_action_key"),
+            "source_observed_at": item.get("source_observed_at"),
+            "source_action_fingerprint": item.get("source_action_fingerprint"),
         }
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         signing_key = getattr(self, "_operator_inbox_signing_key", None)
@@ -4238,6 +4262,9 @@ class WebConsoleServer:
         item_signature = params.get("item_signature")
         record_action_id = params.get("record_action_id")
         action_fingerprint = params.get("action_fingerprint")
+        source_action_key = params.get("source_action_key", "")
+        source_observed_at = params.get("source_observed_at", "")
+        source_action_fingerprint = params.get("source_action_fingerprint", "")
         required_text = {
             "item_id": item_id,
             "source": source,
@@ -4267,6 +4294,24 @@ class WebConsoleServer:
                 "OPERATOR_INBOX_READ_FINGERPRINT_INVALID",
                 "Operator inbox action_fingerprint must be a string.",
             )
+        for field_name, field_value in (
+            ("source_action_key", source_action_key),
+            ("source_observed_at", source_observed_at),
+            ("source_action_fingerprint", source_action_fingerprint),
+        ):
+            if not isinstance(field_value, str):
+                return self._operator_inbox_read_error(
+                    "OPERATOR_INBOX_READ_REFRESH_BINDING_INVALID",
+                    f"Operator inbox {field_name} must be a string.",
+                )
+        if component.strip() == "pending_refresh" and (
+            not source_action_key.strip()
+            or not source_observed_at.strip()
+        ):
+            return self._operator_inbox_read_error(
+                "OPERATOR_INBOX_READ_REFRESH_BINDING_REQUIRED",
+                "Pending refresh reads require an exact source action result binding.",
+            )
         normalized_tool = tool.strip()
         if normalized_tool not in WEB_V2_OPERATOR_INBOX_READ_TOOLS:
             return self._operator_inbox_read_error(
@@ -4294,6 +4339,9 @@ class WebConsoleServer:
             "gate_level": "read_only",
             "record_action_id": record_action_id.strip(),
             "action_fingerprint": action_fingerprint.strip(),
+            "source_action_key": source_action_key.strip(),
+            "source_observed_at": source_observed_at.strip(),
+            "source_action_fingerprint": source_action_fingerprint.strip(),
         }
         normalized_signature = item_signature.strip()
         if re.fullmatch(r"[0-9a-f]{64}", normalized_signature) is None:
@@ -4320,6 +4368,9 @@ class WebConsoleServer:
                 tool=normalized_tool,
                 arguments=dict(arguments),
                 action_fingerprint=action_fingerprint.strip(),
+                source_action_key=source_action_key.strip(),
+                source_observed_at=source_observed_at.strip(),
+                source_action_fingerprint=source_action_fingerprint.strip(),
             )
 
     def _execute_operator_inbox_read_bound_to_project(
@@ -4332,6 +4383,9 @@ class WebConsoleServer:
         tool: str,
         arguments: dict[str, Any],
         action_fingerprint: str,
+        source_action_key: str,
+        source_observed_at: str,
+        source_action_fingerprint: str,
     ) -> dict[str, Any]:
 
         from runner.mcp_server import MCPPlanningBridgeServer
@@ -4367,6 +4421,10 @@ class WebConsoleServer:
             observed_status=observed_status,
             evidence=evidence,
             action_fingerprint=action_fingerprint,
+            source_action_key=source_action_key,
+            source_observed_at=source_observed_at,
+            source_action_fingerprint=source_action_fingerprint,
+            refresh_arguments=arguments,
         )
         run_result = {
             "source": "web_v2_operator_inbox_read",
@@ -4407,6 +4465,10 @@ class WebConsoleServer:
         observed_status: str,
         evidence: dict[str, Any],
         action_fingerprint: str,
+        source_action_key: str,
+        source_observed_at: str,
+        source_action_fingerprint: str,
+        refresh_arguments: dict[str, Any],
     ) -> dict[str, Any]:
         evidence_source = self._bounded_operator_inbox_record_value(evidence.get("source"), fallback="unknown")
         bounded_status = self._bounded_operator_inbox_record_value(observed_status, fallback="unknown")
@@ -4426,6 +4488,10 @@ class WebConsoleServer:
             "message": message,
             "result_ok": result_ok,
             "action_fingerprint": action_fingerprint,
+            "source_action_key": source_action_key,
+            "source_observed_at": source_observed_at,
+            "source_action_fingerprint": source_action_fingerprint,
+            "refresh_arguments": dict(refresh_arguments),
         }
         signature = self._web_operator_inbox_record_signature(params)
         params["run_receipt_signature"] = signature
@@ -4584,10 +4650,27 @@ class WebConsoleServer:
                 "OPERATOR_INBOX_RECORD_RESULT_OK_INVALID",
                 "Signed operator inbox result_ok must be boolean.",
             )
+        refresh_arguments = params.get("refresh_arguments")
+        if not isinstance(refresh_arguments, dict):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_REFRESH_ARGUMENTS_INVALID",
+                "Signed operator inbox refresh_arguments must be an object.",
+            )
         tool = str(params["tool"]).strip()
         mode = str(params["mode"]).strip().lower()
         status = str(params["status"]).strip().lower()
         message = str(params["message"]).strip()
+        component = str(params["component"]).strip()
+        source_action_key = str(params.get("source_action_key") or "").strip()
+        source_observed_at = str(params.get("source_observed_at") or "").strip()
+        source_action_fingerprint = str(params.get("source_action_fingerprint") or "").strip()
+        if component == "pending_refresh" and (
+            not source_action_key or not source_observed_at
+        ):
+            return self._operator_inbox_record_error(
+                "OPERATOR_INBOX_RECORD_REFRESH_BINDING_REQUIRED",
+                "Signed pending refresh records require an exact source action result binding.",
+            )
         if tool not in WEB_V2_OPERATOR_INBOX_READ_TOOLS:
             return self._operator_inbox_record_error(
                 "OPERATOR_INBOX_RECORD_TOOL_DENIED",
@@ -4638,6 +4721,11 @@ class WebConsoleServer:
                 message=message,
                 result_ok=result_ok,
                 action_fingerprint=action_fingerprint.strip(),
+                component=component,
+                source_action_key=source_action_key,
+                source_observed_at=source_observed_at,
+                source_action_fingerprint=source_action_fingerprint,
+                refresh_arguments=refresh_arguments,
             )
 
     def _write_operator_inbox_record_bound_to_project(
@@ -4650,6 +4738,11 @@ class WebConsoleServer:
         message: str,
         result_ok: bool,
         action_fingerprint: str,
+        component: str,
+        source_action_key: str,
+        source_observed_at: str,
+        source_action_fingerprint: str,
+        refresh_arguments: dict[str, Any],
     ) -> dict[str, Any]:
         lock, receipts = self._operator_inbox_record_receipt_state()
         with lock:
@@ -4668,16 +4761,31 @@ class WebConsoleServer:
             receipt["status"] = "recording"
 
         try:
-            recorded = record_product_console_action_result(
-                self.project_root,
-                action_id=str(params["action_id"]).strip(),
-                tool=tool,
-                mode="read",
-                status=status,
-                message=message,
-                result_ok=result_ok,
-                action_fingerprint=action_fingerprint or None,
-            )
+            if component == "pending_refresh":
+                recorded = record_product_console_refresh_result(
+                    self.project_root,
+                    source_action_key=source_action_key,
+                    source_observed_at=source_observed_at,
+                    source_action_fingerprint=source_action_fingerprint,
+                    tool=tool,
+                    arguments=refresh_arguments,
+                    status=status,
+                    message=message,
+                    result_ok=result_ok,
+                )
+            else:
+                recorded = record_product_console_action_result(
+                    self.project_root,
+                    action_id=str(params["action_id"]).strip(),
+                    tool=tool,
+                    mode="read",
+                    status=status,
+                    message=message,
+                    result_ok=result_ok,
+                    action_fingerprint=action_fingerprint or None,
+                )
+            if recorded.get("ok") is not True:
+                raise RuntimeError(str(recorded.get("error_code") or "refresh receipt rejected"))
         except Exception:
             with lock:
                 if isinstance(receipts.get(signature), dict):
@@ -4691,7 +4799,11 @@ class WebConsoleServer:
                 receipts[signature]["status"] = "recorded"
 
         refreshed = self._api_v2_status()
-        response_message = "Signed Web INBOX read result recorded; Product Console status refreshed."
+        response_message = (
+            "Signed Web INBOX refresh result recorded; pending refresh state closed."
+            if component == "pending_refresh" and result_ok
+            else "Signed Web INBOX read result recorded; Product Console status refreshed."
+        )
         refreshed["action"] = WEB_V2_OPERATOR_INBOX_RECORD_ACTION
         refreshed["message"] = response_message
         refreshed["action_outcome"] = {"code": "SUCCESS", "message": response_message}
@@ -4706,6 +4818,7 @@ class WebConsoleServer:
             "action_id": str(params["action_id"]).strip(),
             "tool": tool,
             "status": status,
+            "record_kind": "refresh_result" if component == "pending_refresh" else "action_result",
             "record_result": self._json_safe(recorded),
         }
         return refreshed

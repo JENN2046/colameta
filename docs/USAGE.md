@@ -341,6 +341,12 @@ After an `updated` or bridge-completed result, each action's
 read surfaces that should be refreshed next. Failed, blocked, pending, or
 stale, or explicitly `result_ok=false` records do not generate refresh
 suggestions.
+Each successful pending refresh can be persisted as a bounded receipt on the
+exact source action result. The receipt binds the source action key and
+observation time, the refresh tool and project context, stores no raw tool
+output, and removes only that matching refresh from the pending set. A failed
+refresh remains pending with its latest redacted failure summary; a receipt for
+an action result that has since been replaced is rejected.
 Web v2 INBOX `Run` executes the selected read tool instead of treating every
 button as a generic status refresh. A runnable item carries a server-issued
 signature over its item id, source, component, tool, Web run arguments, scope,
@@ -364,7 +370,11 @@ browser confirmation before writing the runtime summary. A consumed receipt
 cannot be recorded again, and receipts from a previous service process are
 invalid. Successful records refresh Web and Product Console immediately; this
 write still does not repeat the read, execute another action, or authorize any
-preview, commit, push, submission, publish, or stable replacement.
+preview, commit, push, submission, publish, or stable replacement. When the
+INBOX item is a pending refresh, the signed run receipt also carries the
+source-result binding. Recording a successful read writes a refresh receipt
+instead of a second unrelated action result, so Product Console can durably
+move that refresh from `pending` to `current`.
 Commander renders those `next_refresh_actions` as read-only refresh buttons on
 the action card. They call the listed read surface and update the widget; they
 do not re-run the original action, confirm preview/commit work, or grant write

@@ -17,7 +17,7 @@ from runner.sensitive_redaction import redact_sensitive_text
 PRODUCT_CONSOLE_SOURCE = "product_console_map"
 PRODUCT_CONSOLE_VERSION = "product_console.v1"
 PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE = "product_console_action_results"
-PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v1"
+PRODUCT_CONSOLE_ACTION_RESULTS_VERSION = "product_console_action_results.v2"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_SOURCE = "submission_evidence_fill_preview"
 SUBMISSION_EVIDENCE_FILL_PREVIEW_VERSION = "submission_evidence_fill_preview.v1"
 SUBMISSION_EVIDENCE_ACTIVITY_ACTION_ID = "submission_evidence_activity"
@@ -225,6 +225,133 @@ def record_product_console_action_result(
         "updated_at": observed_at,
         "recorded_result": entry,
         "stored_result_count": len(entries),
+        "authority_boundary": packet["authority_boundary"],
+    }
+
+
+def record_product_console_refresh_result(
+    project_root: str,
+    *,
+    source_action_key: str,
+    source_observed_at: str,
+    tool: str,
+    status: str,
+    message: str | None = None,
+    result_ok: bool,
+    arguments: dict[str, Any] | None = None,
+    source_action_fingerprint: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Record a bounded refresh receipt against one exact action result."""
+    clean_source_key = _clean_optional_text(source_action_key)
+    clean_source_observed_at = _clean_optional_text(source_observed_at)
+    clean_tool = _clean_optional_text(tool)
+    if not clean_source_key or not clean_source_observed_at or not clean_tool:
+        return _refresh_record_error(
+            "REFRESH_RESULT_BINDING_REQUIRED",
+            "source_action_key, source_observed_at, and tool are required.",
+        )
+    normalized_status = status if status in {"updated", "failed"} else "failed"
+    if (normalized_status == "updated") != result_ok:
+        return _refresh_record_error(
+            "REFRESH_RESULT_OUTCOME_CONFLICT",
+            "updated requires result_ok=true; failed requires result_ok=false.",
+        )
+
+    existing = load_product_console_action_results(project_root)
+    entries = _action_result_entries(existing)
+    source_entry = next(
+        (
+            entry
+            for entry in entries
+            if entry.get("action_key") == clean_source_key
+            and entry.get("observed_at") == clean_source_observed_at
+        ),
+        None,
+    )
+    if source_entry is None:
+        return _refresh_record_error(
+            "REFRESH_RESULT_SOURCE_NOT_FOUND",
+            "The source action result is missing or has been replaced by a newer result.",
+        )
+    clean_source_fingerprint = _clean_optional_text(source_action_fingerprint)
+    recorded_source_fingerprint = _clean_optional_text(source_entry.get("action_fingerprint"))
+    if clean_source_fingerprint and clean_source_fingerprint != recorded_source_fingerprint:
+        return _refresh_record_error(
+            "REFRESH_RESULT_SOURCE_FINGERPRINT_MISMATCH",
+            "The refresh receipt does not match the source action fingerprint.",
+        )
+    expected_tools = {
+        _clean_optional_text(item.get("tool"))
+        for item in _refresh_after_for_tool(_clean_optional_text(source_entry.get("tool")))
+        if isinstance(item, dict)
+    }
+    if clean_tool not in expected_tools:
+        return _refresh_record_error(
+            "REFRESH_RESULT_TOOL_MISMATCH",
+            "The refresh tool is not required by the source action result contract.",
+        )
+    expected_arguments = _refresh_arguments_for_result(source_entry)
+    normalized_arguments = _normalize_refresh_result_arguments(arguments)
+    if normalized_arguments is None or normalized_arguments != expected_arguments:
+        return _refresh_record_error(
+            "REFRESH_RESULT_ARGUMENTS_MISMATCH",
+            "The refresh arguments do not match the source action result context.",
+        )
+
+    observed_at = _iso_now(now)
+    refresh_result = {
+        "tool": clean_tool,
+        "arguments": normalized_arguments,
+        "status": normalized_status,
+        "message": _safe_action_result_message(message or normalized_status),
+        "result_ok": result_ok,
+        "observed_at": observed_at,
+    }
+    prior_refreshes = _refresh_result_entries(source_entry)
+    refresh_key = _refresh_result_key(clean_tool, normalized_arguments)
+    source_entry["refresh_results"] = [
+        refresh_result,
+        *[
+            item
+            for item in prior_refreshes
+            if _refresh_result_key(str(item.get("tool") or ""), item.get("arguments")) != refresh_key
+        ],
+    ]
+    packet = {
+        "ok": True,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": False,
+        "side_effects": True,
+        "project_root": os.path.abspath(os.path.expanduser(project_root)),
+        "project_name": _clean_optional_text(existing.get("project_name"))
+        or _clean_optional_text(source_entry.get("project_name")),
+        "status": "recorded",
+        "updated_at": observed_at,
+        "results": entries[:MAX_STORED_ACTION_RESULTS],
+        "authority_boundary": {
+            "writes_runtime_state_only": True,
+            "does_not_store_raw_tool_output": True,
+            "does_not_execute_action": True,
+            "does_not_execute_refresh": True,
+            "does_not_authorize_stable_replacement": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_publish_app": True,
+        },
+    }
+    write_json_atomic(product_console_action_results_path(project_root), packet)
+    return {
+        "ok": True,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": False,
+        "side_effects": True,
+        "status": "recorded",
+        "updated_at": observed_at,
+        "source_action_key": clean_source_key,
+        "source_observed_at": clean_source_observed_at,
+        "recorded_refresh_result": refresh_result,
         "authority_boundary": packet["authority_boundary"],
     }
 
@@ -1261,7 +1388,9 @@ def _operator_session_recovery_actions(
                     "tool": tool,
                     "arguments": arguments,
                     "source_action_key": _clean_optional_text(refresh.get("source_action_key")),
+                    "source_action_fingerprint": _clean_optional_text(refresh.get("source_action_fingerprint")),
                     "after_result_status": _clean_optional_text(refresh.get("after_result_status")),
+                    "after_observed_at": _clean_optional_text(refresh.get("after_observed_at")),
                 },
                 "why": _clean_optional_text(refresh.get("why")) or "Refresh the read surface after a recorded action result.",
             }
@@ -1888,7 +2017,40 @@ def _normalize_action_result_entry(value: dict[str, Any]) -> dict[str, Any] | No
     action_fingerprint = _clean_optional_text(value.get("action_fingerprint"))
     if action_fingerprint:
         entry["action_fingerprint"] = action_fingerprint
+    refresh_results = _refresh_result_entries(value)
+    if refresh_results:
+        entry["refresh_results"] = refresh_results
     return entry
+
+
+def _refresh_result_entries(value: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = value.get("refresh_results") if isinstance(value, dict) else []
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tool = _clean_optional_text(item.get("tool"))
+        arguments = _normalize_refresh_result_arguments(item.get("arguments"))
+        status = _clean_optional_text(item.get("status"))
+        if not tool or arguments is None or status not in {"updated", "failed"}:
+            continue
+        result_ok = item.get("result_ok")
+        if not isinstance(result_ok, bool) or (status == "updated") != result_ok:
+            continue
+        entries.append(
+            {
+                "tool": tool,
+                "arguments": arguments,
+                "status": status,
+                "message": _safe_action_result_message(item.get("message") or status),
+                "result_ok": result_ok,
+                "observed_at": _clean_optional_text(item.get("observed_at")),
+            }
+        )
+    entries.sort(key=lambda item: item.get("observed_at") or "", reverse=True)
+    return entries
 
 
 def _action_result_index(result_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1943,26 +2105,39 @@ def _next_refresh_actions_for_action(action: dict[str, Any]) -> list[dict[str, A
     arguments = _refresh_arguments_for_action(action)
     status = _clean_optional_text(result.get("status")) or "updated"
     observed_at = _clean_optional_text(result.get("observed_at"))
+    source_action_fingerprint = _clean_optional_text(result.get("action_fingerprint"))
+    recorded_refreshes = {
+        _refresh_result_key(str(item.get("tool") or ""), item.get("arguments")): item
+        for item in _refresh_result_entries(result)
+    }
     refreshes: list[dict[str, Any]] = []
+    completed_count = 0
     for item in refresh_after:
         if not isinstance(item, dict):
             continue
         tool = _clean_optional_text(item.get("tool"))
         if not tool:
             continue
-        refreshes.append(
-            {
-                "tool": tool,
-                "arguments": arguments,
-                "why": _clean_optional_text(item.get("why")) or "Refresh after the recorded action result.",
-                "source_action_key": action_key,
-                "after_result_status": status,
-                "after_observed_at": observed_at,
-                "requires_operator_or_agent_refresh": True,
-            }
-        )
-    if refreshes:
-        result["refresh_recommended"] = True
+        prior = recorded_refreshes.get(_refresh_result_key(tool, arguments))
+        if isinstance(prior, dict) and prior.get("status") == "updated" and prior.get("result_ok") is True:
+            completed_count += 1
+            continue
+        refresh = {
+            "tool": tool,
+            "arguments": arguments,
+            "why": _clean_optional_text(item.get("why")) or "Refresh after the recorded action result.",
+            "source_action_key": action_key,
+            "source_action_fingerprint": source_action_fingerprint,
+            "after_result_status": status,
+            "after_observed_at": observed_at,
+            "requires_operator_or_agent_refresh": True,
+        }
+        if isinstance(prior, dict):
+            refresh["last_refresh_result"] = prior
+        refreshes.append(refresh)
+    result["refresh_recommended"] = bool(refreshes)
+    result["refresh_current"] = bool(refresh_after) and not refreshes
+    result["refresh_completed_count"] = completed_count
     return refreshes
 
 
@@ -1979,6 +2154,39 @@ def _refresh_arguments_for_action(action: dict[str, Any]) -> dict[str, Any]:
     arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
     project_name = _clean_optional_text(arguments.get("project_name"))
     return {"project_name": project_name} if project_name else {}
+
+
+def _refresh_arguments_for_result(result: dict[str, Any]) -> dict[str, Any]:
+    project_name = _clean_optional_text(result.get("project_name"))
+    return {"project_name": project_name} if project_name else {}
+
+
+def _normalize_refresh_result_arguments(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or any(key != "project_name" for key in value):
+        return None
+    project_name = _clean_optional_text(value.get("project_name"))
+    return {"project_name": project_name} if project_name else {}
+
+
+def _refresh_result_key(tool: str, arguments: Any) -> str:
+    normalized = _normalize_refresh_result_arguments(arguments)
+    encoded_arguments = json.dumps(normalized or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"{tool}|{encoded_arguments}"
+
+
+def _refresh_record_error(error_code: str, message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "source": PRODUCT_CONSOLE_ACTION_RESULTS_SOURCE,
+        "schema_version": PRODUCT_CONSOLE_ACTION_RESULTS_VERSION,
+        "read_only": False,
+        "side_effects": False,
+        "status": "failed",
+        "error_code": error_code,
+        "message": message,
+    }
 
 
 def _pending_refresh_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
