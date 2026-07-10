@@ -180,11 +180,7 @@ def get_stable_promotion_evidence_status(
     current_manifest = build_candidate_artifact_manifest(root, resolved_head, include_entries=True)
     if current_manifest.get("available") is not True:
         return _status_error("CANDIDATE_MANIFEST_UNAVAILABLE", "Candidate manifest could not be recomputed.")
-    manifest_matches = (
-        persisted_manifest.get("manifest_sha256") == current_manifest.get("manifest_sha256")
-        and persisted_manifest.get("files") == current_manifest.get("files")
-    )
-    if not manifest_matches:
+    if persisted_manifest != current_manifest:
         return _status_error("RECEIPT_MANIFEST_MISMATCH", "Persisted manifest does not match the exact Git commit.")
     snapshot = _git_snapshot(root)
     current = snapshot.get("head") == resolved_head
@@ -332,10 +328,7 @@ class MCPStablePromotionEvidenceManager:
                 "blockers": blockers,
             }
         preview_manifest = artifact.get("artifact_manifest")
-        if not isinstance(preview_manifest, dict) or (
-            preview_manifest.get("manifest_sha256") != manifest.get("manifest_sha256")
-            or preview_manifest.get("files") != manifest.get("files")
-        ):
+        if not isinstance(preview_manifest, dict) or preview_manifest != manifest:
             return _manager_error("apply", "MANIFEST_CHANGED", "Exact candidate manifest differs from the preview.")
 
         receipt_path = _receipt_path(self.project_root, candidate_head)

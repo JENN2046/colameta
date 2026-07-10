@@ -190,6 +190,30 @@ def test_tampered_preview_and_receipt_are_rejected(tmp_path: Path) -> None:
     assert conflict["error_code"] == "RECEIPT_CONFLICT_INVALID"
 
 
+def test_receipt_manifest_metadata_must_match_recomputed_manifest(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+    preview = manager.handle("preview", {"candidate_head": head})
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    receipt_path = repo / applied["receipt_path"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["artifact_manifest"]["total_size_bytes"] += 1
+    receipt["receipt_digest"] = hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in receipt.items() if key != "receipt_digest"},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    status = get_stable_promotion_evidence_status(str(repo), candidate_head=head)
+
+    assert status["ok"] is False
+    assert status["error_code"] == "RECEIPT_MANIFEST_MISMATCH"
+
+
 def test_runtime_storage_symlink_escape_fails_closed(tmp_path: Path) -> None:
     repo, head = _repo(tmp_path)
     outside = tmp_path / "outside"
