@@ -863,12 +863,20 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'aria-label="关闭项目登记管理"' in page
         assert "activeModalId" in page
         assert "modalReturnFocus" in page
+        assert "MODAL_FOCUS_SELECTOR" in page
+        assert "function modalFocusableElements" in page
         assert "function openModal" in page
         assert "function closeModal" in page
         assert "function closeActiveModal" in page
         assert "focusModal" in page
+        assert "function trapModalFocus" in page
         assert "document.addEventListener(\"keydown\"" in page
         assert 'event.key === "Escape"' in page
+        assert 'event.key !== "Tab"' in page
+        assert "event.shiftKey && current === first" in page
+        assert "!event.shiftKey && current === last" in page
+        assert "!modal.contains(current)" in page
+        assert "trapModalFocus(event)" in page
         assert "document.contains(returnFocus)" in page
         assert 'openModal("project-management-modal")' in page
         assert 'openModal("issue-detail-modal")' in page
