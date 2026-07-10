@@ -826,6 +826,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "recovery_action_count" in page
         assert "Operator inbox" in page
         assert "operatorInbox" in page
+        assert "operator-inbox-list" in page
+        assert "data-copy-operator-inbox" in page
+        assert "data-run-operator-inbox" in page
+        assert "runAction(action" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"
