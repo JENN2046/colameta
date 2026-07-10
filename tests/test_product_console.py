@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 
 from runner.product_console import (
+    _completion_followup_queue,
     build_product_console_map,
     build_submission_evidence_fill_preview,
     load_product_console_action_results,
@@ -229,7 +230,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert "Run or copy the first closeout follow-up action" in completion["progress_state"]["operator_guidance"][0]
     assert completion["progress_state"]["completion_status"] == "needs_attention"
     assert completion["progress_state"]["gap_count"] == 3
-    assert completion["progress_state"]["followup_count"] == 3
+    assert completion["progress_state"]["followup_count"] == 2
     assert completion["progress_state"]["pending_refresh_count"] == 0
     overview = completion["product_completion_overview"]
     assert packet["product_completion_overview"] == overview
@@ -255,6 +256,9 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert category_by_id["release_submission"]["primary_tool"] == "init_submission_evidence"
     assert category_by_id["release_submission"]["required_scope"] == "mcp:commit"
     assert category_by_id["release_submission"]["gate_level"] == "explicit_apply_or_run_required"
+    assert category_by_id["submission_evidence"]["followup_position"] == 1
+    assert category_by_id["submission_evidence"]["followup_item"]["item_id"] == "release_submission"
+    assert category_by_id["submission_evidence"]["primary_tool"] == "init_submission_evidence"
     assert category_by_id["submission_evidence_activity"]["primary_tool"] == "record_product_console_action_result"
     assert category_by_id["submission_evidence_activity"]["required_scope"] == "mcp:commit"
     assert category_by_id["submission_evidence_activity"]["followup_item"]["item_id"] == "submission_evidence_activity"
@@ -280,7 +284,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert queue["read_only"] is True
     assert queue["side_effects"] is False
     assert queue["status"] == "needs_attention"
-    assert queue["total_count"] == 3
+    assert queue["total_count"] == 2
     assert queue["next_item"]["item_id"] == "release_submission"
     assert queue["next_item"]["primary_tool"] == "init_submission_evidence"
     assert queue["next_item"]["required_scope"] == "mcp:commit"
@@ -288,6 +292,15 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert queue["next_item"]["action_id"] == "init_submission_evidence"
     assert queue["next_item"]["action_key"] == "init_submission_evidence|init_submission_evidence|commit"
     assert queue["next_item"]["action_fingerprint"]
+    assert queue["next_item"]["components"] == ["release_submission", "submission_evidence"]
+    assert queue["next_item"]["related_item_ids"] == ["release_submission", "submission_evidence"]
+    assert queue["next_item"]["shared_by_component_count"] == 2
+    assert queue["next_item"]["gap_codes"] == [
+        "RELEASE_SUBMISSION_NOT_READY",
+        "SUBMISSION_EVIDENCE_NOT_READY",
+    ]
+    assert queue["items"][1]["item_id"] == "submission_evidence_activity"
+    assert "components" not in queue["items"][1]
     trail = completion["operator_session_trail"]
     assert packet["operator_session_trail"] == trail
     assert trail["source"] == "product_console_operator_session_trail"
@@ -296,7 +309,7 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert trail["status"] == "followup_pending"
     assert trail["pending_refresh_count"] == 0
     assert trail["stored_result_count"] == 0
-    assert trail["followup_count"] == 3
+    assert trail["followup_count"] == 2
     assert trail["next_item"]["item_id"] == "release_submission"
     assert trail["recent_events"] == []
     assert trail["recovery_action_count"] == 1
@@ -310,6 +323,48 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert trail["recovery_actions"][0]["copy_payload"]["action_fingerprint"] == queue["next_item"]["action_fingerprint"]
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
+
+
+def test_completion_followup_queue_keeps_different_fingerprints_separate() -> None:
+    def group(component: str, fingerprint: str, candidate: str) -> dict[str, object]:
+        action = {
+            "action_id": "shared_action_key",
+            "tool": "example_commit_tool",
+            "mode": "commit",
+            "required_scope": "mcp:commit",
+            "arguments": {"candidate": candidate},
+        }
+        return {
+            "group_id": component,
+            "label": component,
+            "status": "needs_attention",
+            "component": component,
+            "gap_codes": [f"{component.upper()}_NOT_READY"],
+            "primary_action": action,
+            "action_refs": [
+                {
+                    **action,
+                    "action_key": "shared_action_key|example_commit_tool|commit",
+                    "action_fingerprint": fingerprint,
+                }
+            ],
+        }
+
+    queue = _completion_followup_queue(
+        status="needs_attention",
+        action_groups=[
+            group("first_component", "fingerprint-one", "candidate-one"),
+            group("second_component", "fingerprint-two", "candidate-two"),
+        ],
+    )
+
+    assert queue["total_count"] == 2
+    assert [item["position"] for item in queue["items"]] == [1, 2]
+    assert [item["action_fingerprint"] for item in queue["items"]] == [
+        "fingerprint-one",
+        "fingerprint-two",
+    ]
+    assert all("components" not in item for item in queue["items"])
 
 
 def test_console_map_attaches_recorded_action_result(tmp_path) -> None:

@@ -1038,15 +1038,15 @@ def _completion_surface(
         recommended_actions=recommended_actions,
         safe_next_action=safe_next_action,
     )
+    followup_queue = _completion_followup_queue(
+        status=completion_status,
+        action_groups=action_groups,
+    )
     progress_state = _completion_progress_state(
         status=completion_status,
         gaps=gaps,
         action_result_state=action_result_state,
-        followup_count=len(action_groups),
-    )
-    followup_queue = _completion_followup_queue(
-        status=completion_status,
-        action_groups=action_groups,
+        followup_count=int(followup_queue.get("total_count") or 0),
     )
     product_completion_overview = _product_completion_overview(
         status=completion_status,
@@ -1156,11 +1156,7 @@ def _product_completion_overview(
         if isinstance(followup_queue.get("items"), list)
         else []
     )
-    followup_by_component = {
-        str(item.get("component") or item.get("item_id")): item
-        for item in followup_items
-        if isinstance(item, dict)
-    }
+    followup_by_component = _completion_followup_items_by_component(followup_items)
     categories = [
         _product_completion_category(
             component_id=component_id,
@@ -1842,11 +1838,22 @@ def _completion_followup_queue(
     status: str,
     action_groups: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    items = [
-        _completion_followup_item(index=index, group=group)
-        for index, group in enumerate(action_groups)
-        if isinstance(group, dict)
-    ]
+    items: list[dict[str, Any]] = []
+    item_index_by_fingerprint: dict[str, int] = {}
+    for group in action_groups:
+        if not isinstance(group, dict):
+            continue
+        item = _completion_followup_item(index=len(items), group=group)
+        fingerprint = str(item.get("action_fingerprint") or "")
+        existing_index = item_index_by_fingerprint.get(fingerprint) if fingerprint else None
+        if existing_index is not None:
+            items[existing_index] = _completion_merge_shared_followup_item(items[existing_index], item)
+            continue
+        if fingerprint:
+            item_index_by_fingerprint[fingerprint] = len(items)
+        items.append(item)
+    for position, item in enumerate(items, start=1):
+        item["position"] = position
     return {
         "source": "product_console_closeout_followup_queue",
         "schema_version": "product_console_closeout_followup_queue.v1",
@@ -1865,6 +1872,59 @@ def _completion_followup_queue(
             "does_not_authorize_stable_replacement": True,
         },
     }
+
+
+def _completion_merge_shared_followup_item(
+    primary: dict[str, Any],
+    duplicate: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(primary)
+    primary_component = str(primary.get("component") or primary.get("item_id") or "")
+    duplicate_component = str(duplicate.get("component") or duplicate.get("item_id") or "")
+    components = [
+        str(item)
+        for item in list(primary.get("components") or [primary_component]) + [duplicate_component]
+        if item
+    ]
+    related_item_ids = [
+        str(item)
+        for item in list(primary.get("related_item_ids") or [primary.get("item_id")])
+        + [duplicate.get("item_id")]
+        if item
+    ]
+    merged["components"] = list(dict.fromkeys(components))
+    merged["related_item_ids"] = list(dict.fromkeys(related_item_ids))
+    merged["shared_by_component_count"] = len(merged["components"])
+    merged["gap_codes"] = list(
+        dict.fromkeys(
+            str(item)
+            for item in list(primary.get("gap_codes") or []) + list(duplicate.get("gap_codes") or [])
+            if item
+        )
+    )
+    if duplicate.get("status") == "blocked":
+        merged["status"] = "blocked"
+    merged["action_ref_count"] = max(
+        int(primary.get("action_ref_count") or 0),
+        int(duplicate.get("action_ref_count") or 0),
+    )
+    return merged
+
+
+def _completion_followup_items_by_component(
+    items: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    by_component: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        components = item.get("components") if isinstance(item.get("components"), list) else []
+        if not components:
+            components = [item.get("component") or item.get("item_id")]
+        for component in components:
+            if component:
+                by_component[str(component)] = item
+    return by_component
 
 
 def _completion_followup_item(*, index: int, group: dict[str, Any]) -> dict[str, Any]:

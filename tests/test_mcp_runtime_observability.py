@@ -1192,6 +1192,9 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "Last run" in widget_html
         assert "Confirm outside" in widget_html
         assert "Preview first" in widget_html
+        assert "completionFollowupItemForGroup" in widget_html
+        assert "shared action " in widget_html
+        assert "shared_by_component_count" in widget_html
         assert "stablePreviewActionIsRunnable" in widget_html
         assert "stablePreviewConfirmationMessage" in widget_html
         assert "previewActionConfirmations" in widget_html
@@ -1953,6 +1956,10 @@ vm.runInThisContext({json.dumps(widget_script)});
           next_step: "Record the latest submission evidence activity after refresh/recovery actions.",
           display_order: 1,
           followup_position: 1,
+          followup_item: {{
+            item_id: "submission_evidence_activity",
+            shared_by_component_count: 2
+          }},
           primary_tool: "record_product_console_action_result",
           required_scope: "mcp:commit",
           gate_level: "explicit_apply_or_run_required"
@@ -2090,6 +2097,9 @@ vm.runInThisContext({json.dumps(widget_script)});
           label: "Evidence Activity",
           status: "needs_attention",
           component: "submission_evidence_activity",
+          components: ["submission_evidence_activity", "submission_evidence"],
+          shared_by_component_count: 2,
+          position: 1,
           gap_codes: ["SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"],
           primary_tool: "record_product_console_action_result",
           required_scope: "mcp:commit",
@@ -2146,12 +2156,16 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(productCompletionCategoryText().includes("gaps 1"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("record_product_console_action_result"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("mcp:commit"), productCompletionCategoryText());
+  assert(productCompletionCategoryText().includes("followup 1"), productCompletionCategoryText());
+  assert(productCompletionCategoryText().includes("shared action 2"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("Record the latest submission evidence activity"), productCompletionCategoryText());
   assert(productCompletionFollowupCopyButton(), "product completion category copy should render");
   assert(productCompletionFollowupRecordButton(), "product completion category record should render");
   assert(productCompletionFollowupRefreshButton(), "product completion category refresh should render");
   assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());
   assert(closeoutGroupText().includes("gaps 1"), closeoutGroupText());
+  assert(closeoutGroupText().includes("followup 1"), closeoutGroupText());
+  assert(closeoutGroupText().includes("shared action 2"), closeoutGroupText());
   assert(closeoutGroupText().includes("record_submission_evidence_activity | record_product_console_action_result | commit"), closeoutGroupText());
   assert(closeoutGroupText().includes("Record the latest submission evidence activity"), closeoutGroupText());
   assert(closeoutGroupText().includes("Confirm required"), closeoutGroupText());

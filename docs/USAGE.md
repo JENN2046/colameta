@@ -399,6 +399,14 @@ rejects missing/placeholder messages, unknown fields, invalid modes/statuses,
 and confirmation payload mismatches. All other Web v2 write intents remain
 blocked, and this path does not execute the original action or authorize
 submission, publish, commit, push, or stable replacement.
+When multiple incomplete categories reference the exact same
+`action_fingerprint`, the Product follow-up queue keeps one shared action and
+uses `components`, `related_item_ids`, and merged `gap_codes` to identify every
+category it covers. Categories retain their separate status and gaps while
+sharing one `followup_position`, and progress counts unique executable actions.
+Only exact fingerprint matches are folded together; actions with different
+arguments, scopes, or result contracts remain separate so authorization
+boundaries cannot be collapsed accidentally.
 Use `get_submission_evidence_fill_preview` to review the generated
 `fill_submission_evidence_files` payload before any write. The preview returns a
 copyable tool call with `mark_ready=false` and placeholder evidence content; it
