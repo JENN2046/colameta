@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import runner.stable_promotion_evidence as stable_promotion_evidence
+import runner.stable_promotion_readiness as stable_promotion_readiness
 from runner.stable_promotion_evidence import (
     MCPStablePromotionEvidenceManager,
     build_candidate_artifact_manifest,
@@ -380,3 +381,33 @@ def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path)
     applied = server.call_tool_for_agent("manage_stable_promotion_evidence", next_arguments)
     assert applied["ok"] is True
     assert applied["data"]["status"] == "recorded"
+
+
+def test_service_routed_readiness_preserves_project_name_in_recommended_preview(tmp_path: Path, monkeypatch) -> None:
+    repo, head = _repo(tmp_path)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(repo),
+        project_name="demo-project",
+        project_mode="managed",
+    )
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(str(repo), service_mode=True)
+    server.project_registry = registry
+    monkeypatch.setattr(stable_promotion_readiness, "get_runtime_version_status", lambda _root: _runtime(repo, head))
+
+    readiness = server.call_tool_for_agent(
+        "get_stable_promotion_readiness",
+        {"project_name": "demo-project"},
+    )
+
+    assert readiness["ok"] is True
+    recommended = readiness["data"]["recommended_next_steps"][0]
+    assert recommended["tool"] == "manage_stable_promotion_evidence"
+    assert recommended["arguments"]["project_name"] == "demo-project"
+    preview = server.call_tool_for_agent(recommended["tool"], recommended["arguments"])
+    assert preview["ok"] is True
+    assert preview["data"]["can_apply"] is True

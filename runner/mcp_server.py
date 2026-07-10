@@ -249,15 +249,19 @@ _normalize_run_mcp_workflow_name = normalize_workflow_name
 
 
 def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Extract next_actions list from a tool result dict, handling both flat and data-wrapped structures."""
-    next_actions = result.get("next_actions")
-    if isinstance(next_actions, list):
-        return next_actions
+    """Extract next_actions from flat or data-wrapped tool results."""
+    return _find_action_list(result, "next_actions")
+
+
+def _find_action_list(result: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
+    actions = result.get(key)
+    if isinstance(actions, list):
+        return actions
     data = result.get("data")
     if isinstance(data, dict):
-        next_actions = data.get("next_actions")
-        if isinstance(next_actions, list):
-            return next_actions
+        actions = data.get(key)
+        if isinstance(actions, list):
+            return actions
     return None
 
 
@@ -8677,6 +8681,11 @@ class MCPPlanningBridgeServer:
                 for action in next_actions:
                     if isinstance(action, dict):
                         _inject_project_name_into_action(action, clean_project_name)
+            recommended_next_steps = _find_action_list(result, "recommended_next_steps")
+            if recommended_next_steps is not None:
+                for action in recommended_next_steps:
+                    if isinstance(action, dict):
+                        _inject_project_name_into_action(action, clean_project_name)
         return result
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
@@ -10796,8 +10805,8 @@ class MCPPlanningBridgeServer:
         }
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
-        project_root, _ = self._resolve_read_only_project_context(params)
-        return get_stable_promotion_readiness(
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        result = get_stable_promotion_readiness(
             project_root,
             visible_tool_names=self._visible_tool_names(),
             supported_workflows=list(_SUPPORTED_MCP_WORKFLOWS),
@@ -10805,6 +10814,14 @@ class MCPPlanningBridgeServer:
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
         )
+        if params.get("project_name") is not None:
+            project_name = self._project_name_for_context(project_root, project_record, params)
+            recommended_next_steps = _find_action_list(result, "recommended_next_steps")
+            if recommended_next_steps is not None:
+                for action in recommended_next_steps:
+                    if isinstance(action, dict):
+                        _inject_project_name_into_action(action, project_name)
+        return result
 
     def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
