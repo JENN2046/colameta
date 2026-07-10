@@ -128,6 +128,14 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .product-followup-label { color: #c9d1d9; font-size: 12px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-followup-meta { color: #8b949e; font-size: 10px; line-height: 1.4; word-break: break-word; }
 .product-followup-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.product-completion-overview { border-top: 1px solid #30363d55; margin-top: 8px; padding-top: 8px; display: grid; gap: 6px; }
+.product-completion-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.product-completion-title { color: #c9d1d9; font-size: 12px; font-weight: 600; }
+.product-completion-counts { display: flex; flex-wrap: wrap; gap: 5px; }
+.product-completion-next { color: #8b949e; font-size: 10px; line-height: 1.4; word-break: break-word; }
+.product-completion-categories { display: grid; gap: 4px; }
+.product-completion-category { display: flex; justify-content: space-between; gap: 8px; align-items: center; color: #8b949e; font-size: 10px; border-top: 1px solid #21262d; padding-top: 4px; }
+.product-completion-category:first-child { border-top: none; padding-top: 0; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -1608,6 +1616,48 @@ function renderOperatorInboxRunImpact(completion, operatorTrail) {{
   return h;
 }}
 
+function productCompletionBadgeClass(severity) {{
+  if (severity === "ready") return "badge-ok";
+  if (severity === "blocker") return "badge-err";
+  if (severity === "needs_attention") return "badge-warn";
+  return "badge-info";
+}}
+
+function renderProductCompletionOverview(completionOverview) {{
+  completionOverview = completionOverview || {{}};
+  const categories = Array.isArray(completionOverview.categories) ? completionOverview.categories : [];
+  const status = completionOverview.status || "-";
+  const ready = completionOverview.ready_category_count === 0 || completionOverview.ready_category_count ? completionOverview.ready_category_count : 0;
+  const total = completionOverview.total_category_count === 0 || completionOverview.total_category_count ? completionOverview.total_category_count : categories.length;
+  const blockers = completionOverview.blocker_category_count === 0 || completionOverview.blocker_category_count ? completionOverview.blocker_category_count : 0;
+  const attention = completionOverview.needs_attention_category_count === 0 || completionOverview.needs_attention_category_count ? completionOverview.needs_attention_category_count : 0;
+  const primary = completionOverview.primary_gap_category && typeof completionOverview.primary_gap_category === "object" ? completionOverview.primary_gap_category : null;
+  const primaryLabel = primary ? (primary.label || primary.category_id || "-") : "无";
+  const nextStep = completionOverview.next_step || (primary && primary.next_step) || "Read Product Console and follow the first incomplete category.";
+  let h = `<div class="product-completion-overview" aria-label="Product completion overview">`;
+  h += `<div class="product-completion-head"><div class="product-completion-title">Product completion</div><span class="badge ${{productCompletionBadgeClass(status)}}">${{esc(status)}}</span></div>`;
+  h += `<div class="product-completion-counts">`;
+  h += `<span class="badge badge-ok">ready ${{esc(ready)}}/${{esc(total)}}</span>`;
+  h += `<span class="badge ${{attention ? "badge-warn" : "badge-info"}}">attention ${{esc(attention)}}</span>`;
+  h += `<span class="badge ${{blockers ? "badge-err" : "badge-info"}}">blocker ${{esc(blockers)}}</span>`;
+  h += `</div>`;
+  h += `<div class="product-completion-next">第一缺口：${{esc(primaryLabel)}} ｜ 下一步：${{esc(nextStep)}}</div>`;
+  if (categories.length) {{
+    h += `<div class="product-completion-categories">`;
+    for (const category of categories.slice(0, 5)) {{
+      const label = category.label || category.category_id || "-";
+      const severity = category.severity || category.status || "-";
+      const gapCount = Array.isArray(category.gap_codes) ? category.gap_codes.length : 0;
+      const tool = category.primary_tool || (category.primary_action && category.primary_action.tool) || "";
+      h += `<div class="product-completion-category"><span>${{esc(label)}}</span><span class="badge ${{productCompletionBadgeClass(severity)}}">${{esc(severity)}}${{gapCount ? " · gaps " + esc(gapCount) : ""}}${{tool ? " · " + esc(tool) : ""}}</span></div>`;
+    }}
+    h += `</div>`;
+  }}
+  h += `<div class="product-completion-next">只读概览；不执行提交、发布、stable replacement 或 app submission。</div>`;
+  h += `</div>`;
+  return h;
+}}
+
 function renderServiceCapabilityCard(data) {{
   data = data || {{}};
   const svc = data.web_commander_service || {{}};
@@ -1692,6 +1742,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Product closeout", completionText);
+  h += renderProductCompletionOverview(completionOverview);
   h += renderOperatorInboxRunImpact(completion, operatorTrail);
   h += r("Product categories", completionCategoryText);
   h += r("Operator trail", operatorTrailText);
