@@ -236,6 +236,7 @@ Through the Web Console, you can see:
 - Which user decisions have been recorded
 - Whether GPTs understood your decisions correctly
 - What next actions are available
+- Which submission evidence files still declare unfinished content, with a local editor for preview-bound revision
 
 You do not need to personally act as the engineering lead.
 But you can still observe, inspect, and correct the process when needed.
@@ -506,7 +507,7 @@ High-risk Web Console actions such as running or fixing the current version with
 `/api/commit-preview` only creates runtime preview metadata; `/api/commit-confirm` is the local Git history mutation boundary and requires dangerous confirmation. Web remote Git is read-only status only: the Web Console must not expose push, pull, fetch, preview, apply, or equivalent remote Git mutation routes. Remote Git mutations remain outside the Web Console and require a dedicated hard-gated plan before any future Web surface is added.
 This Web confirmation guard is intentionally pre-executor only: it does not replace post-run scope validation, GitHub Actions remains outside this local Web guard, the browser still temporarily receives the confirmation id for E2A confirmation flow, and server-side workdir synchronization remains deferred. MCP parity and broader Git remote/apply guard coverage remain separate hardening tracks.
 If a platform blocks a preview-bound ColaMeta apply tool call before ColaMeta can evaluate its own guards, treat it as an operator handoff boundary, not a bypass; see [Platform-Blocked Operator Handoff RFC](docs/platform-blocked-operator-handoff.md).
-Submission evidence that explicitly remains draft is revised through `manage_submission_evidence_revision`: preview binds a manifest-owned Markdown path to current/proposed digests, apply rechecks both the file and manifest before an atomic replacement, and the ready field remains false until separate human review.
+Submission evidence that explicitly remains draft is revised through `manage_submission_evidence_revision`: preview binds a manifest-owned Markdown path to current/proposed digests, apply rechecks both the file and manifest before an atomic replacement, and the ready field remains false until separate human review. The Web Console's **EVIDENCE** workspace exposes the bounded source text only through its authenticated local read route, invalidates the preview whenever the editor changes, requires the same one-use dangerous confirmation for apply, and refreshes Product Console status after a successful revision.
 Runtime version status is a read-only signal, not restart authority; see [Runtime Version Status Decision Contract](docs/runtime-version-status-decision-contract.md).
 Runtime loaded-code verification adds read-only reload awareness for stale loaded modules or post-commit HEAD changes; see [Runtime Loaded-Code Verification](docs/runtime-loaded-code-verification.md).
 

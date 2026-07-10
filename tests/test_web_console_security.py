@@ -205,6 +205,20 @@ class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
 
 
 class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
+    def test_local_evidence_revision_workspace_renders_guarded_preview_confirm_flow(self) -> None:
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+
+        assert 'id="right-tab-evidence"' in page
+        assert "function evidenceRevisionEntries" in page
+        assert "/api/submission-evidence/revision/context" in page
+        assert "/api/submission-evidence/revision/preview" in page
+        assert 'dangerousPostAction("/api/submission-evidence/revision/apply"' in page
+        assert 'id="evidence-revision-content"' in page
+        assert "正文已修改；请重新生成预览后再应用。" in page
+        assert "ready 字段保持 false" in page
+
     def test_product_followup_copy_payloads_preserve_action_binding(self) -> None:
         from runner.web_console_v2_assets import render_v2_index_page
 
@@ -479,6 +493,131 @@ class WebConsoleSecurityTests(unittest.TestCase):
         self.server._api_execute_current_version = safe_execute
         self.addCleanup(lambda: setattr(self.server, "_api_execute_current_version", original_execute))
         return calls
+
+    def prepare_submission_evidence_revision(self) -> tuple[str, str]:
+        from runner.release_submission_readiness import (
+            DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
+            init_submission_evidence_scaffold,
+        )
+
+        draft = """# Logo Evidence
+
+## asset_path
+docs/assets/app-logo.png
+
+## dimensions
+1024x1024
+
+## review_notes
+Draft evidence only; a human reviewer still needs to confirm the final asset.
+"""
+        final = """# Logo Evidence
+
+## asset_path
+docs/assets/app-logo.png
+
+## dimensions
+1024x1024 RGBA PNG
+
+## review_notes
+The release operator reviewed the final exported asset in the local Web Console.
+"""
+        init_submission_evidence_scaffold(str(self.project))
+        evidence_path = self.project / "docs/submission/logo.md"
+        evidence_path.write_text(draft, encoding="utf-8")
+        manifest_path = self.project / DEFAULT_SUBMISSION_MATERIALS_REL_PATH
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["evidence"]["logo"] = "docs/submission/logo.md"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return draft, final
+
+    def test_submission_evidence_local_web_editor_is_read_guarded_preview_bound_and_confirmed(self) -> None:
+        draft, final = self.prepare_submission_evidence_revision()
+        self.start_web()
+        read_token = self.read_token_from_page()
+        csrf = self.csrf_token_from_page()
+        context_url = (
+            f"http://{HOST}:{self.port}/api/submission-evidence/revision/context"
+            "?key=logo&ref=docs%2Fsubmission%2Flogo.md"
+        )
+
+        status, denied = json_request(context_url)
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
+        status, context = json_request(context_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(context["ok"])
+        self.assertEqual(context["current_content"], draft)
+        self.assertTrue(context["local_web_only"])
+
+        preview_url = f"http://{HOST}:{self.port}/api/submission-evidence/revision/preview"
+        preview_payload = {"key": "logo", "ref": "docs/submission/logo.md", "content": final}
+        status, preview = json_request(
+            preview_url,
+            method="POST",
+            payload=preview_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(preview["ok"])
+        self.assertFalse(preview["content_included"])
+        self.assertNotIn(final.strip(), json.dumps(preview))
+        self.assertEqual((self.project / "docs/submission/logo.md").read_text(encoding="utf-8"), draft)
+
+        apply_url = f"http://{HOST}:{self.port}/api/submission-evidence/revision/apply"
+        apply_payload = {"preview_id": preview["preview_id"], "content": final}
+        status, unconfirmed = json_request(
+            apply_url,
+            method="POST",
+            payload=apply_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(unconfirmed["error_code"], "DANGEROUS_CONFIRMATION_REQUIRED")
+
+        confirmation_id = self.dangerous_preview(
+            "/api/submission-evidence/revision/apply",
+            apply_payload,
+        )
+        status, mismatched = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "content": final + "\nchanged after confirmation\n", "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(mismatched["error_code"], "DANGEROUS_CONFIRMATION_PAYLOAD_MISMATCH")
+
+        status, applied = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["status"], "applied")
+        self.assertFalse(applied["content_included"])
+        self.assertTrue(applied["dangerous_action_receipt"]["confirmation_validated"])
+        self.assertNotIn(final.strip(), json.dumps(applied))
+        self.assertEqual((self.project / "docs/submission/logo.md").read_text(encoding="utf-8"), final)
+        assert self.server is not None
+        workflow_paths = list((Path(self.server.runner_dir) / "runtime/workflows").glob("*.json"))
+        self.assertTrue(workflow_paths)
+        workflow_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in workflow_paths
+        )
+        self.assertNotIn(final.strip(), workflow_text)
 
     def install_api_stub(self, method_name: str) -> list[dict[str, Any]]:
         assert self.server is not None

@@ -103,6 +103,19 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-run-trail-item.running { color: #d29922; }
 .operator-inbox-run-trail-item.completed { color: #3fb950; }
 .operator-inbox-run-trail-item.failed { color: #f85149; }
+.evidence-workspace-summary { color: #8b949e; font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
+.evidence-workspace-list { display: grid; gap: 7px; margin-bottom: 10px; }
+.evidence-workspace-item { border: 1px solid #30363d; border-radius: 6px; padding: 8px; background: #0d1117; }
+.evidence-workspace-item.selected { border-color: #58a6ff; }
+.evidence-workspace-ref { color: #8b949e; font-size: 10px; word-break: break-all; margin-top: 3px; }
+.evidence-editor { border-top: 1px solid #30363d; padding-top: 10px; }
+.evidence-editor textarea { width: 100%; min-height: 260px; resize: vertical; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 9px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.evidence-editor textarea:focus { outline: 2px solid #1f6feb; outline-offset: 1px; }
+.evidence-editor-meta { color: #8b949e; font-size: 10px; line-height: 1.5; margin: 6px 0; word-break: break-word; }
+.evidence-editor-status { color: #8b949e; font-size: 11px; min-height: 18px; margin-top: 7px; }
+.evidence-editor-status.preview_ready { color: #58a6ff; }
+.evidence-editor-status.applied { color: #3fb950; }
+.evidence-editor-status.failed { color: #f85149; }
 .modal-sync-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin-bottom: 10px; min-height: 16px; }
 .registry-action-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin: 8px 0 10px; min-height: 16px; }
 .registry-action-status.running { color: #d29922; }
@@ -223,8 +236,8 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .live-run-events-scroll::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 .live-run-events-scroll::-webkit-scrollbar-thumb:hover { background: #484f58; }
 
-.tab-bar { display: flex; gap: 0; margin-bottom: 12px; border-bottom: 1px solid #30363d; }
-.tab-btn { background: transparent; border: none; color: #8b949e; padding: 6px 14px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; text-align: left; display: flex; align-items: center; justify-content: flex-start; }
+.tab-bar { display: flex; gap: 0; margin-bottom: 12px; border-bottom: 1px solid #30363d; overflow-x: auto; scrollbar-width: thin; }
+.tab-btn { background: transparent; border: none; color: #8b949e; padding: 6px 8px; font-size: 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; text-align: left; display: flex; align-items: center; justify-content: flex-start; flex: 0 0 auto; }
 .tab-btn.active { color: #f0f6fc; border-bottom-color: #58a6ff; }
 .tab-btn:hover { color: #c9d1d9; }
 .tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 16px; margin-left: 6px; padding: 0 5px; border-radius: 999px; border: 1px solid #30363d; color: #8b949e; background: #0d1117; font-size: 10px; line-height: 1; }
@@ -421,8 +434,12 @@ const LEFT_TAB_DEFAULT = "overview";
 const LEFT_TAB_NAMES = ["overview", "versionplan"];
 let activeLeftTab = LEFT_TAB_DEFAULT;
 const RIGHT_TAB_DEFAULT = "todolist";
-const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
+const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "evidence", "decision", "memory"];
 let activeRightTab = RIGHT_TAB_DEFAULT;
+let evidenceRevisionEditor = {{
+  key: "", ref: "", content: "", context: null, preview: null,
+  state: "idle", message: "", busy: false,
+}};
 let operatorInboxRunFeedback = null;
 let operatorInboxRunTrail = [];
 let operatorInboxRunTrailFeedback = "";
@@ -915,6 +932,12 @@ function issueLink(label, count, kind) {{
 
 function render(data) {{
   latestStatusData = data || {{}};
+  const activeProjectRoot = currentProjectRootForSwitcher(latestStatusData);
+  const editorProjectRoot = evidenceRevisionEditor.context && evidenceRevisionEditor.context.project_root
+    ? String(evidenceRevisionEditor.context.project_root) : "";
+  if (editorProjectRoot && activeProjectRoot && editorProjectRoot !== activeProjectRoot) {{
+    evidenceRevisionEditor = {{ key: "", ref: "", content: "", context: null, preview: null, state: "idle", message: "", busy: false }};
+  }}
   latestStatusSignature = statusSignature(latestStatusData);
   clearStaleOperatorInboxFeedback(latestStatusData);
   renderRefreshStatus();
@@ -2896,6 +2919,177 @@ function renderOperatorInboxRunTrail() {{
   return h;
 }}
 
+function evidenceRevisionEntries(data) {{
+  data = data || {{}};
+  const service = data.web_commander_service || {{}};
+  const consoleMap = service.product_console_map || data.product_console_map || {{}};
+  const bundle = consoleMap.release_submission_evidence_bundle || {{}};
+  const fillPlan = bundle.fill_plan || {{}};
+  const sourceEntries = Array.isArray(fillPlan.content_review_entries) ? fillPlan.content_review_entries : [];
+  const entries = [];
+  for (const entry of sourceEntries) {{
+    if (!entry || !entry.key) continue;
+    const states = Array.isArray(entry.file_states) ? entry.file_states : [];
+    const reviewStates = states.filter(function(item) {{ return item && item.status === "review_required" && item.ref; }});
+    const refs = reviewStates.length
+      ? reviewStates.map(function(item) {{ return String(item.ref); }})
+      : (Array.isArray(entry.refs) ? entry.refs.map(String) : []);
+    for (const ref of refs) {{
+      const fileState = reviewStates.find(function(item) {{ return String(item.ref) === ref; }}) || {{}};
+      entries.push({{
+        key: String(entry.key),
+        ref: ref,
+        readyField: String(entry.ready_field || ""),
+        purpose: String(entry.purpose || ""),
+        requiredSections: Array.isArray(entry.required_sections) ? entry.required_sections.map(String) : [],
+        reasonCodes: Array.isArray(fileState.reason_codes) ? fileState.reason_codes.map(String) : [],
+      }});
+    }}
+  }}
+  return entries;
+}}
+
+async function openEvidenceRevisionEditor(key, ref) {{
+  activeRightTab = "evidence";
+  evidenceRevisionEditor = {{ key: key, ref: ref, content: "", context: null, preview: null, state: "loading", message: "正在读取受控证据正文…", busy: true }};
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const query = "?key=" + encodeURIComponent(key) + "&ref=" + encodeURIComponent(ref);
+    const resp = await fetch("/api/submission-evidence/revision/context" + query, {{ cache: "no-store", headers: readHeaders() }});
+    const context = await resp.json();
+    if (!context.ok) throw new Error(context.message || context.error_code || "读取证据正文失败。");
+    evidenceRevisionEditor.context = context;
+    evidenceRevisionEditor.content = String(context.current_content || "");
+    evidenceRevisionEditor.state = "editing";
+    evidenceRevisionEditor.message = "正文仅在本地受读权限保护的编辑器中返回；公开状态包不包含正文。";
+  }} catch (e) {{
+    evidenceRevisionEditor.state = "failed";
+    evidenceRevisionEditor.message = String(e);
+  }} finally {{
+    evidenceRevisionEditor.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+async function previewEvidenceRevision() {{
+  if (evidenceRevisionEditor.busy || !evidenceRevisionEditor.key || !evidenceRevisionEditor.ref) return;
+  const textarea = $("evidence-revision-content");
+  evidenceRevisionEditor.content = textarea ? textarea.value : evidenceRevisionEditor.content;
+  evidenceRevisionEditor.preview = null;
+  evidenceRevisionEditor.busy = true;
+  evidenceRevisionEditor.state = "previewing";
+  evidenceRevisionEditor.message = "正在校验章节、未完成标记与摘要绑定…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const resp = await fetch("/api/submission-evidence/revision/preview", {{
+      method: "POST", headers: jsonHeaders(), cache: "no-store",
+      body: JSON.stringify({{ key: evidenceRevisionEditor.key, ref: evidenceRevisionEditor.ref, content: evidenceRevisionEditor.content }}),
+    }});
+    const preview = await resp.json();
+    if (!preview.ok) throw new Error(preview.message || preview.error_code || "证据预览失败。");
+    evidenceRevisionEditor.preview = preview;
+    evidenceRevisionEditor.state = "preview_ready";
+    evidenceRevisionEditor.message = "预览已绑定；应用时会再次核对正文、清单和文件基线。";
+  }} catch (e) {{
+    evidenceRevisionEditor.state = "failed";
+    evidenceRevisionEditor.message = String(e);
+  }} finally {{
+    evidenceRevisionEditor.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+async function applyEvidenceRevision() {{
+  const preview = evidenceRevisionEditor.preview || {{}};
+  if (evidenceRevisionEditor.busy || !preview.preview_id) return;
+  evidenceRevisionEditor.busy = true;
+  evidenceRevisionEditor.state = "applying";
+  evidenceRevisionEditor.message = "等待一次性危险操作确认…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const result = await dangerousPostAction("/api/submission-evidence/revision/apply", {{
+      preview_id: preview.preview_id,
+      content: evidenceRevisionEditor.content,
+    }});
+    if (!result.ok) throw new Error(result.message || result.error_code || "证据应用失败。");
+    evidenceRevisionEditor.preview = null;
+    evidenceRevisionEditor.state = "applied";
+    evidenceRevisionEditor.message = "证据已应用，ready 字段保持 false；状态已自动刷新，请完成人工复核后再标记 ready。";
+    try {{
+      latestStatusData = await fetchStatus();
+      latestStatusSignature = statusSignature(latestStatusData);
+    }} catch (refreshError) {{
+      evidenceRevisionEditor.message = "证据已应用，但状态自动刷新失败；请手动刷新。";
+    }}
+  }} catch (e) {{
+    evidenceRevisionEditor.state = "failed";
+    evidenceRevisionEditor.message = String(e);
+  }} finally {{
+    evidenceRevisionEditor.busy = false;
+    render(latestStatusData || {{}});
+  }}
+}}
+
+function bindEvidenceRevisionActions(root) {{
+  if (!root) return;
+  root.querySelectorAll("[data-open-evidence-revision]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      openEvidenceRevisionEditor(this.getAttribute("data-evidence-key") || "", this.getAttribute("data-evidence-ref") || "");
+    }});
+  }});
+  const textarea = $("evidence-revision-content");
+  if (textarea) textarea.addEventListener("input", function() {{
+    evidenceRevisionEditor.content = this.value;
+    if (evidenceRevisionEditor.preview) {{
+      evidenceRevisionEditor.preview = null;
+      evidenceRevisionEditor.state = "editing";
+      evidenceRevisionEditor.message = "正文已修改；请重新生成预览后再应用。";
+      const status = $("evidence-revision-status");
+      if (status) {{ status.className = "evidence-editor-status editing"; status.textContent = evidenceRevisionEditor.message; }}
+      const apply = $("evidence-revision-apply");
+      if (apply) apply.disabled = true;
+    }}
+  }});
+  const previewButton = $("evidence-revision-preview");
+  if (previewButton) previewButton.addEventListener("click", previewEvidenceRevision);
+  const applyButton = $("evidence-revision-apply");
+  if (applyButton) applyButton.addEventListener("click", applyEvidenceRevision);
+}}
+
+function renderEvidenceRevisionWorkspace(data) {{
+  const entries = evidenceRevisionEntries(data);
+  let h = `<div class="evidence-workspace-summary">本地受控编辑区 ｜ review required ${{entries.length}}<br>选择清单绑定的 Markdown，编辑后先预览，再通过一次性确认应用；应用不会把 ready 字段设为 true。</div>`;
+  if (!entries.length) {{
+    h += `<div class="empty-state">当前没有需要修订的未完成证据。</div>`;
+  }} else {{
+    h += `<div class="evidence-workspace-list">`;
+    for (const entry of entries) {{
+      const selected = evidenceRevisionEditor.key === entry.key && evidenceRevisionEditor.ref === entry.ref;
+      const reasons = entry.reasonCodes.length ? entry.reasonCodes.join(", ") : "review_required";
+      h += `<div class="evidence-workspace-item${{selected ? " selected" : ""}}">`;
+      h += `<div class="operator-inbox-head"><div><div class="operator-inbox-title">${{esc(entry.key)}}</div><div class="evidence-workspace-ref">${{esc(entry.ref)}}</div></div><span class="badge badge-warn">${{esc(reasons)}}</span></div>`;
+      if (entry.purpose) h += `<div class="operator-inbox-why">${{esc(entry.purpose)}}</div>`;
+      h += `<div class="operator-inbox-actions"><button type="button" class="operator-inbox-btn" data-open-evidence-revision="true" data-evidence-key="${{escAttr(entry.key)}}" data-evidence-ref="${{escAttr(entry.ref)}}">${{selected ? "重新载入" : "编辑"}}</button></div>`;
+      h += `</div>`;
+    }}
+    h += `</div>`;
+  }}
+  if (evidenceRevisionEditor.key && evidenceRevisionEditor.ref) {{
+    const ctx = evidenceRevisionEditor.context || {{}};
+    const preview = evidenceRevisionEditor.preview || {{}};
+    const disabled = evidenceRevisionEditor.busy || !ctx.current_sha256;
+    h += `<div class="evidence-editor">`;
+    h += `<div class="operator-inbox-title">${{esc(evidenceRevisionEditor.key)}} ｜ ${{esc(evidenceRevisionEditor.ref)}}</div>`;
+    h += `<div class="evidence-editor-meta">required sections: ${{esc((ctx.required_sections || []).join(", ") || "-")}}<br>current sha256: ${{esc(ctx.current_sha256 || "-")}}${{preview.proposed_sha256 ? `<br>proposed sha256: ${{esc(preview.proposed_sha256)}}` : ""}}</div>`;
+    h += `<label class="key" for="evidence-revision-content">完整替换 Markdown</label>`;
+    h += `<textarea id="evidence-revision-content" spellcheck="false"${{disabled ? " disabled" : ""}}>${{esc(evidenceRevisionEditor.content)}}</textarea>`;
+    h += `<div class="operator-inbox-actions"><button type="button" id="evidence-revision-preview" class="operator-inbox-btn"${{disabled ? " disabled" : ""}}>1. 生成预览</button><button type="button" id="evidence-revision-apply" class="operator-inbox-btn"${{evidenceRevisionEditor.busy || !preview.preview_id ? " disabled" : ""}}>2. 确认并应用</button></div>`;
+    h += `<div id="evidence-revision-status" class="evidence-editor-status ${{escAttr(evidenceRevisionEditor.state)}}" role="status" aria-live="polite">${{esc(evidenceRevisionEditor.message)}}</div>`;
+    h += `</div>`;
+  }}
+  return h;
+}}
+
 function renderOperatorInboxPanel(data) {{
   data = data || {{}};
   const inbox = operatorInboxFromData(data);
@@ -2954,12 +3148,15 @@ function renderRightColumn(data) {{
   const inboxGatedNumber = operatorInboxNumericCount(inboxCounts.gated, 0);
   const inboxBadgeClass = inboxGatedNumber > 0 ? "tab-badge warn" : (inboxTotalNumber > 0 ? "tab-badge info" : "tab-badge");
   const inboxTabTitle = "Operator inbox: " + inboxCounts.total + " total, " + inboxCounts.readOnly + " read-only, " + inboxCounts.gated + " gated";
+  const evidenceCount = evidenceRevisionEntries(data || {{}}).length;
+  const evidenceTabTitle = "Evidence revision: " + evidenceCount + " review-required file" + (evidenceCount === 1 ? "" : "s");
 
-  // Tabbed card: TODOLIST + INBOX + DECISION + MEMORY
+  // Tabbed card: TODOLIST + INBOX + EVIDENCE + DECISION + MEMORY
   h += `<div class="card action-tab-card">`;
   h += `<div class="tab-bar" role="tablist" aria-label="Operator workspace">`;
   h += `<button type="button" id="right-tab-todolist" role="tab" aria-selected="${{rightTabAriaSelected("todolist")}}" aria-controls="right-panel-todolist" aria-label="${{escAttr(todoTabTitle)}}" class="tab-btn${{rightTabActiveClass("todolist")}}" data-tab-button="todolist" title="${{escAttr(todoTabTitle)}}" onclick="switchActionTab('todolist', this)" onkeydown="handleRightTabKeydown(event, 'todolist')"><span class="tab-icon">☰</span>TODOLIST${{rightTabCountBadge(todoCount, "tab-badge info")}}</button>`;
   h += `<button type="button" id="right-tab-operator-inbox" role="tab" aria-selected="${{rightTabAriaSelected("operator-inbox")}}" aria-controls="right-panel-operator-inbox" aria-label="${{escAttr(inboxTabTitle)}}" class="tab-btn${{rightTabActiveClass("operator-inbox")}}" data-tab-button="operator-inbox" title="${{escAttr(inboxTabTitle)}}" onclick="switchActionTab('operator-inbox', this)" onkeydown="handleRightTabKeydown(event, 'operator-inbox')"><span class="tab-icon">▣</span>INBOX${{rightTabCountBadge(inboxTotalNumber, inboxBadgeClass)}}</button>`;
+  h += `<button type="button" id="right-tab-evidence" role="tab" aria-selected="${{rightTabAriaSelected("evidence")}}" aria-controls="right-panel-evidence" aria-label="${{escAttr(evidenceTabTitle)}}" class="tab-btn${{rightTabActiveClass("evidence")}}" data-tab-button="evidence" title="${{escAttr(evidenceTabTitle)}}" onclick="switchActionTab('evidence', this)" onkeydown="handleRightTabKeydown(event, 'evidence')"><span class="tab-icon">✎</span>EVIDENCE${{rightTabCountBadge(evidenceCount, evidenceCount ? "tab-badge warn" : "tab-badge")}}</button>`;
   h += `<button type="button" id="right-tab-decision" role="tab" aria-selected="${{rightTabAriaSelected("decision")}}" aria-controls="right-panel-decision" aria-label="${{escAttr(decisionTabTitle)}}" class="tab-btn${{rightTabActiveClass("decision")}}" data-tab-button="decision" title="${{escAttr(decisionTabTitle)}}" onclick="switchActionTab('decision', this)" onkeydown="handleRightTabKeydown(event, 'decision')"><span class="tab-icon">◆</span>DECISION${{rightTabCountBadge(decisionCount, "tab-badge info")}}</button>`;
   h += `<button type="button" id="right-tab-memory" role="tab" aria-selected="${{rightTabAriaSelected("memory")}}" aria-controls="right-panel-memory" aria-label="MEMORY" class="tab-btn${{rightTabActiveClass("memory")}}" data-tab-button="memory" onclick="switchActionTab('memory', this)" onkeydown="handleRightTabKeydown(event, 'memory')"><span class="tab-icon">◎</span>MEMORY</button>`;
   h += `</div>`;
@@ -3004,6 +3201,11 @@ function renderRightColumn(data) {{
   // INBOX tab
   h += `<div id="right-panel-operator-inbox" class="tab-content" role="tabpanel" aria-labelledby="right-tab-operator-inbox" aria-hidden="${{rightTabAriaHidden("operator-inbox")}}" tabindex="0" data-tab="operator-inbox"${{rightTabDisplayStyle("operator-inbox")}}>`;
   h += renderOperatorInboxPanel(data);
+  h += `</div>`;
+
+  // EVIDENCE tab
+  h += `<div id="right-panel-evidence" class="tab-content" role="tabpanel" aria-labelledby="right-tab-evidence" aria-hidden="${{rightTabAriaHidden("evidence")}}" tabindex="0" data-tab="evidence"${{rightTabDisplayStyle("evidence")}}>`;
+  h += renderEvidenceRevisionWorkspace(data);
   h += `</div>`;
 
   // DECISION tab
@@ -3067,6 +3269,7 @@ function renderRightColumn(data) {{
 
   $("layout-right").innerHTML = h;
   bindOperatorInboxActions($("layout-right"));
+  bindEvidenceRevisionActions($("layout-right"));
   syncAdaptiveTodoPageSize();
 
   $("layout-right").querySelectorAll("[data-copy-todo-id]").forEach(function(btn) {{

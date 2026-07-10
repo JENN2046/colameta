@@ -67,6 +67,52 @@ class MCPSubmissionEvidenceRevisionManager:
             "action must be preview, apply, status, or discard.",
         )
 
+    def editor_context(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return bounded source text for the authenticated local Web editor only."""
+        key = str(params.get("key") or "").strip()
+        ref = str(params.get("ref") or "").strip()
+        if key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY:
+            return self._error(
+                "SUBMISSION_EVIDENCE_KEY_INVALID",
+                "Choose a supported submission evidence key.",
+                accepted_keys=sorted(SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY),
+            )
+        if not ref:
+            return self._error(
+                "SUBMISSION_EVIDENCE_REF_REQUIRED",
+                "editor context requires the manifest-bound evidence ref.",
+            )
+        target = self._load_target(key, ref, require_review_required=True)
+        if target.get("ok") is not True:
+            return target
+        current_content = str(target["current_content"])
+        return {
+            "ok": True,
+            "source": SUBMISSION_EVIDENCE_REVISION_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_REVISION_VERSION,
+            "action": "editor_context",
+            "status": "review_required",
+            "project_root": self.project_root,
+            "key": key,
+            "ref": target["ref"],
+            "ready_field": target["ready_field"],
+            "current_content": current_content,
+            "current_sha256": _sha256_text(current_content),
+            "current_size_bytes": len(current_content.encode("utf-8")),
+            "manifest_sha256": target["manifest_sha256"],
+            "reason_codes": target["reason_codes"],
+            "required_sections": self._required_sections(key),
+            "max_size_bytes": SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES,
+            "content_included": True,
+            "local_web_only": True,
+            "authority_boundary": {
+                "authenticated_local_web_read": True,
+                "manifest_bound_submission_markdown_only": True,
+                "does_not_mutate_files": True,
+                "does_not_expose_content_through_mcp_packets": True,
+            },
+        }
+
     def _preview(self, params: dict[str, Any]) -> dict[str, Any]:
         key = str(params.get("key") or "").strip()
         ref = str(params.get("ref") or "").strip()
