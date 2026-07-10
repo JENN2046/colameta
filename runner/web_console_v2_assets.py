@@ -1527,13 +1527,18 @@ function renderProductFollowupQueue(completion) {{
           component: item.component || "",
           tool: tool,
           action: primary.action || "",
-          action_id: primary.action_id || "",
+          action_id: item.action_id || primary.action_id || "",
+          action_key: item.action_key || primary.action_key || "",
+          action_fingerprint: item.action_fingerprint || primary.action_fingerprint || "",
           arguments: primary.arguments || {{}},
           required_scope: scope,
           gate_level: gate,
         }}, null, 2);
+        const recordPayload = JSON.stringify(productFollowupRecordPayload(item, primary, scope), null, 2);
         const copyLabel = "复制 Product follow-up 调用：" + label;
+        const recordLabel = "复制 Product follow-up 结果记录模板：" + label;
         h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy follow-up</button>`;
+        h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(recordPayload)}}" aria-label="${{escAttr(recordLabel)}}" title="${{escAttr(recordLabel)}}">Copy record</button>`;
       }}
       h += `</div>`;
       h += `</div>`;
@@ -1545,6 +1550,43 @@ function renderProductFollowupQueue(completion) {{
   h += `<div class="product-followup-meta">队列只读；Copy 不执行操作，Run 入口仍受 INBOX scope gate 控制。</div>`;
   h += `</div>`;
   return h;
+}}
+
+function productFollowupRecordPayload(item, primary, scope) {{
+  item = item || {{}};
+  primary = primary || {{}};
+  const primaryTool = item.primary_tool || primary.tool || "";
+  const primaryArguments = primary.arguments && typeof primary.arguments === "object" ? primary.arguments : {{}};
+  if (primaryTool === "record_product_console_action_result" && (primaryArguments.action_id || primaryArguments.tool)) {{
+    const recordArguments = Object.assign({{}}, primaryArguments);
+    const recordFingerprint = recordArguments.action_fingerprint || item.action_fingerprint || primary.action_fingerprint || "";
+    if (recordFingerprint) recordArguments.action_fingerprint = recordFingerprint;
+    const underlyingMode = recordArguments.mode || "read";
+    const underlyingActionKey = item.action_key || primary.action_key || [recordArguments.action_id, recordArguments.tool, underlyingMode].filter(Boolean).join("|");
+    return {{
+      tool: "record_product_console_action_result",
+      arguments: recordArguments,
+      source_action_key: underlyingActionKey,
+      source_item_id: item.item_id || "",
+      source_component: item.component || "",
+      required_scope: "mcp:commit",
+      gate_level: "explicit_operator_record_required",
+    }};
+  }}
+  const actionKey = item.action_key || primary.action_key || "";
+  return operatorInboxRecordPayload({{
+    item_id: item.item_id || "",
+    component: item.component || "",
+    tool: primaryTool,
+    required_scope: scope || item.required_scope || primary.required_scope || "mcp:read",
+    action_fingerprint: item.action_fingerprint || primary.action_fingerprint || "",
+    copy_payload: {{
+      action: primary.action || "",
+      action_id: item.action_id || primary.action_id || "",
+      action_key: actionKey,
+      action_fingerprint: item.action_fingerprint || primary.action_fingerprint || "",
+    }},
+  }}, actionKey);
 }}
 
 function openProductFollowupInInbox(itemId) {{

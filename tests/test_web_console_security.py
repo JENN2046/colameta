@@ -8,6 +8,8 @@ import os
 import re
 import socket
 import secrets
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -200,6 +202,77 @@ class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
         assert "other-project" in policy["display_summary"]["target"]
         assert "只移出登记" in policy["display_summary"]["target"]
         assert "不删除磁盘文件" in policy["display_summary"]["target"]
+
+
+class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
+    def test_product_followup_copy_payloads_preserve_action_binding(self) -> None:
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+
+        assert 'action_key: item.action_key || primary.action_key || ""' in page
+        assert 'action_fingerprint: item.action_fingerprint || primary.action_fingerprint || ""' in page
+        assert 'action_id: item.action_id || primary.action_id || ""' in page
+        assert "productFollowupRecordPayload" in page
+        assert "const recordPayload = JSON.stringify(productFollowupRecordPayload(item, primary, scope), null, 2)" in page
+        assert "复制 Product follow-up 结果记录模板：" in page
+        assert "Copy follow-up" in page
+        assert "Copy record" in page
+
+    def test_submission_activity_record_copy_uses_underlying_action_arguments(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for product follow-up payload behavior smoke")
+        from runner.web_console_v2_assets import render_v2_index_page
+
+        page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
+        function_source = page.split("function productFollowupRecordPayload", 1)[1].split(
+            "function openProductFollowupInInbox", 1
+        )[0]
+        script = "function productFollowupRecordPayload" + function_source + r'''
+const assert = require("assert");
+function operatorInboxRecordPayload() { throw new Error("generic record wrapper must not be used"); }
+const argumentsPayload = {
+  action_id: "submission_evidence_activity",
+  tool: "submission_evidence_activity_summary",
+  mode: "read",
+  status: "updated",
+  message: "operator-confirmed evidence activity",
+  result_ok: true,
+};
+const result = productFollowupRecordPayload({
+  item_id: "submission_evidence_activity",
+  component: "submission_evidence_activity",
+  primary_tool: "record_product_console_action_result",
+  required_scope: "mcp:commit",
+}, {
+  action: "record_submission_evidence_activity",
+  tool: "record_product_console_action_result",
+  arguments: argumentsPayload,
+  required_scope: "mcp:commit",
+}, "mcp:commit");
+assert.deepStrictEqual(result.arguments, argumentsPayload);
+assert.strictEqual(result.source_action_key, "submission_evidence_activity|submission_evidence_activity_summary|read");
+assert.strictEqual(result.required_scope, "mcp:commit");
+assert.strictEqual(result.gate_level, "explicit_operator_record_required");
+const fingerprintBound = productFollowupRecordPayload({
+  item_id: "release_submission",
+  component: "release_submission",
+  primary_tool: "record_product_console_action_result",
+  required_scope: "mcp:commit",
+  action_fingerprint: "bound-fingerprint",
+}, {
+  tool: "record_product_console_action_result",
+  arguments: {
+    action_id: "submission_evidence_activity",
+    tool: "submission_evidence_activity_summary",
+    mode: "read",
+    status: "updated",
+  },
+}, "mcp:commit");
+assert.strictEqual(fingerprintBound.arguments.action_fingerprint, "bound-fingerprint");
+'''
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def free_tcp_port() -> int:
@@ -849,7 +922,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "item_id: followupItemId" in page
         assert "component: item.component" in page
         assert "action: primary.action" in page
-        assert "action_id: primary.action_id" in page
+        assert 'action_id: item.action_id || primary.action_id || ""' in page
         assert "required_scope: scope" in page
         assert "gate_level: gate" in page
         assert "Operator trail" in page

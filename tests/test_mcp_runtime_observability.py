@@ -1189,6 +1189,11 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "clearStaleEvidenceState" in widget_html
         assert "submissionPreviewCardModels" in widget_html
         assert "copy_payload" in widget_html
+        assert "primary.action_key = item.action_key" in widget_html
+        assert "primary.action_fingerprint = item.action_fingerprint" in widget_html
+        assert "primary.arguments.action_fingerprint = primary.action_fingerprint" in widget_html
+        assert "action_key: action.action_key" in widget_html
+        assert "action_fingerprint: action.action_fingerprint" in widget_html
         assert "renderEvidenceRefreshQueue" in widget_html
         assert "fillPlan.draft_entries" in widget_html
         assert "ready \" + (progress.complete_count || 0)" in widget_html
@@ -1199,6 +1204,41 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_submission_evidence_fill_preview" in widget_html
         assert "get_apps_connector_smoke_packet" in widget_html
         assert "get_stable_replacement_cadence" in widget_html
+
+    def test_commander_closeout_record_copy_puts_fingerprint_in_arguments(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node is required for commander closeout payload behavior smoke")
+
+        project = self.make_git_checkout()
+        server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        widget_html = server._commander_widget_html()
+        function_source = widget_html.split("function closeoutFollowupAction", 1)[1].split(
+            "function closeoutFollowupKey", 1
+        )[0]
+        script = "function closeoutFollowupAction" + function_source + r'''
+const assert = require("assert");
+const result = closeoutFollowupAction({
+  item_id: "submission_evidence_activity",
+  action_id: "submission_evidence_activity",
+  action_key: "submission_evidence_activity|submission_evidence_activity_summary|read",
+  action_fingerprint: "bound-fingerprint",
+  required_scope: "mcp:commit",
+  primary_action: {
+    tool: "record_product_console_action_result",
+    arguments: {
+      action_id: "submission_evidence_activity",
+      tool: "submission_evidence_activity_summary",
+      mode: "read",
+      status: "updated",
+    },
+  },
+});
+assert.strictEqual(result.arguments.action_fingerprint, "bound-fingerprint");
+assert.strictEqual(result.action_key, "submission_evidence_activity|submission_evidence_activity_summary|read");
+assert.strictEqual(result.required_scope, "mcp:commit");
+'''
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False, timeout=15)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
     def test_web_gpt_service_entrypoint_lists_commander_sequence(self) -> None:
         project = self.make_git_checkout(managed=True)

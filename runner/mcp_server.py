@@ -5690,11 +5690,18 @@ class MCPPlanningBridgeServer:
       }
       function closeoutFollowupAction(item) {
         var primary = item && item.primary_action && typeof item.primary_action === "object" ? Object.assign({}, item.primary_action) : {};
+        if (!primary.action_id && item && item.action_id) primary.action_id = item.action_id;
         if (!primary.action_id && item && item.item_id) primary.action_id = item.item_id;
+        if (!primary.action_key && item && item.action_key) primary.action_key = item.action_key;
+        if (!primary.action_fingerprint && item && item.action_fingerprint) primary.action_fingerprint = item.action_fingerprint;
         if (!primary.mode && item && item.required_scope === "mcp:read") primary.mode = "read";
         if (!primary.mode && item && item.required_scope === "mcp:preview") primary.mode = "preview";
         if (!primary.mode && item && item.required_scope === "mcp:commit") primary.mode = "commit";
         if (!primary.required_scope && item && item.required_scope) primary.required_scope = item.required_scope;
+        if (primary.tool === "record_product_console_action_result" && primary.action_fingerprint) {
+          primary.arguments = primary.arguments && typeof primary.arguments === "object" ? Object.assign({}, primary.arguments) : {};
+          if (!primary.arguments.action_fingerprint) primary.arguments.action_fingerprint = primary.action_fingerprint;
+        }
         return primary;
       }
       function closeoutFollowupKey(item, action) {
@@ -6357,6 +6364,8 @@ class MCPPlanningBridgeServer:
             arguments: action.arguments || {},
             action: action.action,
             action_id: action.action_id,
+            action_key: action.action_key,
+            action_fingerprint: action.action_fingerprint,
             required_scope: item.required_scope || action.required_scope,
             gate_level: item.gate_level
           }, null, 2), "Copied closeout follow-up.");
