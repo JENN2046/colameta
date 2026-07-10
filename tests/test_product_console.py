@@ -939,6 +939,9 @@ def test_console_map_routes_public_stale_runtime_to_promotion_readiness() -> Non
     ]
     assert packet["readiness_snapshot"]["safe_next_action"]["tool"] == "get_stable_promotion_readiness"
     assert packet["readiness_snapshot"]["stable_delivery_decision"]["status"] == "promotion_review_required"
+    completion = packet["completion_surface"]
+    assert completion["safe_next_action"]["tool"] == "get_stable_promotion_readiness"
+    assert completion["safe_next_action"]["authority"] == "read_only"
 
 
 def test_console_map_advances_loaded_stable_readiness_to_artifact_preview() -> None:
@@ -996,6 +999,30 @@ def test_console_map_advances_loaded_stable_readiness_to_artifact_preview() -> N
         {"tool": "get_product_console_map", "why": "Advance the Product Console stable promotion action."},
     ]
     assert packet["stable_promotion_readiness_snapshot"]["artifact_preview_status"] == "missing"
+    completion = packet["completion_surface"]
+    safe_next = completion["safe_next_action"]
+    assert safe_next["tool"] == first["tool"]
+    assert safe_next["arguments"] == first["arguments"]
+    assert safe_next["mode"] == first["mode"]
+    assert safe_next["required_scope"] == first["required_scope"]
+    assert safe_next["action_key"] == first["action_key"]
+    assert safe_next["action_fingerprint"] == first["action_fingerprint"]
+    product_group = completion["action_groups"][0]
+    assert product_group["group_id"] == "product_readiness"
+    assert product_group["primary_action"] == safe_next
+    assert product_group["action_refs"][0]["action_fingerprint"] == first["action_fingerprint"]
+    queue_item = completion["followup_queue"]["next_item"]
+    assert queue_item["primary_tool"] == "manage_stable_promotion_evidence"
+    assert queue_item["required_scope"] == "mcp:preview"
+    assert queue_item["gate_level"] == "preview_gate"
+    assert queue_item["requires_confirmation_before_write_or_run"] is True
+    assert queue_item["action_key"] == first["action_key"]
+    assert queue_item["action_fingerprint"] == first["action_fingerprint"]
+    overview = completion["product_completion_overview"]
+    assert overview["recommended_action"]["tool"] == first["tool"]
+    assert overview["recommended_action"]["required_scope"] == "mcp:preview"
+    assert overview["recommended_action"]["action_fingerprint"] == first["action_fingerprint"]
+    assert overview["primary_gap_category"]["primary_action"] == safe_next
 
 
 def test_console_map_advances_active_stable_preview_to_fail_closed_explicit_apply() -> None:
@@ -1041,6 +1068,22 @@ def test_console_map_advances_active_stable_preview_to_fail_closed_explicit_appl
         "action": "apply",
         "preview_id": "preview_1234",
     }
+    completion = packet["completion_surface"]
+    safe_next = completion["safe_next_action"]
+    assert safe_next["tool"] == first["tool"]
+    assert safe_next["arguments"] == first["arguments"]
+    assert safe_next["mode"] == "commit"
+    assert safe_next["required_scope"] == "mcp:commit"
+    assert safe_next["action_key"] == first["action_key"]
+    assert safe_next["action_fingerprint"] == first["action_fingerprint"]
+    queue_item = completion["followup_queue"]["next_item"]
+    assert queue_item["required_scope"] == "mcp:commit"
+    assert queue_item["gate_level"] == "explicit_apply_or_run_required"
+    assert queue_item["action_fingerprint"] == first["action_fingerprint"]
+    assert (
+        completion["product_completion_overview"]["recommended_action"]["action_fingerprint"]
+        == first["action_fingerprint"]
+    )
 
 
 def test_console_map_auto_loads_default_release_submission_manifest(tmp_path) -> None:

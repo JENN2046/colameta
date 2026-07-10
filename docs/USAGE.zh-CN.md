@@ -188,6 +188,11 @@ console map 本身仍然只读，不执行该动作。
 `preview_id` 的 `action=apply`，并明确标为 `mcp:commit`、要求显式确认。预览过期、被篡改、
 HEAD 变化或 manifest 变化时不会恢复 apply。这个闭环只持久化 artifact receipt，仍不授权
 重启、替换 stable、切换路由或发布。
+当 stable promotion packet 已把动作推进到 preview 或 apply 时，
+`completion_surface.safe_next_action`、Product Readiness action group、
+`followup_queue` 和 `product_completion_overview` 会复用同一条规范化动作及其
+`action_key`、`action_fingerprint`、参数和 scope，不会退回“再读取一次 readiness”的动作回环。
+只有没有装载 stable promotion packet 时，完成面板才保留 readiness 提供的只读动作作为回退。
 当 release/submission 缺少真实 manifest 时，`recommended_first_actions` 会推荐 MCP 工具
 `init_submission_evidence`；当 manifest 已存在但 evidence 文件缺失或仍是
 `.todo.md` 占位文件时，它会推荐 MCP 工具 `fill_submission_evidence_files` 来补齐
