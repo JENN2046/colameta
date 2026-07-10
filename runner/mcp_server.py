@@ -5513,6 +5513,7 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Gaps</strong><span id="closeout-gaps">-</span></div>
         <div class="note"><strong>Next</strong><span id="closeout-next">-</span></div>
       </div>
+      <div class="recommended-actions" id="product-completion-categories"></div>
       <div class="recommended-actions" id="closeout-action-groups"></div>
     </section>
     <section class="section">
@@ -6162,7 +6163,46 @@ class MCPPlanningBridgeServer:
         ].filter(Boolean).join(" | "));
         text("closeout-gaps", completionGapText(completion));
         text("closeout-next", completionNextText(completion));
+        renderProductCompletionCategories(completion);
         renderCompletionGroups(completion);
+      }
+      function renderProductCompletionCategories(completion) {
+        var target = byId("product-completion-categories");
+        target.innerHTML = "";
+        var overview = completion && completion.product_completion_overview && typeof completion.product_completion_overview === "object" ? completion.product_completion_overview : {};
+        var categories = Array.isArray(overview.categories) ? overview.categories : [];
+        if (!categories.length) {
+          var empty = document.createElement("div");
+          empty.className = "note product-completion-empty";
+          empty.textContent = "Read Product Console to load product completion categories.";
+          target.appendChild(empty);
+          return;
+        }
+        categories.slice(0, 5).forEach(function (category) {
+          if (!category || typeof category !== "object") return;
+          var card = document.createElement("div");
+          card.className = "recommended-action product-completion-category";
+          var title = document.createElement("div");
+          title.className = "recommended-action-title product-completion-title";
+          title.textContent = [category.label || category.category_id || "Completion category", category.severity || category.status].filter(Boolean).join(" | ");
+          var meta = document.createElement("div");
+          meta.className = "recommended-action-meta product-completion-meta";
+          appendChip(meta, category.category_id || "");
+          appendChip(meta, category.ready === true ? "ready" : (category.status || "needs_attention"), category.ready === true ? "read" : "commit");
+          var gaps = Array.isArray(category.gap_codes) ? category.gap_codes : [];
+          appendChip(meta, gaps.length ? "gaps " + gaps.length : "no gaps", gaps.length ? "commit" : "read");
+          var message = document.createElement("div");
+          message.className = "recommended-action-why product-completion-message";
+          message.textContent = category.message || "";
+          var next = document.createElement("div");
+          next.className = "recommended-action-boundary product-completion-next";
+          next.textContent = category.next_step || "";
+          card.appendChild(title);
+          card.appendChild(meta);
+          card.appendChild(message);
+          card.appendChild(next);
+          target.appendChild(card);
+        });
       }
       function renderCompletionGroups(completion) {
         var target = byId("closeout-action-groups");

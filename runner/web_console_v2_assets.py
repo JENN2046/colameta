@@ -1266,6 +1266,15 @@ function renderServiceCapabilityCard(data) {{
   const overviewReady = completionOverview.ready_category_count === 0 || completionOverview.ready_category_count ? completionOverview.ready_category_count : "-";
   const overviewTotal = completionOverview.total_category_count === 0 || completionOverview.total_category_count ? completionOverview.total_category_count : "-";
   const completionText = (completionOverview.status || completion.status || "-") + " ｜ " + overviewReady + "/" + overviewTotal + " ｜ " + completionProgressText + " ｜ " + (completionOverview.next_step || completionStep);
+  const completionCategories = Array.isArray(completionOverview.categories) ? completionOverview.categories : [];
+  const completionCategoryText = completionCategories.length
+    ? completionCategories.slice(0, 5).map((category) => {{
+      const label = category.label || category.category_id || "-";
+      const state = category.severity || category.status || "-";
+      const gapCount = Array.isArray(category.gap_codes) ? category.gap_codes.length : 0;
+      return label + " " + state + " " + (gapCount ? "gaps " + gapCount : "ready");
+    }}).join(" ｜ ")
+    : "-";
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1285,6 +1294,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Connector closeout", closeoutStatus + " ｜ " + closeoutDecision);
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Product closeout", completionText);
+  h += r("Product categories", completionCategoryText);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);
