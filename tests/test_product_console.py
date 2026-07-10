@@ -264,6 +264,8 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert groups["release_submission"]["status"] == "needs_attention"
     assert groups["release_submission"]["primary_action"]["tool"] == "init_submission_evidence"
     assert groups["release_submission"]["action_refs"][0]["tool"] == "init_submission_evidence"
+    assert groups["release_submission"]["action_refs"][0]["action_key"]
+    assert groups["release_submission"]["action_refs"][0]["action_fingerprint"]
     assert groups["submission_evidence"]["primary_action"]["tool"] == "init_submission_evidence"
     assert groups["submission_evidence_activity"]["primary_action"]["tool"] == "record_product_console_action_result"
     assert "Record the latest submission evidence activity" in groups["submission_evidence_activity"]["empty_state"]
@@ -277,6 +279,9 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert queue["next_item"]["primary_tool"] == "init_submission_evidence"
     assert queue["next_item"]["required_scope"] == "mcp:commit"
     assert queue["next_item"]["gate_level"] == "explicit_apply_or_run_required"
+    assert queue["next_item"]["action_id"] == "init_submission_evidence"
+    assert queue["next_item"]["action_key"] == "init_submission_evidence|init_submission_evidence|commit"
+    assert queue["next_item"]["action_fingerprint"]
     trail = completion["operator_session_trail"]
     assert packet["operator_session_trail"] == trail
     assert trail["source"] == "product_console_operator_session_trail"
@@ -294,6 +299,9 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert trail["recovery_actions"][0]["required_scope"] == "mcp:commit"
     assert trail["recovery_actions"][0]["can_run_now"] is False
     assert trail["recovery_actions"][0]["copy_payload"]["item_id"] == "release_submission"
+    assert trail["recovery_actions"][0]["copy_payload"]["action_id"] == queue["next_item"]["action_id"]
+    assert trail["recovery_actions"][0]["copy_payload"]["action_key"] == queue["next_item"]["action_key"]
+    assert trail["recovery_actions"][0]["copy_payload"]["action_fingerprint"] == queue["next_item"]["action_fingerprint"]
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
