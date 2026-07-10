@@ -908,6 +908,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert inbox["runnable_read_count"] + inbox["gated_count"] == inbox["total_count"]
         inbox_sources = {item["source"] for item in inbox["items"]}
         assert {"product_console", "apps_connector", "stable_cadence"} <= inbox_sources
+        if payload["stable_replacement_cadence"].get("candidate_differs_from_stable") is True:
+            assert "stable_promotion" in inbox_sources
         assert all("tool" in item and "required_scope" in item and "gate_level" in item for item in inbox["items"])
         runnable_items = [item for item in inbox["items"] if item.get("can_run_now") is True]
         assert len(runnable_items) == inbox["runnable_read_count"]
@@ -920,6 +922,16 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert set(apps_smoke["run_arguments"]) == {"project_name"}
         assert apps_smoke["run_arguments"]["project_name"]
         assert "tunnel_client" not in apps_smoke["run_arguments"]
+        if payload["stable_replacement_cadence"].get("candidate_differs_from_stable") is True:
+            promotion_preview = next(
+                item for item in inbox["items"] if item.get("item_id") == "stable_promotion_evidence_preview"
+            )
+            assert promotion_preview["tool"] == "manage_stable_promotion_evidence"
+            assert promotion_preview["required_scope"] == "mcp:preview"
+            assert promotion_preview["gate_level"] == "preview_required"
+            assert promotion_preview["can_run_now"] is False
+            assert "item_signature" not in promotion_preview
+            assert promotion_preview["copy_payload"]["arguments"]["candidate_head"]
         assert payload["operator_inbox"]["status"] == inbox["status"]
         from runner.web_console_v2_assets import render_v2_index_page
 
@@ -1226,6 +1238,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         calls_by_label = {item["label"]: item for item in service["copyable_mcp_calls"]}
         assert calls["get_apps_connector_smoke_packet"]["arguments"]["project_name"]
         assert calls["get_stable_replacement_cadence"]["arguments"]["project_name"]
+        assert calls["manage_stable_promotion_evidence"]["arguments"]["action"] == "preview"
+        assert calls["manage_stable_promotion_evidence"]["arguments"]["project_name"]
+        if payload["stable_replacement_cadence"].get("candidate_head"):
+            assert calls["manage_stable_promotion_evidence"]["arguments"]["candidate_head"]
         assert calls["get_stage_parallel_plan_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_run_preview"]["arguments"]["project_name"]
         assert calls["get_stage_parallel_worktree_assignment_preview"]["arguments"]["project_name"]
@@ -1252,6 +1268,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert calls["get_connector_runtime_health_status"]["arguments"]["project_name"]
         assert calls_by_label["Apps smoke packet"]["tool"] == "get_apps_connector_smoke_packet"
         assert calls_by_label["Stable cadence"]["tool"] == "get_stable_replacement_cadence"
+        assert calls_by_label["Stable promotion evidence preview"]["tool"] == "manage_stable_promotion_evidence"
         assert calls_by_label["Parallel plan preview"]["tool"] == "get_stage_parallel_plan_preview"
         assert calls_by_label["Parallel run preview"]["tool"] == "get_stage_parallel_run_preview"
         assert calls_by_label["Parallel worktree assignment"]["tool"] == "get_stage_parallel_worktree_assignment_preview"
@@ -1539,6 +1556,39 @@ class WebConsoleSecurityTests(unittest.TestCase):
         product_record = product_payload["operator_inbox_run_result"]["record_action"]["params"]
         assert product_record["action_id"] == product_item["record_action_id"]
         assert product_record["action_fingerprint"] == product_item["action_fingerprint"]
+
+    def test_web_operator_inbox_exposes_gated_stable_promotion_evidence_preview(self) -> None:
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        inbox = server._web_commander_operator_inbox(
+            operator_session_trail={"recovery_actions": []},
+            apps_connector_closeout={},
+            stable_replacement_cadence={
+                "candidate_differs_from_stable": True,
+                "candidate_head": "a" * 40,
+                "recommended_cadence": "batch_when_ready",
+            },
+            project_name="demo-project",
+        )
+
+        item = next(
+            candidate
+            for candidate in inbox["items"]
+            if candidate.get("item_id") == "stable_promotion_evidence_preview"
+        )
+        assert item["source"] == "stable_promotion"
+        assert item["component"] == "artifact_evidence"
+        assert item["tool"] == "manage_stable_promotion_evidence"
+        assert item["required_scope"] == "mcp:preview"
+        assert item["gate_level"] == "preview_required"
+        assert item["can_run_now"] is False
+        assert "item_signature" not in item
+        assert item["copy_payload"]["arguments"] == {
+            "action": "preview",
+            "project_name": "demo-project",
+            "candidate_head": "a" * 40,
+        }
 
     def test_v2_operator_inbox_run_rejects_unbound_or_non_read_payloads(self) -> None:
         assert self.server is None

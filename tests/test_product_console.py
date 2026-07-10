@@ -198,6 +198,11 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert entries["product_readiness"]["arguments"] == {"project_name": "demo-project"}
     assert entries["executor_workflow"]["status"] == "blocked"
     assert entries["git_remote_push"]["required_scope"] == "mcp:commit"
+    assert entries["stable_promotion_artifact_evidence"]["tool"] == "manage_stable_promotion_evidence"
+    assert entries["stable_promotion_artifact_evidence"]["arguments"] == {
+        "project_name": "demo-project",
+        "action": "status",
+    }
     assert entries["release_submission_readiness"]["tool"] == "get_release_submission_readiness"
     assert entries["release_submission_readiness"]["status"] == "needs_attention"
     evidence_bundle = packet["release_submission_evidence_bundle"]

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import subprocess
 from typing import Any
 
 from runner.runtime_observability import get_runtime_version_status, git_checkout_metadata
+from runner.stable_promotion_evidence import (
+    build_candidate_artifact_manifest,
+    count_promotion_relevant_porcelain_entries,
+    get_stable_promotion_evidence_status,
+)
 
 
 DEFAULT_STABLE_RUNTIME_DIR = "/home/jenn/tools/colameta"
@@ -17,6 +20,7 @@ REQUIRED_VISIBLE_TOOLS = (
     "get_agent_consumer_contract",
     "get_service_entry_profile",
     "get_stable_promotion_readiness",
+    "manage_stable_promotion_evidence",
     "get_runtime_version_status",
     "list_registered_projects",
     "analyze_project_state",
@@ -46,7 +50,8 @@ def get_stable_promotion_readiness(
     root = os.path.abspath(os.path.expanduser(project_root))
     runtime = runtime_status if isinstance(runtime_status, dict) else get_runtime_version_status(root)
     git_state = _git_repo_state(root)
-    candidate_manifest = _candidate_artifact_manifest(root, git_state)
+    candidate_manifest = build_candidate_artifact_manifest(root, git_state.get("head"))
+    promotion_evidence = get_stable_promotion_evidence_status(root, candidate_head=git_state.get("head"))
     stable_state = _stable_runtime_state(stable_runtime_dir or _default_stable_runtime_dir())
     tool_support = _tool_support(visible_tool_names or (), supported_workflows or ())
     registry_state = _registry_state(registered_projects)
@@ -95,10 +100,14 @@ def get_stable_promotion_readiness(
         warnings.append(_warning("NO_REGISTERED_PROJECTS_VISIBLE", "服务模式下当前未看到已登记项目。"))
 
     external_required = [
-        _blocker("PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED", "需要把候选 artifact manifest 摘要与 sha256 写入晋升材料。"),
         _blocker("ROLLBACK_REHEARSAL_NOT_PROVEN", "需要在不替换稳定服务的前提下完成 rollback/rehearsal 证明。"),
         _blocker("COMMANDER_STABLE_REPLACEMENT_AUTHORIZATION_ABSENT", "替换稳定服务必须由 Commander 给出精确、当前有效授权。"),
     ]
+    if promotion_evidence.get("status") != "verified_current":
+        external_required.insert(
+            0,
+            _blocker("PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED", "需要持久化并验证精确候选 HEAD 的 artifact manifest。"),
+        )
     stable_promotion_review_candidate = not local_blockers
 
     if stable_promotion_review_candidate:
@@ -139,12 +148,17 @@ def get_stable_promotion_readiness(
         "git": git_state,
         "stable_runtime": stable_state,
         "candidate_artifact_manifest": candidate_manifest,
+        "promotion_artifact_evidence": promotion_evidence,
         "registry": registry_state,
         "tool_support": tool_support,
         "local_blockers": local_blockers,
         "warnings": warnings,
         "external_required_before_stable_replacement": external_required,
-        "recommended_next_steps": _recommended_next_steps(stable_promotion_review_candidate),
+        "recommended_next_steps": _recommended_next_steps(
+            stable_promotion_review_candidate,
+            artifact_evidence_ready=promotion_evidence.get("status") == "verified_current",
+            candidate_head=_clean_text(git_state.get("head")),
+        ),
         "safety_boundary": {
             "does_not_authorize_stable_replacement": True,
             "does_not_authorize_service_restart": True,
@@ -161,8 +175,8 @@ def get_stable_promotion_readiness(
 
 def _git_repo_state(project_root: str) -> dict[str, Any]:
     metadata = git_checkout_metadata(project_root)
-    status = _run_git(project_root, ["status", "--porcelain=v1", "-z"])
-    dirty_entries = _count_porcelain_z_entries(status.get("stdout_bytes", b"")) if status["ok"] else None
+    status = _run_git(project_root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    dirty_entries = count_promotion_relevant_porcelain_entries(status.get("stdout_bytes", b"")) if status["ok"] else None
     origin_head = _run_git(project_root, ["rev-parse", "--verify", "origin/main"])
     ahead = behind = None
     ahead_behind_available = False
@@ -207,81 +221,6 @@ def _stable_runtime_state(stable_runtime_dir: str) -> dict[str, Any]:
     }
 
 
-def _candidate_artifact_manifest(project_root: str, git_state: dict[str, Any]) -> dict[str, Any]:
-    head = git_state.get("head")
-    if not isinstance(head, str) or not head.strip():
-        return {
-            "available": False,
-            "unavailable_reason": "project_head_unknown",
-            "read_only": True,
-        }
-
-    listed = _run_git(project_root, ["ls-files", "-z"])
-    if not listed["ok"]:
-        return {
-            "available": False,
-            "unavailable_reason": "git_ls_files_failed",
-            "read_only": True,
-        }
-
-    root = os.path.abspath(os.path.expanduser(project_root))
-    entries: list[dict[str, Any]] = []
-    total_size_bytes = 0
-    for raw_path in _split_nul_paths(listed.get("stdout_bytes", b"")):
-        relative_path = raw_path.decode("utf-8", errors="replace")
-        if not relative_path:
-            continue
-        fingerprint = _fingerprint_tracked_path(root, relative_path)
-        if not fingerprint.get("available"):
-            return {
-                "available": False,
-                "unavailable_reason": str(fingerprint.get("unavailable_reason") or "tracked_file_fingerprint_failed"),
-                "failed_path": relative_path,
-                "read_only": True,
-            }
-        size_bytes = int(fingerprint.get("size_bytes") or 0)
-        total_size_bytes += size_bytes
-        entries.append(
-            {
-                "path": relative_path,
-                "file_type": fingerprint.get("file_type"),
-                "sha256": fingerprint.get("sha256"),
-                "size_bytes": size_bytes,
-            }
-        )
-
-    entries.sort(key=lambda item: str(item.get("path") or ""))
-    payload = {
-        "manifest_version": 1,
-        "manifest_kind": "tracked_worktree_sha256_manifest",
-        "project_head": head,
-        "file_count": len(entries),
-        "total_size_bytes": total_size_bytes,
-        "files": entries,
-    }
-    manifest_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    manifest_sha256 = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
-    path_list_sha256 = hashlib.sha256(
-        "\n".join(str(item.get("path") or "") for item in entries).encode("utf-8")
-    ).hexdigest()
-
-    return {
-        "available": True,
-        "manifest_version": 1,
-        "manifest_kind": "tracked_worktree_sha256_manifest",
-        "algorithm": "sha256",
-        "project_head": head,
-        "file_count": len(entries),
-        "total_size_bytes": total_size_bytes,
-        "manifest_sha256": manifest_sha256,
-        "tracked_path_list_sha256": path_list_sha256,
-        "file_entries_omitted_from_response": True,
-        "included_paths_preview": [str(item.get("path") or "") for item in entries[:20]],
-        "excluded_scope": "untracked_files_ignored_runtime_private_state_git_directory_virtualenv_build_artifacts",
-        "read_only": True,
-    }
-
-
 def _tool_support(
     visible_tool_names: list[str] | tuple[str, ...],
     supported_workflows: list[str] | tuple[str, ...],
@@ -300,6 +239,7 @@ def _tool_support(
         "agent_consumer_contract_visible": "get_agent_consumer_contract" in visible,
         "service_entry_profile_visible": "get_service_entry_profile" in visible,
         "stable_readiness_tool_visible": "get_stable_promotion_readiness" in visible,
+        "stable_promotion_evidence_tool_visible": "manage_stable_promotion_evidence" in visible,
         "thin_governed_loop_preview_supported": "thin_governed_loop_preview" in workflows,
     }
 
@@ -323,17 +263,36 @@ def _default_stable_runtime_dir() -> str:
     return DEFAULT_STABLE_RUNTIME_DIR
 
 
-def _recommended_next_steps(local_ready: bool) -> list[dict[str, str]]:
+def _recommended_next_steps(
+    local_ready: bool,
+    *,
+    artifact_evidence_ready: bool,
+    candidate_head: str | None,
+) -> list[dict[str, Any]]:
     if not local_ready:
         return [
             {"step": "clear_local_blockers", "description": "先修复 local_blockers，再重新调用本工具。"},
             {"step": "rerun_readiness", "description": "确认运行中服务加载的是当前 checkout 代码，且 worktree clean。"},
         ]
-    return [
-        {"step": "generate_artifact_manifest", "description": "为候选 HEAD 生成 artifact manifest 与 sha256。"},
+    steps: list[dict[str, Any]] = []
+    if not artifact_evidence_ready:
+        steps.append(
+            {
+                "step": "persist_artifact_manifest",
+                "description": "先 preview，再持久化精确候选 HEAD 的 artifact manifest 与 sha256。",
+                "tool": "manage_stable_promotion_evidence",
+                "arguments": {
+                    "action": "preview",
+                    **({"candidate_head": candidate_head} if candidate_head else {}),
+                },
+                "required_scope": "mcp:preview",
+            }
+        )
+    steps.extend([
         {"step": "run_stable_promotion_rehearsal", "description": "在不替换稳定服务的前提下演练启动、健康检查与 rollback。"},
         {"step": "request_commander_authorization", "description": "拿到精确 hash-specific Commander 授权后，才可进入稳定服务替换。"},
-    ]
+    ])
+    return steps
 
 
 def _blocker(code: str, message: str) -> dict[str, str]:
@@ -342,51 +301,6 @@ def _blocker(code: str, message: str) -> dict[str, str]:
 
 def _warning(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
-
-
-def _count_porcelain_z_entries(raw: bytes) -> int:
-    if not raw:
-        return 0
-    return len([part for part in raw.split(b"\0") if part])
-
-
-def _split_nul_paths(raw: bytes) -> list[bytes]:
-    if not raw:
-        return []
-    return [part for part in raw.split(b"\0") if part]
-
-
-def _fingerprint_tracked_path(project_root: str, relative_path: str) -> dict[str, Any]:
-    candidate = os.path.abspath(os.path.join(project_root, relative_path))
-    try:
-        common = os.path.commonpath([project_root, candidate])
-    except ValueError:
-        return {"available": False, "unavailable_reason": "path_outside_project_root"}
-    if common != project_root:
-        return {"available": False, "unavailable_reason": "path_outside_project_root"}
-    try:
-        if os.path.islink(candidate):
-            data = os.readlink(candidate).encode("utf-8", errors="surrogateescape")
-            return {
-                "available": True,
-                "file_type": "symlink",
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size_bytes": len(data),
-            }
-        digest = hashlib.sha256()
-        size = 0
-        with open(candidate, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                size += len(chunk)
-                digest.update(chunk)
-        return {
-            "available": True,
-            "file_type": "file",
-            "sha256": digest.hexdigest(),
-            "size_bytes": size,
-        }
-    except OSError as exc:
-        return {"available": False, "unavailable_reason": exc.__class__.__name__}
 
 
 def _run_git(project_root: str, args: list[str]) -> dict[str, Any]:

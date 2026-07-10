@@ -49,6 +49,7 @@ SAFE_OUTPUT_FIELDS = {
     "manual_acceptance_evidence", "evidence_mismatch_warning",
     "scope", "target_files", "strategy", "command_count", "can_run",
     "validation_groups", "run_id", "run_file", "passed", "failed_command_index",
+    "candidate_head", "receipt_id", "receipt_path", "already_recorded",
 }
 
 
@@ -266,6 +267,13 @@ def infer_risk_level(tool_name: str, action: str) -> str:
             "run": "commit",
             "status": "info",
         },
+        "manage_stable_promotion_evidence": {
+            "inspect": "info",
+            "status": "info",
+            "preview": "preview",
+            "apply": "commit",
+            "discard": "preview",
+        },
         "run_mcp_workflow": {
             "auto_preview": "preview",
             "project_status": "info",
@@ -398,6 +406,7 @@ def should_record_tool(tool_name: str, action: str) -> bool:
             "preflight", "run_once_preview", "run_once", "run_bounded_preview", "run_bounded", "recheck_report_preview", "recheck_report_apply", "scope_mismatch_preview", "scope_mismatch_apply", "status",
         },
         "manage_validation_run": {"inspect", "preview", "run", "status"},
+        "manage_stable_promotion_evidence": {"inspect", "status", "preview", "apply", "discard"},
         "run_mcp_workflow": {
             "auto_preview", "project_status", "source_onboarding", "plan_update",
             "small_project_patch", "docs_update", "git_commit",

@@ -3,7 +3,7 @@
 ## tool_inventory
 Project name: colameta-self-dev
 MCP exposure profile: normal
-Visible tool count: 54
+Visible tool count: 56
 
 | Tool | Scope | Title |
 |---|---|---|
@@ -23,10 +23,12 @@ Visible tool count: 54
 | `init_submission_evidence` | `mcp:commit` | Initialize Submission Evidence |
 | `fill_submission_evidence_files` | `mcp:commit` | Fill Submission Evidence Files |
 | `mark_submission_evidence_ready_fields` | `mcp:commit` | Mark Submission Evidence Ready Fields |
+| `record_product_console_action_result` | `mcp:commit` | Record Product Console Action Result |
 | `render_commander_app` | `mcp:read` | Render Commander App |
 | `get_apps_connector_smoke_packet` | `mcp:read` | Get Apps Connector Smoke Packet |
 | `get_stable_replacement_cadence` | `mcp:read` | Get Stable Replacement Cadence |
-| `get_stable_promotion_readiness` | `mcp:read` | (untitled) |
+| `get_stable_promotion_readiness` | `mcp:read` | Get Stable Promotion Readiness |
+| `manage_stable_promotion_evidence` | action-scoped | Manage Stable Promotion Evidence |
 | `get_stage_parallel_plan_preview` | `mcp:read` | Get Stage Parallel Plan Preview |
 | `get_stage_parallel_run_preview` | `mcp:read` | Get Stage Parallel Run Preview |
 | `get_stage_parallel_worktree_assignment_preview` | `mcp:read` | Get Stage Parallel Worktree Assignment Preview |

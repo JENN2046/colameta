@@ -71,6 +71,7 @@ from runner.release_submission_readiness import (
     mark_submission_evidence_ready_fields,
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
+from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
     build_stage_parallel_closeout_packet,
@@ -175,6 +176,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "manage_stable_promotion_evidence",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
@@ -246,17 +248,36 @@ _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
 _normalize_run_mcp_workflow_name = normalize_workflow_name
 
 
-def _find_next_actions(result: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Extract next_actions list from a tool result dict, handling both flat and data-wrapped structures."""
-    next_actions = result.get("next_actions")
-    if isinstance(next_actions, list):
-        return next_actions
+def _find_action_list(result: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
+    actions = result.get(key)
+    if isinstance(actions, list):
+        return actions
     data = result.get("data")
     if isinstance(data, dict):
-        next_actions = data.get("next_actions")
-        if isinstance(next_actions, list):
-            return next_actions
+        actions = data.get(key)
+        if isinstance(actions, list):
+            return actions
     return None
+
+
+def _find_action(result: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """Extract a singular action field from flat or data-wrapped tool results."""
+    action = result.get(key)
+    if isinstance(action, dict):
+        return action
+    data = result.get("data")
+    if isinstance(data, dict):
+        action = data.get(key)
+        if isinstance(action, dict):
+            return action
+    return None
+
+
+def _inject_project_name_into_action(action: dict[str, Any], project_name: str) -> None:
+    for key in ("arguments", "params"):
+        action_params = action.get(key)
+        if isinstance(action_params, dict) and "project_name" not in action_params:
+            action_params["project_name"] = project_name
 
 
 class _MCPRateLimiter:
@@ -539,6 +560,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_apps_connector_smoke_packet",
     "get_stable_replacement_cadence",
     "get_stable_promotion_readiness",
+    "manage_stable_promotion_evidence",
     "get_stage_parallel_plan_preview",
     "get_stage_parallel_run_preview",
     "get_stage_parallel_worktree_assignment_preview",
@@ -1048,6 +1070,16 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
                 "manage_validation_run",
                 {"inspect": "mcp:read", "status": "mcp:read", "preview": "mcp:preview", "run": "mcp:commit"},
             ),
+            "manage_stable_promotion_evidence": _action_policy(
+                "manage_stable_promotion_evidence",
+                {
+                    "inspect": "mcp:read",
+                    "status": "mcp:read",
+                    "preview": "mcp:preview",
+                    "discard": "mcp:preview",
+                    "apply": "mcp:commit",
+                },
+            ),
         }
     )
     stage_action_scopes = {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"}
@@ -1126,6 +1158,7 @@ class MCPPlanningBridgeServer:
             "get_apps_connector_smoke_packet": self._tool_get_apps_connector_smoke_packet,
             "get_stable_replacement_cadence": self._tool_get_stable_replacement_cadence,
             "get_stable_promotion_readiness": self._tool_get_stable_promotion_readiness,
+            "manage_stable_promotion_evidence": self._tool_manage_stable_promotion_evidence,
             "get_stage_parallel_plan_preview": self._tool_get_stage_parallel_plan_preview,
             "get_stage_parallel_run_preview": self._tool_get_stage_parallel_run_preview,
             "get_stage_parallel_worktree_assignment_preview": self._tool_get_stage_parallel_worktree_assignment_preview,
@@ -1556,6 +1589,7 @@ class MCPPlanningBridgeServer:
             ),
             MCPToolDef(
                 name="get_stable_promotion_readiness",
+                title="Get Stable Promotion Readiness",
                 description=(
                     f"[{self.project_hint}] 稳定服务晋升只读预检卡片。"
                     "汇总运行中代码新鲜度、Git clean、MCP 入口能力、registry、稳定运行目录来源和晋升阻断项。"
@@ -1573,6 +1607,46 @@ class MCPPlanningBridgeServer:
                     "additionalProperties": False,
                 },
                 output_schema=common_output_schema,
+            ),
+            MCPToolDef(
+                name="manage_stable_promotion_evidence",
+                title="Manage Stable Promotion Evidence",
+                description=(
+                    f"[{self.project_hint}] 为精确 Git candidate HEAD 生成、预览、持久化并验证 artifact manifest receipt。"
+                    "preview 只写短期 runtime preview；apply 仅写 .colameta runtime evidence，且要求 HEAD、origin/main、clean worktree "
+                    "与 preview 保持一致。它不替换或重启 stable service，不修改 Git，不 push，不 release/deploy。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["inspect", "status", "preview", "apply", "discard"],
+                            "description": "inspect/status 只读；preview 生成受控预览；apply 持久化精确 HEAD manifest receipt；discard 丢弃预览。",
+                        },
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。服务模式下按已登记 project_name 路由；服务模式必须提供。",
+                        },
+                        "candidate_head": {
+                            "type": "string",
+                            "description": "preview/status 可选。精确候选 commit；省略时使用当前 HEAD。",
+                        },
+                        "preview_id": {
+                            "type": "string",
+                            "description": "apply/discard 必填。来自 preview 的 preview_id。",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
+                },
             ),
             MCPToolDef(
                 name="get_stage_parallel_plan_preview",
@@ -8592,14 +8666,24 @@ class MCPPlanningBridgeServer:
         original_project_name = params.get("project_name")
         result = routed_tool(routed_params)
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
-            self._inject_project_name_into_routed_result(result, original_project_name.strip())
-            next_actions = _find_next_actions(result)
-            if next_actions is not None:
-                for action in next_actions:
-                    if isinstance(action, dict):
-                        action_params = action.get("params")
-                        if isinstance(action_params, dict) and "project_name" not in action_params:
-                            action_params["project_name"] = original_project_name.strip()
+            clean_project_name = original_project_name.strip()
+            self._inject_project_name_into_routed_result(result, clean_project_name)
+            for key in (
+                "next_action",
+                "safe_next_action",
+                "recommended_next_action",
+                "primary_next_action",
+                "copyable_tool_call",
+            ):
+                action = _find_action(result, key)
+                if action is not None:
+                    _inject_project_name_into_action(action, clean_project_name)
+            for key in ("next_actions", "safe_next_actions", "recommended_next_steps", "recommended_next_actions"):
+                actions = _find_action_list(result, key)
+                if actions is not None:
+                    for action in actions:
+                        if isinstance(action, dict):
+                            _inject_project_name_into_action(action, clean_project_name)
         return result
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
@@ -10719,8 +10803,8 @@ class MCPPlanningBridgeServer:
         }
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
-        project_root, _ = self._resolve_read_only_project_context(params)
-        return get_stable_promotion_readiness(
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        result = get_stable_promotion_readiness(
             project_root,
             visible_tool_names=self._visible_tool_names(),
             supported_workflows=list(_SUPPORTED_MCP_WORKFLOWS),
@@ -10728,6 +10812,29 @@ class MCPPlanningBridgeServer:
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
         )
+        if params.get("project_name") is not None:
+            project_name = self._project_name_for_context(project_root, project_record, params)
+            recommended_next_steps = _find_action_list(result, "recommended_next_steps")
+            if recommended_next_steps is not None:
+                for action in recommended_next_steps:
+                    if isinstance(action, dict):
+                        _inject_project_name_into_action(action, project_name)
+        return result
+
+    def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if action not in {"inspect", "status", "preview", "apply", "discard"}:
+            raise MCPToolInputError(
+                "INVALID_ACTION",
+                "action 必须是 inspect、status、preview、apply 或 discard。",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_stable_promotion_evidence", params, require_managed=True)
+        manager = MCPStablePromotionEvidenceManager(self.project_root)
+        result = manager.handle(action, params)
+        self._record_workflow_if_needed("manage_stable_promotion_evidence", action, params, result)
+        return self._with_project_identity(result)
 
     def _tool_get_stage_parallel_plan_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)

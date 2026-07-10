@@ -1127,6 +1127,18 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert server.get_required_scope_for_tool("manage_stage_parallel_merges", {"action": "apply"}) == "mcp:commit"
         assert server.get_required_scope_for_tool("get_connector_runtime_health_status", {}) == "mcp:read"
         assert server.get_required_scope_for_tool("get_stable_promotion_readiness", {}) == "mcp:read"
+        assert server.get_required_scope_for_tool(
+            "manage_stable_promotion_evidence", {"action": "status"}
+        ) == "mcp:read"
+        assert server.get_required_scope_for_tool(
+            "manage_stable_promotion_evidence", {"action": "preview"}
+        ) == "mcp:preview"
+        assert server.get_required_scope_for_tool(
+            "manage_stable_promotion_evidence", {"action": "discard"}
+        ) == "mcp:preview"
+        assert server.get_required_scope_for_tool(
+            "manage_stable_promotion_evidence", {"action": "apply"}
+        ) == "mcp:commit"
         widget_html = server._commander_widget_html()
         assert "Readiness" in widget_html
         assert "Next Step" in widget_html

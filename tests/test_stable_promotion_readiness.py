@@ -96,6 +96,17 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert result["readiness_status"] == "not_ready_for_stable_promotion_review"
         assert "WORKTREE_NOT_CLEAN" in {item["code"] for item in result["local_blockers"]}
 
+    def test_untracked_runner_runtime_evidence_does_not_dirty_candidate(self) -> None:
+        repo, head = self.make_repo_with_origin()
+        runtime_dir = repo / ".colameta" / "runtime" / "stable-promotion-evidence"
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / "receipt.json").write_text("{}\n", encoding="utf-8")
+
+        result = self.readiness(repo, head)
+
+        assert result["git"]["worktree_clean"] is True
+        assert "WORKTREE_NOT_CLEAN" not in {item["code"] for item in result["local_blockers"]}
+
     def test_runtime_reload_needed_blocks_review_candidate(self) -> None:
         repo, head = self.make_repo_with_origin()
 

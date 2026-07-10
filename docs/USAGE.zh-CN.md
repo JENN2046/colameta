@@ -1017,6 +1017,20 @@ Jenn 明确要现在在 stable 使用新能力
 `CLI`、`docs`、`tests`）、风险级别和 `suggested_review_action`。
 `ready_for_human_review` 表示可以审查这批 dev，不表示授权或请求 stable replacement。
 
+稳定晋升 artifact 证据使用 `manage_stable_promotion_evidence` 准备。`preview` 从精确候选
+Git commit object database 计算完整 SHA-256 manifest，不读取当前 worktree 文件内容；只有
+candidate 等于当前 `HEAD`、匹配 `origin/main` 且 worktree clean 时才允许进入 apply。显式确认
+后的 `apply` 会重新计算不可变 commit manifest，与 preview 完整比对后，把 full receipt 写入
+`.colameta/runtime/stable-promotion-evidence/`；`status` 会重新计算并验证 receipt。已有无效
+receipt 会保留供调查，不会被静默覆盖。这些动作不会替换或重启 stable、修改 Git、push、
+release 或 deploy。
+
+```text
+manage_stable_promotion_evidence(action="preview", project_name="colameta-self-dev", candidate_head="<exact-head>")
+manage_stable_promotion_evidence(action="apply", project_name="colameta-self-dev", preview_id="<preview-id>")
+manage_stable_promotion_evidence(action="status", project_name="colameta-self-dev", candidate_head="<exact-head>")
+```
+
 替换流程必须包含：
 
 ```text
