@@ -845,6 +845,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "Product closeout 将在结果返回后刷新。" in page
         assert "Product closeout 未被推进，请查看 INBOX 项或复制调用手动处理。" in page
         assert "renderCenterColumn(latestStatusData)" in page
+        assert "openPendingRefreshInInbox" in page
+        assert 'data-open-pending-refresh="true"' in page
+        assert "Open refresh" in page
+        assert 'data-operator-inbox-component="${escAttr(itemComponent)}"' in page
+        assert '[data-operator-inbox-component="pending_refresh"]' in page
         assert "Operator inbox" in page
         assert "operatorInbox" in page
         assert 'data-tab-button="operator-inbox"' in page

@@ -95,6 +95,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-run-impact.completed { color: #3fb950; }
 .operator-inbox-run-impact.failed { color: #f85149; }
 .operator-inbox-run-impact .impact-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
+.operator-inbox-run-impact .impact-actions { margin-top: 6px; }
 .operator-inbox-run-trail { border-top: 1px solid #30363d55; margin: 8px 0 10px; padding-top: 8px; }
 .operator-inbox-run-trail-title { color: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
 .operator-inbox-run-trail-list { display: grid; gap: 5px; }
@@ -1553,6 +1554,24 @@ function openProductFollowupInInbox(itemId) {{
   }}
 }}
 
+function openPendingRefreshInInbox() {{
+  if (!$("layout-right") || !$("layout-right").querySelector('[data-tab="operator-inbox"]')) {{
+    if (latestStatusData) renderRightColumn(latestStatusData);
+  }}
+  showRightTab("operator-inbox");
+  const root = $("layout-right");
+  if (!root) return;
+  root.querySelectorAll(".operator-inbox-item.target-highlight").forEach(function(el) {{
+    el.classList.remove("target-highlight");
+  }});
+  const target = root.querySelector('[data-operator-inbox-component="pending_refresh"]') || root.querySelector('[data-tab="operator-inbox"]');
+  if (target) {{
+    if (target.classList && target.classList.contains("operator-inbox-item")) target.classList.add("target-highlight");
+    target.scrollIntoView({{ block: "nearest", behavior: "smooth" }});
+    if (typeof target.focus === "function") target.focus({{ preventScroll: true }});
+  }}
+}}
+
 function renderOperatorInboxRunImpact(completion, operatorTrail) {{
   if (!operatorInboxRunFeedback) return "";
   completion = completion || {{}};
@@ -1579,6 +1598,9 @@ function renderOperatorInboxRunImpact(completion, operatorTrail) {{
   let h = `<div class="operator-inbox-run-impact ${{escAttr(state)}}" role="status" aria-live="polite">`;
   h += `刚才 INBOX Run：${{esc(label)}} ｜ ${{esc(operatorInboxRunFeedback.message || state)}}`;
   h += `<div class="impact-meta">${{esc(operatorInboxRunFeedback.timestamp || "-")}} ｜ closeout ${{esc(progressLabel)}} ｜ ${{esc(guidance)}}</div>`;
+  if (pendingRefresh > 0) {{
+    h += `<div class="impact-actions"><button type="button" class="operator-inbox-btn" data-open-pending-refresh="true" aria-label="在 INBOX 中查看 pending refresh">Open refresh</button></div>`;
+  }}
   h += `</div>`;
   return h;
 }}
@@ -1769,6 +1791,11 @@ function renderCenterColumn(data) {{
   $("layout-center").querySelectorAll("[data-open-product-followup]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       openProductFollowupInInbox(this.getAttribute("data-open-product-followup") || "");
+    }});
+  }});
+  $("layout-center").querySelectorAll("[data-open-pending-refresh]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      openPendingRefreshInInbox();
     }});
   }});
   bindOperatorInboxActions($("layout-center"));
@@ -2514,6 +2541,7 @@ function renderOperatorInboxItem(item) {{
   const actionKey = operatorInboxActionKey(item);
   const feedback = operatorInboxFeedbackFor(actionKey);
   const followupItemId = item.copy_payload && item.copy_payload.item_id ? String(item.copy_payload.item_id) : "";
+  const itemComponent = item.component ? String(item.component) : "";
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
   const nextAction = JSON.stringify({{
     action: item.item_id || item.tool || "operator_inbox_item",
@@ -2530,7 +2558,7 @@ function renderOperatorInboxItem(item) {{
     : canRun
     ? "运行只读 operator inbox 项：" + itemLabel
     : "需要更高权限，不能在 Web Console 直接运行：" + itemLabel;
-  let h = `<div class="operator-inbox-item" tabindex="-1" data-operator-inbox-key="${{escAttr(actionKey)}}" data-operator-inbox-followup-item-id="${{escAttr(followupItemId)}}">`;
+  let h = `<div class="operator-inbox-item" tabindex="-1" data-operator-inbox-key="${{escAttr(actionKey)}}" data-operator-inbox-followup-item-id="${{escAttr(followupItemId)}}" data-operator-inbox-component="${{escAttr(itemComponent)}}">`;
   h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(itemLabel)}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
   h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
