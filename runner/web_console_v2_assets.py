@@ -89,6 +89,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-action-status.completed { color: #3fb950; }
 .operator-inbox-action-status.failed { color: #f85149; }
 .operator-inbox-action-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
+.modal-sync-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin-bottom: 10px; min-height: 16px; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -434,6 +435,10 @@ function renderRefreshStatus() {{
   const el = $("refresh-status");
   if (!el) return;
   el.textContent = lastStatusRefreshText + " ｜ " + backgroundPollStatusText;
+}}
+
+function projectManagementSyncStatusText() {{
+  return "项目登记数据：" + lastStatusRefreshText + " ｜ " + backgroundPollStatusText;
 }}
 
 function setRefreshStatus(source, pollStatus) {{
@@ -1771,6 +1776,7 @@ function applyProjectIdentity() {{
 }}
 
 function openProjectManagement() {{
+  renderProjectManagementModal(latestStatusData || {{}});
   const modal = $("project-management-modal");
   if (modal) modal.classList.add("open");
 }}
@@ -2117,6 +2123,7 @@ function renderProjectManagement(data) {{
   const currentRoot = currentProjectRootForSwitcher(data || {{}});
   let h = "";
   h += `<div class="card"><div class="card-title">项目登记管理</div>`;
+  h += `<div class="modal-sync-status" role="status" aria-live="polite">${{esc(projectManagementSyncStatusText())}}</div>`;
   h += `<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">这里管理项目登记元数据。移出/清理只修改登记记录，不会删除磁盘文件；应用迁移会按预览修改 registry / plan / state / settings。当前项目会标注“当前”，/mnt/... 会标注为 Windows 挂载路径。</div>`;
 
   if (projects.length === 0) {{
