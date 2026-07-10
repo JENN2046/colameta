@@ -922,6 +922,14 @@ manage_stable_promotion_evidence(action="apply", project_name="colameta-self-dev
 manage_stable_promotion_evidence(action="status", project_name="colameta-self-dev", candidate_head="<exact-head>")
 ```
 
+Stable promotion readiness reuses the production-ops rollback rehearsal check
+instead of maintaining a separate verdict. `rollback_rehearsal_binding` becomes
+`verified_current` only when the readable backup archive has a valid SHA-256,
+the evidence targets the exact candidate HEAD, and
+`rehearsal_executed_restore=false`. This removes
+`ROLLBACK_REHEARSAL_NOT_PROVEN` from the remaining evidence list; it does not
+execute a restore or authorize stable replacement.
+
 Stable replacement must include:
 
 ```text

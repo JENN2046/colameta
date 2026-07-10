@@ -178,6 +178,9 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["remote_https_mcp_preflight"]["network_check"] == "run"
         assert packet["checks"]["backup_inventory"]["backup_sha256"]
         assert packet["checks"]["rollback_rehearsal"]["rehearsal_executed_restore"] is False
+        assert len(packet["checks"]["rollback_rehearsal"]["backup_sha256"]) == 64
+        assert packet["checks"]["rollback_rehearsal"]["backup_member_count"] == 1
+        assert "sample_members" not in packet["checks"]["rollback_rehearsal"]
 
     def test_omitted_expected_head_falls_back_to_candidate_head(self) -> None:
         from runner.production_ops import build_production_ops_packet
@@ -982,6 +985,74 @@ class ProductionOpsTests(unittest.TestCase):
 
         assert packet["status"] == "needs_attention"
         assert packet["checks"]["backup_inventory"]["reason_code"] == "STABLE_BACKUP_MISSING"
+
+    def test_rollback_rehearsal_rejects_non_commit_target_before_git_command(self) -> None:
+        from runner.production_ops import build_rollback_rehearsal_check
+
+        def fail_if_called(command: list[str]) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(f"invalid target must not reach git: {command}")
+
+        check = build_rollback_rehearsal_check(
+            str(self.project),
+            str(self.backups),
+            "--help",
+            command_runner=fail_if_called,
+        )
+
+        assert check["status"] == "needs_attention"
+        assert check["reason_code"] == "ROLLBACK_TARGET_COMMIT_UNRESOLVED"
+
+    def test_rollback_rehearsal_does_not_follow_backup_symlink(self) -> None:
+        from runner.production_ops import build_rollback_rehearsal_check
+
+        linked_backups = self.tmp_path / "linked-backups"
+        linked_backups.mkdir()
+        source = next(self.backups.glob("stable-before-*.tar.gz"))
+        (linked_backups / "stable-before-linked.tar.gz").symlink_to(source)
+
+        check = build_rollback_rehearsal_check(
+            str(self.project),
+            str(linked_backups),
+            HEAD,
+            command_runner=FakeCommandRunner(),
+        )
+
+        assert check["status"] == "needs_attention"
+        assert check["reason_code"] == "ROLLBACK_BACKUP_MISSING"
+
+    def test_rollback_rehearsal_rejects_empty_backup_archive(self) -> None:
+        from runner.production_ops import build_rollback_rehearsal_check
+
+        empty_backups = self.tmp_path / "empty-archive-backups"
+        empty_backups.mkdir()
+        with tarfile.open(empty_backups / "stable-before-empty.tar.gz", "w:gz"):
+            pass
+
+        check = build_rollback_rehearsal_check(
+            str(self.project),
+            str(empty_backups),
+            HEAD,
+            command_runner=FakeCommandRunner(),
+        )
+
+        assert check["status"] == "needs_attention"
+        assert check["reason_code"] == "ROLLBACK_REHEARSAL_BACKUP_ARCHIVE_EMPTY"
+        assert check["backup_member_count"] == 0
+        assert check["rehearsal_executed_restore"] is False
+
+    def test_rollback_rehearsal_accepts_sha256_git_object_id(self) -> None:
+        from runner.production_ops import build_rollback_rehearsal_check
+
+        target_head = "b" * 64
+        check = build_rollback_rehearsal_check(
+            str(self.project),
+            str(self.backups),
+            target_head,
+            command_runner=FakeCommandRunner(),
+        )
+
+        assert check["status"] == "ready"
+        assert check["target_head"] == target_head
 
     def test_secret_like_input_is_not_echoed_to_packet(self) -> None:
         from runner.production_ops import build_production_ops_packet
