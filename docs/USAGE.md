@@ -341,6 +341,19 @@ After an `updated` or bridge-completed result, each action's
 read surfaces that should be refreshed next. Failed, blocked, pending, or
 stale, or explicitly `result_ok=false` records do not generate refresh
 suggestions.
+Web v2 INBOX `Run` executes the selected read tool instead of treating every
+button as a generic status refresh. A runnable item carries a server-issued
+signature over its item id, source, component, tool, Web run arguments, scope,
+gate, and current project. The server accepts only a fixed read-tool allowlist,
+verifies the signature, rejects unresolved placeholders, and asks the MCP
+policy layer to classify the exact tool call as `mcp:read` again before
+dispatch. Copy payloads remain unchanged, but Web run arguments are separate;
+for example, Apps smoke placeholder evidence stays in the copy handoff and is
+not submitted as observed health by the Web button. The response contains the
+actual tool result, a compact `operator_inbox_run_result.evidence` summary, and
+a freshly rebuilt Web status. The INBOX card exposes that evidence and a
+`Copy result` control. This path cannot execute preview/commit tools or grant
+executor, commit, push, submission, or stable-replacement authority.
 Commander renders those `next_refresh_actions` as read-only refresh buttons on
 the action card. They call the listed read surface and update the widget; they
 do not re-run the original action, confirm preview/commit work, or grant write

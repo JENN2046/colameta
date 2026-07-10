@@ -904,10 +904,20 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert inbox["read_only"] is True
         assert inbox["side_effects"] is False
         assert inbox["total_count"] == len(inbox["items"])
-        assert inbox["read_only_count"] + inbox["gated_count"] == inbox["total_count"]
+        assert inbox["runnable_read_count"] <= inbox["read_only_count"]
+        assert inbox["runnable_read_count"] + inbox["gated_count"] == inbox["total_count"]
         inbox_sources = {item["source"] for item in inbox["items"]}
         assert {"product_console", "apps_connector", "stable_cadence"} <= inbox_sources
         assert all("tool" in item and "required_scope" in item and "gate_level" in item for item in inbox["items"])
+        runnable_items = [item for item in inbox["items"] if item.get("can_run_now") is True]
+        assert len(runnable_items) == inbox["runnable_read_count"]
+        assert all(len(item.get("item_signature") or "") == 64 for item in runnable_items)
+        assert all(isinstance(item.get("run_arguments"), dict) for item in runnable_items)
+        apps_smoke = next(item for item in inbox["items"] if item.get("item_id") == "apps_connector_smoke")
+        assert "tunnel_client" in apps_smoke["copy_payload"]["arguments"]
+        assert set(apps_smoke["run_arguments"]) == {"project_name"}
+        assert apps_smoke["run_arguments"]["project_name"]
+        assert "tunnel_client" not in apps_smoke["run_arguments"]
         assert payload["operator_inbox"]["status"] == inbox["status"]
         from runner.web_console_v2_assets import render_v2_index_page
 
@@ -966,7 +976,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert 'data-operator-inbox-component="${escAttr(itemComponent)}"' in page
         assert "component: actionComponent || \"\"" in page
         assert "action.component || \"\"" in page
-        assert "setOperatorInboxRunFeedback(actionKey, \"completed\", \"运行完成，状态已刷新。\", data, actionLabel, actionComponent)" in page
+        assert "data.message || \"只读工具运行完成，状态已刷新。\"" in page
         assert "component === \"pending_refresh\"" in page
         assert '[data-operator-inbox-component="pending_refresh"]' in page
         assert "Operator inbox" in page
@@ -1116,6 +1126,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "renderOperatorInboxRunTrail" in page
         assert "operatorInboxFeedbackFor" in page
         assert "operatorInboxSignature" in page
+        assert "item.item_signature || \"\"" in page
         assert "clearStaleOperatorInboxFeedback" in page
         assert 'operatorInboxRunFeedback.state === "running"' in page
         assert "operatorInboxRunFeedback.inboxSignature" in page
@@ -1140,6 +1151,14 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "复制 operator inbox 调用：" in page
         assert "运行只读 operator inbox 项：" in page
         assert "需要更高权限，不能在 Web Console 直接运行：" in page
+        assert 'action: "operator_inbox_read"' in page
+        assert "run_arguments" in page
+        assert "item_signature" in page
+        assert "operator_inbox_run_result" in page
+        assert "Result evidence" in page
+        assert "Copy result" in page
+        assert "复制本次只读工具结果：" in page
+        assert "网页可执行服务端绑定且 MCP policy 仍判定为 mcp:read 的 INBOX 工具" in page
         assert "复制 MCP 调用：" in page
         assert "复制 TODO ID " in page
         assert 'aria-disabled="${canRun && !isRunning ? "false" : "true"}"' in page
@@ -1422,6 +1441,156 @@ class WebConsoleSecurityTests(unittest.TestCase):
             project.get("project_root") != str(other_project)
             for project in registry.get("projects", [])
         )
+
+    def test_v2_operator_inbox_run_executes_bound_read_tool_and_returns_evidence(self) -> None:
+        self.start_web()
+        csrf = self.csrf_token_from_page()
+        current = self.server._api_v2_status()
+        item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("tool") == "get_stable_replacement_cadence"
+        )
+        params = {
+            "item_id": item["item_id"],
+            "source": item["source"],
+            "component": item["component"],
+            "tool": item["tool"],
+            "arguments": item["run_arguments"],
+            "required_scope": item["required_scope"],
+            "gate_level": item["gate_level"],
+            "item_signature": item["item_signature"],
+        }
+
+        status, payload = json_request(
+            f"http://{HOST}:{self.port}/api/v2/action",
+            method="POST",
+            payload={"next_action": {"action": "operator_inbox_read", "params": params}},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            timeout=8,
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["action"] == "operator_inbox_read"
+        assert payload["action_outcome"]["code"] == "SUCCESS"
+        run_result = payload["operator_inbox_run_result"]
+        assert run_result["source"] == "web_v2_operator_inbox_read"
+        assert run_result["read_only"] is True
+        assert run_result["side_effects"] is False
+        assert run_result["item_id"] == "stable_replacement_cadence"
+        assert run_result["tool"] == "get_stable_replacement_cadence"
+        assert run_result["tool_result"]["tool"] == "get_stable_replacement_cadence"
+        assert run_result["tool_result"]["data"]["source"] == "stable_replacement_cadence"
+        assert run_result["evidence"]["source"] == "stable_replacement_cadence"
+        assert run_result["evidence"]["read_only"] is True
+        assert "product_status" not in run_result["tool_result"]["data"]
+        assert payload["operator_inbox"]["status"] in {"ready", "empty"}
+
+    def test_v2_operator_inbox_run_rejects_unbound_or_non_read_payloads(self) -> None:
+        assert self.server is None
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        current = server._api_v2_status()
+        item = next(
+            candidate
+            for candidate in current["operator_inbox"]["items"]
+            if candidate.get("tool") == "get_stable_replacement_cadence"
+        )
+        params = {
+            "item_id": item["item_id"],
+            "source": item["source"],
+            "component": item["component"],
+            "tool": item["tool"],
+            "arguments": item["run_arguments"],
+            "required_scope": item["required_scope"],
+            "gate_level": item["gate_level"],
+            "item_signature": item["item_signature"],
+        }
+
+        placeholder_item = server._web_commander_inbox_item(
+            item_id="placeholder_read",
+            source="test",
+            component="read",
+            label="Placeholder read",
+            tool="get_stable_replacement_cadence",
+            arguments={"value": "<unresolved>"},
+            required_scope="mcp:read",
+            gate_level="read_only",
+            can_run_now=True,
+            copy_payload={},
+            why="test",
+        )
+        assert placeholder_item is not None
+        assert placeholder_item["can_run_now"] is False
+        assert "item_signature" not in placeholder_item
+
+        tampered = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "arguments": {"unexpected": True}},
+            }
+        })
+        assert tampered["ok"] is False
+        assert tampered["error_code"] == "OPERATOR_INBOX_READ_BINDING_MISMATCH"
+
+        malformed_signature = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "item_signature": "签名不是十六进制"},
+            }
+        })
+        assert malformed_signature["ok"] is False
+        assert malformed_signature["error_code"] == "OPERATOR_INBOX_READ_BINDING_MISMATCH"
+
+        unknown = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "project_root": "/tmp/other"},
+            }
+        })
+        assert unknown["ok"] is False
+        assert unknown["error_code"] == "OPERATOR_INBOX_READ_FIELDS_INVALID"
+
+        placeholder = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "arguments": {"evidence": "<operator-confirmed>"}},
+            }
+        })
+        assert placeholder["ok"] is False
+        assert placeholder["error_code"] == "OPERATOR_INBOX_READ_PLACEHOLDER_REJECTED"
+
+        denied_tool = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "tool": "manage_git"},
+            }
+        })
+        assert denied_tool["ok"] is False
+        assert denied_tool["error_code"] == "OPERATOR_INBOX_READ_TOOL_DENIED"
+
+        denied_scope = server._api_v2_action({
+            "next_action": {
+                "action": "operator_inbox_read",
+                "params": {**params, "required_scope": "mcp:commit"},
+            }
+        })
+        assert denied_scope["ok"] is False
+        assert denied_scope["error_code"] == "OPERATOR_INBOX_READ_SCOPE_DENIED"
+
+        with patch(
+            "runner.mcp_server.MCPPlanningBridgeServer.get_required_scope_for_tool",
+            return_value="mcp:commit",
+        ):
+            policy_denied = server._api_v2_action({
+                "next_action": {"action": "operator_inbox_read", "params": params}
+            })
+        assert policy_denied["ok"] is False
+        assert policy_denied["error_code"] == "OPERATOR_INBOX_READ_POLICY_DENIED"
 
     def test_v2_product_console_record_requires_confirmation_and_refreshes_closeout(self) -> None:
         from runner.product_console import load_product_console_action_results

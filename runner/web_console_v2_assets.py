@@ -1866,7 +1866,7 @@ function renderServiceCapabilityCard(data) {{
     }}
     h += `</div>`;
   }}
-  h += `<div class="service-boundary">网页主要展示服务事实和复制 MCP 调用；Product follow-up 的 Record result 只在 dangerous confirmation 后写 runtime 摘要；不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
+  h += `<div class="service-boundary">网页可执行服务端绑定且 MCP policy 仍判定为 mcp:read 的 INBOX 工具；Product follow-up 的 Record result 只在 dangerous confirmation 后写 runtime 摘要；不授权 executor run、commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。</div>`;
   h += `</div>`;
   return h;
 }}
@@ -2002,7 +2002,7 @@ function bindOperatorInboxActions(root) {{
         if (data && data.ok === false) {{
           setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data, actionLabel, actionComponent);
         }} else {{
-          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data, actionLabel, actionComponent);
+          setOperatorInboxRunFeedback(actionKey, "completed", data.message || "只读工具运行完成，状态已刷新。", data, actionLabel, actionComponent);
         }}
       }} catch (e) {{
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
@@ -2064,6 +2064,7 @@ function operatorInboxSignature(data) {{
       item.required_scope || "",
       item.gate_level || "",
       item.tool || "",
+      item.item_signature || "",
     ].join(":");
   }}).join("|");
 }}
@@ -2103,6 +2104,7 @@ function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabe
     source: "来自刚才的 Run 操作",
     timestamp: timestamp,
     inboxSignature: operatorInboxSignature(data || latestStatusData || {{}}),
+    result: data && data.operator_inbox_run_result ? data.operator_inbox_run_result : null,
   }};
   pushOperatorInboxRunTrail(actionKey, state, message, actionLabel);
   if (latestStatusData) {{
@@ -2751,15 +2753,21 @@ function renderOperatorInboxItem(item) {{
   const itemComponent = item.component ? String(item.component) : "";
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
   const recordPayload = JSON.stringify(operatorInboxRecordPayload(item, actionKey), null, 2);
+  const runArguments = item.run_arguments && typeof item.run_arguments === "object" ? item.run_arguments : (item.arguments || {{}});
   const nextAction = JSON.stringify({{
-    action: item.item_id || item.tool || "operator_inbox_item",
-    tool: item.tool || "",
-    arguments: item.arguments || {{}},
-    required_scope: item.required_scope || "mcp:read",
-    gate_level: item.gate_level || "read_only",
-    component: itemComponent,
+    action: "operator_inbox_read",
+    params: {{
+      item_id: item.item_id || "",
+      source: item.source || "",
+      component: itemComponent,
+      tool: item.tool || "",
+      arguments: runArguments,
+      required_scope: item.required_scope || "mcp:read",
+      gate_level: item.gate_level || "read_only",
+      item_signature: item.item_signature || "",
+    }},
   }});
-  const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool;
+  const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool && item.item_signature;
   const isRunning = feedback && feedback.state === "running";
   const copyLabel = "复制 operator inbox 调用：" + itemLabel;
   const runLabel = isRunning
@@ -2780,6 +2788,15 @@ function renderOperatorInboxItem(item) {{
   if (feedback) {{
     h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
     h += `<div class="operator-inbox-action-meta">${{esc(feedback.source || "来自刚才的 Run 操作")}} ｜ ${{esc(feedback.timestamp || "")}}</div>`;
+    if (feedback.result) {{
+      const evidence = feedback.result.evidence && typeof feedback.result.evidence === "object" ? feedback.result.evidence : {{}};
+      const evidenceText = JSON.stringify(evidence, null, 2);
+      const resultText = JSON.stringify(feedback.result, null, 2);
+      const copyResultLabel = "复制本次只读工具结果：" + itemLabel;
+      h += `<details class="operator-inbox-result"><summary>Result evidence</summary>`;
+      h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(resultText)}}" aria-label="${{escAttr(copyResultLabel)}}" title="${{escAttr(copyResultLabel)}}">Copy result</button>`;
+      h += `<pre>${{esc(evidenceText)}}</pre></details>`;
+    }}
   }}
   h += `</div>`;
   return h;
@@ -2796,8 +2813,9 @@ function operatorInboxCountSummary(inbox) {{
   const items = Array.isArray(inbox.items) ? inbox.items : [];
   const total = inbox.total_count === 0 || inbox.total_count ? inbox.total_count : items.length;
   const readOnly = inbox.read_only_count === 0 || inbox.read_only_count ? inbox.read_only_count : "-";
+  const runnable = inbox.runnable_read_count === 0 || inbox.runnable_read_count ? inbox.runnable_read_count : "-";
   const gated = inbox.gated_count === 0 || inbox.gated_count ? inbox.gated_count : "-";
-  return {{ items: items, total: total, readOnly: readOnly, gated: gated }};
+  return {{ items: items, total: total, readOnly: readOnly, runnable: runnable, gated: gated }};
 }}
 
 function operatorInboxNumericCount(value, fallback) {{
@@ -2836,7 +2854,7 @@ function renderOperatorInboxPanel(data) {{
   }}
 
   let h = `<div class="operator-inbox-summary">`;
-  h += `${{esc(inbox.status || "-")}} ｜ total ${{esc(counts.total)}} ｜ read ${{esc(counts.readOnly)}} ｜ gated ${{esc(counts.gated)}}`;
+  h += `${{esc(inbox.status || "-")}} ｜ total ${{esc(counts.total)}} ｜ read ${{esc(counts.readOnly)}} ｜ runnable ${{esc(counts.runnable)}} ｜ gated ${{esc(counts.gated)}}`;
   if (inbox.authority_boundary) h += `<br>${{esc(inbox.authority_boundary)}}`;
   h += `</div>`;
   if (sources.length) {{
