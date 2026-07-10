@@ -33,6 +33,7 @@ from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.mcp_project_memory import MCPProjectMemoryManager
 from runner.mcp_todolist import MCPTodoListManager
 from runner.mcp_project_patch import MCPProjectPatchManager
+from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
 from runner.mcp_git_history import MCPGitHistoryManager
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_docs import MCPProjectDocsManager
@@ -167,6 +168,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_release_submission_readiness",
     "get_submission_evidence_fill_preview",
     "get_submission_evidence_auto_draft",
+    "manage_submission_evidence_revision",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
@@ -551,6 +553,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_release_submission_readiness",
     "get_submission_evidence_fill_preview",
     "get_submission_evidence_auto_draft",
+    "manage_submission_evidence_revision",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
@@ -1082,6 +1085,15 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
             ),
         }
     )
+    policies["manage_submission_evidence_revision"] = _action_policy(
+        "manage_submission_evidence_revision",
+        {
+            "status": "mcp:read",
+            "preview": "mcp:preview",
+            "discard": "mcp:preview",
+            "apply": "mcp:commit",
+        },
+    )
     stage_action_scopes = {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"}
     for name in (
         "manage_stage_parallel_worktrees",
@@ -1132,6 +1144,7 @@ class MCPPlanningBridgeServer:
         release_submission_input_schema = self._release_submission_input_schema()
         submission_evidence_fill_preview_input_schema = self._submission_evidence_fill_preview_input_schema()
         submission_evidence_auto_draft_input_schema = self._submission_evidence_auto_draft_input_schema()
+        submission_evidence_revision_input_schema = self._submission_evidence_revision_input_schema()
         init_submission_evidence_input_schema = self._init_submission_evidence_input_schema()
         fill_submission_evidence_input_schema = self._fill_submission_evidence_input_schema()
         mark_submission_evidence_ready_input_schema = self._mark_submission_evidence_ready_input_schema()
@@ -1149,6 +1162,7 @@ class MCPPlanningBridgeServer:
             "get_release_submission_readiness": self._tool_get_release_submission_readiness,
             "get_submission_evidence_fill_preview": self._tool_get_submission_evidence_fill_preview,
             "get_submission_evidence_auto_draft": self._tool_get_submission_evidence_auto_draft,
+            "manage_submission_evidence_revision": self._tool_manage_submission_evidence_revision,
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "mark_submission_evidence_ready_fields": self._tool_mark_submission_evidence_ready_fields,
@@ -1446,6 +1460,25 @@ class MCPPlanningBridgeServer:
                     "destructiveHint": False,
                     "openWorldHint": False,
                     "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="manage_submission_evidence_revision",
+                title="Manage Submission Evidence Revision",
+                description=(
+                    f"[{self.project_hint}] 对 manifest 已绑定、明确标为 unfinished 的 docs/submission/*.md evidence 执行受控修订。"
+                    "preview 校验 replacement 正文、required sections、当前文件/manifest 摘要并创建短时工件；"
+                    "apply 要求 preview_id 和同一 replacement 正文，校验 proposed digest 与基线后原子替换 evidence 并保持 ready=false；"
+                    "结果不回传 evidence 正文，不提交 OpenAI review、不发布。"
+                    "scope: status=mcp:read, preview/discard=mcp:preview, apply=mcp:commit。"
+                ),
+                input_schema=submission_evidence_revision_input_schema,
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "openWorldHint": False,
+                    "idempotentHint": False,
                 },
             ),
             MCPToolDef(
@@ -5871,7 +5904,10 @@ class MCPPlanningBridgeServer:
             default_path: Array.isArray(entry.refs) ? entry.refs.join(", ") : entry.default_path,
             content_prompt: fillPlan.why,
             purpose: fillPlan.why,
-            required_sections: reasonCodes.concat(entry.required_sections || [])
+            required_sections: reasonCodes.concat(entry.required_sections || []),
+            copyable_entry_shape: Array.isArray(entry.revision_preview_calls) ? entry.revision_preview_calls[0] : null,
+            copy_payload: Array.isArray(entry.revision_preview_calls) ? entry.revision_preview_calls[0] : null,
+            copy_message: "Copied bounded evidence revision preview call."
           };
         });
       }
@@ -7969,6 +8005,53 @@ class MCPPlanningBridgeServer:
                 },
             },
             "required": [],
+            "additionalProperties": False,
+        }
+
+    def _submission_evidence_revision_input_schema(self) -> dict[str, Any]:
+        evidence_keys = [
+            "logo",
+            "screenshots",
+            "test_prompts",
+            "test_responses",
+            "localization",
+            "mcp_tool_info",
+            "app_management_permissions",
+            "security_review",
+            "metadata_snapshot",
+            "submission_confirmations",
+        ]
+        return {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "服务模式下指定已登记 managed project_name。",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["preview", "apply", "status", "discard"],
+                    "description": "preview 校验并绑定修订；apply 使用 preview_id 落盘；status/discard 管理短时工件。",
+                },
+                "key": {
+                    "type": "string",
+                    "enum": evidence_keys,
+                    "description": "preview 必填。manifest 中的 evidence key。",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "preview 必填。必须是该 key 在 manifest 中已绑定且当前 review_required 的 docs/submission/*.md。",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "preview/apply 必填。apply 必须重新提交与 preview digest 完全一致的 replacement Markdown；结果和 preview 工件都不保存正文。",
+                },
+                "preview_id": {
+                    "type": "string",
+                    "description": "apply/status/discard 必填。来自 preview 的 preview_id。",
+                },
+            },
+            "required": ["action"],
             "additionalProperties": False,
         }
 
@@ -10276,6 +10359,18 @@ class MCPPlanningBridgeServer:
             },
         }
 
+    def _tool_manage_submission_evidence_revision(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool(
+                "manage_submission_evidence_revision",
+                params,
+                require_managed=True,
+            )
+        action = str(params.get("action") or "").strip()
+        result = MCPSubmissionEvidenceRevisionManager(self.project_root).handle(action, params)
+        self._record_workflow_if_needed("manage_submission_evidence_revision", action, params, result)
+        return result
+
     def _selected_auto_submission_evidence_keys(self, raw_selected: Any) -> list[str]:
         supported = ["mcp_tool_info", "security_review", "metadata_snapshot"]
         if not isinstance(raw_selected, list):
@@ -10354,7 +10449,7 @@ class MCPPlanningBridgeServer:
                 "This evidence draft is generated by a read-only MCP tool. It does not start executors, run validation, write files, commit, push, replace stable service, create OpenAI App drafts, submit review, publish, or read tokens/cookies/raw logs.",
                 "",
                 "## safety_boundaries",
-                "Submission write actions remain separated behind `fill_submission_evidence_files` with `mcp:commit` scope. Ready fields remain false until a human reviewer confirms final evidence.",
+                "Submission creation remains separated behind `fill_submission_evidence_files` with `mcp:commit` scope. Replacing explicitly unfinished manifest-bound Markdown uses the digest-bound `manage_submission_evidence_revision` preview/apply flow and keeps its ready field false. Ready fields remain false until a human reviewer confirms final evidence.",
             ]
         )
         return "\n".join(lines) + "\n"

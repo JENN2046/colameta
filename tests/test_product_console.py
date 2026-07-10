@@ -1014,10 +1014,16 @@ def test_console_map_blocks_mark_ready_for_explicitly_unfinished_evidence() -> N
     )
 
     first = packet["recommended_first_actions"][0]
-    assert first["action_id"] == "review_submission_evidence_content_logo"
-    assert first["tool"] == "get_release_submission_readiness"
-    assert first["mode"] == "read"
-    assert first["arguments"] == {"project_name": "demo-project"}
+    assert first["action_id"] == "preview_submission_evidence_revision_logo_1"
+    assert first["tool"] == "manage_submission_evidence_revision"
+    assert first["mode"] == "preview"
+    assert first["arguments"] == {
+        "project_name": "demo-project",
+        "action": "preview",
+        "key": "logo",
+        "ref": "docs/submission/logo.md",
+        "content": "<operator-confirmed complete replacement evidence Markdown>",
+    }
     assert first["evidence_context"]["content_review_required"] is True
     assert first["evidence_context"]["mark_ready_blocked"] is True
     assert first["evidence_context"]["refs"] == ["docs/submission/logo.md"]
@@ -1034,10 +1040,13 @@ def test_console_map_blocks_mark_ready_for_explicitly_unfinished_evidence() -> N
     assert bundle["progress_summary"]["rows"][0]["file_states"][0]["status"] == "review_required"
     fill_plan = bundle["fill_plan"]
     assert fill_plan["status"] == "evidence_content_review_required"
-    assert fill_plan["next_tool"] == "get_release_submission_readiness"
+    assert fill_plan["next_tool"] == "manage_submission_evidence_revision"
     assert fill_plan["mark_ready_blocked"] is True
     assert fill_plan["draft_entries"] == []
     assert fill_plan["content_review_entries"][0]["key"] == "logo"
+    revision_call = fill_plan["content_review_entries"][0]["revision_preview_calls"][0]
+    assert revision_call["tool"] == "manage_submission_evidence_revision"
+    assert revision_call["required_scope"] == "mcp:preview"
     safe_next = packet["completion_surface"]["safe_next_action"]
     assert safe_next["action_id"] == first["action_id"]
     assert safe_next["action_fingerprint"] == first["action_fingerprint"]
@@ -1502,7 +1511,7 @@ def test_submission_evidence_fill_preview_defaults_to_one_review_key() -> None:
     assert packet["copyable_tool_call"]["arguments"]["keys"] == ["logo"]
 
 
-def test_submission_evidence_fill_preview_reports_content_review_blocker_as_read_only() -> None:
+def test_submission_evidence_fill_preview_reports_bounded_content_revision_call() -> None:
     packet = build_submission_evidence_fill_preview(
         "/tmp/project",
         project_name="demo-project",
@@ -1513,11 +1522,17 @@ def test_submission_evidence_fill_preview_reports_content_review_blocker_as_read
     assert packet["content_review_entry_count"] == 1
     assert packet["draft_entry_count"] == 0
     assert packet["review_entry_count"] == 0
-    assert packet["copyable_tool_call"]["tool"] == "get_release_submission_readiness"
-    assert packet["copyable_tool_call"]["arguments"] == {"project_name": "demo-project"}
-    assert packet["copyable_tool_call"]["required_scope"] == "mcp:read"
-    assert packet["copyable_tool_call"]["result_contract"]["expected_result_kind"] == "read_packet"
-    assert packet["operator_instructions"][0].startswith("Open each referenced evidence file")
+    assert packet["copyable_tool_call"]["tool"] == "manage_submission_evidence_revision"
+    assert packet["copyable_tool_call"]["arguments"] == {
+        "project_name": "demo-project",
+        "action": "preview",
+        "key": "logo",
+        "ref": "docs/submission/logo.md",
+        "content": "<operator-confirmed complete replacement evidence Markdown>",
+    }
+    assert packet["copyable_tool_call"]["required_scope"] == "mcp:preview"
+    assert packet["copyable_tool_call"]["result_contract"]["expected_result_kind"] == "preview_packet"
+    assert packet["operator_instructions"][0].startswith("Replace the revision call's content placeholder")
 
 
 def test_submission_evidence_fill_preview_reports_unavailable_selected_review_key() -> None:
