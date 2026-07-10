@@ -95,6 +95,18 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert result["stable_promotion_review_candidate"] is False
         assert result["readiness_status"] == "not_ready_for_stable_promotion_review"
         assert "WORKTREE_NOT_CLEAN" in {item["code"] for item in result["local_blockers"]}
+        assert result["worktree_isolation"] == {
+            "status": "changes_excluded_from_exact_commit_evidence",
+            "worktree_clean": False,
+            "dirty_entry_count": 1,
+            "candidate_source": "git_object_database",
+            "worktree_content_used": False,
+            "worktree_changes_block_artifact_receipt": False,
+            "worktree_changes_still_block_promotion_review": True,
+        }
+        assert result["recommended_next_steps"][0]["step"] == "persist_artifact_manifest"
+        assert result["recommended_next_steps"][0]["tool"] == "manage_stable_promotion_evidence"
+        assert result["recommended_next_steps"][1]["step"] == "clear_local_blockers"
 
     def test_untracked_runner_runtime_evidence_does_not_dirty_candidate(self) -> None:
         repo, head = self.make_repo_with_origin()
@@ -106,6 +118,19 @@ class StablePromotionReadinessTests(unittest.TestCase):
 
         assert result["git"]["worktree_clean"] is True
         assert "WORKTREE_NOT_CLEAN" not in {item["code"] for item in result["local_blockers"]}
+
+    def test_local_ahead_candidate_keeps_artifact_evidence_step_visible(self) -> None:
+        repo, _ = self.make_repo_with_origin()
+        (repo / "NEXT.md").write_text("next\n", encoding="utf-8")
+        self.run_cmd(["git", "-C", str(repo), "add", "NEXT.md"])
+        self.run_cmd(["git", "-C", str(repo), "commit", "-m", "local next"])
+        head = self.run_cmd(["git", "-C", str(repo), "rev-parse", "HEAD"]).stdout.strip()
+
+        result = self.readiness(repo, head)
+
+        assert "LOCAL_COMMITS_NOT_PUSHED_TO_ORIGIN" in {item["code"] for item in result["warnings"]}
+        assert result["recommended_next_steps"][0]["step"] == "persist_artifact_manifest"
+        assert result["recommended_next_steps"][0]["arguments"]["candidate_head"] == head
 
     def test_runtime_reload_needed_blocks_review_candidate(self) -> None:
         repo, head = self.make_repo_with_origin()
@@ -124,6 +149,18 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert result["stable_promotion_review_candidate"] is False
         assert "REQUIRED_MCP_TOOLS_MISSING" in {item["code"] for item in result["local_blockers"]}
         assert result["tool_support"]["web_gpt_entrypoint_visible"] is False
+
+    def test_missing_evidence_tool_does_not_recommend_unavailable_action(self) -> None:
+        repo, head = self.make_repo_with_origin()
+        visible = [tool for tool in REQUIRED_VISIBLE_TOOLS if tool != "manage_stable_promotion_evidence"]
+
+        result = self.readiness(repo, head, visible_tool_names=visible)
+
+        assert result["stable_promotion_review_candidate"] is False
+        assert "REQUIRED_MCP_TOOLS_MISSING" in {item["code"] for item in result["local_blockers"]}
+        assert result["tool_support"]["stable_promotion_evidence_tool_visible"] is False
+        assert result["recommended_next_steps"][0]["step"] == "clear_local_blockers"
+        assert all(step.get("tool") != "manage_stable_promotion_evidence" for step in result["recommended_next_steps"])
 
     def test_missing_agent_consumer_contract_blocks_review_candidate(self) -> None:
         repo, head = self.make_repo_with_origin()

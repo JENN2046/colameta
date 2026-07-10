@@ -60,6 +60,12 @@ def _runtime(repo: Path, head: str) -> dict[str, object]:
     }
 
 
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def test_manifest_is_bound_to_exact_commit_not_dirty_worktree(tmp_path: Path) -> None:
     repo, head = _repo(tmp_path)
     committed = build_candidate_artifact_manifest(str(repo), head, include_entries=True)
@@ -105,6 +111,7 @@ def test_preview_apply_persists_and_verifies_current_manifest(tmp_path: Path) ->
     assert preview["can_apply"] is True
     assert preview["blockers"] == []
     assert preview["manifest"]["file_entries_omitted_from_response"] is True
+    assert preview["worktree_isolation"]["status"] == "clean"
 
     applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
     assert applied["ok"] is True
@@ -177,18 +184,32 @@ def test_verified_receipt_becomes_stale_when_origin_main_advances(tmp_path: Path
     }
 
 
-def test_preview_apply_fails_closed_when_worktree_or_head_changes(tmp_path: Path) -> None:
+def test_preview_apply_excludes_dirty_worktree_but_fails_closed_when_head_changes(tmp_path: Path) -> None:
     repo, head = _repo(tmp_path)
     manager = MCPStablePromotionEvidenceManager(str(repo))
 
     (repo / "README.md").write_text("dirty\n", encoding="utf-8")
-    blocked = manager.handle("preview", {"candidate_head": head})
-    assert blocked["can_apply"] is False
-    assert "WORKTREE_NOT_CLEAN" in {item["code"] for item in blocked["blockers"]}
-    blocked_apply = manager.handle("apply", {"preview_id": blocked["preview_id"]})
-    assert blocked_apply["error_code"] == "PREVIEW_BLOCKED"
+    dirty_preview = manager.handle("preview", {"candidate_head": head})
+    assert dirty_preview["can_apply"] is True
+    assert dirty_preview["blockers"] == []
+    assert dirty_preview["worktree_isolation"] == {
+        "status": "changes_excluded_from_exact_commit_evidence",
+        "worktree_clean": False,
+        "dirty_entry_count": 1,
+        "candidate_source": "git_object_database",
+        "worktree_content_used": False,
+        "worktree_changes_block_artifact_receipt": False,
+        "worktree_changes_still_block_promotion_review": True,
+    }
+    dirty_apply = manager.handle("apply", {"preview_id": dirty_preview["preview_id"]})
+    assert dirty_apply["ok"] is True
+    assert dirty_apply["status"] == "recorded"
+    assert dirty_apply["worktree_isolation"]["worktree_clean"] is False
+    assert dirty_apply["evidence_status"]["verified"] is True
 
     _run("git", "restore", "README.md", cwd=repo)
+    receipt_path = repo / dirty_apply["receipt_path"]
+    receipt_path.unlink()
     preview = manager.handle("preview", {"candidate_head": head})
     (repo / "NEXT.md").write_text("next\n", encoding="utf-8")
     _run("git", "add", "NEXT.md", cwd=repo)
@@ -206,6 +227,26 @@ def test_preview_apply_fails_closed_when_worktree_or_head_changes(tmp_path: Path
     assert invalid_ref["error_code"] == "CANDIDATE_COMMIT_UNAVAILABLE"
 
 
+def test_worktree_change_after_preview_does_not_change_exact_commit_receipt(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+    preview = manager.handle("preview", {"candidate_head": head})
+    (repo / "README.md").write_text("changed after preview\n", encoding="utf-8")
+
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+
+    assert applied["ok"] is True
+    assert applied["status"] == "recorded"
+    assert applied["worktree_isolation"]["worktree_clean"] is False
+    _run("git", "restore", "README.md", cwd=repo)
+    status = manager.handle("status", {"candidate_head": head})
+    assert status["verified"] is True
+    assert status["worktree_isolation"]["worktree_content_used"] is False
+    assert status["worktree_isolation"]["worktree_clean"] is True
+    assert status["recorded_worktree_isolation"]["worktree_clean"] is False
+    assert status["manifest"]["manifest_sha256"] == preview["manifest"]["manifest_sha256"]
+
+
 def test_tampered_preview_and_receipt_are_rejected(tmp_path: Path) -> None:
     repo, head = _repo(tmp_path)
     manager = MCPStablePromotionEvidenceManager(str(repo))
@@ -217,6 +258,18 @@ def test_tampered_preview_and_receipt_are_rejected(tmp_path: Path) -> None:
     rejected = manager.handle("apply", {"preview_id": preview["preview_id"]})
     assert rejected["ok"] is False
     assert rejected["error_code"] == "PREVIEW_DIGEST_MISMATCH"
+
+    preview = manager.handle("preview", {"candidate_head": head})
+    preview_path = repo / ".colameta" / "runtime" / "stable-promotion-evidence-previews" / f"{preview['preview_id']}.json"
+    artifact = json.loads(preview_path.read_text(encoding="utf-8"))
+    artifact["worktree_isolation"]["worktree_clean"] = False
+    artifact["preview_digest"] = _canonical_sha256(
+        {key: value for key, value in artifact.items() if key != "preview_digest"}
+    )
+    preview_path.write_text(json.dumps(artifact), encoding="utf-8")
+    rejected = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    assert rejected["ok"] is False
+    assert rejected["error_code"] == "PREVIEW_WORKTREE_ISOLATION_MISMATCH"
 
     preview = manager.handle("preview", {"candidate_head": head})
     applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
@@ -241,20 +294,34 @@ def test_receipt_manifest_metadata_must_match_recomputed_manifest(tmp_path: Path
     receipt_path = repo / applied["receipt_path"]
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["artifact_manifest"]["total_size_bytes"] += 1
-    receipt["receipt_digest"] = hashlib.sha256(
-        json.dumps(
-            {key: value for key, value in receipt.items() if key != "receipt_digest"},
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    receipt["receipt_digest"] = _canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    )
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
     status = get_stable_promotion_evidence_status(str(repo), candidate_head=head)
 
     assert status["ok"] is False
     assert status["error_code"] == "RECEIPT_MANIFEST_MISMATCH"
+
+
+def test_receipt_worktree_isolation_must_match_recorded_git_snapshot(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+    preview = manager.handle("preview", {"candidate_head": head})
+    applied = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    receipt_path = repo / applied["receipt_path"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["worktree_isolation"]["worktree_clean"] = False
+    receipt["receipt_digest"] = _canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    status = get_stable_promotion_evidence_status(str(repo), candidate_head=head)
+
+    assert status["ok"] is False
+    assert status["error_code"] == "RECEIPT_WORKTREE_ISOLATION_MISMATCH"
 
 
 def test_runtime_storage_symlink_escape_fails_closed(tmp_path: Path) -> None:

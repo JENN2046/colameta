@@ -109,6 +109,7 @@ def get_stable_promotion_readiness(
             _blocker("PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED", "需要持久化并验证精确候选 HEAD 的 artifact manifest。"),
         )
     stable_promotion_review_candidate = not local_blockers
+    worktree_isolation = _worktree_isolation(git_state, candidate_manifest)
 
     if stable_promotion_review_candidate:
         readiness_status = "stable_promotion_review_candidate"
@@ -148,6 +149,7 @@ def get_stable_promotion_readiness(
         "git": git_state,
         "stable_runtime": stable_state,
         "candidate_artifact_manifest": candidate_manifest,
+        "worktree_isolation": worktree_isolation,
         "promotion_artifact_evidence": promotion_evidence,
         "registry": registry_state,
         "tool_support": tool_support,
@@ -157,6 +159,7 @@ def get_stable_promotion_readiness(
         "recommended_next_steps": _recommended_next_steps(
             stable_promotion_review_candidate,
             artifact_evidence_ready=promotion_evidence.get("status") == "verified_current",
+            artifact_evidence_tool_visible=tool_support.get("stable_promotion_evidence_tool_visible") is True,
             candidate_head=_clean_text(git_state.get("head")),
         ),
         "safety_boundary": {
@@ -169,6 +172,7 @@ def get_stable_promotion_readiness(
             "does_not_create_review_decision": True,
             "does_not_emit_gate_event": True,
             "does_not_write_delivery_state": True,
+            "worktree_changes_excluded_from_candidate_manifest": True,
         },
     }
 
@@ -267,19 +271,18 @@ def _recommended_next_steps(
     local_ready: bool,
     *,
     artifact_evidence_ready: bool,
+    artifact_evidence_tool_visible: bool,
     candidate_head: str | None,
 ) -> list[dict[str, Any]]:
-    if not local_ready:
-        return [
-            {"step": "clear_local_blockers", "description": "先修复 local_blockers，再重新调用本工具。"},
-            {"step": "rerun_readiness", "description": "确认运行中服务加载的是当前 checkout 代码，且 worktree clean。"},
-        ]
     steps: list[dict[str, Any]] = []
-    if not artifact_evidence_ready:
+    if not artifact_evidence_ready and artifact_evidence_tool_visible:
         steps.append(
             {
                 "step": "persist_artifact_manifest",
-                "description": "先 preview，再持久化精确候选 HEAD 的 artifact manifest 与 sha256。",
+                "description": (
+                    "先 preview，再持久化精确候选 HEAD 的 artifact manifest 与 sha256；"
+                    "该证据只读 Git object database，不包含当前 worktree 改动。"
+                ),
                 "tool": "manage_stable_promotion_evidence",
                 "arguments": {
                     "action": "preview",
@@ -288,11 +291,39 @@ def _recommended_next_steps(
                 "required_scope": "mcp:preview",
             }
         )
+    if not local_ready:
+        steps.extend(
+            [
+                {"step": "clear_local_blockers", "description": "清理 local_blockers；worktree 改动仍阻断正式晋升审查。"},
+                {"step": "rerun_readiness", "description": "确认运行中服务加载的是当前 checkout 代码，且 worktree clean。"},
+            ]
+        )
+        return steps
     steps.extend([
         {"step": "run_stable_promotion_rehearsal", "description": "在不替换稳定服务的前提下演练启动、健康检查与 rollback。"},
         {"step": "request_commander_authorization", "description": "拿到精确 hash-specific Commander 授权后，才可进入稳定服务替换。"},
     ])
     return steps
+
+
+def _worktree_isolation(git_state: dict[str, Any], candidate_manifest: dict[str, Any]) -> dict[str, Any]:
+    clean_state = git_state.get("worktree_clean")
+    status = (
+        "clean"
+        if clean_state is True
+        else "changes_excluded_from_exact_commit_evidence"
+        if clean_state is False
+        else "worktree_state_unavailable_but_content_not_used"
+    )
+    return {
+        "status": status,
+        "worktree_clean": clean_state,
+        "dirty_entry_count": git_state.get("dirty_entry_count"),
+        "candidate_source": candidate_manifest.get("source_kind"),
+        "worktree_content_used": candidate_manifest.get("worktree_content_used"),
+        "worktree_changes_block_artifact_receipt": False,
+        "worktree_changes_still_block_promotion_review": clean_state is not True,
+    }
 
 
 def _blocker(code: str, message: str) -> dict[str, str]:
