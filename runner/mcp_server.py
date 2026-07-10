@@ -5854,6 +5854,27 @@ class MCPPlanningBridgeServer:
         if (!data || typeof data !== "object") return {};
         return data.source === "submission_evidence_fill_preview" ? data : {};
       }
+      function contentReviewCardModels(fillPlan) {
+        if (!fillPlan || !Array.isArray(fillPlan.content_review_entries)) return [];
+        return fillPlan.content_review_entries.map(function (entry) {
+          var reasonCodes = [];
+          (Array.isArray(entry.file_states) ? entry.file_states : []).forEach(function (state) {
+            if (!state || !Array.isArray(state.reason_codes)) return;
+            state.reason_codes.forEach(function (reason) {
+              if (reasonCodes.indexOf(reason) < 0) reasonCodes.push(reason);
+            });
+          });
+          return {
+            key: entry.key,
+            title: entry.key,
+            status: entry.current_status || fillPlan.status,
+            default_path: Array.isArray(entry.refs) ? entry.refs.join(", ") : entry.default_path,
+            content_prompt: fillPlan.why,
+            purpose: fillPlan.why,
+            required_sections: reasonCodes.concat(entry.required_sections || [])
+          };
+        });
+      }
       function submissionPreviewCardModels(data) {
         var preview = submissionPreview(data);
         if (!preview.source) return [];
@@ -5895,6 +5916,10 @@ class MCPPlanningBridgeServer:
             };
           });
         }
+        if (preview.status === "content_review_required") {
+          var previewBundle = preview.evidence_bundle || {};
+          return contentReviewCardModels(previewBundle.fill_plan || {});
+        }
         return [];
       }
       function evidenceCardModels(data) {
@@ -5903,24 +5928,7 @@ class MCPPlanningBridgeServer:
         var bundle = evidenceBundle(data);
         var fillPlan = bundle.fill_plan || {};
         if (Array.isArray(fillPlan.content_review_entries) && fillPlan.content_review_entries.length) {
-          return fillPlan.content_review_entries.map(function (entry) {
-            var reasonCodes = [];
-            (Array.isArray(entry.file_states) ? entry.file_states : []).forEach(function (state) {
-              if (!state || !Array.isArray(state.reason_codes)) return;
-              state.reason_codes.forEach(function (reason) {
-                if (reasonCodes.indexOf(reason) < 0) reasonCodes.push(reason);
-              });
-            });
-            return {
-              key: entry.key,
-              title: entry.key,
-              status: entry.current_status || fillPlan.status,
-              default_path: Array.isArray(entry.refs) ? entry.refs.join(", ") : entry.default_path,
-              content_prompt: fillPlan.why,
-              purpose: fillPlan.why,
-              required_sections: reasonCodes.concat(entry.required_sections || [])
-            };
-          });
+          return contentReviewCardModels(fillPlan);
         }
         if (Array.isArray(fillPlan.draft_entries) && fillPlan.draft_entries.length) {
           return fillPlan.draft_entries.map(function (entry) {

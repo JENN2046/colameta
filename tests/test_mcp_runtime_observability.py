@@ -2527,6 +2527,46 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceText("evidence-tag").includes("human_reviewed"), evidenceText("evidence-tag"));
 
   dispatchToolOutput({{
+    source: "submission_evidence_fill_preview",
+    project_name: "demo-project",
+    status: "content_review_required",
+    summary: "Unfinished evidence blocks mark-ready.",
+    copyable_tool_call: {{
+      tool: "get_release_submission_readiness",
+      arguments: {{ project_name: "demo-project" }},
+      required_scope: "mcp:read"
+    }},
+    evidence_bundle: {{
+      fill_plan: {{
+        status: "evidence_content_review_required",
+        why: "Edit unfinished evidence before marking ready.",
+        content_review_entries: [{{
+          key: "logo",
+          current_status: "review_required",
+          refs: ["docs/submission/logo.md"],
+          required_sections: ["asset_path"],
+          file_states: [{{
+            ref: "docs/submission/logo.md",
+            status: "review_required",
+            reason_codes: ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"]
+          }}]
+        }}]
+      }}
+    }},
+    operator_instructions: ["Edit the referenced file before refreshing readiness."]
+  }});
+  assert.strictEqual(byId("submission-status").textContent, "content_review_required");
+  assert.strictEqual(
+    byId("submission-blockers").textContent,
+    "preview content_review_required | tool get_release_submission_readiness"
+  );
+  assert.strictEqual(evidenceCards().length, 1, "content-review preview should render the nested evidence entry");
+  assert(evidenceText("evidence-title").includes("logo | review_required"), evidenceText("evidence-title"));
+  assert(evidenceText("evidence-path").includes("docs/submission/logo.md"), evidenceText("evidence-path"));
+  assert(evidenceText("evidence-tag").includes("DRAFT_CONTENT"), evidenceText("evidence-tag"));
+  assert(evidenceText("evidence-tag").includes("HUMAN_REVIEW_PENDING"), evidenceText("evidence-tag"));
+
+  dispatchToolOutput({{
     source: "submission_evidence_fill",
     project_name: "demo-project",
     ok: false,
