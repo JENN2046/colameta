@@ -921,28 +921,33 @@ def _completion_progress_state(
     submission_activity_recorded = submission_activity.get("available") is True
     if status == "ready":
         progress = "closeout_ready"
-        message = "Closeout is ready; no remaining follow-up action is required."
+        guidance = _completion_progress_guidance(progress)
     elif pending_refresh_count:
         progress = "refresh_pending"
-        message = "Recorded action results exist and require a read-only refresh before closeout can be trusted."
+        guidance = _completion_progress_guidance(progress)
     elif stale_result_count:
         progress = "stale_result"
-        message = "A recorded action result is stale because the underlying action changed."
+        guidance = _completion_progress_guidance(progress)
     elif submission_activity_recorded or stored_result_count:
         progress = "recorded_needs_review"
-        message = "Action evidence has been recorded; review remaining gaps before claiming closeout ready."
+        guidance = _completion_progress_guidance(progress)
     else:
         progress = "not_started"
-        message = "No closeout follow-up result has been recorded yet."
+        guidance = _completion_progress_guidance(progress)
     return {
         "source": "product_console_closeout_progress_state",
         "schema_version": "product_console_closeout_progress_state.v1",
         "read_only": True,
         "side_effects": False,
         "status": progress,
+        "label": guidance["label"],
+        "severity": guidance["severity"],
         "completion_status": status,
         "ready": status == "ready",
-        "message": message,
+        "message": guidance["message"],
+        "next_step": guidance["next_step"],
+        "operator_guidance": guidance["operator_guidance"],
+        "recommended_action": guidance["recommended_action"],
         "followup_count": followup_count,
         "gap_count": len(gaps),
         "pending_refresh_count": pending_refresh_count,
@@ -950,6 +955,87 @@ def _completion_progress_state(
         "stored_result_count": stored_result_count,
         "submission_evidence_activity_recorded": submission_activity_recorded,
     }
+
+
+def _completion_progress_guidance(progress: str) -> dict[str, Any]:
+    guidance = {
+        "closeout_ready": {
+            "label": "Closeout Ready",
+            "severity": "ready",
+            "message": "Closeout is ready; no remaining follow-up action is required.",
+            "next_step": "Continue through the read-only Commander flow or prepare the external closeout handoff.",
+            "operator_guidance": [
+                "Keep the current Product Console and connector evidence together for review.",
+                "Do not treat this as release, publish, or stable replacement authorization.",
+            ],
+            "recommended_action": {
+                "tool": "render_commander_app",
+                "required_scope": "mcp:read",
+                "why": "Review the ready closeout surface without granting write authority.",
+            },
+        },
+        "refresh_pending": {
+            "label": "Refresh Pending",
+            "severity": "needs_attention",
+            "message": "Recorded action results exist and require a read-only refresh before closeout can be trusted.",
+            "next_step": "Run the queued read-only refresh action, then re-read Product Console.",
+            "operator_guidance": [
+                "Refresh before accepting the latest recorded result as current evidence.",
+                "If refresh fails, keep closeout blocked and record the failure as operator evidence.",
+            ],
+            "recommended_action": {
+                "tool": "get_product_console_map",
+                "required_scope": "mcp:read",
+                "why": "Refresh Product Console after recorded action evidence.",
+            },
+        },
+        "stale_result": {
+            "label": "Stale Result",
+            "severity": "needs_attention",
+            "message": "A recorded action result is stale because the underlying action changed.",
+            "next_step": "Re-run or re-record the changed follow-up before trusting closeout evidence.",
+            "operator_guidance": [
+                "Do not reuse stale action evidence for closeout.",
+                "Compare the current follow-up action and record a fresh result if still relevant.",
+            ],
+            "recommended_action": {
+                "tool": "get_product_console_map",
+                "required_scope": "mcp:read",
+                "why": "Inspect the current follow-up action before re-recording evidence.",
+            },
+        },
+        "recorded_needs_review": {
+            "label": "Recorded, Needs Review",
+            "severity": "needs_attention",
+            "message": "Action evidence has been recorded; review remaining gaps before claiming closeout ready.",
+            "next_step": "Review remaining closeout gaps and follow the next Product Console action group.",
+            "operator_guidance": [
+                "Recorded evidence is useful, but it is not the same as closeout ready.",
+                "Resolve every remaining gap and refresh before accepting the closeout.",
+            ],
+            "recommended_action": {
+                "tool": "get_product_console_map",
+                "required_scope": "mcp:read",
+                "why": "Re-read Product Console to inspect remaining closeout gaps.",
+            },
+        },
+        "not_started": {
+            "label": "Not Started",
+            "severity": "needs_attention",
+            "message": "No closeout follow-up result has been recorded yet.",
+            "next_step": "Start with the first closeout follow-up queue item.",
+            "operator_guidance": [
+                "Run or copy the first closeout follow-up action from Commander.",
+                "Record only a concise, redacted result summary after the operator confirms the outcome.",
+            ],
+            "recommended_action": {
+                "tool": "get_product_console_map",
+                "required_scope": "mcp:read",
+                "why": "Load closeout follow-up actions before recording evidence.",
+            },
+        },
+    }
+    return dict(guidance.get(progress) or guidance["not_started"])
 
 
 def _completion_summary(status: str, gaps: list[dict[str, Any]]) -> str:
