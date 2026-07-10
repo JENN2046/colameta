@@ -1830,9 +1830,21 @@ vm.runInThisContext({json.dumps(widget_script)});
       progress_state: {{
         source: "product_console_closeout_progress_state",
         status: "recorded_needs_review",
+        label: "Recorded, Needs Review",
+        severity: "needs_attention",
         completion_status: "needs_attention",
         ready: false,
         message: "Action evidence has been recorded; review remaining gaps before claiming closeout ready.",
+        next_step: "Review remaining closeout gaps and follow the next Product Console action group.",
+        operator_guidance: [
+          "Recorded evidence is useful, but it is not the same as closeout ready.",
+          "Resolve every remaining gap and refresh before accepting the closeout."
+        ],
+        recommended_action: {{
+          tool: "get_product_console_map",
+          required_scope: "mcp:read",
+          why: "Re-read Product Console to inspect remaining closeout gaps."
+        }},
         followup_count: 1,
         gap_count: 1,
         pending_refresh_count: 0,
@@ -1932,7 +1944,8 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(evidenceActivityText().includes("recorded | updated | Recorded recovery refreshed | 2026-01-02T03:04:05Z"), evidenceActivityText());
   assert.strictEqual(evidenceActivityRecordButton().disabled, false);
   assert(byId("closeout-status").textContent.includes("needs_attention"), byId("closeout-status").textContent);
-  assert(byId("closeout-status").textContent.includes("progress recorded_needs_review"), byId("closeout-status").textContent);
+  assert(byId("closeout-status").textContent.includes("Recorded, Needs Review"), byId("closeout-status").textContent);
+  assert(byId("closeout-status").textContent.includes("Review remaining closeout gaps"), byId("closeout-status").textContent);
   assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);
   assert.strictEqual(byId("closeout-next").textContent, "record_submission_evidence_activity | record_product_console_action_result | commit");
   assert(closeoutGroupText().includes("Evidence Activity | needs_attention"), closeoutGroupText());

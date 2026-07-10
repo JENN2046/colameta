@@ -6153,7 +6153,8 @@ class MCPPlanningBridgeServer:
         var progress = completion.progress_state && typeof completion.progress_state === "object" ? completion.progress_state : {};
         text("closeout-status", [
           completion.status,
-          progress.status ? "progress " + progress.status : "",
+          progress.label || (progress.status ? "progress " + progress.status : ""),
+          progress.next_step,
           completion.ready === true ? "ready" : "",
           completion.summary
         ].filter(Boolean).join(" | "));

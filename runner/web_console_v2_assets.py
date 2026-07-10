@@ -1260,8 +1260,9 @@ function renderServiceCapabilityCard(data) {{
   const completionProgress = completion.progress_state || {{}};
   const completionNext = [completionAction.action, completionAction.tool || completionAction.runbook, completionAction.authority].filter(Boolean).join(" ｜ ") || "-";
   const completionGapCount = completion.gap_count === 0 || completion.gap_count ? String(completion.gap_count) : "-";
-  const completionProgressText = completionProgress.status || "-";
-  const completionText = (completion.status || "-") + " ｜ " + completionProgressText + " ｜ gaps " + completionGapCount + " ｜ " + completionNext;
+  const completionProgressText = completionProgress.label || completionProgress.status || "-";
+  const completionStep = completionProgress.next_step || completionNext;
+  const completionText = (completion.status || "-") + " ｜ " + completionProgressText + " ｜ gaps " + completionGapCount + " ｜ " + completionStep;
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;

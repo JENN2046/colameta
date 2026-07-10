@@ -764,6 +764,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert service["product_console_completion"]["progress_state"]["source"] == "product_console_closeout_progress_state"
         assert service["product_console_completion"]["progress_state"]["read_only"] is True
         assert service["product_console_completion"]["progress_state"]["side_effects"] is False
+        assert service["product_console_completion"]["progress_state"]["label"]
+        assert service["product_console_completion"]["progress_state"]["severity"] in {"ready", "needs_attention"}
+        assert service["product_console_completion"]["progress_state"]["next_step"]
+        assert service["product_console_completion"]["progress_state"]["recommended_action"]["required_scope"] == "mcp:read"
+        assert service["product_console_completion"]["progress_state"]["operator_guidance"]
         assert service["product_console_completion"]["progress_state"]["status"] in {
             "not_started",
             "recorded_needs_review",

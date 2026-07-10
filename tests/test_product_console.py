@@ -216,6 +216,11 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert completion["components"]["submission_evidence_activity"]["status"] == "not_recorded"
     assert completion["progress_state"]["source"] == "product_console_closeout_progress_state"
     assert completion["progress_state"]["status"] == "not_started"
+    assert completion["progress_state"]["label"] == "Not Started"
+    assert completion["progress_state"]["severity"] == "needs_attention"
+    assert completion["progress_state"]["next_step"] == "Start with the first closeout follow-up queue item."
+    assert completion["progress_state"]["recommended_action"]["tool"] == "get_product_console_map"
+    assert "Run or copy the first closeout follow-up action" in completion["progress_state"]["operator_guidance"][0]
     assert completion["progress_state"]["completion_status"] == "needs_attention"
     assert completion["progress_state"]["gap_count"] == 3
     assert completion["progress_state"]["followup_count"] == 3
@@ -298,6 +303,9 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     assert packet["action_result_state"]["pending_refreshes"][0]["arguments"] == {"project_name": "demo-project"}
     completion = packet["completion_surface"]
     assert completion["progress_state"]["status"] == "refresh_pending"
+    assert completion["progress_state"]["label"] == "Refresh Pending"
+    assert completion["progress_state"]["recommended_action"]["required_scope"] == "mcp:read"
+    assert "Run the queued read-only refresh action" in completion["progress_state"]["next_step"]
     assert completion["progress_state"]["pending_refresh_count"] == 1
     assert completion["progress_state"]["stored_result_count"] == 1
     assert completion["progress_state"]["ready"] is False
@@ -464,6 +472,9 @@ def test_console_map_completion_surface_ready_when_closeout_evidence_is_current(
     assert completion["status"] == "ready"
     assert completion["ready"] is True
     assert completion["progress_state"]["status"] == "closeout_ready"
+    assert completion["progress_state"]["label"] == "Closeout Ready"
+    assert completion["progress_state"]["severity"] == "ready"
+    assert completion["progress_state"]["recommended_action"]["tool"] == "render_commander_app"
     assert completion["progress_state"]["ready"] is True
     assert completion["progress_state"]["pending_refresh_count"] == 0
     assert completion["progress_state"]["submission_evidence_activity_recorded"] is True
