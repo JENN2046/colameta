@@ -1010,6 +1010,11 @@ Jenn 明确要现在在 stable 使用新能力
 这个判断优先读 `get_stable_replacement_cadence(project_name=...)`，或 Web
 `/api/v2/status.stable_replacement_cadence`。`colameta status --json` 也会返回
 同一份 cadence packet。
+
+Product Readiness 还会返回 `stable_delivery_decision`。普通 HEAD 漂移保持
+`deferred_batch`；如果公开 MCP health 证据证明端点加载的 runtime 不是候选提交，则变为
+`promotion_review_required`，并路由到 `get_stable_promotion_readiness`。这个升级只要求审查
+证据，不会授权替换稳定服务。
 当 dev ahead stable 时，cadence packet 会包含 `dev_batch_summary`，列出从 stable
 以来的 commit 数、最近 commit subject、`batch_size` 和 `promotion_posture`。这只是
 后续批次审查证据，不是替换请求。

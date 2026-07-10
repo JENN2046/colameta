@@ -3760,6 +3760,28 @@ vm.runInThisContext({json.dumps(widget_script)});
         readiness.assert_called_once_with(str(project))
         chatgpt.assert_called_once()
 
+    def test_service_product_readiness_preserves_registered_project_name(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        packet = {
+            "ok": True,
+            "source": "product_readiness",
+            "read_only": True,
+            "side_effects": False,
+            "status": "blocked",
+        }
+
+        with patch("runner.mcp_server.build_product_readiness_packet", return_value=packet) as readiness:
+            result = server.call_tool_for_agent(
+                "get_product_readiness_status",
+                {"project_name": "demo-project"},
+            )
+
+        assert result["ok"] is True
+        readiness.assert_called_once_with(str(project), project_name="demo-project")
+
     def test_full_loop_authority_tool_is_read_only_and_does_not_echo_confirmation_ref(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=False)

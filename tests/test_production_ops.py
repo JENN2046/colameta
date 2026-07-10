@@ -861,6 +861,29 @@ class ProductionOpsTests(unittest.TestCase):
         assert check["operator_hint"]["runbook"] == "docs/dns-proxy-tunnel-runbook.zh-CN.md"
         assert "cloudflared edge DNS" in check["operator_hint"]["symptom"]
         assert "198.18.0.0/15 fake-IP DNS answers" in check["operator_hint"]["watch_for"]
+        assert packet["checks"]["secret_redaction"]["status"] == "ready"
+        assert "SECRET_LIKE_CONTENT_DETECTED" not in packet["blocker_codes"]
+
+    def test_public_authorization_server_metadata_does_not_weaken_secret_detection(self) -> None:
+        from runner.production_ops import _detect_sensitive_content
+
+        public_metadata = _detect_sensitive_content(
+            {"responses": {"authorization_server": {"status": 404}}}
+        )
+        secret_value = _detect_sensitive_content(
+            {"responses": {"authorization_server": "sk-not-a-real-token-value"}}
+        )
+        misplaced_metadata = _detect_sensitive_content(
+            {"unexpected": {"authorization_server": {"status": 404}}}
+        )
+        unsanitized_status = _detect_sensitive_content(
+            {"responses": {"authorization_server": {"status": "404"}}}
+        )
+
+        assert public_metadata["status"] == "ready"
+        assert secret_value["status"] == "blocked"
+        assert misplaced_metadata["status"] == "blocked"
+        assert unsanitized_status["status"] == "blocked"
 
     def test_missing_connector_smoke_needs_attention_not_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet

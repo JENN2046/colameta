@@ -9919,7 +9919,14 @@ class MCPPlanningBridgeServer:
         return self._commander_app_manifest(params)
 
     def _tool_get_product_readiness_status(self, params: dict[str, Any]) -> dict[str, Any]:
-        project_root, _ = self._resolve_read_only_project_context(params)
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = (
+            self._project_name_for_context(project_root, project_record, params)
+            if params.get("project_name") is not None or project_record is not None
+            else None
+        )
+        if project_name:
+            return build_product_readiness_packet(project_root, project_name=project_name)
         return build_product_readiness_packet(project_root)
 
     def _tool_get_chatgpt_app_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
