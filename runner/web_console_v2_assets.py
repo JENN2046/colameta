@@ -89,6 +89,13 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .operator-inbox-action-status.completed { color: #3fb950; }
 .operator-inbox-action-status.failed { color: #f85149; }
 .operator-inbox-action-meta { color: #8b949e; font-size: 10px; margin-top: 2px; }
+.operator-inbox-run-trail { border-top: 1px solid #30363d55; margin: 8px 0 10px; padding-top: 8px; }
+.operator-inbox-run-trail-title { color: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
+.operator-inbox-run-trail-list { display: grid; gap: 5px; }
+.operator-inbox-run-trail-item { color: #8b949e; font-size: 11px; line-height: 1.4; }
+.operator-inbox-run-trail-item.running { color: #d29922; }
+.operator-inbox-run-trail-item.completed { color: #3fb950; }
+.operator-inbox-run-trail-item.failed { color: #f85149; }
 .modal-sync-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin-bottom: 10px; min-height: 16px; }
 .registry-action-status { color: #8b949e; font-size: 11px; line-height: 1.4; margin: 8px 0 10px; min-height: 16px; }
 .registry-action-status.running { color: #d29922; }
@@ -388,6 +395,8 @@ const RIGHT_TAB_DEFAULT = "todolist";
 const RIGHT_TAB_NAMES = ["todolist", "operator-inbox", "decision", "memory"];
 let activeRightTab = RIGHT_TAB_DEFAULT;
 let operatorInboxRunFeedback = null;
+let operatorInboxRunTrail = [];
+const OPERATOR_INBOX_RUN_TRAIL_LIMIT = 5;
 const TODO_PAGE_SIZE_DEFAULT = 8;
 const TODO_PAGE_SIZE_MIN = 3;
 const TODO_PAGE_SIZE_MAX = 20;
@@ -1654,16 +1663,18 @@ function bindOperatorInboxActions(root) {{
       try {{
         const action = JSON.parse(this.getAttribute("data-run-operator-inbox") || "{{}}");
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || operatorInboxActionKeyFromAction(action);
-        setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...");
+        const actionLabel = this.getAttribute("data-operator-inbox-action-label") || actionKey;
+        setOperatorInboxRunFeedback(actionKey, "running", "正在运行 operator inbox 项...", null, actionLabel);
         const data = await runAction(action, latestStatusData || {{}});
         if (data && data.ok === false) {{
-          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data);
+          setOperatorInboxRunFeedback(actionKey, "failed", data.message || data.error_code || "运行失败。", data, actionLabel);
         }} else {{
-          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data);
+          setOperatorInboxRunFeedback(actionKey, "completed", "运行完成，状态已刷新。", data, actionLabel);
         }}
       }} catch (e) {{
         const actionKey = this.getAttribute("data-operator-inbox-action-key") || "";
-        if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e));
+        const actionLabel = this.getAttribute("data-operator-inbox-action-label") || actionKey;
+        if (actionKey) setOperatorInboxRunFeedback(actionKey, "failed", String(e), null, actionLabel);
         showError(String(e));
       }}
     }});
@@ -1712,15 +1723,28 @@ function operatorInboxFeedbackTimestamp() {{
   return new Date().toLocaleTimeString([], {{ hour: "2-digit", minute: "2-digit", second: "2-digit" }});
 }}
 
-function setOperatorInboxRunFeedback(actionKey, state, message, data) {{
+function pushOperatorInboxRunTrail(actionKey, state, message, actionLabel) {{
+  operatorInboxRunTrail.unshift({{
+    actionKey: actionKey || "operator_inbox_item",
+    label: actionLabel || actionKey || "operator inbox 项",
+    state: state || "idle",
+    message: String(message || ""),
+    timestamp: operatorInboxFeedbackTimestamp(),
+  }});
+  operatorInboxRunTrail = operatorInboxRunTrail.slice(0, OPERATOR_INBOX_RUN_TRAIL_LIMIT);
+}}
+
+function setOperatorInboxRunFeedback(actionKey, state, message, data, actionLabel) {{
+  const timestamp = operatorInboxFeedbackTimestamp();
   operatorInboxRunFeedback = {{
     actionKey: actionKey,
     state: state,
     message: message,
     source: "来自刚才的 Run 操作",
-    timestamp: operatorInboxFeedbackTimestamp(),
+    timestamp: timestamp,
     inboxSignature: operatorInboxSignature(data || latestStatusData || {{}}),
   }};
+  pushOperatorInboxRunTrail(actionKey, state, message, actionLabel);
   if (latestStatusData) {{
     renderRightColumn(latestStatusData);
     showRightTab("operator-inbox");
@@ -2364,7 +2388,7 @@ function renderOperatorInboxItem(item) {{
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
   h += `<div class="operator-inbox-actions">`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
-  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" data-operator-inbox-action-label="${{escAttr(itemLabel)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
   h += `</div>`;
   if (feedback) {{
     h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
@@ -2394,6 +2418,22 @@ function operatorInboxNumericCount(value, fallback) {{
   return Number.isFinite(parsed) ? parsed : fallback;
 }}
 
+function renderOperatorInboxRunTrail() {{
+  let h = `<div class="operator-inbox-run-trail" aria-label="最近 operator inbox Run">`;
+  h += `<div class="operator-inbox-run-trail-title">最近 Run</div>`;
+  if (!operatorInboxRunTrail.length) {{
+    h += `<div class="operator-inbox-run-trail-item">暂无最近 Run。</div>`;
+  }} else {{
+    h += `<div class="operator-inbox-run-trail-list">`;
+    for (const item of operatorInboxRunTrail) {{
+      h += `<div class="operator-inbox-run-trail-item ${{escAttr(item.state || "")}}">${{esc(item.timestamp || "-")}} ｜ ${{esc(item.label || item.actionKey || "operator inbox 项")}} ｜ ${{esc(item.message || "")}}</div>`;
+    }}
+    h += `</div>`;
+  }}
+  h += `</div>`;
+  return h;
+}}
+
 function renderOperatorInboxPanel(data) {{
   data = data || {{}};
   const inbox = operatorInboxFromData(data);
@@ -2417,6 +2457,7 @@ function renderOperatorInboxPanel(data) {{
     }}
     h += `</div>`;
   }}
+  h += renderOperatorInboxRunTrail();
   if (!items.length) {{
     h += `<div class="empty-state">暂无 operator inbox 项</div>`;
   }} else {{
