@@ -862,6 +862,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "setGlobalLoading" in page
         assert "clearGlobalError" in page
         assert 'id="refresh-status" class="refresh-status" role="status" aria-live="polite"' in page
+        assert 'id="refresh-btn" type="button" aria-busy="false" aria-disabled="false"' in page
+        assert "refreshInFlight" in page
+        assert "setRefreshButtonBusy" in page
+        assert "刷新中..." in page
         assert "lastStatusRefreshText" in page
         assert "backgroundPollStatusText" in page
         assert "setRefreshStatus" in page

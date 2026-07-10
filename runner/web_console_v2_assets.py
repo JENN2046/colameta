@@ -228,7 +228,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
         <option>加载中…</option>
       </select>
       <button id="project-manage-btn" onclick="openProjectManagement()">项目管理</button>
-      <button onclick="refresh()">刷新</button>
+      <button id="refresh-btn" type="button" aria-busy="false" aria-disabled="false" onclick="refresh()">刷新</button>
       <div id="refresh-status" class="refresh-status" role="status" aria-live="polite">尚未刷新 ｜ 后台轮询未启动</div>
     </div>
   </div>
@@ -357,6 +357,7 @@ const BACKGROUND_STATUS_POLL_MS = 5000;
 let pollTimer = null;
 let statusPollTimer = null;
 let statusPollInFlight = false;
+let refreshInFlight = false;
 let lastStatusRefreshText = "尚未刷新";
 let backgroundPollStatusText = "后台轮询未启动";
 let pollCount = 0;
@@ -393,6 +394,9 @@ async function fetchStatus() {{
 }}
 
 async function refresh() {{
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  setRefreshButtonBusy(true);
   setGlobalLoading(true, "正在刷新状态...");
   clearGlobalError();
   setRefreshStatus(null, "正在手动刷新...");
@@ -407,7 +411,18 @@ async function refresh() {{
     showError(String(e));
   }} finally {{
     setGlobalLoading(false);
+    setRefreshButtonBusy(false);
+    refreshInFlight = false;
   }}
+}}
+
+function setRefreshButtonBusy(isBusy) {{
+  const btn = $("refresh-btn");
+  if (!btn) return;
+  btn.disabled = isBusy;
+  btn.textContent = isBusy ? "刷新中..." : "刷新";
+  btn.setAttribute("aria-busy", isBusy ? "true" : "false");
+  btn.setAttribute("aria-disabled", isBusy ? "true" : "false");
 }}
 
 function refreshTimestamp() {{
