@@ -69,6 +69,7 @@ def _release_with_materials(
     entry_templates = [logo_template] if evidence_status == "needs_attention" else []
     ready = evidence_status == "ready"
     filled_not_marked_ready = evidence_status == "filled_not_marked_ready"
+    review_required = evidence_status == "review_required"
     evidence_progress = {
         "source": "submission_evidence_progress",
         "schema_version": "submission_evidence_progress.v1",
@@ -79,6 +80,7 @@ def _release_with_materials(
             "ready": 1 if ready else 0,
             "needs_attention": 1 if evidence_status == "needs_attention" else 0,
             "filled_not_marked_ready": 1 if filled_not_marked_ready else 0,
+            "review_required": 1 if review_required else 0,
             "placeholder": 0,
             "not_started": 0,
         },
@@ -97,6 +99,14 @@ def _release_with_materials(
             }
         ],
     }
+    if review_required:
+        evidence_progress["rows"][0]["file_states"] = [
+            {
+                "ref": "docs/submission/logo.md",
+                "status": "review_required",
+                "reason_codes": ["DRAFT_CONTENT", "HUMAN_REVIEW_PENDING"],
+            }
+        ]
     return {
         "status": status,
         "ready": status == "ready",
@@ -994,6 +1004,45 @@ def test_console_map_splits_multiple_ready_reviews_into_per_key_actions() -> Non
     assert safe_next["action_fingerprint"] == review_actions[0]["action_fingerprint"]
 
 
+def test_console_map_blocks_mark_ready_for_explicitly_unfinished_evidence() -> None:
+    packet = build_product_console_map(
+        "/tmp/project",
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(evidence_status="review_required"),
+    )
+
+    first = packet["recommended_first_actions"][0]
+    assert first["action_id"] == "review_submission_evidence_content_logo"
+    assert first["tool"] == "get_release_submission_readiness"
+    assert first["mode"] == "read"
+    assert first["arguments"] == {"project_name": "demo-project"}
+    assert first["evidence_context"]["content_review_required"] is True
+    assert first["evidence_context"]["mark_ready_blocked"] is True
+    assert first["evidence_context"]["refs"] == ["docs/submission/logo.md"]
+    assert first["evidence_context"]["unfinished_reason_codes"] == [
+        "DRAFT_CONTENT",
+        "HUMAN_REVIEW_PENDING",
+    ]
+    assert not any(
+        action.get("tool") == "mark_submission_evidence_ready_fields"
+        for action in packet["recommended_first_actions"]
+    )
+    bundle = packet["release_submission_evidence_bundle"]
+    assert bundle["progress_summary"]["counts"]["review_required"] == 1
+    assert bundle["progress_summary"]["rows"][0]["file_states"][0]["status"] == "review_required"
+    fill_plan = bundle["fill_plan"]
+    assert fill_plan["status"] == "evidence_content_review_required"
+    assert fill_plan["next_tool"] == "get_release_submission_readiness"
+    assert fill_plan["mark_ready_blocked"] is True
+    assert fill_plan["draft_entries"] == []
+    assert fill_plan["content_review_entries"][0]["key"] == "logo"
+    safe_next = packet["completion_surface"]["safe_next_action"]
+    assert safe_next["action_id"] == first["action_id"]
+    assert safe_next["action_fingerprint"] == first["action_fingerprint"]
+
+
 def test_console_map_marks_full_loop_entries_preview_required_when_controls_ready() -> None:
     packet = build_product_console_map(
         "/tmp/project",
@@ -1451,6 +1500,24 @@ def test_submission_evidence_fill_preview_defaults_to_one_review_key() -> None:
     assert packet["review_entry_count"] == 1
     assert packet["remaining_review_count"] == 2
     assert packet["copyable_tool_call"]["arguments"]["keys"] == ["logo"]
+
+
+def test_submission_evidence_fill_preview_reports_content_review_blocker_as_read_only() -> None:
+    packet = build_submission_evidence_fill_preview(
+        "/tmp/project",
+        project_name="demo-project",
+        release_submission_readiness=_release_with_materials(evidence_status="review_required"),
+    )
+
+    assert packet["status"] == "content_review_required"
+    assert packet["content_review_entry_count"] == 1
+    assert packet["draft_entry_count"] == 0
+    assert packet["review_entry_count"] == 0
+    assert packet["copyable_tool_call"]["tool"] == "get_release_submission_readiness"
+    assert packet["copyable_tool_call"]["arguments"] == {"project_name": "demo-project"}
+    assert packet["copyable_tool_call"]["required_scope"] == "mcp:read"
+    assert packet["copyable_tool_call"]["result_contract"]["expected_result_kind"] == "read_packet"
+    assert packet["operator_instructions"][0].startswith("Open each referenced evidence file")
 
 
 def test_submission_evidence_fill_preview_reports_unavailable_selected_review_key() -> None:

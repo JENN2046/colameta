@@ -18,12 +18,48 @@ SUBMISSION_EVIDENCE_FILL_VERSION = "submission_evidence_fill.v1"
 SUBMISSION_EVIDENCE_MARK_READY_SOURCE = "submission_evidence_mark_ready"
 SUBMISSION_EVIDENCE_MARK_READY_VERSION = "submission_evidence_mark_ready.v1"
 SUBMISSION_EVIDENCE_REVIEW_CONFIRMATION = "human_reviewed"
+SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED = "SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED"
 DEFAULT_SUBMISSION_MATERIALS_REL_PATH = "docs/chatgpt-app-submission-materials.json"
 RELEASE_SUBMISSION_MATERIALS_MAX_BYTES = 65536
 SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES = 32768
 READY = "ready"
 NEEDS_ATTENTION = "needs_attention"
 BLOCKED = "blocked"
+
+SUBMISSION_EVIDENCE_UNFINISHED_CONTENT_MARKERS = {
+    "DRAFT_CONTENT": (
+        "draft evidence only",
+        "draft visual evidence",
+        "this draft does not claim complete",
+        "this evidence draft is generated",
+        "this draft is built",
+    ),
+    "FINAL_ASSET_MISSING": (
+        "it is not a final",
+        "no final chatgpt app",
+        "must be provided separately",
+    ),
+    "HUMAN_REVIEW_PENDING": (
+        "a human reviewer still needs to",
+        "still need a human",
+        "human privacy review is still required",
+        "human security/privacy review is still required",
+        "human reviewer must confirm final",
+    ),
+    "CONFIRMATION_PENDING": (
+        "not yet confirmed",
+        "must remain false until",
+        "keep this field unready until",
+        "must be confirmed from the dashboard before",
+        "must still be confirmed by the human submitter",
+    ),
+    "REQUIRED_PERMISSION_UNPROVEN": (
+        "does not prove that the current operator session has",
+    ),
+    "REQUIRED_COVERAGE_MISSING": (
+        "they do not cover mobile ui screenshots",
+    ),
+}
 
 SUBMISSION_MATERIAL_TEXT_FIELDS = {
     "app_name",
@@ -456,6 +492,18 @@ def fill_submission_evidence_files(
         }
 
     planned, validation_errors = _plan_submission_evidence_file_writes(root, entries)
+    if mark_ready and not validation_errors:
+        for item in planned:
+            reason_codes = _submission_evidence_unfinished_content_reason_codes(str(item.get("content") or ""))
+            if reason_codes:
+                validation_errors.append(
+                    {
+                        "key": item.get("key"),
+                        "ref": item.get("rel_path"),
+                        "error_code": SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED,
+                        "reason_codes": reason_codes,
+                    }
+                )
     if validation_errors:
         return {
             "ok": False,
@@ -464,7 +512,9 @@ def fill_submission_evidence_files(
             "project_root": root,
             "observed_at": _iso_now(now),
             "error_code": "SUBMISSION_EVIDENCE_INPUT_INVALID",
-            "message": "Submission evidence input is invalid; no files were written.",
+            "message": (
+                "Submission evidence input is invalid or explicitly unfinished; no files were written or marked ready."
+            ),
             "validation_errors": validation_errors,
             "safe_recovery_actions": _submission_evidence_safe_recovery_actions(
                 selected_keys=_submission_evidence_keys_from_entries(entries),
@@ -621,7 +671,10 @@ def mark_submission_evidence_ready_fields(
             "project_root": root,
             "observed_at": _iso_now(now),
             "error_code": "SUBMISSION_EVIDENCE_READY_PROOF_INVALID",
-            "message": "Every selected evidence key must reference present non-placeholder files before it can be marked ready.",
+            "message": (
+                "Every selected evidence key must reference present non-placeholder files whose content does not "
+                "explicitly declare draft, pending review, missing final assets, unconfirmed permissions, or coverage gaps."
+            ),
             "validation_errors": proof_errors,
             "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=normalized_keys),
         }
@@ -898,6 +951,8 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
     missing_files_by_key: list[dict[str, str]] = []
     placeholder_files: list[str] = []
     placeholder_files_by_key: list[dict[str, str]] = []
+    content_review_files: list[str] = []
+    content_review_files_by_key: list[dict[str, Any]] = []
     present_files: list[str] = []
 
     for evidence_key in required_keys:
@@ -906,31 +961,52 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
             missing_keys.append(evidence_key)
             continue
         for ref in refs:
-            normalized = _normalize_evidence_ref(project_root, ref)
-            if normalized.get("ok") is not True:
-                invalid_refs.append({"key": evidence_key, "ref": ref, "error_code": str(normalized.get("error_code"))})
-                continue
-            rel_path = str(normalized["rel_path"])
-            if os.path.isfile(str(normalized["abs_path"])):
-                if _is_placeholder_evidence_ref(rel_path):
-                    placeholder_files.append(rel_path)
-                    placeholder_files_by_key.append({"key": evidence_key, "ref": rel_path})
-                else:
-                    present_files.append(rel_path)
-            else:
+            state = _submission_evidence_ref_state(project_root, ref)
+            rel_path = str(state.get("ref") or ref)
+            state_status = str(state.get("status") or "invalid")
+            if state_status == "invalid":
+                invalid_refs.append(
+                    {
+                        "key": evidence_key,
+                        "ref": ref,
+                        "error_code": str(state.get("error_code") or "EVIDENCE_REF_INVALID"),
+                    }
+                )
+            elif state_status == "missing":
                 missing_files.append(rel_path)
                 missing_files_by_key.append({"key": evidence_key, "ref": rel_path})
+            elif state_status == "placeholder":
+                placeholder_files.append(rel_path)
+                placeholder_files_by_key.append({"key": evidence_key, "ref": rel_path})
+            elif state_status == "review_required":
+                content_review_files.append(rel_path)
+                content_review_files_by_key.append(
+                    {
+                        "key": evidence_key,
+                        "ref": rel_path,
+                        "reason_codes": list(state.get("reason_codes") or []),
+                    }
+                )
+            else:
+                present_files.append(rel_path)
 
-    if missing_keys or invalid_refs or missing_files or placeholder_files:
+    structural_incomplete = bool(missing_keys or invalid_refs or missing_files or placeholder_files)
+    if structural_incomplete or content_review_files:
         incomplete_keys = _dedupe_preserve_order(
             sorted(set(missing_keys))
             + [item["key"] for item in invalid_refs]
             + [item["key"] for item in missing_files_by_key]
             + [item["key"] for item in placeholder_files_by_key]
+            + [item["key"] for item in content_review_files_by_key]
         )
+        reason_codes: list[str] = []
+        if structural_incomplete:
+            reason_codes.append("SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE")
+        if content_review_files:
+            reason_codes.append(SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED)
         return {
             "status": NEEDS_ATTENTION,
-            "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_INCOMPLETE"],
+            "reason_codes": reason_codes,
             "required_keys": required_keys,
             "incomplete_keys": incomplete_keys,
             "missing_keys": sorted(set(missing_keys)),
@@ -939,6 +1015,8 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
             "missing_files_by_key": missing_files_by_key,
             "placeholder_files": sorted(set(placeholder_files)),
             "placeholder_files_by_key": placeholder_files_by_key,
+            "content_review_files": sorted(set(content_review_files)),
+            "content_review_files_by_key": content_review_files_by_key,
             "present_files": sorted(set(present_files)),
             "fill_entry_templates": _submission_evidence_entry_templates_for(incomplete_keys),
         }
@@ -947,6 +1025,8 @@ def _evidence_references_check(project_root: str, materials: dict[str, Any], man
         "reason_codes": ["SUBMISSION_EVIDENCE_REFERENCES_READY"],
         "required_keys": required_keys,
         "incomplete_keys": [],
+        "content_review_files": [],
+        "content_review_files_by_key": [],
         "present_files": sorted(set(present_files)),
         "fill_entry_templates": [],
     }
@@ -961,6 +1041,7 @@ def _submission_evidence_progress(project_root: str, materials: dict[str, Any], 
         "ready": 0,
         "needs_attention": 0,
         "filled_not_marked_ready": 0,
+        "review_required": 0,
         "placeholder": 0,
         "not_started": 0,
     }
@@ -1015,17 +1096,63 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
         return {"ref": rel_path, "status": "missing"}
     if _is_placeholder_evidence_ref(rel_path):
         return {"ref": rel_path, "status": "placeholder"}
+    if rel_path.lower().endswith((".md", ".markdown")):
+        try:
+            with open(str(normalized["abs_path"]), "rb") as handle:
+                content_bytes = handle.read(SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES + 1)
+        except OSError as exc:
+            return {
+                "ref": rel_path,
+                "status": "invalid",
+                "error_code": "SUBMISSION_EVIDENCE_FILE_UNREADABLE",
+                "error_type": exc.__class__.__name__,
+            }
+        if len(content_bytes) > SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES:
+            return {
+                "ref": rel_path,
+                "status": "invalid",
+                "error_code": "SUBMISSION_EVIDENCE_CONTENT_TOO_LARGE",
+                "max_bytes": SUBMISSION_EVIDENCE_CONTENT_MAX_BYTES,
+                "actual_bytes_at_least": len(content_bytes),
+            }
+        try:
+            content = content_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return {
+                "ref": rel_path,
+                "status": "invalid",
+                "error_code": "SUBMISSION_EVIDENCE_FILE_UNREADABLE",
+                "error_type": exc.__class__.__name__,
+            }
+        reason_codes = _submission_evidence_unfinished_content_reason_codes(content)
+        if reason_codes:
+            return {
+                "ref": rel_path,
+                "status": "review_required",
+                "reason_codes": reason_codes,
+            }
     return {"ref": rel_path, "status": "present"}
+
+
+def _submission_evidence_unfinished_content_reason_codes(content: str) -> list[str]:
+    normalized = " ".join(content.casefold().split())
+    return [
+        reason_code
+        for reason_code, markers in SUBMISSION_EVIDENCE_UNFINISHED_CONTENT_MARKERS.items()
+        if any(marker in normalized for marker in markers)
+    ]
 
 
 def _submission_evidence_progress_status(ready: bool, refs: list[str], file_states: list[dict[str, Any]]) -> str:
     if not refs:
         return "needs_attention" if ready else "not_started"
     state_values = {str(item.get("status") or "unknown") for item in file_states}
-    has_problem = bool(state_values & {"invalid", "missing", "placeholder"})
+    has_problem = bool(state_values & {"invalid", "missing", "placeholder", "review_required"})
     has_present = "present" in state_values
     if ready:
         return "needs_attention" if has_problem or not has_present else "ready"
+    if "review_required" in state_values:
+        return "review_required"
     if has_present and not has_problem:
         return "filled_not_marked_ready"
     if "placeholder" in state_values:
@@ -1042,6 +1169,16 @@ def _submission_evidence_row_next_action(status: str, template: dict[str, Any]) 
             "tool": "mark_submission_evidence_ready_fields",
             "mark_ready": True,
             "why": "Evidence file exists, but the manifest ready field remains false.",
+        }
+    if status == "review_required":
+        return {
+            "action": "review_evidence_content",
+            "tool": "get_release_submission_readiness",
+            "mark_ready": False,
+            "why": (
+                "The referenced file explicitly declares draft, missing-final-asset, pending-review, "
+                "unconfirmed-permission, or uncovered-test state; edit and review it before marking ready."
+            ),
         }
     return {
         "action": "fill_submission_evidence",
@@ -1092,17 +1229,33 @@ def _validate_ready_evidence_refs(root: str, key: str, refs: list[str]) -> tuple
     errors: list[dict[str, Any]] = []
     reviewed_refs: list[str] = []
     for ref in refs:
-        normalized = _normalize_evidence_ref(root, ref)
-        if normalized.get("ok") is not True:
-            errors.append({"key": key, "ref": ref, "error_code": str(normalized.get("error_code"))})
+        state = _submission_evidence_ref_state(root, ref)
+        rel_path = str(state.get("ref") or ref)
+        state_status = str(state.get("status") or "invalid")
+        if state_status == "invalid":
+            errors.append(
+                {
+                    "key": key,
+                    "ref": ref,
+                    "error_code": str(state.get("error_code") or "EVIDENCE_REF_INVALID"),
+                }
+            )
             continue
-        rel_path = str(normalized["rel_path"])
-        abs_path = str(normalized["abs_path"])
-        if _is_placeholder_evidence_ref(rel_path):
+        if state_status == "placeholder":
             errors.append({"key": key, "ref": rel_path, "error_code": "SUBMISSION_EVIDENCE_PLACEHOLDER_REF"})
             continue
-        if not os.path.isfile(abs_path):
+        if state_status == "missing":
             errors.append({"key": key, "ref": rel_path, "error_code": "SUBMISSION_EVIDENCE_FILE_MISSING"})
+            continue
+        if state_status == "review_required":
+            errors.append(
+                {
+                    "key": key,
+                    "ref": rel_path,
+                    "error_code": SUBMISSION_EVIDENCE_CONTENT_REVIEW_REQUIRED,
+                    "reason_codes": list(state.get("reason_codes") or []),
+                }
+            )
             continue
         reviewed_refs.append(rel_path)
     return errors, reviewed_refs

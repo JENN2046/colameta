@@ -398,8 +398,12 @@ def build_submission_evidence_fill_preview(
     review_entries = fill_plan.get("review_entries") if isinstance(fill_plan, dict) else []
     if not isinstance(review_entries, list):
         review_entries = []
+    content_review_entries = fill_plan.get("content_review_entries") if isinstance(fill_plan, dict) else []
+    if not isinstance(content_review_entries, list):
+        content_review_entries = []
     filtered_entries = _filter_draft_entries(draft_entries, selected)
     filtered_review_entries = _filter_review_entries(review_entries, selected)
+    filtered_content_review_entries = _filter_review_entries(content_review_entries, selected)
     if not selected and filtered_review_entries:
         filtered_review_entries = filtered_review_entries[:1]
     fill_entries = [
@@ -418,7 +422,7 @@ def build_submission_evidence_fill_preview(
     ]
     available_keys = {
         str(entry.get("key"))
-        for entry in [*filtered_entries, *filtered_review_entries]
+        for entry in [*filtered_entries, *filtered_review_entries, *filtered_content_review_entries]
         if isinstance(entry, dict) and entry.get("key")
     }
     ignored_selected_keys = sorted(selected - available_keys)
@@ -427,15 +431,22 @@ def build_submission_evidence_fill_preview(
         fill_plan,
         fill_entries,
         filtered_review_entries,
+        filtered_content_review_entries,
         selected,
     )
     if status == "review_ready":
         copyable_tool = "mark_submission_evidence_ready_fields"
         review_keys = [str(entry.get("key")) for entry in filtered_review_entries if isinstance(entry, dict) and entry.get("key")]
         copyable_arguments = {**dict(fill_plan.get("next_arguments") or project_args), "keys": review_keys}
+        copyable_mode = "commit"
+    elif status == "content_review_required":
+        copyable_tool = "get_release_submission_readiness"
+        copyable_arguments = project_args
+        copyable_mode = "read"
     else:
         copyable_tool = "fill_submission_evidence_files"
         copyable_arguments = {**project_args, "entries": fill_entries, "mark_ready": False}
+        copyable_mode = "commit"
     operator_instructions = _submission_evidence_preview_operator_instructions(status)
     return {
         "ok": True,
@@ -455,13 +466,14 @@ def build_submission_evidence_fill_preview(
         "fill_plan_status": fill_plan.get("status"),
         "draft_entry_count": len(filtered_entries),
         "review_entry_count": len(filtered_review_entries),
+        "content_review_entry_count": len(filtered_content_review_entries),
         "remaining_review_count": len(review_entries),
         "copyable_tool_call": {
             "tool": copyable_tool,
             "arguments": copyable_arguments,
-            "required_scope": "mcp:commit",
+            "required_scope": _required_scope_for_mode(copyable_mode),
             "requires_explicit_operator_review": True,
-            "result_contract": _result_contract_for_action("commit", copyable_tool),
+            "result_contract": _result_contract_for_action(copyable_mode, copyable_tool),
         },
         "operator_instructions": operator_instructions,
         "evidence_bundle": bundle,
@@ -2504,9 +2516,15 @@ def _release_submission_recommended_actions(
     manifest_check = checks.get("submission_materials_manifest") if isinstance(checks, dict) else None
     progress = release_submission.get("submission_evidence_progress")
     review_keys = _filled_not_marked_ready_keys(progress)
+    content_review_keys = _content_review_required_keys(progress)
     review_entries = _review_entries_for_keys(
         progress,
         review_keys,
+        templates=release_submission.get("submission_evidence_entry_templates"),
+    )
+    content_review_entries = _review_entries_for_keys(
+        progress,
+        content_review_keys,
         templates=release_submission.get("submission_evidence_entry_templates"),
     )
     if source in {"unknown", "parameters_only"}:
@@ -2533,6 +2551,38 @@ def _release_submission_recommended_actions(
                 why="Fix submission manifest schema or unknown fields before collecting final evidence.",
             )
         ]
+    if content_review_entries:
+        actions: list[dict[str, Any]] = []
+        for index, entry in enumerate(content_review_entries, start=1):
+            key = str(entry.get("key") or "")
+            if not key:
+                continue
+            reason_codes = _content_review_reason_codes(entry)
+            actions.append(
+                _recommended_action(
+                    f"review_submission_evidence_content_{_action_id_from(key, None, 'item')}",
+                    label=f"Review {key.replace('_', ' ').title()} Evidence Content",
+                    mode="read",
+                    source="release_submission_readiness",
+                    tool="get_release_submission_readiness",
+                    arguments=project_args,
+                    evidence_context={
+                        **entry,
+                        "human_review_required": True,
+                        "content_review_required": True,
+                        "mark_ready_blocked": True,
+                        "unfinished_reason_codes": reason_codes,
+                        "review_sequence_position": index,
+                        "review_sequence_total": len(content_review_entries),
+                    },
+                    why=(
+                        f"The referenced evidence for {key} explicitly declares unfinished state. "
+                        "Review and edit that file, then refresh readiness before any mark-ready action."
+                    ),
+                )
+            )
+        if actions:
+            return actions
     if isinstance(evidence_check, dict) and evidence_check.get("status") == "needs_attention":
         entry_templates = list(evidence_check.get("fill_entry_templates") or [])
         return [
@@ -2698,6 +2748,12 @@ def _release_submission_materials_snapshot(release_submission: dict[str, Any]) -
         "missing_evidence_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
         "missing_evidence_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
         "placeholder_evidence_files": list(evidence_check.get("placeholder_files") or []) if isinstance(evidence_check, dict) else [],
+        "content_review_evidence_files": list(evidence_check.get("content_review_files") or [])
+        if isinstance(evidence_check, dict)
+        else [],
+        "content_review_evidence_files_by_key": list(evidence_check.get("content_review_files_by_key") or [])
+        if isinstance(evidence_check, dict)
+        else [],
         "incomplete_evidence_keys": list(evidence_check.get("incomplete_keys") or []) if isinstance(evidence_check, dict) else [],
         "evidence_entry_templates": list(release_submission.get("submission_evidence_entry_templates") or []),
         "evidence_progress": release_submission.get("submission_evidence_progress"),
@@ -2773,6 +2829,12 @@ def _release_submission_evidence_bundle(
             "missing_keys": list(evidence_check.get("missing_keys") or []) if isinstance(evidence_check, dict) else [],
             "missing_files": list(evidence_check.get("missing_files") or []) if isinstance(evidence_check, dict) else [],
             "placeholder_files": list(evidence_check.get("placeholder_files") or []) if isinstance(evidence_check, dict) else [],
+            "content_review_files": list(evidence_check.get("content_review_files") or [])
+            if isinstance(evidence_check, dict)
+            else [],
+            "content_review_files_by_key": list(evidence_check.get("content_review_files_by_key") or [])
+            if isinstance(evidence_check, dict)
+            else [],
             "incomplete_keys": list(evidence_check.get("incomplete_keys") or []) if isinstance(evidence_check, dict) else [],
         },
         "fill_plan": fill_plan,
@@ -2796,6 +2858,9 @@ def _release_submission_progress_summary(progress: Any) -> dict[str, Any]:
                     "status": row.get("status"),
                     "ready": row.get("ready") is True,
                     "refs": list(row.get("refs") or []) if isinstance(row.get("refs"), list) else [],
+                    "file_states": list(row.get("file_states") or [])
+                    if isinstance(row.get("file_states"), list)
+                    else [],
                     "default_path": row.get("default_path"),
                 }
             )
@@ -2853,6 +2918,28 @@ def _release_submission_fill_plan(
             "human_review_required": False,
             "why": "Submission evidence is already marked ready by the local manifest and readiness checks.",
         }
+    content_review_keys = _content_review_required_keys(progress)
+    if content_review_keys:
+        content_review_entries = _review_entries_for_keys(
+            progress,
+            content_review_keys,
+            templates=release_submission.get("submission_evidence_entry_templates"),
+        )
+        return {
+            "status": "evidence_content_review_required",
+            "next_tool": "get_release_submission_readiness",
+            "next_arguments": project_args,
+            "draft_entries": [],
+            "content_review_entries": content_review_entries,
+            "next_review_key": content_review_keys[0],
+            "remaining_review_count": len(content_review_entries),
+            "human_review_required": True,
+            "mark_ready_blocked": True,
+            "why": (
+                "One or more referenced evidence files explicitly declare unfinished state. Review and edit the "
+                "listed files, then refresh readiness before marking any corresponding ready field."
+            ),
+        }
     review_keys = _filled_not_marked_ready_keys(progress)
     if review_keys:
         review_entries = _review_entries_for_keys(
@@ -2903,7 +2990,7 @@ def _release_submission_draft_entries(release_submission: dict[str, Any], progre
     if not isinstance(rows, list):
         return entries
     for row in rows:
-        if not isinstance(row, dict) or row.get("status") == "ready":
+        if not isinstance(row, dict) or row.get("status") in {"ready", "review_required"}:
             continue
         key = str(row.get("key") or "")
         if not key:
@@ -2936,7 +3023,10 @@ def _filled_not_marked_ready_keys(progress: Any) -> list[str]:
     counts = progress.get("counts")
     if not isinstance(counts, dict):
         return []
-    if any(_count_value(counts.get(key)) > 0 for key in ("needs_attention", "placeholder", "not_started")):
+    if any(
+        _count_value(counts.get(key)) > 0
+        for key in ("needs_attention", "review_required", "placeholder", "not_started")
+    ):
         return []
     rows = progress.get("rows")
     if not isinstance(rows, list):
@@ -2946,6 +3036,29 @@ def _filled_not_marked_ready_keys(progress: Any) -> list[str]:
         for row in rows
         if isinstance(row, dict) and row.get("status") == "filled_not_marked_ready" and row.get("key")
     ]
+
+
+def _content_review_required_keys(progress: Any) -> list[str]:
+    rows = progress.get("rows") if isinstance(progress, dict) else []
+    if not isinstance(rows, list):
+        return []
+    return [
+        str(row.get("key"))
+        for row in rows
+        if isinstance(row, dict) and row.get("status") == "review_required" and row.get("key")
+    ]
+
+
+def _content_review_reason_codes(entry: dict[str, Any]) -> list[str]:
+    reason_codes: list[str] = []
+    for state in entry.get("file_states") if isinstance(entry.get("file_states"), list) else []:
+        if not isinstance(state, dict) or state.get("status") != "review_required":
+            continue
+        for reason_code in state.get("reason_codes") if isinstance(state.get("reason_codes"), list) else []:
+            normalized = str(reason_code or "")
+            if normalized and normalized not in reason_codes:
+                reason_codes.append(normalized)
+    return reason_codes
 
 
 def _count_value(value: Any) -> int:
@@ -3026,6 +3139,7 @@ def _submission_evidence_fill_preview_status(
     fill_plan: dict[str, Any],
     fill_entries: list[dict[str, Any]],
     review_entries: list[dict[str, Any]],
+    content_review_entries: list[dict[str, Any]],
     selected_keys: set[str],
 ) -> str:
     fill_plan_status = str(fill_plan.get("status") or "unknown")
@@ -3037,6 +3151,12 @@ def _submission_evidence_fill_preview_status(
         return "manifest_needs_attention"
     if fill_plan_status == "needs_release_readiness":
         return "needs_release_readiness"
+    if fill_plan_status == "evidence_content_review_required":
+        if content_review_entries:
+            return "content_review_required"
+        if selected_keys:
+            return "selected_keys_not_available"
+        return "no_preview_entries"
     if fill_plan_status == "evidence_ready_for_review":
         if review_entries:
             return "review_ready"
@@ -3057,6 +3177,8 @@ def _submission_evidence_fill_preview_summary(status: str, fill_entries: list[di
         return f"Prepared a read-only fill payload preview with {len(fill_entries)} evidence entries."
     if status == "review_ready":
         return "Prepared a read-only ready-field marking payload for human-reviewed evidence."
+    if status == "content_review_required":
+        return "Referenced evidence explicitly declares unfinished state; mark-ready remains blocked until it is edited and reviewed."
     if status == "no_fill_needed":
         return "Submission evidence is already ready; no fill payload is needed."
     if status == "manifest_missing":
@@ -3069,6 +3191,12 @@ def _submission_evidence_fill_preview_summary(status: str, fill_entries: list[di
 
 
 def _submission_evidence_preview_operator_instructions(status: str) -> list[str]:
+    if status == "content_review_required":
+        return [
+            "Open each referenced evidence file and resolve every reported unfinished reason code.",
+            "Do not mark a ready field while the file still declares draft, pending review, missing final assets, unconfirmed permissions, or coverage gaps.",
+            "Refresh release submission readiness after editing evidence; a mark-ready action appears only when content review blockers are gone.",
+        ]
     if status == "review_ready":
         return [
             "Review every referenced evidence file before running the mark-ready tool.",

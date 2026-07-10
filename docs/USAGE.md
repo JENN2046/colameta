@@ -313,6 +313,15 @@ its arguments contain exactly one key. The completion surface and default fill
 preview use the first item only; after that item is explicitly confirmed and
 marked ready, refresh readiness and Product Console to advance the queue. Product
 Console never recommends bulk confirmation of all remaining evidence.
+Markdown evidence is also checked for explicit unfinished declarations. Stable
+reason codes cover draft content, missing final assets, pending human review,
+pending confirmations, unproven Dashboard permission, and stated test-coverage
+gaps. Such a file is reported as `review_required`, including its path and reason
+codes but not its body. Product Console shows a read-only content-review action
+and blocks mark-ready until the operator edits the file and refreshes readiness.
+Both `mark_submission_evidence_ready_fields` and
+`fill_submission_evidence_files(mark_ready=true)` enforce the same check without
+partially writing the manifest or evidence files.
 In the Commander widget, the Release Evidence panel prefers these bundle draft
 entries after a `Console` read and falls back to release-readiness progress and
 templates after a `Submission` read.
@@ -438,6 +447,12 @@ the next review key; run that commit-scoped tool only after a human reviewer
 confirms that key's referenced evidence is final, then refresh before reviewing
 the next key. The Commander widget
 `Fill Preview` button calls this read-only preview.
+If a referenced Markdown file still says it is a draft, not final, awaiting
+human confirmation, missing required assets/permissions, or knowingly lacks
+required coverage, the preview instead returns `status=content_review_required`
+and a read-only readiness refresh call. Edit the named file and resolve the
+reported reason codes first; changing `review_confirmation` cannot bypass this
+content gate.
 If `fill_submission_evidence_files` or
 `mark_submission_evidence_ready_fields` returns `ok=false`, inspect
 `safe_recovery_actions`; those actions only refresh readiness or regenerate a
