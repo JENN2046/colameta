@@ -1107,20 +1107,16 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
     if _is_placeholder_evidence_ref(rel_path):
         return {"ref": rel_path, "status": "placeholder"}
     if rel_path.lower().endswith((".md", ".markdown")):
-        if not rel_path.startswith(SUBMISSION_EVIDENCE_CONTENT_ROOT):
+        path_error = _submission_evidence_markdown_path_error(
+            project_root,
+            rel_path,
+            str(normalized["abs_path"]),
+        )
+        if path_error:
             return {
                 "ref": rel_path,
                 "status": "invalid",
-                "error_code": "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED",
-                "allowed_root": SUBMISSION_EVIDENCE_CONTENT_ROOT,
-            }
-        expected_real_path = os.path.abspath(os.path.join(os.path.realpath(project_root), rel_path))
-        actual_real_path = os.path.realpath(str(normalized["abs_path"]))
-        if actual_real_path != expected_real_path:
-            return {
-                "ref": rel_path,
-                "status": "invalid",
-                "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+                "error_code": path_error,
                 "allowed_root": SUBMISSION_EVIDENCE_CONTENT_ROOT,
             }
         try:
@@ -1158,6 +1154,15 @@ def _submission_evidence_ref_state(project_root: str, ref: str) -> dict[str, Any
                 "reason_codes": reason_codes,
             }
     return {"ref": rel_path, "status": "present"}
+
+
+def _submission_evidence_markdown_path_error(project_root: str, rel_path: str, abs_path: str) -> str | None:
+    if not rel_path.startswith(SUBMISSION_EVIDENCE_CONTENT_ROOT):
+        return "SUBMISSION_EVIDENCE_CONTENT_PATH_NOT_ALLOWED"
+    expected_real_path = os.path.abspath(os.path.join(os.path.realpath(project_root), rel_path))
+    if os.path.realpath(abs_path) != expected_real_path:
+        return "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED"
+    return None
 
 
 def _submission_evidence_unfinished_content_reason_codes(content: str) -> list[str]:
@@ -1380,6 +1385,9 @@ def _normalize_submission_evidence_output_ref(project_root: str, ref: str) -> di
         return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_TODO_TARGET_NOT_ACCEPTED"}
     if not rel_path.endswith(".md"):
         return {"ok": False, "error_code": "SUBMISSION_EVIDENCE_MARKDOWN_REQUIRED"}
+    path_error = _submission_evidence_markdown_path_error(project_root, rel_path, str(normalized["abs_path"]))
+    if path_error:
+        return {"ok": False, "error_code": path_error}
     return normalized
 
 

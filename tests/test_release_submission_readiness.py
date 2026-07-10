@@ -272,7 +272,6 @@ def test_release_submission_rejects_markdown_outside_submission_root_before_cont
     ]
     assert manifest_path.read_text(encoding="utf-8") == before
 
-
 def test_release_submission_rejects_symlinked_markdown_before_content_read(tmp_path) -> None:
     init_submission_evidence_scaffold(str(tmp_path))
     private_path = tmp_path / "private/provider-config.md"
@@ -311,6 +310,28 @@ def test_release_submission_rejects_symlinked_markdown_before_content_read(tmp_p
         {
             "key": "logo",
             "ref": "docs/submission/logo-linked.md",
+            "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
+        }
+    ]
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+    fill_packet = fill_submission_evidence_files(
+        str(tmp_path),
+        entries=[
+            {
+                "key": "logo",
+                "filename": "logo-linked.md",
+                "content": "private provider notes\n",
+            }
+        ],
+        mark_ready=True,
+    )
+    assert fill_packet["ok"] is False
+    assert fill_packet["validation_errors"] == [
+        {
+            "index": 0,
+            "key": "logo",
+            "ref": "logo-linked.md",
             "error_code": "SUBMISSION_EVIDENCE_SYMLINK_NOT_ALLOWED",
         }
     ]
