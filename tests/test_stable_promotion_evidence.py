@@ -60,6 +60,19 @@ def _runtime(repo: Path, head: str) -> dict[str, object]:
     }
 
 
+def _rollback_rehearsal(head: str) -> dict[str, object]:
+    return {
+        "status": "ready",
+        "reason_codes": ["ROLLBACK_REHEARSAL_READY"],
+        "evidence_source": "local_read_only_status",
+        "backup_file": "/tmp/stable-before-test.tar.gz",
+        "backup_sha256": "a" * 64,
+        "backup_member_count": 1,
+        "target_head": head,
+        "rehearsal_executed_restore": False,
+    }
+
+
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -137,12 +150,13 @@ def test_preview_apply_persists_and_verifies_current_manifest(tmp_path: Path) ->
         supported_workflows=list(REQUIRED_WORKFLOWS),
         runtime_status=_runtime(repo, head),
         stable_runtime_dir=str(stable_dir),
+        rollback_rehearsal_evidence=_rollback_rehearsal(head),
     )
     assert readiness["promotion_artifact_evidence"]["status"] == "verified_current"
     assert "PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED" not in {
         item["code"] for item in readiness["external_required_before_stable_replacement"]
     }
-    assert readiness["recommended_next_steps"][0]["step"] == "run_stable_promotion_rehearsal"
+    assert readiness["recommended_next_steps"][0]["step"] == "request_commander_authorization"
 
 
 def test_verified_receipt_becomes_stale_when_origin_main_advances(tmp_path: Path) -> None:
@@ -177,6 +191,7 @@ def test_verified_receipt_becomes_stale_when_origin_main_advances(tmp_path: Path
         supported_workflows=list(REQUIRED_WORKFLOWS),
         runtime_status=_runtime(repo, head),
         stable_runtime_dir=str(stable_dir),
+        rollback_rehearsal_evidence=_rollback_rehearsal(head),
     )
     assert readiness["promotion_artifact_evidence"]["status"] == "verified_stale"
     assert "PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED" in {

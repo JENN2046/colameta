@@ -99,7 +99,12 @@ def build_production_ops_packet(
         or _remote_preflight_check(safe_public_base_url, no_network, preflight_runner, target_head),
         "cloudflared_service": _systemd_service_check(cloudflared_service_name, command_runner),
         "backup_inventory": _backup_inventory_check(backup_dir),
-        "rollback_rehearsal": _rollback_rehearsal_check(root, backup_dir, target_head, command_runner),
+        "rollback_rehearsal": build_rollback_rehearsal_check(
+            root,
+            backup_dir,
+            target_head,
+            command_runner=command_runner,
+        ),
         "connector_smoke": _connector_smoke_check(
             connector_smoke,
             fresh_hours=connector_smoke_fresh_hours,
@@ -470,30 +475,69 @@ def _backup_inventory_check(backup_dir: str) -> dict[str, Any]:
     )
 
 
+def build_rollback_rehearsal_check(
+    project_root: str,
+    backup_dir: str,
+    target_head: str | None,
+    *,
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    """Build the shared, read-only rollback rehearsal evidence check."""
+    return _rollback_rehearsal_check(
+        os.path.abspath(os.path.expanduser(project_root)),
+        backup_dir,
+        target_head,
+        command_runner or _run_command,
+    )
+
+
 def _rollback_rehearsal_check(
     project_root: str,
     backup_dir: str,
     target_head: str | None,
     command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
 ) -> dict[str, Any]:
+    target_head = _clean_git_object_id(target_head)
+    if target_head is None:
+        return _check(NEEDS_ATTENTION, "ROLLBACK_TARGET_COMMIT_UNRESOLVED", "Rollback target commit is unavailable.")
     latest = _latest_backup(backup_dir)
     if latest is None:
         return _check(NEEDS_ATTENTION, "ROLLBACK_BACKUP_MISSING", "Rollback rehearsal needs a stable backup archive.")
-    if not target_head:
-        return _check(NEEDS_ATTENTION, "ROLLBACK_TARGET_COMMIT_UNRESOLVED", "Rollback target commit is unavailable.")
     result = command_runner(["git", "-C", project_root, "cat-file", "-e", f"{target_head}^{{commit}}"])
     if result.returncode != 0:
         return _check(NEEDS_ATTENTION, "ROLLBACK_TARGET_COMMIT_UNRESOLVED", "Rollback target commit cannot be resolved.", target_head=target_head)
+    backup_sha256 = _sha256_file(latest)
+    if not backup_sha256:
+        return _check(
+            NEEDS_ATTENTION,
+            "ROLLBACK_BACKUP_SHA256_UNAVAILABLE",
+            "Rollback rehearsal backup sha256 could not be calculated.",
+            backup_file=str(latest),
+            target_head=target_head,
+        )
     try:
         with tarfile.open(latest, "r:gz") as archive:
-            archive.getmembers()[:1]
+            members = archive.getmembers()
     except (tarfile.TarError, OSError):
         return _check(NEEDS_ATTENTION, "ROLLBACK_BACKUP_ARCHIVE_UNREADABLE", "Rollback rehearsal backup archive cannot be listed.", backup_file=str(latest))
+    if not members:
+        return _check(
+            NEEDS_ATTENTION,
+            "ROLLBACK_REHEARSAL_BACKUP_ARCHIVE_EMPTY",
+            "Rollback rehearsal backup archive is empty.",
+            backup_file=str(latest),
+            backup_sha256=backup_sha256,
+            backup_member_count=0,
+            target_head=target_head,
+            rehearsal_executed_restore=False,
+        )
     return _check(
         READY,
         "ROLLBACK_REHEARSAL_READY",
         "Rollback rehearsal evidence is available without modifying stable runtime.",
         backup_file=str(latest),
+        backup_sha256=backup_sha256,
+        backup_member_count=len(members),
         target_head=target_head,
         rehearsal_executed_restore=False,
     )
@@ -907,7 +951,11 @@ def _latest_backup(backup_dir: str) -> Path | None:
     root = Path(os.path.abspath(os.path.expanduser(backup_dir)))
     if not root.is_dir():
         return None
-    backups = [item for item in root.glob("stable-before-*.tar.gz") if item.is_file()]
+    backups = [
+        item
+        for item in root.glob("stable-before-*.tar.gz")
+        if item.is_file() and not item.is_symlink()
+    ]
     if not backups:
         return None
     return max(backups, key=lambda item: item.stat().st_mtime)
@@ -972,6 +1020,13 @@ def _clean_head(value: str | None) -> str | None:
     if re.fullmatch(r"[0-9a-f]{40}", text):
         return text
     return None
+
+
+def _clean_git_object_id(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) else None
 
 
 def _is_relative_to(path: str, root: str) -> bool:

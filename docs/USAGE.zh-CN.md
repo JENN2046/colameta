@@ -1038,6 +1038,12 @@ manage_stable_promotion_evidence(action="apply", project_name="colameta-self-dev
 manage_stable_promotion_evidence(action="status", project_name="colameta-self-dev", candidate_head="<exact-head>")
 ```
 
+Stable Promotion Readiness 直接复用 production ops 的 rollback rehearsal 检查，不再维护
+另一套结论。只有 backup archive 可读取、SHA-256 有效、证据绑定精确候选 HEAD，且
+`rehearsal_executed_restore=false` 时，`rollback_rehearsal_binding` 才是
+`verified_current`，并从剩余证据中移除 `ROLLBACK_REHEARSAL_NOT_PROVEN`。这不会执行
+restore，也不会授权替换稳定服务。
+
 替换流程必须包含：
 
 ```text

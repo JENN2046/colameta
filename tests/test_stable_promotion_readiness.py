@@ -12,6 +12,22 @@ from runner.stable_promotion_readiness import (
 )
 
 
+def _rollback_rehearsal(head: str, **overrides: object) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "status": "ready",
+        "reason_code": "ROLLBACK_REHEARSAL_READY",
+        "reason_codes": ["ROLLBACK_REHEARSAL_READY"],
+        "evidence_source": "local_read_only_status",
+        "backup_file": "/tmp/stable-before-test.tar.gz",
+        "backup_sha256": "a" * 64,
+        "backup_member_count": 1,
+        "target_head": head,
+        "rehearsal_executed_restore": False,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
 class StablePromotionReadinessTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="colameta-stable-readiness-")
@@ -55,6 +71,7 @@ class StablePromotionReadinessTests(unittest.TestCase):
             "supported_workflows": list(REQUIRED_WORKFLOWS),
             "runtime_status": self.runtime_status(repo, head),
             "stable_runtime_dir": str(stable_dir),
+            "rollback_rehearsal_evidence": _rollback_rehearsal(head),
         }
         kwargs.update(overrides)
         return get_stable_promotion_readiness(str(repo), **kwargs)
@@ -76,9 +93,10 @@ class StablePromotionReadinessTests(unittest.TestCase):
         assert len(result["candidate_artifact_manifest"]["manifest_sha256"]) == 64
         assert {item["code"] for item in result["external_required_before_stable_replacement"]} == {
             "PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED",
-            "ROLLBACK_REHEARSAL_NOT_PROVEN",
             "COMMANDER_STABLE_REPLACEMENT_AUTHORIZATION_ABSENT",
         }
+        assert result["rollback_rehearsal_binding"]["status"] == "verified_current"
+        assert result["rollback_rehearsal_binding"]["rehearsal_executed_restore"] is False
         assert result["git"]["worktree_clean"] is True
         assert result["git"]["ahead"] == 0
         assert result["tool_support"]["agent_consumer_contract_visible"] is True
@@ -139,6 +157,76 @@ class StablePromotionReadinessTests(unittest.TestCase):
 
         assert result["stable_promotion_review_candidate"] is False
         assert "RUNTIME_RELOAD_NEEDED_FOR_VERIFICATION" in {item["code"] for item in result["local_blockers"]}
+
+    def test_rehearsal_must_match_candidate_and_read_only_restore_boundary(self) -> None:
+        repo, head = self.make_repo_with_origin()
+
+        result = self.readiness(
+            repo,
+            head,
+            rollback_rehearsal_evidence=_rollback_rehearsal(
+                "b" * 40,
+                backup_sha256="invalid",
+                rehearsal_executed_restore=True,
+            ),
+        )
+
+        binding = result["rollback_rehearsal_binding"]
+        assert binding["status"] == "not_proven"
+        assert set(binding["reason_codes"]) == {
+            "ROLLBACK_REHEARSAL_BACKUP_SHA256_INVALID",
+            "ROLLBACK_REHEARSAL_RESTORE_BOUNDARY_INVALID",
+            "ROLLBACK_REHEARSAL_TARGET_MISMATCH",
+        }
+        assert "ROLLBACK_REHEARSAL_NOT_PROVEN" in {
+            item["code"] for item in result["external_required_before_stable_replacement"]
+        }
+
+    def test_not_ready_rehearsal_keeps_rehearsal_step_before_authorization(self) -> None:
+        repo, head = self.make_repo_with_origin()
+        result = self.readiness(
+            repo,
+            head,
+            rollback_rehearsal_evidence={
+                "status": "needs_attention",
+                "reason_codes": ["ROLLBACK_BACKUP_MISSING"],
+                "evidence_source": "local_read_only_status",
+                "target_head": head,
+                "rehearsal_executed_restore": False,
+            },
+        )
+
+        steps = result["recommended_next_steps"]
+        assert [step["step"] for step in steps] == [
+            "persist_artifact_manifest",
+            "run_stable_promotion_rehearsal",
+            "request_commander_authorization",
+        ]
+        assert "ROLLBACK_BACKUP_MISSING" in result["rollback_rehearsal_binding"]["reason_codes"]
+
+    def test_ready_label_without_authoritative_rehearsal_fields_does_not_clear_gate(self) -> None:
+        repo, head = self.make_repo_with_origin()
+
+        result = self.readiness(
+            repo,
+            head,
+            rollback_rehearsal_evidence={
+                "status": "ready",
+                "backup_file": "/tmp/stable-before-test.tar.gz",
+                "backup_sha256": "a" * 64,
+                "target_head": head,
+                "rehearsal_executed_restore": False,
+            },
+        )
+
+        assert set(result["rollback_rehearsal_binding"]["reason_codes"]) == {
+            "ROLLBACK_REHEARSAL_BACKUP_ARCHIVE_EMPTY",
+            "ROLLBACK_REHEARSAL_READY_CODE_MISSING",
+            "ROLLBACK_REHEARSAL_SOURCE_INVALID",
+        }
+        assert "ROLLBACK_REHEARSAL_NOT_PROVEN" in {
+            item["code"] for item in result["external_required_before_stable_replacement"]
+        }
 
     def test_missing_required_entrypoint_blocks_review_candidate(self) -> None:
         repo, head = self.make_repo_with_origin()

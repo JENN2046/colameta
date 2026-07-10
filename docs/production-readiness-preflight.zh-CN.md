@@ -42,10 +42,16 @@
 它仍然需要：
 
 - 把 `candidate_artifact_manifest` 摘要与 sha256 写入晋升材料
-- rollback / rehearsal 证明
+- 与精确候选 HEAD 绑定的 rollback / rehearsal 证明；现场证明满足时会显示为
+  `rollback_rehearsal_binding.status=verified_current`
 - Commander 对稳定服务替换的精确授权
 
 `stable_production_ready` 当前必须保持 `false`，因为只读工具不能替代部署授权、发布物证明或 rollback receipt。
+
+`rollback_rehearsal_evidence` 与 production ops 使用同一个只读检查来源。稳定晋级包还会通过
+`rollback_rehearsal_binding` 复核 backup SHA-256、归档可读性、精确候选 HEAD 和
+`rehearsal_executed_restore=false`。只有绑定为 `verified_current` 才能移除
+`ROLLBACK_REHEARSAL_NOT_PROVEN`；该状态不表示执行过 restore。
 
 ## candidate_artifact_manifest
 

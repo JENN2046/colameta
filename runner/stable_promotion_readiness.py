@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Any
+from typing import Any, Callable
 
 from runner.runtime_observability import get_runtime_version_status, git_checkout_metadata
 from runner.stable_promotion_evidence import (
@@ -41,6 +41,9 @@ def get_stable_promotion_readiness(
     runtime_status: dict[str, Any] | None = None,
     registered_projects: list[dict[str, Any]] | None = None,
     stable_runtime_dir: str | None = None,
+    backup_dir: str | None = None,
+    rollback_rehearsal_evidence: dict[str, Any] | None = None,
+    rollback_rehearsal_builder: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a read-only stable-promotion preflight card.
 
@@ -55,6 +58,22 @@ def get_stable_promotion_readiness(
     stable_state = _stable_runtime_state(stable_runtime_dir or _default_stable_runtime_dir())
     tool_support = _tool_support(visible_tool_names or (), supported_workflows or ())
     registry_state = _registry_state(registered_projects)
+    built_rehearsal_evidence = (
+        rollback_rehearsal_evidence
+        if isinstance(rollback_rehearsal_evidence, dict)
+        else (rollback_rehearsal_builder or _build_rollback_rehearsal_evidence)(
+            project_root=root,
+            backup_dir=backup_dir or _default_backup_dir(),
+            target_head=_clean_text(git_state.get("head")),
+        )
+    )
+    rehearsal_evidence = (
+        dict(built_rehearsal_evidence) if isinstance(built_rehearsal_evidence, dict) else {}
+    )
+    rehearsal_binding = _rollback_rehearsal_binding(
+        rehearsal_evidence,
+        candidate_head=_clean_text(git_state.get("head")),
+    )
 
     local_blockers: list[dict[str, str]] = []
     if not runtime.get("project_checkout_head"):
@@ -99,21 +118,24 @@ def get_stable_promotion_readiness(
     if service_mode and registry_state["registered_project_count"] == 0:
         warnings.append(_warning("NO_REGISTERED_PROJECTS_VISIBLE", "服务模式下当前未看到已登记项目。"))
 
-    external_required = [
-        _blocker("ROLLBACK_REHEARSAL_NOT_PROVEN", "需要在不替换稳定服务的前提下完成 rollback/rehearsal 证明。"),
-        _blocker("COMMANDER_STABLE_REPLACEMENT_AUTHORIZATION_ABSENT", "替换稳定服务必须由 Commander 给出精确、当前有效授权。"),
-    ]
+    external_required: list[dict[str, str]] = []
     if promotion_evidence.get("status") != "verified_current":
-        external_required.insert(
-            0,
+        external_required.append(
             _blocker("PROMOTION_ARTIFACT_MANIFEST_NOT_PERSISTED", "需要持久化并验证精确候选 HEAD 的 artifact manifest。"),
         )
+    if rehearsal_binding.get("status") != "verified_current":
+        external_required.append(
+            _blocker("ROLLBACK_REHEARSAL_NOT_PROVEN", "需要为精确候选 HEAD 完成只读 rollback/rehearsal 证明。")
+        )
+    external_required.append(
+        _blocker("COMMANDER_STABLE_REPLACEMENT_AUTHORIZATION_ABSENT", "替换稳定服务必须由 Commander 给出精确、当前有效授权。")
+    )
     stable_promotion_review_candidate = not local_blockers
     worktree_isolation = _worktree_isolation(git_state, candidate_manifest)
 
     if stable_promotion_review_candidate:
         readiness_status = "stable_promotion_review_candidate"
-        one_line = "本地服务候选可进入稳定晋升审查；正式替换仍被 artifact、rollback 和 Commander 授权阻断。"
+        one_line = "本地服务候选可进入稳定晋升审查；正式替换仍需完成 external_required_before_stable_replacement。"
     else:
         readiness_status = "not_ready_for_stable_promotion_review"
         one_line = "当前服务候选还不能进入稳定晋升审查；先清掉 local_blockers。"
@@ -151,6 +173,8 @@ def get_stable_promotion_readiness(
         "candidate_artifact_manifest": candidate_manifest,
         "worktree_isolation": worktree_isolation,
         "promotion_artifact_evidence": promotion_evidence,
+        "rollback_rehearsal_evidence": rehearsal_evidence,
+        "rollback_rehearsal_binding": rehearsal_binding,
         "registry": registry_state,
         "tool_support": tool_support,
         "local_blockers": local_blockers,
@@ -160,6 +184,7 @@ def get_stable_promotion_readiness(
             stable_promotion_review_candidate,
             artifact_evidence_ready=promotion_evidence.get("status") == "verified_current",
             artifact_evidence_tool_visible=tool_support.get("stable_promotion_evidence_tool_visible") is True,
+            rollback_rehearsal_ready=rehearsal_binding.get("status") == "verified_current",
             candidate_head=_clean_text(git_state.get("head")),
         ),
         "safety_boundary": {
@@ -267,11 +292,29 @@ def _default_stable_runtime_dir() -> str:
     return DEFAULT_STABLE_RUNTIME_DIR
 
 
+def _default_backup_dir() -> str:
+    from runner.production_ops import DEFAULT_BACKUP_DIR
+
+    return DEFAULT_BACKUP_DIR
+
+
+def _build_rollback_rehearsal_evidence(
+    *,
+    project_root: str,
+    backup_dir: str,
+    target_head: str | None,
+) -> dict[str, Any]:
+    from runner.production_ops import build_rollback_rehearsal_check
+
+    return build_rollback_rehearsal_check(project_root, backup_dir, target_head)
+
+
 def _recommended_next_steps(
     local_ready: bool,
     *,
     artifact_evidence_ready: bool,
     artifact_evidence_tool_visible: bool,
+    rollback_rehearsal_ready: bool,
     candidate_head: str | None,
 ) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
@@ -299,11 +342,68 @@ def _recommended_next_steps(
             ]
         )
         return steps
-    steps.extend([
-        {"step": "run_stable_promotion_rehearsal", "description": "在不替换稳定服务的前提下演练启动、健康检查与 rollback。"},
-        {"step": "request_commander_authorization", "description": "拿到精确 hash-specific Commander 授权后，才可进入稳定服务替换。"},
-    ])
+    if not rollback_rehearsal_ready:
+        steps.append(
+            {"step": "run_stable_promotion_rehearsal", "description": "在不替换稳定服务的前提下演练启动、健康检查与 rollback。"}
+        )
+    steps.append(
+        {"step": "request_commander_authorization", "description": "拿到精确 hash-specific Commander 授权后，才可进入稳定服务替换。"}
+    )
     return steps
+
+
+def _rollback_rehearsal_binding(
+    evidence: dict[str, Any],
+    *,
+    candidate_head: str | None,
+) -> dict[str, Any]:
+    target_head = _clean_text(evidence.get("target_head"))
+    backup_file = _clean_text(evidence.get("backup_file"))
+    backup_sha256 = _clean_text(evidence.get("backup_sha256"))
+    backup_member_count = evidence.get("backup_member_count")
+    evidence_reason_codes = {
+        str(code) for code in evidence.get("reason_codes", []) if isinstance(code, str) and code
+    }
+    reason_codes: list[str] = []
+    if evidence.get("status") != "ready":
+        reason_codes.extend(evidence_reason_codes)
+        if not reason_codes:
+            reason_codes.append("ROLLBACK_REHEARSAL_EVIDENCE_NOT_READY")
+    if evidence.get("evidence_source") != "local_read_only_status":
+        reason_codes.append("ROLLBACK_REHEARSAL_SOURCE_INVALID")
+    if "ROLLBACK_REHEARSAL_READY" not in evidence_reason_codes:
+        reason_codes.append("ROLLBACK_REHEARSAL_READY_CODE_MISSING")
+    if not candidate_head or target_head != candidate_head:
+        reason_codes.append("ROLLBACK_REHEARSAL_TARGET_MISMATCH")
+    if not backup_file:
+        reason_codes.append("ROLLBACK_REHEARSAL_BACKUP_UNAVAILABLE")
+    if not backup_sha256 or len(backup_sha256) != 64 or any(char not in "0123456789abcdef" for char in backup_sha256.lower()):
+        reason_codes.append("ROLLBACK_REHEARSAL_BACKUP_SHA256_INVALID")
+    if not isinstance(backup_member_count, int) or isinstance(backup_member_count, bool) or backup_member_count < 1:
+        reason_codes.append("ROLLBACK_REHEARSAL_BACKUP_ARCHIVE_EMPTY")
+    if evidence.get("rehearsal_executed_restore") is not False:
+        reason_codes.append("ROLLBACK_REHEARSAL_RESTORE_BOUNDARY_INVALID")
+    verified = not reason_codes
+    return {
+        "source": "stable_promotion_rollback_rehearsal_binding",
+        "schema_version": "stable_promotion_rollback_rehearsal_binding.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": "verified_current" if verified else "not_proven",
+        "verified": verified,
+        "candidate_head": candidate_head,
+        "evidence_target_head": target_head,
+        "backup_file": backup_file,
+        "backup_sha256": backup_sha256,
+        "backup_member_count": backup_member_count,
+        "rehearsal_executed_restore": evidence.get("rehearsal_executed_restore"),
+        "reason_codes": ["ROLLBACK_REHEARSAL_VERIFIED_CURRENT"] if verified else sorted(set(reason_codes)),
+        "authority_boundary": {
+            "does_not_execute_restore": True,
+            "does_not_modify_stable_runtime": True,
+            "does_not_authorize_stable_replacement": True,
+        },
+    }
 
 
 def _worktree_isolation(git_state: dict[str, Any], candidate_manifest: dict[str, Any]) -> dict[str, Any]:
