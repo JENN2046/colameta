@@ -1798,6 +1798,104 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert replay["error_code"] == "OPERATOR_INBOX_RECORD_RECEIPT_REUSED"
         assert len(load_product_console_action_results(str(self.project))["results"]) == 1
 
+    def test_v2_operator_inbox_refresh_receipt_closes_exact_pending_refresh(self) -> None:
+        from runner.product_console import (
+            build_product_console_map,
+            load_product_console_action_results,
+            record_product_console_action_result,
+        )
+        from runner.web_console import WebConsoleServer
+
+        server = WebConsoleServer(str(self.project))
+        current = server._api_v2_status()
+        readiness = current["service_readiness_summary"]
+        project_name = current["web_commander_service"]["project_name"]
+        readiness_context = {
+            "status": readiness.get("status"),
+            "ready": readiness.get("status") == "ready",
+            "primary_blocker": readiness.get("primary_blocker"),
+            "safe_next_action": (readiness.get("safe_next_actions") or [{}])[0],
+        }
+        console = build_product_console_map(
+            str(self.project),
+            project_name=project_name,
+            readiness_packet=readiness_context,
+        )
+        source_action = next(
+            action
+            for action in console["recommended_first_actions"]
+            if action["result_contract"]["refresh_after"]
+        )
+        expected_refresh_count = len(source_action["result_contract"]["refresh_after"])
+        record_product_console_action_result(
+            str(self.project),
+            action_id=source_action["action_id"],
+            tool=source_action["tool"],
+            mode=source_action["mode"],
+            status="updated",
+            message="seed exact source result",
+            project_name=project_name,
+            result_ok=True,
+            action_fingerprint=source_action["action_fingerprint"],
+        )
+
+        def run_params(item: dict[str, object]) -> dict[str, object]:
+            return {
+                "item_id": item["item_id"],
+                "source": item["source"],
+                "component": item["component"],
+                "tool": item["tool"],
+                "arguments": item["run_arguments"],
+                "required_scope": item["required_scope"],
+                "gate_level": item["gate_level"],
+                "item_signature": item["item_signature"],
+                "record_action_id": item["record_action_id"],
+                "action_fingerprint": item["action_fingerprint"],
+                "source_action_key": item["source_action_key"],
+                "source_observed_at": item["source_observed_at"],
+                "source_action_fingerprint": item["source_action_fingerprint"],
+            }
+
+        pending_status = server._api_v2_status()
+        assert pending_status["operator_session_trail"]["pending_refresh_count"] == expected_refresh_count
+        refresh_items = [
+            item
+            for item in pending_status["operator_inbox"]["items"]
+            if item.get("component") == "pending_refresh"
+        ]
+        assert len(refresh_items) == expected_refresh_count
+        refresh_record = None
+        for refresh_index, refresh_item in enumerate(refresh_items):
+            assert refresh_item["source_action_key"]
+            assert refresh_item["source_observed_at"]
+            if refresh_index == 0:
+                tampered_params = run_params(refresh_item)
+                tampered_params["source_observed_at"] = "2026-01-01T00:00:00Z"
+                tampered = server._api_v2_action({
+                    "next_action": {"action": "operator_inbox_read", "params": tampered_params}
+                })
+                assert tampered["ok"] is False
+                assert tampered["error_code"] == "OPERATOR_INBOX_READ_BINDING_MISMATCH"
+            refresh_run = server._api_v2_action({
+                "next_action": {"action": "operator_inbox_read", "params": run_params(refresh_item)}
+            })
+            assert refresh_run["ok"] is True
+            refresh_action = refresh_run["operator_inbox_run_result"]["record_action"]
+            assert refresh_action["params"]["source_action_key"] == refresh_item["source_action_key"]
+            assert refresh_action["params"]["source_observed_at"] == refresh_item["source_observed_at"]
+
+            refresh_record = server._api_v2_action({"next_action": refresh_action})
+            assert refresh_record["ok"] is True
+            result = refresh_record["operator_inbox_record_result"]
+            assert result["record_kind"] == "refresh_result"
+            assert result["record_result"]["recorded_refresh_result"]["status"] == "updated"
+        assert refresh_record is not None
+        assert refresh_record["operator_session_trail"]["pending_refresh_count"] == 0
+
+        stored = load_product_console_action_results(str(self.project))["results"]
+        assert len(stored) == 1
+        assert len(stored[0]["refresh_results"]) == expected_refresh_count
+
     def test_v2_status_snapshot_is_serialized_with_project_switch(self) -> None:
         from runner.web_console import WebConsoleServer
 

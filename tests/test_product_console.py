@@ -8,6 +8,7 @@ from runner.product_console import (
     build_submission_evidence_fill_preview,
     load_product_console_action_results,
     record_product_console_action_result,
+    record_product_console_refresh_result,
 )
 from runner.release_submission_readiness import DEFAULT_SUBMISSION_MATERIALS_REL_PATH
 
@@ -384,6 +385,136 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     assert commander_action["last_action_result"]["refresh_recommended"] is True
     assert commander_action["next_refresh_actions"][0]["tool"] == "get_product_console_map"
     assert commander_action["next_refresh_actions"][0]["source_action_key"] == commander_action["action_key"]
+
+
+def test_console_map_closes_pending_refresh_with_exact_persistent_receipt(tmp_path) -> None:
+    initial_packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+    initial_action = _action_by_tool(initial_packet, "render_commander_app")
+    source_result = record_product_console_action_result(
+        str(tmp_path),
+        action_id=initial_action["action_id"],
+        tool=initial_action["tool"],
+        mode=initial_action["mode"],
+        status="updated",
+        message="rendered commander",
+        project_name="demo-project",
+        result_ok=True,
+        action_fingerprint=initial_action["action_fingerprint"],
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )["recorded_result"]
+
+    failed = record_product_console_refresh_result(
+        str(tmp_path),
+        source_action_key=source_result["action_key"],
+        source_observed_at=source_result["observed_at"],
+        source_action_fingerprint=source_result["action_fingerprint"],
+        tool="get_product_console_map",
+        arguments={"project_name": "demo-project"},
+        status="failed",
+        message="refresh failed with token=secret-value",
+        result_ok=False,
+        now=datetime(2026, 1, 2, 3, 5, 5, tzinfo=timezone.utc),
+    )
+    assert failed["ok"] is True
+
+    pending_packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+    pending = pending_packet["action_result_state"]["pending_refreshes"]
+    assert len(pending) == 1
+    assert pending[0]["last_refresh_result"]["status"] == "failed"
+    assert "secret-value" not in pending[0]["last_refresh_result"]["message"]
+
+    recorded = record_product_console_refresh_result(
+        str(tmp_path),
+        source_action_key=source_result["action_key"],
+        source_observed_at=source_result["observed_at"],
+        source_action_fingerprint=source_result["action_fingerprint"],
+        tool="get_product_console_map",
+        arguments={"project_name": "demo-project"},
+        status="updated",
+        message="product console refreshed",
+        result_ok=True,
+        now=datetime(2026, 1, 2, 3, 6, 5, tzinfo=timezone.utc),
+    )
+    assert recorded["ok"] is True
+    assert recorded["recorded_refresh_result"]["status"] == "updated"
+
+    current_packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+    commander_action = _action_by_tool(current_packet, "render_commander_app")
+    assert current_packet["action_result_state"]["pending_refresh_count"] == 0
+    assert current_packet["completion_surface"]["components"]["action_refresh"]["status"] == "current"
+    assert commander_action["last_action_result"]["refresh_recommended"] is False
+    assert commander_action["last_action_result"]["refresh_current"] is True
+    assert commander_action["last_action_result"]["refresh_completed_count"] == 1
+    assert commander_action["next_refresh_actions"] == []
+    stored = load_product_console_action_results(str(tmp_path))["results"][0]
+    assert stored["refresh_results"][0]["status"] == "updated"
+
+
+def test_refresh_receipt_rejects_replaced_source_result(tmp_path) -> None:
+    initial_packet = build_product_console_map(
+        str(tmp_path),
+        project_name="demo-project",
+        readiness_packet=_readiness(),
+        full_loop_authority=_full_loop(),
+        release_submission_readiness=_release_with_materials(status="ready", evidence_status="ready"),
+    )
+    action = _action_by_tool(initial_packet, "render_commander_app")
+    old_result = record_product_console_action_result(
+        str(tmp_path),
+        action_id=action["action_id"],
+        tool=action["tool"],
+        mode=action["mode"],
+        status="updated",
+        message="old result",
+        project_name="demo-project",
+        result_ok=True,
+        action_fingerprint=action["action_fingerprint"],
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )["recorded_result"]
+    record_product_console_action_result(
+        str(tmp_path),
+        action_id=action["action_id"],
+        tool=action["tool"],
+        mode=action["mode"],
+        status="updated",
+        message="new result",
+        project_name="demo-project",
+        result_ok=True,
+        action_fingerprint=action["action_fingerprint"],
+        now=datetime(2026, 1, 2, 3, 5, 5, tzinfo=timezone.utc),
+    )
+
+    rejected = record_product_console_refresh_result(
+        str(tmp_path),
+        source_action_key=old_result["action_key"],
+        source_observed_at=old_result["observed_at"],
+        source_action_fingerprint=old_result["action_fingerprint"],
+        tool="get_product_console_map",
+        arguments={"project_name": "demo-project"},
+        status="updated",
+        message="stale refresh",
+        result_ok=True,
+    )
+    assert rejected["ok"] is False
+    assert rejected["error_code"] == "REFRESH_RESULT_SOURCE_NOT_FOUND"
 
 
 def test_console_map_marks_recorded_action_result_stale_when_action_arguments_change(tmp_path) -> None:

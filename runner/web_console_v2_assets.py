@@ -2808,6 +2808,9 @@ function renderOperatorInboxItem(item) {{
       item_signature: item.item_signature || "",
       record_action_id: item.record_action_id || item.item_id || "",
       action_fingerprint: item.action_fingerprint || "",
+      source_action_key: item.source_action_key || "",
+      source_observed_at: item.source_observed_at || "",
+      source_action_fingerprint: item.source_action_fingerprint || "",
     }},
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool && item.item_signature;
