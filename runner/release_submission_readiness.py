@@ -610,6 +610,7 @@ def mark_submission_evidence_ready_fields(
     keys: list[str],
     review_confirmation: str,
     now: datetime | None = None,
+    update_notes: bool = True,
 ) -> dict[str, Any]:
     root = os.path.abspath(os.path.expanduser(project_root))
     manifest_rel_path = DEFAULT_SUBMISSION_MATERIALS_REL_PATH
@@ -689,9 +690,11 @@ def mark_submission_evidence_ready_fields(
             "safe_recovery_actions": _submission_evidence_safe_recovery_actions(selected_keys=normalized_keys),
         }
 
-    manifest["notes"] = (
-        "Submission evidence ready fields were marked after human review. Re-run release readiness before Dashboard submission."
-    )
+    if update_notes:
+        manifest["notes"] = (
+            "Submission evidence ready fields were marked after human review. "
+            "Re-run release readiness before Dashboard submission."
+        )
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
@@ -709,6 +712,7 @@ def mark_submission_evidence_ready_fields(
         "ready_fields_marked": sorted(ready_fields_marked),
         "already_ready_fields": sorted(already_ready_fields),
         "review_confirmation": review_confirmation,
+        "notes_updated": update_notes,
         "reviewed_refs_by_key": reviewed_refs_by_key,
         "next_step": {
             "tool": "get_release_submission_readiness",

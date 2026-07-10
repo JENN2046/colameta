@@ -8,7 +8,7 @@ from runner.release_submission_readiness import (
     DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
     init_submission_evidence_scaffold,
 )
-from runner.workflow_engine import record_tool_call
+from runner.workflow_engine import infer_risk_level, record_tool_call, should_record_tool
 from runner.workflow_records import WorkflowRecordStore
 
 
@@ -134,6 +134,7 @@ def test_ready_review_binds_every_manifest_ref_before_marking_one_key_ready(tmp_
     second_path.write_text(FINAL_LOGO_VARIANT, encoding="utf-8")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["evidence"]["logo"] = ["docs/submission/logo.md", "docs/submission/logo-dark.md"]
+    manifest["notes"] = "Keep this operator-authored submission note unchanged."
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     manager = MCPSubmissionEvidenceRevisionManager(str(tmp_path))
 
@@ -187,7 +188,18 @@ def test_ready_review_binds_every_manifest_ref_before_marking_one_key_ready(tmp_
     assert applied["status"] == "ready_marked"
     assert applied["ready_fields_marked"] == ["logo_ready"]
     assert applied["content_included"] is False
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["logo_ready"] is True
+    updated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest["logo_ready"] is True
+    assert updated_manifest["notes"] == "Keep this operator-authored submission note unchanged."
+    assert applied["notes_updated"] is False
+    assert applied["manifest_notes_preserved"] is True
+
+
+def test_ready_review_workflow_risk_levels_match_preview_and_write_authority() -> None:
+    assert should_record_tool("mark_submission_evidence_ready_fields", "preview") is True
+    assert should_record_tool("mark_submission_evidence_ready_fields", "apply") is True
+    assert infer_risk_level("mark_submission_evidence_ready_fields", "preview") == "preview"
+    assert infer_risk_level("mark_submission_evidence_ready_fields", "apply") == "write"
 
 
 def test_preview_rejects_replacement_that_is_still_unfinished_without_artifact(tmp_path: Path) -> None:

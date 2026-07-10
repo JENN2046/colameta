@@ -297,6 +297,7 @@ class MCPSubmissionEvidenceRevisionManager:
             self.project_root,
             keys=[key],
             review_confirmation="human_reviewed",
+            update_notes=False,
         )
         if result.get("ok") is not True:
             return result
@@ -311,6 +312,7 @@ class MCPSubmissionEvidenceRevisionManager:
             "key": key,
             "reviewed_refs": targets["refs"],
             "content_included": False,
+            "manifest_notes_preserved": True,
             "authority_boundary": self._ready_authority_boundary(),
         })
         return safe_result

@@ -283,6 +283,10 @@ def infer_risk_level(tool_name: str, action: str) -> str:
             "apply": "write",
             "discard": "preview",
         },
+        "mark_submission_evidence_ready_fields": {
+            "preview": "preview",
+            "apply": "write",
+        },
         "run_mcp_workflow": {
             "auto_preview": "preview",
             "project_status": "info",
