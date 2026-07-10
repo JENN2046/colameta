@@ -1229,6 +1229,7 @@ function renderServiceCapabilityCard(data) {{
   const apps = svc.apps_connector_closeout || data.apps_connector_closeout || {{}};
   const completion = svc.product_console_completion || data.product_console_completion || {{}};
   const completionOverview = svc.product_completion_overview || data.product_completion_overview || completion.product_completion_overview || {{}};
+  const operatorTrail = svc.operator_session_trail || data.operator_session_trail || completion.operator_session_trail || {{}};
   const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
   const cadence = svc.stable_replacement_cadence || data.stable_replacement_cadence || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
@@ -1276,6 +1277,10 @@ function renderServiceCapabilityCard(data) {{
       return label + " " + state + " " + (gapCount ? "gaps " + gapCount : "ready") + (tool ? " " + tool : "");
     }}).join(" ｜ ")
     : "-";
+  const trailEventCount = Array.isArray(operatorTrail.recent_events) ? operatorTrail.recent_events.length : 0;
+  const trailRefreshCount = operatorTrail.pending_refresh_count === 0 || operatorTrail.pending_refresh_count ? operatorTrail.pending_refresh_count : "-";
+  const trailNext = operatorTrail.next_item && (operatorTrail.next_item.label || operatorTrail.next_item.item_id) ? operatorTrail.next_item.label || operatorTrail.next_item.item_id : "-";
+  const operatorTrailText = (operatorTrail.status || "-") + " ｜ refresh " + trailRefreshCount + " ｜ events " + trailEventCount + " ｜ next " + trailNext;
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
@@ -1296,6 +1301,7 @@ function renderServiceCapabilityCard(data) {{
   h += r("Apps smoke", (apps.status || "-") + " ｜ " + preferredTool);
   h += r("Product closeout", completionText);
   h += r("Product categories", completionCategoryText);
+  h += r("Operator trail", operatorTrailText);
   h += r("Apps metadata", metadataStatus + " ｜ " + expectedTool);
   h += r("Stable cadence", cadenceText);
   h += r("Dev batch", batchText);

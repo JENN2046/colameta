@@ -794,6 +794,14 @@ class WebConsoleSecurityTests(unittest.TestCase):
             assert actionable_categories[0]["required_scope"] in {"mcp:read", "mcp:preview", "mcp:commit"}
             assert actionable_categories[0]["gate_level"]
         assert payload["product_completion_overview"]["status"] == overview["status"]
+        trail = service["operator_session_trail"]
+        assert trail["source"] == "product_console_operator_session_trail"
+        assert trail["read_only"] is True
+        assert trail["side_effects"] is False
+        assert trail["status"] in {"not_started", "followup_pending", "refresh_pending", "recorded", "ready"}
+        assert isinstance(trail["recent_events"], list)
+        assert isinstance(trail["pending_refreshes"], list)
+        assert payload["operator_session_trail"]["status"] == trail["status"]
         from runner.web_console_v2_assets import render_v2_index_page
 
         page = render_v2_index_page(csrf_token="csrf", web_read_token="read")
@@ -801,6 +809,8 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "completionCategoryText" in page
         assert "completionOverview.categories" in page
         assert "category.primary_tool" in page
+        assert "Operator trail" in page
+        assert "operatorTrailText" in page
         assert payload["apps_connector_closeout"]["read_only"] is True
         assert payload["apps_connector_closeout"]["preferred_smoke_tool"]["tool"] == "get_apps_connector_smoke_packet"
         assert payload["apps_connector_tool_refresh"]["expected_tool"] == "get_apps_connector_smoke_packet"

@@ -5513,6 +5513,7 @@ class MCPPlanningBridgeServer:
         <div class="note"><strong>Gaps</strong><span id="closeout-gaps">-</span></div>
         <div class="note"><strong>Next</strong><span id="closeout-next">-</span></div>
       </div>
+      <div class="recommended-actions" id="operator-session-trail"></div>
       <div class="recommended-actions" id="product-completion-categories"></div>
       <div class="recommended-actions" id="closeout-action-groups"></div>
     </section>
@@ -6163,8 +6164,44 @@ class MCPPlanningBridgeServer:
         ].filter(Boolean).join(" | "));
         text("closeout-gaps", completionGapText(completion));
         text("closeout-next", completionNextText(completion));
+        renderOperatorSessionTrail(completion);
         renderProductCompletionCategories(completion);
         renderCompletionGroups(completion);
+      }
+      function renderOperatorSessionTrail(completion) {
+        var target = byId("operator-session-trail");
+        target.innerHTML = "";
+        var trail = completion && completion.operator_session_trail && typeof completion.operator_session_trail === "object" ? completion.operator_session_trail : {};
+        var card = document.createElement("div");
+        card.className = "recommended-action operator-session-trail-card";
+        var title = document.createElement("div");
+        title.className = "recommended-action-title operator-session-trail-title";
+        title.textContent = ["Operator Trail", trail.status].filter(Boolean).join(" | ");
+        var meta = document.createElement("div");
+        meta.className = "recommended-action-meta operator-session-trail-meta";
+        appendChip(meta, trail.pending_refresh_count === 0 || trail.pending_refresh_count ? "refresh " + trail.pending_refresh_count : "");
+        appendChip(meta, trail.stored_result_count === 0 || trail.stored_result_count ? "records " + trail.stored_result_count : "");
+        appendChip(meta, trail.followup_count === 0 || trail.followup_count ? "followups " + trail.followup_count : "");
+        var summary = document.createElement("div");
+        summary.className = "recommended-action-why operator-session-trail-summary";
+        summary.textContent = trail.summary || "Operator trail has no recorded action events yet.";
+        var detail = document.createElement("div");
+        detail.className = "recommended-action-boundary operator-session-trail-detail";
+        var refreshes = Array.isArray(trail.pending_refreshes) ? trail.pending_refreshes : [];
+        var events = Array.isArray(trail.recent_events) ? trail.recent_events : [];
+        refreshes.slice(0, 2).forEach(function (item) {
+          appendChip(detail, ["refresh", item.tool, item.after_result_status].filter(Boolean).join(" "));
+        });
+        events.slice(0, 2).forEach(function (item) {
+          appendChip(detail, [item.label || item.event_id, item.status, item.tool].filter(Boolean).join(" "));
+        });
+        var next = trail.next_item && typeof trail.next_item === "object" ? trail.next_item : {};
+        appendChip(detail, next.label ? "next " + next.label : "");
+        card.appendChild(title);
+        card.appendChild(meta);
+        card.appendChild(summary);
+        card.appendChild(detail);
+        target.appendChild(card);
       }
       function renderProductCompletionCategories(completion) {
         var target = byId("product-completion-categories");
