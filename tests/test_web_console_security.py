@@ -826,6 +826,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "recovery_action_count" in page
         assert "Operator inbox" in page
         assert "operatorInbox" in page
+        assert 'data-tab-button="operator-inbox"' in page
+        assert 'data-tab="operator-inbox"' in page
+        assert "renderOperatorInboxPanel" in page
+        assert "bindOperatorInboxActions" in page
         assert "operator-inbox-list" in page
         assert "data-copy-operator-inbox" in page
         assert "data-run-operator-inbox" in page
