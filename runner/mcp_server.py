@@ -6151,8 +6151,10 @@ class MCPPlanningBridgeServer:
       function renderCompletion(data) {
         var completion = completionSurface(data);
         var progress = completion.progress_state && typeof completion.progress_state === "object" ? completion.progress_state : {};
+        var overview = completion.product_completion_overview && typeof completion.product_completion_overview === "object" ? completion.product_completion_overview : {};
         text("closeout-status", [
           completion.status,
+          overview.summary,
           progress.label || (progress.status ? "progress " + progress.status : ""),
           progress.next_step,
           completion.ready === true ? "ready" : "",

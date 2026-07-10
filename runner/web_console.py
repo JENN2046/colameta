@@ -1855,6 +1855,48 @@ class WebConsoleServer:
                         "authority": "read_only",
                         "why": "Refresh the Product Console map to inspect closeout completion.",
                     },
+                    "product_completion_overview": {
+                        "source": "product_completion_overview",
+                        "schema_version": "product_completion_overview.v1",
+                        "read_only": True,
+                        "side_effects": False,
+                        "status": "needs_attention",
+                        "ready": False,
+                        "summary": "Product completion overview is unavailable because Product Console map failed.",
+                        "ready_category_count": 0,
+                        "total_category_count": 1,
+                        "blocker_category_count": 0,
+                        "needs_attention_category_count": 1,
+                        "primary_gap_category": {
+                            "category_id": "product_console_map",
+                            "label": "Product Console Map",
+                            "status": "unknown",
+                            "ready": False,
+                            "severity": "needs_attention",
+                            "gap_codes": ["PRODUCT_CONSOLE_MAP_UNAVAILABLE"],
+                            "message": "Product Console map is unavailable.",
+                            "next_step": "Refresh Product Console before accepting product completion.",
+                        },
+                        "categories": [
+                            {
+                                "category_id": "product_console_map",
+                                "label": "Product Console Map",
+                                "status": "unknown",
+                                "ready": False,
+                                "severity": "needs_attention",
+                                "gap_codes": ["PRODUCT_CONSOLE_MAP_UNAVAILABLE"],
+                                "message": "Product Console map is unavailable.",
+                                "next_step": "Refresh Product Console before accepting product completion.",
+                            }
+                        ],
+                        "next_step": "Refresh Product Console before accepting product completion.",
+                        "recommended_action": {
+                            "tool": "get_product_console_map",
+                            "arguments": {"project_name": project_name},
+                            "authority": "read_only",
+                            "why": "Refresh the Product Console map to inspect product completion.",
+                        },
+                    },
                 },
             }
         apps_smoke_call = apps_connector_closeout.get("preferred_smoke_tool")
@@ -2028,6 +2070,13 @@ class WebConsoleServer:
             "product_console_completion": product_console_map.get("completion_surface")
             if isinstance(product_console_map.get("completion_surface"), dict)
             else {},
+            "product_completion_overview": (
+                product_console_map.get("product_completion_overview")
+                if isinstance(product_console_map.get("product_completion_overview"), dict)
+                else product_console_map.get("completion_surface", {}).get("product_completion_overview")
+                if isinstance(product_console_map.get("completion_surface"), dict)
+                else {}
+            ),
             "apps_connector_closeout": apps_connector_closeout,
             "apps_connector_tool_refresh": apps_connector_closeout.get("metadata_refresh_guidance"),
             "stable_replacement_cadence": stable_replacement_cadence,
@@ -3469,6 +3518,7 @@ class WebConsoleServer:
         result["web_commander_service"] = self._json_safe(web_commander_service)
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
         result["product_console_completion"] = self._json_safe(web_commander_service["product_console_completion"])
+        result["product_completion_overview"] = self._json_safe(web_commander_service["product_completion_overview"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
         result["stable_replacement_cadence"] = self._json_safe(web_commander_service["stable_replacement_cadence"])

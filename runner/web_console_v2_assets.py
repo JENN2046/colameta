@@ -1228,6 +1228,7 @@ function renderServiceCapabilityCard(data) {{
   const connector = svc.connector || {{}};
   const apps = svc.apps_connector_closeout || data.apps_connector_closeout || {{}};
   const completion = svc.product_console_completion || data.product_console_completion || {{}};
+  const completionOverview = svc.product_completion_overview || data.product_completion_overview || completion.product_completion_overview || {{}};
   const toolRefresh = svc.apps_connector_tool_refresh || data.apps_connector_tool_refresh || {{}};
   const cadence = svc.stable_replacement_cadence || data.stable_replacement_cadence || {{}};
   const profiles = Array.isArray(svc.profiles) ? svc.profiles : [];
@@ -1262,7 +1263,9 @@ function renderServiceCapabilityCard(data) {{
   const completionGapCount = completion.gap_count === 0 || completion.gap_count ? String(completion.gap_count) : "-";
   const completionProgressText = completionProgress.label || completionProgress.status || "-";
   const completionStep = completionProgress.next_step || completionNext;
-  const completionText = (completion.status || "-") + " ｜ " + completionProgressText + " ｜ gaps " + completionGapCount + " ｜ " + completionStep;
+  const overviewReady = completionOverview.ready_category_count === 0 || completionOverview.ready_category_count ? completionOverview.ready_category_count : "-";
+  const overviewTotal = completionOverview.total_category_count === 0 || completionOverview.total_category_count ? completionOverview.total_category_count : "-";
+  const completionText = (completionOverview.status || completion.status || "-") + " ｜ " + overviewReady + "/" + overviewTotal + " ｜ " + completionProgressText + " ｜ " + (completionOverview.next_step || completionStep);
 
   let h = `<div class="card summary-card service-capability-card ${{cardClass}}">`;
   h += `<div class="card-title">Web Commander 服务能力入口</div>`;
