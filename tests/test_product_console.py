@@ -277,6 +277,17 @@ def test_console_map_defaults_to_read_preview_product_surface() -> None:
     assert queue["next_item"]["primary_tool"] == "init_submission_evidence"
     assert queue["next_item"]["required_scope"] == "mcp:commit"
     assert queue["next_item"]["gate_level"] == "explicit_apply_or_run_required"
+    trail = completion["operator_session_trail"]
+    assert packet["operator_session_trail"] == trail
+    assert trail["source"] == "product_console_operator_session_trail"
+    assert trail["read_only"] is True
+    assert trail["side_effects"] is False
+    assert trail["status"] == "followup_pending"
+    assert trail["pending_refresh_count"] == 0
+    assert trail["stored_result_count"] == 0
+    assert trail["followup_count"] == 3
+    assert trail["next_item"]["item_id"] == "release_submission"
+    assert trail["recent_events"] == []
     assert completion["authority_boundary"]["does_not_execute_actions"] is True
     assert packet["authority_boundary"]["does_not_push"] is True
 
@@ -337,6 +348,16 @@ def test_console_map_attaches_recorded_action_result(tmp_path) -> None:
     assert completion["progress_state"]["pending_refresh_count"] == 1
     assert completion["progress_state"]["stored_result_count"] == 1
     assert completion["progress_state"]["ready"] is False
+    trail = completion["operator_session_trail"]
+    assert packet["operator_session_trail"] == trail
+    assert trail["status"] == "refresh_pending"
+    assert trail["stored_result_count"] == 1
+    assert trail["pending_refresh_count"] == 1
+    assert trail["pending_refreshes"][0]["tool"] == "get_product_console_map"
+    assert trail["recent_events"][0]["event_id"] == "latest_result"
+    assert trail["recent_events"][0]["status"] == "updated"
+    assert trail["recent_events"][0]["tool"] == "render_commander_app"
+    assert "secret-value" not in trail["recent_events"][0]["message"]
     assert commander_action["last_action_result"]["status"] == "updated"
     assert commander_action["last_action_result"]["result_ok"] is True
     assert commander_action["last_action_result"]["fingerprint_verified"] is True

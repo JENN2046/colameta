@@ -115,6 +115,7 @@ def build_product_console_map(
         "action_result_state": action_result_state,
         "completion_surface": completion_surface,
         "product_completion_overview": completion_surface.get("product_completion_overview"),
+        "operator_session_trail": completion_surface.get("operator_session_trail"),
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
@@ -839,6 +840,11 @@ def _completion_surface(
         safe_next_action=safe_next_action,
         followup_queue=followup_queue,
     )
+    operator_session_trail = _operator_session_trail(
+        status=completion_status,
+        action_result_state=action_result_state,
+        followup_queue=followup_queue,
+    )
     return {
         "source": "product_console_completion_surface",
         "schema_version": "product_console_completion_surface.v1",
@@ -850,6 +856,7 @@ def _completion_surface(
         "summary": _completion_summary(completion_status, gaps),
         "progress_state": progress_state,
         "product_completion_overview": product_completion_overview,
+        "operator_session_trail": operator_session_trail,
         "components": components,
         "gap_count": len(gaps),
         "gaps": gaps,
@@ -1115,6 +1122,141 @@ def _product_completion_overview_summary(
         f"Product completion needs attention: {ready_count}/{total_count} categories ready, "
         f"{blocker_count} blocker category(s), {needs_attention_count} attention category(s)."
     )
+
+
+def _operator_session_trail(
+    *,
+    status: str,
+    action_result_state: dict[str, Any],
+    followup_queue: dict[str, Any],
+) -> dict[str, Any]:
+    recent_events = _operator_session_recent_events(action_result_state)
+    pending_refreshes = (
+        action_result_state.get("pending_refreshes")
+        if isinstance(action_result_state.get("pending_refreshes"), list)
+        else []
+    )
+    next_item = followup_queue.get("next_item") if isinstance(followup_queue.get("next_item"), dict) else None
+    return {
+        "source": "product_console_operator_session_trail",
+        "schema_version": "product_console_operator_session_trail.v1",
+        "read_only": True,
+        "side_effects": False,
+        "status": _operator_session_trail_status(
+            completion_status=status,
+            recent_events=recent_events,
+            pending_refreshes=pending_refreshes,
+            next_item=next_item,
+        ),
+        "summary": _operator_session_trail_summary(
+            recent_events=recent_events,
+            pending_refreshes=pending_refreshes,
+            next_item=next_item,
+        ),
+        "stored_result_count": int(action_result_state.get("stored_result_count") or 0),
+        "stale_result_count": int(action_result_state.get("stale_result_count") or 0),
+        "pending_refresh_count": len(pending_refreshes),
+        "followup_count": int(followup_queue.get("total_count") or 0),
+        "next_item": dict(next_item) if isinstance(next_item, dict) else None,
+        "pending_refreshes": [_operator_session_refresh_item(item) for item in pending_refreshes[:5] if isinstance(item, dict)],
+        "recent_events": recent_events,
+        "authority_boundary": {
+            "read_only": True,
+            "side_effects": False,
+            "does_not_execute_actions": True,
+            "does_not_write_runtime_state": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_authorize_stable_replacement": True,
+        },
+    }
+
+
+def _operator_session_recent_events(action_result_state: dict[str, Any]) -> list[dict[str, Any]]:
+    latest = action_result_state.get("latest") if isinstance(action_result_state.get("latest"), dict) else None
+    events: list[dict[str, Any]] = []
+    if isinstance(latest, dict):
+        events.append(_operator_session_result_event(latest, event_id="latest_result", label="Latest Result"))
+    activity = (
+        action_result_state.get("submission_evidence_activity")
+        if isinstance(action_result_state.get("submission_evidence_activity"), dict)
+        else None
+    )
+    if isinstance(activity, dict) and activity.get("available") is True:
+        activity_key = activity.get("action_key") or _action_key_from_fields(
+            action_id=_clean_optional_text(activity.get("action_id")),
+            tool=_clean_optional_text(activity.get("tool")),
+            mode=_clean_optional_text(activity.get("mode")) or "read",
+        )
+        if not any(item.get("action_key") == activity_key for item in events):
+            events.append(
+                _operator_session_result_event(
+                    activity,
+                    event_id="submission_evidence_activity",
+                    label="Evidence Activity",
+                )
+            )
+    return events[:5]
+
+
+def _operator_session_result_event(value: dict[str, Any], *, event_id: str, label: str) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "kind": "action_result",
+        "label": label,
+        "status": _clean_optional_text(value.get("status")) or "unknown",
+        "action_key": _clean_optional_text(value.get("action_key")),
+        "action_id": _clean_optional_text(value.get("action_id")),
+        "tool": _clean_optional_text(value.get("tool")),
+        "mode": _clean_optional_text(value.get("mode")) or "read",
+        "message": _safe_action_result_message(value.get("message") or value.get("status") or "recorded"),
+        "observed_at": _clean_optional_text(value.get("observed_at")),
+        "result_ok": value.get("result_ok") if isinstance(value.get("result_ok"), bool) else None,
+    }
+
+
+def _operator_session_refresh_item(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "pending_refresh",
+        "tool": _clean_optional_text(value.get("tool")),
+        "arguments": dict(value.get("arguments") or {}) if isinstance(value.get("arguments"), dict) else {},
+        "why": _clean_optional_text(value.get("why")) or "Refresh the read surface after a recorded action result.",
+        "source_action_key": _clean_optional_text(value.get("source_action_key")),
+        "after_result_status": _clean_optional_text(value.get("after_result_status")),
+        "after_observed_at": _clean_optional_text(value.get("after_observed_at")),
+        "requires_operator_or_agent_refresh": True,
+    }
+
+
+def _operator_session_trail_status(
+    *,
+    completion_status: str,
+    recent_events: list[dict[str, Any]],
+    pending_refreshes: list[dict[str, Any]],
+    next_item: dict[str, Any] | None,
+) -> str:
+    if pending_refreshes:
+        return "refresh_pending"
+    if next_item:
+        return "followup_pending"
+    if recent_events:
+        return "recorded"
+    return "not_started" if completion_status != "ready" else "ready"
+
+
+def _operator_session_trail_summary(
+    *,
+    recent_events: list[dict[str, Any]],
+    pending_refreshes: list[dict[str, Any]],
+    next_item: dict[str, Any] | None,
+) -> str:
+    if pending_refreshes:
+        return f"Operator trail has {len(pending_refreshes)} pending refresh action(s)."
+    if next_item:
+        label = _clean_optional_text(next_item.get("label")) or _clean_optional_text(next_item.get("item_id")) or "next item"
+        return f"Operator trail is waiting for follow-up: {label}."
+    if recent_events:
+        return f"Operator trail has {len(recent_events)} recent recorded event(s)."
+    return "Operator trail has no recorded action events yet."
 
 
 def _completion_progress_state(

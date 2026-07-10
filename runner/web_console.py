@@ -1897,6 +1897,27 @@ class WebConsoleServer:
                             "why": "Refresh the Product Console map to inspect product completion.",
                         },
                     },
+                    "operator_session_trail": {
+                        "source": "product_console_operator_session_trail",
+                        "schema_version": "product_console_operator_session_trail.v1",
+                        "read_only": True,
+                        "side_effects": False,
+                        "status": "not_started",
+                        "summary": "Operator trail has no recorded action events yet.",
+                        "stored_result_count": 0,
+                        "stale_result_count": 0,
+                        "pending_refresh_count": 0,
+                        "followup_count": 1,
+                        "next_item": {
+                            "item_id": "product_console_map",
+                            "label": "Product Console Map",
+                            "status": "needs_attention",
+                            "primary_tool": "get_product_console_map",
+                            "required_scope": "mcp:read",
+                        },
+                        "pending_refreshes": [],
+                        "recent_events": [],
+                    },
                 },
             }
         apps_smoke_call = apps_connector_closeout.get("preferred_smoke_tool")
@@ -2074,6 +2095,13 @@ class WebConsoleServer:
                 product_console_map.get("product_completion_overview")
                 if isinstance(product_console_map.get("product_completion_overview"), dict)
                 else product_console_map.get("completion_surface", {}).get("product_completion_overview")
+                if isinstance(product_console_map.get("completion_surface"), dict)
+                else {}
+            ),
+            "operator_session_trail": (
+                product_console_map.get("operator_session_trail")
+                if isinstance(product_console_map.get("operator_session_trail"), dict)
+                else product_console_map.get("completion_surface", {}).get("operator_session_trail")
                 if isinstance(product_console_map.get("completion_surface"), dict)
                 else {}
             ),
@@ -3519,6 +3547,7 @@ class WebConsoleServer:
         result["service_readiness_summary"] = self._json_safe(web_commander_service["readiness"])
         result["product_console_completion"] = self._json_safe(web_commander_service["product_console_completion"])
         result["product_completion_overview"] = self._json_safe(web_commander_service["product_completion_overview"])
+        result["operator_session_trail"] = self._json_safe(web_commander_service["operator_session_trail"])
         result["apps_connector_closeout"] = self._json_safe(web_commander_service["apps_connector_closeout"])
         result["apps_connector_tool_refresh"] = self._json_safe(web_commander_service["apps_connector_tool_refresh"])
         result["stable_replacement_cadence"] = self._json_safe(web_commander_service["stable_replacement_cadence"])

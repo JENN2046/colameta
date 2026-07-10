@@ -1754,6 +1754,9 @@ function closeoutGroupText() {{
 function productCompletionCategoryText() {{
   return byId("product-completion-categories").textContent;
 }}
+function operatorSessionTrailText() {{
+  return byId("operator-session-trail").textContent;
+}}
 function productCompletionFollowupRecordButton() {{
   return findByClass(byId("product-completion-categories"), "closeout-followup-record")[0];
 }}
@@ -1902,6 +1905,35 @@ vm.runInThisContext({json.dumps(widget_script)});
         }}],
         next_step: "Review remaining closeout gaps and follow the next Product Console action group."
       }},
+      operator_session_trail: {{
+        source: "product_console_operator_session_trail",
+        status: "refresh_pending",
+        summary: "Operator trail has 1 pending refresh action(s).",
+        stored_result_count: 1,
+        stale_result_count: 0,
+        pending_refresh_count: 1,
+        followup_count: 1,
+        next_item: {{
+          item_id: "submission_evidence_activity",
+          label: "Evidence Activity",
+          primary_tool: "record_product_console_action_result",
+          required_scope: "mcp:commit"
+        }},
+        pending_refreshes: [{{
+          tool: "get_product_console_map",
+          after_result_status: "updated",
+          source_action_key: "submission_evidence_activity|submission_evidence_activity_summary|read",
+          why: "Refresh Product Console after recording evidence activity."
+        }}],
+        recent_events: [{{
+          event_id: "latest_result",
+          label: "Latest Result",
+          status: "updated",
+          tool: "submission_evidence_activity_summary",
+          message: "Recorded recovery refreshed",
+          observed_at: "2026-01-02T03:04:05Z"
+        }}]
+      }},
       gaps: [{{
         component: "submission_evidence_activity",
         status: "not_recorded",
@@ -2000,6 +2032,11 @@ vm.runInThisContext({json.dumps(widget_script)});
   assert(byId("closeout-status").textContent.includes("Review remaining closeout gaps"), byId("closeout-status").textContent);
   assert(byId("closeout-gaps").textContent.includes("submission_evidence_activity | not_recorded | SUBMISSION_EVIDENCE_ACTIVITY_NOT_RECORDED"), byId("closeout-gaps").textContent);
   assert.strictEqual(byId("closeout-next").textContent, "record_submission_evidence_activity | record_product_console_action_result | commit");
+  assert(operatorSessionTrailText().includes("Operator Trail | refresh_pending"), operatorSessionTrailText());
+  assert(operatorSessionTrailText().includes("refresh 1"), operatorSessionTrailText());
+  assert(operatorSessionTrailText().includes("records 1"), operatorSessionTrailText());
+  assert(operatorSessionTrailText().includes("Latest Result updated submission_evidence_activity_summary"), operatorSessionTrailText());
+  assert(operatorSessionTrailText().includes("next Evidence Activity"), operatorSessionTrailText());
   assert(productCompletionCategoryText().includes("Product Readiness | ready"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("Evidence Activity | needs_attention"), productCompletionCategoryText());
   assert(productCompletionCategoryText().includes("gaps 1"), productCompletionCategoryText());
