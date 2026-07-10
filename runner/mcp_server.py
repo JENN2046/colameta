@@ -8668,23 +8668,35 @@ class MCPPlanningBridgeServer:
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
             clean_project_name = original_project_name.strip()
             self._inject_project_name_into_routed_result(result, clean_project_name)
-            for key in (
-                "next_action",
-                "safe_next_action",
-                "recommended_next_action",
-                "primary_next_action",
-                "copyable_tool_call",
-            ):
-                action = _find_action(result, key)
-                if action is not None:
-                    _inject_project_name_into_action(action, clean_project_name)
-            for key in ("next_actions", "safe_next_actions", "recommended_next_steps", "recommended_next_actions"):
-                actions = _find_action_list(result, key)
-                if actions is not None:
-                    for action in actions:
-                        if isinstance(action, dict):
-                            _inject_project_name_into_action(action, clean_project_name)
+            self._inject_project_name_into_nested_actions(result, clean_project_name)
         return result
+
+    def _inject_project_name_into_nested_actions(self, value: Any, project_name: str) -> None:
+        singular_action_keys = {
+            "next_action",
+            "safe_next_action",
+            "recommended_next_action",
+            "primary_next_action",
+            "copyable_tool_call",
+        }
+        plural_action_keys = {
+            "next_actions",
+            "safe_next_actions",
+            "recommended_next_steps",
+            "recommended_next_actions",
+        }
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in singular_action_keys and isinstance(nested, dict):
+                    _inject_project_name_into_action(nested, project_name)
+                elif key in plural_action_keys and isinstance(nested, list):
+                    for action in nested:
+                        if isinstance(action, dict):
+                            _inject_project_name_into_action(action, project_name)
+                self._inject_project_name_into_nested_actions(nested, project_name)
+        elif isinstance(value, list):
+            for nested in value:
+                self._inject_project_name_into_nested_actions(nested, project_name)
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
         workflow = result.get("workflow")

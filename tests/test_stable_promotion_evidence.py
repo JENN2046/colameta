@@ -540,7 +540,14 @@ def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path)
     assert preview["ok"] is True
     next_arguments = preview["data"]["next_action"]["arguments"]
     assert next_arguments["project_name"] == "demo-project"
-    applied = server.call_tool_for_agent("manage_stable_promotion_evidence", next_arguments)
+    refreshed_status = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {"action": "status", "candidate_head": head, "project_name": "demo-project"},
+    )
+    recovered_arguments = refreshed_status["data"]["active_preview"]["safe_next_action"]["arguments"]
+    assert recovered_arguments == next_arguments
+    assert recovered_arguments["project_name"] == "demo-project"
+    applied = server.call_tool_for_agent("manage_stable_promotion_evidence", recovered_arguments)
     assert applied["ok"] is True
     assert applied["data"]["status"] == "recorded"
 
