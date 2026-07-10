@@ -8,6 +8,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import runner.stable_promotion_evidence as stable_promotion_evidence
 from runner.stable_promotion_evidence import (
     MCPStablePromotionEvidenceManager,
     build_candidate_artifact_manifest,
@@ -251,6 +252,34 @@ def test_concurrent_apply_publishes_one_receipt_without_overwrite(tmp_path: Path
     assert len(receipts) == 1
     status = get_stable_promotion_evidence_status(str(repo), candidate_head=head)
     assert status["verified"] is True
+
+
+def test_apply_rechecks_receipt_created_between_status_and_file_check(tmp_path: Path, monkeypatch) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+    winner_preview = manager.handle("preview", {"candidate_head": head})
+    observer_preview = manager.handle("preview", {"candidate_head": head})
+    receipt_path = str(repo / ".colameta" / "runtime" / "stable-promotion-evidence" / f"{head}.json")
+    original_isfile = os.path.isfile
+    state = {"candidate_checks": 0, "inject_winner": True}
+
+    def racing_isfile(path: object) -> bool:
+        if state["inject_winner"] and str(path) == receipt_path:
+            state["candidate_checks"] += 1
+            if state["candidate_checks"] == 1:
+                return False
+            state["inject_winner"] = False
+            winner = manager.handle("apply", {"preview_id": winner_preview["preview_id"]})
+            assert winner["status"] == "recorded"
+            return True
+        return original_isfile(path)
+
+    monkeypatch.setattr(stable_promotion_evidence.os.path, "isfile", racing_isfile)
+    observed = manager.handle("apply", {"preview_id": observer_preview["preview_id"]})
+
+    assert observed["ok"] is True
+    assert observed["status"] == "already_recorded"
+    assert observed["evidence_status"]["verified"] is True
 
 
 def test_mcp_tool_is_visible_and_action_scoped(tmp_path: Path) -> None:

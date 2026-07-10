@@ -340,19 +340,11 @@ class MCPStablePromotionEvidenceManager:
             )
         existing = get_stable_promotion_evidence_status(self.project_root, candidate_head=candidate_head)
         if existing.get("verified") is True:
-            self._delete_preview(preview_id)
-            return {
-                "ok": True,
-                "source": "stable_promotion_artifact_evidence",
-                "schema_version": RECEIPT_SCHEMA_VERSION,
-                "action": "apply",
-                "status": "already_recorded",
-                "already_recorded": True,
-                "candidate_head": candidate_head,
-                "evidence_status": existing,
-                "authority_boundary": _authority_boundary(),
-            }
+            return self._already_recorded(preview_id, candidate_head, existing)
         if os.path.isfile(receipt_path):
+            concurrent = get_stable_promotion_evidence_status(self.project_root, candidate_head=candidate_head)
+            if concurrent.get("verified") is True:
+                return self._already_recorded(preview_id, candidate_head, concurrent)
             return _manager_error(
                 "apply",
                 "RECEIPT_CONFLICT_INVALID",
@@ -384,18 +376,7 @@ class MCPStablePromotionEvidenceManager:
         if not created:
             concurrent = get_stable_promotion_evidence_status(self.project_root, candidate_head=candidate_head)
             if concurrent.get("verified") is True:
-                self._delete_preview(preview_id)
-                return {
-                    "ok": True,
-                    "source": "stable_promotion_artifact_evidence",
-                    "schema_version": RECEIPT_SCHEMA_VERSION,
-                    "action": "apply",
-                    "status": "already_recorded",
-                    "already_recorded": True,
-                    "candidate_head": candidate_head,
-                    "evidence_status": concurrent,
-                    "authority_boundary": _authority_boundary(),
-                }
+                return self._already_recorded(preview_id, candidate_head, concurrent)
             return _manager_error(
                 "apply",
                 "RECEIPT_CONFLICT_INVALID",
@@ -461,6 +442,25 @@ class MCPStablePromotionEvidenceManager:
     def _runtime_storage_is_safe(self) -> bool:
         probe = str(Path(self.previews_root) / ".storage-probe.json")
         return _is_safe_runtime_artifact_path(self.project_root, probe)
+
+    def _already_recorded(
+        self,
+        preview_id: str,
+        candidate_head: str,
+        evidence_status: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._delete_preview(preview_id)
+        return {
+            "ok": True,
+            "source": "stable_promotion_artifact_evidence",
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "action": "apply",
+            "status": "already_recorded",
+            "already_recorded": True,
+            "candidate_head": candidate_head,
+            "evidence_status": evidence_status,
+            "authority_boundary": _authority_boundary(),
+        }
 
     def _read_preview(self, preview_id: str) -> dict[str, Any] | None:
         try:
