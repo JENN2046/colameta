@@ -14,6 +14,7 @@ from runner.stable_promotion_evidence import (
     MCPStablePromotionEvidenceManager,
     build_candidate_artifact_manifest,
     get_stable_promotion_evidence_status,
+    get_stable_promotion_preview_status,
 )
 from runner.stable_promotion_readiness import (
     REQUIRED_VISIBLE_TOOLS,
@@ -159,6 +160,54 @@ def test_preview_apply_persists_and_verifies_current_manifest(tmp_path: Path) ->
     assert readiness["recommended_next_steps"][0]["step"] == "request_commander_authorization"
 
 
+def test_active_preview_status_recovers_exact_apply_action(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    manager = MCPStablePromotionEvidenceManager(str(repo))
+
+    missing = get_stable_promotion_preview_status(str(repo), candidate_head=head)
+    assert missing["status"] == "missing"
+    assert missing["can_apply"] is False
+
+    preview = manager.handle("preview", {"candidate_head": head})
+    active = get_stable_promotion_preview_status(str(repo), candidate_head=head)
+    assert active["status"] == "ready_to_apply"
+    assert active["read_only"] is True
+    assert active["side_effects"] is False
+    assert active["preview_id"] == preview["preview_id"]
+    assert active["safe_next_action"] == {
+        "tool": "manage_stable_promotion_evidence",
+        "arguments": {"action": "apply", "preview_id": preview["preview_id"]},
+        "required_scope": "mcp:commit",
+    }
+
+    applied = manager.handle("apply", active["safe_next_action"]["arguments"])
+    assert applied["status"] == "recorded"
+    assert get_stable_promotion_preview_status(str(repo), candidate_head=head)["status"] == "missing"
+
+
+def test_readiness_advances_existing_preview_to_commit_scoped_apply(tmp_path: Path) -> None:
+    repo, head = _repo(tmp_path)
+    preview = MCPStablePromotionEvidenceManager(str(repo)).handle("preview", {"candidate_head": head})
+    stable_dir = tmp_path / "stable"
+    stable_dir.mkdir()
+
+    readiness = get_stable_promotion_readiness(
+        str(repo),
+        visible_tool_names=list(REQUIRED_VISIBLE_TOOLS),
+        supported_workflows=list(REQUIRED_WORKFLOWS),
+        runtime_status=_runtime(repo, head),
+        stable_runtime_dir=str(stable_dir),
+        rollback_rehearsal_evidence=_rollback_rehearsal(head),
+    )
+
+    assert readiness["promotion_artifact_preview"]["status"] == "ready_to_apply"
+    assert readiness["recommended_next_steps"][0]["arguments"] == {
+        "action": "apply",
+        "preview_id": preview["preview_id"],
+    }
+    assert readiness["recommended_next_steps"][0]["required_scope"] == "mcp:commit"
+
+
 def test_verified_receipt_becomes_stale_when_origin_main_advances(tmp_path: Path) -> None:
     repo, head = _repo(tmp_path)
     manager = MCPStablePromotionEvidenceManager(str(repo))
@@ -236,6 +285,8 @@ def test_preview_apply_excludes_dirty_worktree_but_fails_closed_when_head_change
     old_status = manager.handle("status", {"candidate_head": head})
     assert old_status["status"] == "missing"
     assert old_status["current"] is False
+    assert old_status["active_preview"]["status"] == "stale"
+    assert old_status["active_preview"]["can_apply"] is False
 
     invalid_ref = manager.handle("preview", {"candidate_head": "--help"})
     assert invalid_ref["ok"] is False
@@ -270,6 +321,7 @@ def test_tampered_preview_and_receipt_are_rejected(tmp_path: Path) -> None:
     artifact = json.loads(preview_path.read_text(encoding="utf-8"))
     artifact["candidate_head"] = "0" * 40
     preview_path.write_text(json.dumps(artifact), encoding="utf-8")
+    assert get_stable_promotion_preview_status(str(repo), candidate_head=head)["status"] == "missing"
     rejected = manager.handle("apply", {"preview_id": preview["preview_id"]})
     assert rejected["ok"] is False
     assert rejected["error_code"] == "PREVIEW_DIGEST_MISMATCH"
@@ -282,6 +334,7 @@ def test_tampered_preview_and_receipt_are_rejected(tmp_path: Path) -> None:
         {key: value for key, value in artifact.items() if key != "preview_digest"}
     )
     preview_path.write_text(json.dumps(artifact), encoding="utf-8")
+    assert get_stable_promotion_preview_status(str(repo), candidate_head=head)["status"] == "missing"
     rejected = manager.handle("apply", {"preview_id": preview["preview_id"]})
     assert rejected["ok"] is False
     assert rejected["error_code"] == "PREVIEW_WORKTREE_ISOLATION_MISMATCH"
@@ -487,7 +540,14 @@ def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path)
     assert preview["ok"] is True
     next_arguments = preview["data"]["next_action"]["arguments"]
     assert next_arguments["project_name"] == "demo-project"
-    applied = server.call_tool_for_agent("manage_stable_promotion_evidence", next_arguments)
+    refreshed_status = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {"action": "status", "candidate_head": head, "project_name": "demo-project"},
+    )
+    recovered_arguments = refreshed_status["data"]["active_preview"]["safe_next_action"]["arguments"]
+    assert recovered_arguments == next_arguments
+    assert recovered_arguments["project_name"] == "demo-project"
+    applied = server.call_tool_for_agent("manage_stable_promotion_evidence", recovered_arguments)
     assert applied["ok"] is True
     assert applied["data"]["status"] == "recorded"
 
@@ -517,6 +577,29 @@ def test_service_routed_readiness_preserves_project_name_in_recommended_preview(
     recommended = readiness["data"]["recommended_next_steps"][0]
     assert recommended["tool"] == "manage_stable_promotion_evidence"
     assert recommended["arguments"]["project_name"] == "demo-project"
+    evidence_action = readiness["data"]["promotion_artifact_evidence"]["safe_next_action"]
+    assert evidence_action["arguments"]["project_name"] == "demo-project"
     preview = server.call_tool_for_agent(recommended["tool"], recommended["arguments"])
     assert preview["ok"] is True
     assert preview["data"]["can_apply"] is True
+
+    refreshed = server.call_tool_for_agent(
+        "get_stable_promotion_readiness",
+        {"project_name": "demo-project"},
+    )
+    active_preview_action = refreshed["data"]["promotion_artifact_preview"]["safe_next_action"]
+    assert active_preview_action["arguments"] == {
+        "action": "apply",
+        "preview_id": preview["data"]["preview_id"],
+        "project_name": "demo-project",
+    }
+    assert refreshed["data"]["recommended_next_steps"][0]["arguments"] == active_preview_action["arguments"]
+    discarded = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {
+            "action": "discard",
+            "preview_id": preview["data"]["preview_id"],
+            "project_name": "demo-project",
+        },
+    )
+    assert discarded["ok"] is True

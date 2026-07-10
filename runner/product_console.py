@@ -39,6 +39,7 @@ def build_product_console_map(
     readiness_packet: dict[str, Any] | None = None,
     full_loop_authority: dict[str, Any] | None = None,
     release_submission_readiness: dict[str, Any] | None = None,
+    stable_promotion_readiness: dict[str, Any] | None = None,
     action_results: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -60,6 +61,7 @@ def build_product_console_map(
             status=status,
             readiness=readiness,
             release_submission=release,
+            stable_promotion_readiness=stable_promotion_readiness,
         ),
         result_state,
     )
@@ -123,6 +125,7 @@ def build_product_console_map(
         "readiness_snapshot": _readiness_snapshot(readiness),
         "full_loop_authority_snapshot": _full_loop_snapshot(full_loop),
         "release_submission_snapshot": _release_submission_snapshot(release),
+        "stable_promotion_readiness_snapshot": _stable_promotion_readiness_snapshot(stable_promotion_readiness),
         "release_submission_evidence_bundle": release_evidence_bundle,
         "authority_boundary": _authority_boundary(),
         "not_authorized_actions": [
@@ -644,9 +647,14 @@ def _recommended_first_actions(
     status: str,
     readiness: dict[str, Any] | None,
     release_submission: dict[str, Any] | None,
+    stable_promotion_readiness: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     project_args = {"project_name": project_name} if project_name else {}
-    readiness_actions = _readiness_recommended_actions(project_args, readiness)
+    readiness_actions = _readiness_recommended_actions(
+        project_args,
+        readiness,
+        stable_promotion_readiness=stable_promotion_readiness,
+    )
     release_actions = _release_submission_recommended_actions(project_args, release_submission)
     if status == "blocked":
         return readiness_actions + release_actions + [
@@ -707,6 +715,8 @@ def _recommended_first_actions(
 def _readiness_recommended_actions(
     project_args: dict[str, Any],
     readiness: dict[str, Any] | None,
+    *,
+    stable_promotion_readiness: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     fallback = _recommended_action(
         "inspect_product_readiness",
@@ -728,6 +738,10 @@ def _readiness_recommended_actions(
     why = safe_next.get("why")
     arguments = safe_next.get("arguments") if isinstance(safe_next.get("arguments"), dict) else {}
     if isinstance(tool, str) and tool:
+        if tool == "get_stable_promotion_readiness" and isinstance(stable_promotion_readiness, dict):
+            stable_action = _stable_promotion_recommended_action(project_args, stable_promotion_readiness)
+            if stable_action is not None:
+                return [stable_action]
         return [
             _recommended_action(
                 _action_id_from(action, tool, "readiness_safe_next_action"),
@@ -756,6 +770,59 @@ def _readiness_recommended_actions(
     return [fallback]
 
 
+def _stable_promotion_recommended_action(
+    project_args: dict[str, Any],
+    readiness: dict[str, Any],
+) -> dict[str, Any] | None:
+    steps = readiness.get("recommended_next_steps")
+    if not isinstance(steps, list):
+        return None
+    step = next((item for item in steps if isinstance(item, dict)), None)
+    if not isinstance(step, dict):
+        return None
+    action_id = _clean_optional_text(step.get("step")) or "stable_promotion_next_step"
+    tool = _clean_optional_text(step.get("tool"))
+    runbook = _clean_optional_text(step.get("runbook"))
+    arguments = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
+    scope = _clean_optional_text(step.get("required_scope")) or "mcp:read"
+    mode = "commit" if scope == "mcp:commit" else "preview" if scope == "mcp:preview" else "read"
+    evidence_action = _clean_optional_text(arguments.get("action"))
+    if tool == "manage_stable_promotion_evidence":
+        minimum_mode = (
+            "commit"
+            if evidence_action == "apply"
+            else "preview"
+            if evidence_action in {"preview", "discard"}
+            else "read"
+        )
+        mode = max((mode, minimum_mode), key=lambda item: {"read": 0, "preview": 1, "commit": 2}[item])
+    label = (
+        "Apply Stable Promotion Artifact Evidence"
+        if evidence_action == "apply"
+        else "Preview Stable Promotion Artifact Evidence"
+        if evidence_action == "preview"
+        else action_id.replace("_", " ").title()
+    )
+    return _recommended_action(
+        action_id,
+        label=label,
+        mode=mode,
+        source="stable_promotion_readiness",
+        tool=tool,
+        action=evidence_action or action_id,
+        arguments={**arguments, **project_args},
+        runbook=runbook,
+        why=_clean_optional_text(step.get("description")) or "Continue the current stable promotion evidence review step.",
+        evidence_context={
+            "candidate_head": (readiness.get("project") or {}).get("head")
+            if isinstance(readiness.get("project"), dict)
+            else None,
+            "stable_promotion_review_candidate": readiness.get("stable_promotion_review_candidate") is True,
+            "stable_replacement_authorized": False,
+        },
+    )
+
+
 def _recommended_action(
     action_id: str,
     *,
@@ -771,7 +838,9 @@ def _recommended_action(
 ) -> dict[str, Any]:
     normalized_mode = mode if mode in {"read", "preview", "commit"} else "read"
     requires_confirmation = normalized_mode != "read"
-    side_effects = normalized_mode == "commit"
+    side_effects = normalized_mode == "commit" or (
+        tool == "manage_stable_promotion_evidence" and action in {"preview", "discard"}
+    )
     item: dict[str, Any] = {
         "action_id": action_id,
         "label": label,
@@ -848,6 +917,11 @@ def _refresh_after_for_tool(tool: str | None) -> list[dict[str, Any]]:
         return [{"tool": "get_product_console_map", "why": "Refresh console guidance after stable cadence review."}]
     if tool == "get_stable_promotion_readiness":
         return [{"tool": "get_product_console_map", "why": "Refresh console guidance after stable promotion preflight."}]
+    if tool == "manage_stable_promotion_evidence":
+        return [
+            {"tool": "get_stable_promotion_readiness", "why": "Refresh exact-HEAD stable promotion evidence state."},
+            {"tool": "get_product_console_map", "why": "Advance the Product Console stable promotion action."},
+        ]
     if tool == "render_commander_app":
         return [{"tool": "get_product_console_map", "why": "Refresh console action cards after entering Commander."}]
     return []
@@ -2415,6 +2489,33 @@ def _full_loop_snapshot(full_loop: dict[str, Any] | None) -> dict[str, Any]:
         "full_loop_ready": full_loop.get("full_loop_ready") is True,
         "effective_authority": full_loop.get("effective_authority"),
         "missing_controls": list(full_loop.get("missing_controls") or []),
+    }
+
+
+def _stable_promotion_readiness_snapshot(readiness: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(readiness, dict):
+        return {"status": "not_loaded", "available": False}
+    project = readiness.get("project") if isinstance(readiness.get("project"), dict) else {}
+    evidence = (
+        readiness.get("promotion_artifact_evidence")
+        if isinstance(readiness.get("promotion_artifact_evidence"), dict)
+        else {}
+    )
+    preview = (
+        readiness.get("promotion_artifact_preview")
+        if isinstance(readiness.get("promotion_artifact_preview"), dict)
+        else {}
+    )
+    return {
+        "status": readiness.get("readiness_status") or "unknown",
+        "available": True,
+        "candidate_head": project.get("head"),
+        "stable_promotion_review_candidate": readiness.get("stable_promotion_review_candidate") is True,
+        "stable_production_ready": readiness.get("stable_production_ready") is True,
+        "artifact_evidence_status": evidence.get("status"),
+        "artifact_preview_status": preview.get("status"),
+        "recommended_next_steps": list(readiness.get("recommended_next_steps") or []),
+        "safety_boundary": readiness.get("safety_boundary"),
     }
 
 

@@ -8668,23 +8668,35 @@ class MCPPlanningBridgeServer:
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
             clean_project_name = original_project_name.strip()
             self._inject_project_name_into_routed_result(result, clean_project_name)
-            for key in (
-                "next_action",
-                "safe_next_action",
-                "recommended_next_action",
-                "primary_next_action",
-                "copyable_tool_call",
-            ):
-                action = _find_action(result, key)
-                if action is not None:
-                    _inject_project_name_into_action(action, clean_project_name)
-            for key in ("next_actions", "safe_next_actions", "recommended_next_steps", "recommended_next_actions"):
-                actions = _find_action_list(result, key)
-                if actions is not None:
-                    for action in actions:
-                        if isinstance(action, dict):
-                            _inject_project_name_into_action(action, clean_project_name)
+            self._inject_project_name_into_nested_actions(result, clean_project_name)
         return result
+
+    def _inject_project_name_into_nested_actions(self, value: Any, project_name: str) -> None:
+        singular_action_keys = {
+            "next_action",
+            "safe_next_action",
+            "recommended_next_action",
+            "primary_next_action",
+            "copyable_tool_call",
+        }
+        plural_action_keys = {
+            "next_actions",
+            "safe_next_actions",
+            "recommended_next_steps",
+            "recommended_next_actions",
+        }
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in singular_action_keys and isinstance(nested, dict):
+                    _inject_project_name_into_action(nested, project_name)
+                elif key in plural_action_keys and isinstance(nested, list):
+                    for action in nested:
+                        if isinstance(action, dict):
+                            _inject_project_name_into_action(action, project_name)
+                self._inject_project_name_into_nested_actions(nested, project_name)
+        elif isinstance(value, list):
+            for nested in value:
+                self._inject_project_name_into_nested_actions(nested, project_name)
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
         workflow = result.get("workflow")
@@ -9953,7 +9965,19 @@ class MCPPlanningBridgeServer:
     def _tool_get_product_console_map(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
-        return build_product_console_map(project_root, project_name=project_name)
+        readiness = build_product_readiness_packet(project_root, project_name=project_name)
+        safe_next_action = readiness.get("safe_next_action") if isinstance(readiness.get("safe_next_action"), dict) else {}
+        stable_promotion = (
+            self._build_stable_promotion_readiness_packet(project_root, project_name)
+            if safe_next_action.get("tool") == "get_stable_promotion_readiness"
+            else None
+        )
+        return build_product_console_map(
+            project_root,
+            project_name=project_name,
+            readiness_packet=readiness,
+            stable_promotion_readiness=stable_promotion,
+        )
 
     def _tool_record_product_console_action_result(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
@@ -10811,6 +10835,18 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_stable_promotion_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
+        project_name = (
+            self._project_name_for_context(project_root, project_record, params)
+            if params.get("project_name") is not None
+            else None
+        )
+        return self._build_stable_promotion_readiness_packet(project_root, project_name)
+
+    def _build_stable_promotion_readiness_packet(
+        self,
+        project_root: str,
+        project_name: str | None,
+    ) -> dict[str, Any]:
         result = get_stable_promotion_readiness(
             project_root,
             visible_tool_names=self._visible_tool_names(),
@@ -10819,13 +10855,17 @@ class MCPPlanningBridgeServer:
             mcp_exposure_profile=self.mcp_exposure_profile,
             registered_projects=self._web_gpt_registered_project_summary(),
         )
-        if params.get("project_name") is not None:
-            project_name = self._project_name_for_context(project_root, project_record, params)
+        if project_name:
             recommended_next_steps = _find_action_list(result, "recommended_next_steps")
             if recommended_next_steps is not None:
                 for action in recommended_next_steps:
                     if isinstance(action, dict):
                         _inject_project_name_into_action(action, project_name)
+            for packet_key in ("promotion_artifact_evidence", "promotion_artifact_preview"):
+                packet = result.get(packet_key)
+                safe_next_action = packet.get("safe_next_action") if isinstance(packet, dict) else None
+                if isinstance(safe_next_action, dict):
+                    _inject_project_name_into_action(safe_next_action, project_name)
         return result
 
     def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:

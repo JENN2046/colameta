@@ -9,6 +9,7 @@ from runner.stable_promotion_evidence import (
     build_candidate_artifact_manifest,
     count_promotion_relevant_porcelain_entries,
     get_stable_promotion_evidence_status,
+    get_stable_promotion_preview_status,
 )
 
 
@@ -55,6 +56,7 @@ def get_stable_promotion_readiness(
     git_state = _git_repo_state(root)
     candidate_manifest = build_candidate_artifact_manifest(root, git_state.get("head"))
     promotion_evidence = get_stable_promotion_evidence_status(root, candidate_head=git_state.get("head"))
+    promotion_preview = get_stable_promotion_preview_status(root, candidate_head=git_state.get("head"))
     stable_state = _stable_runtime_state(stable_runtime_dir or _default_stable_runtime_dir())
     tool_support = _tool_support(visible_tool_names or (), supported_workflows or ())
     registry_state = _registry_state(registered_projects)
@@ -173,6 +175,7 @@ def get_stable_promotion_readiness(
         "candidate_artifact_manifest": candidate_manifest,
         "worktree_isolation": worktree_isolation,
         "promotion_artifact_evidence": promotion_evidence,
+        "promotion_artifact_preview": promotion_preview,
         "rollback_rehearsal_evidence": rehearsal_evidence,
         "rollback_rehearsal_binding": rehearsal_binding,
         "registry": registry_state,
@@ -183,7 +186,9 @@ def get_stable_promotion_readiness(
         "recommended_next_steps": _recommended_next_steps(
             stable_promotion_review_candidate,
             artifact_evidence_ready=promotion_evidence.get("status") == "verified_current",
+            artifact_evidence_status=_clean_text(promotion_evidence.get("status")),
             artifact_evidence_tool_visible=tool_support.get("stable_promotion_evidence_tool_visible") is True,
+            artifact_preview=promotion_preview,
             rollback_rehearsal_ready=rehearsal_binding.get("status") == "verified_current",
             candidate_head=_clean_text(git_state.get("head")),
         ),
@@ -313,25 +318,37 @@ def _recommended_next_steps(
     local_ready: bool,
     *,
     artifact_evidence_ready: bool,
+    artifact_evidence_status: str | None,
     artifact_evidence_tool_visible: bool,
+    artifact_preview: dict[str, Any],
     rollback_rehearsal_ready: bool,
     candidate_head: str | None,
 ) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     if not artifact_evidence_ready and artifact_evidence_tool_visible:
+        preview_ready = (
+            artifact_evidence_status == "missing"
+            and artifact_preview.get("status") == "ready_to_apply"
+            and artifact_preview.get("can_apply") is True
+        )
+        preview_id = _clean_text(artifact_preview.get("preview_id")) if preview_ready else None
         steps.append(
             {
                 "step": "persist_artifact_manifest",
                 "description": (
-                    "先 preview，再持久化精确候选 HEAD 的 artifact manifest 与 sha256；"
+                    "应用仍有效的精确候选 HEAD 预览，持久化 artifact manifest 与 sha256；"
+                    "该证据只读 Git object database，不包含当前 worktree 改动。"
+                    if preview_id
+                    else "先 preview，再持久化精确候选 HEAD 的 artifact manifest 与 sha256；"
                     "该证据只读 Git object database，不包含当前 worktree 改动。"
                 ),
                 "tool": "manage_stable_promotion_evidence",
                 "arguments": {
-                    "action": "preview",
-                    **({"candidate_head": candidate_head} if candidate_head else {}),
+                    "action": "apply" if preview_id else "preview",
+                    **({"preview_id": preview_id} if preview_id else {}),
+                    **({"candidate_head": candidate_head} if candidate_head and not preview_id else {}),
                 },
-                "required_scope": "mcp:preview",
+                "required_scope": "mcp:commit" if preview_id else "mcp:preview",
             }
         )
     if not local_ready:

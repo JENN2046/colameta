@@ -3823,15 +3823,66 @@ vm.runInThisContext({json.dumps(widget_script)});
             "status": "ready_read_preview",
             "entries": [],
         }
+        readiness_packet = {
+            "status": "ready",
+            "ready": True,
+            "safe_next_action": {"tool": "render_commander_app"},
+        }
 
-        with patch("runner.mcp_server.build_product_console_map", return_value=console_packet) as console_map:
+        with (
+            patch("runner.mcp_server.build_product_readiness_packet", return_value=readiness_packet),
+            patch("runner.mcp_server.build_product_console_map", return_value=console_packet) as console_map,
+        ):
             result = server.call_tool_for_agent("get_product_console_map", {"project_name": "demo-project"})
 
         assert result["ok"] is True
         assert result["tool"] == "get_product_console_map"
         assert result["data"]["source"] == "product_console_map"
         assert result["data"]["read_only"] is True
-        console_map.assert_called_once_with(str(project), project_name="demo-project")
+        console_map.assert_called_once_with(
+            str(project),
+            project_name="demo-project",
+            readiness_packet=readiness_packet,
+            stable_promotion_readiness=None,
+        )
+
+    def test_product_console_map_loads_stable_preflight_to_advance_stale_runtime_action(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        readiness_packet = {
+            "status": "blocked",
+            "ready": False,
+            "safe_next_action": {"tool": "get_stable_promotion_readiness"},
+        }
+        stable_packet = {
+            "ok": True,
+            "recommended_next_steps": [
+                {
+                    "tool": "manage_stable_promotion_evidence",
+                    "arguments": {"action": "preview", "candidate_head": "a" * 40},
+                    "required_scope": "mcp:preview",
+                }
+            ],
+        }
+        console_packet = {"ok": True, "source": "product_console_map", "read_only": True}
+
+        with (
+            patch("runner.mcp_server.build_product_readiness_packet", return_value=readiness_packet),
+            patch("runner.mcp_server.get_stable_promotion_readiness", return_value=stable_packet),
+            patch("runner.mcp_server.build_product_console_map", return_value=console_packet) as console_map,
+        ):
+            result = server.call_tool_for_agent("get_product_console_map", {"project_name": "demo-project"})
+
+        assert result["ok"] is True
+        assert stable_packet["recommended_next_steps"][0]["arguments"]["project_name"] == "demo-project"
+        console_map.assert_called_once_with(
+            str(project),
+            project_name="demo-project",
+            readiness_packet=readiness_packet,
+            stable_promotion_readiness=stable_packet,
+        )
 
     def test_release_submission_readiness_tool_is_read_only_and_project_routed(self) -> None:
         project = self.make_git_checkout(managed=True)
