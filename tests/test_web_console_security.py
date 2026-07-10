@@ -827,6 +827,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "Product completion" in page
         assert "ready ${esc(ready)}/${esc(total)}" in page
         assert "第一缺口：" in page
+        assert "primaryFollowupId" in page
+        assert "Open first gap" in page
+        assert "category.followup_item" in page
+        assert "followupId" in page
+        assert 'data-open-product-followup="${escAttr(followupId)}"' in page
         assert "只读概览；不执行提交、发布、stable replacement 或 app submission。" in page
         assert "Product follow-up queue" in page
         assert "renderProductFollowupQueue" in page
