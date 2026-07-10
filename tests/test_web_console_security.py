@@ -861,6 +861,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "#loading[aria-hidden=\"true\"]" in page
         assert "setGlobalLoading" in page
         assert "clearGlobalError" in page
+        assert 'id="refresh-status" class="refresh-status" role="status" aria-live="polite"' in page
+        assert "lastStatusRefreshText" in page
+        assert "backgroundPollStatusText" in page
+        assert "setRefreshStatus" in page
+        assert "renderRefreshStatus" in page
+        assert "最后刷新 " in page
+        assert "后台轮询每 5 秒" in page
+        assert "后台轮询正常，无变化" in page
+        assert "后台轮询暂时失败，将重试" in page
         assert "正在刷新状态" in page
         assert "正在执行操作" in page
         assert "正在切换项目" in page
