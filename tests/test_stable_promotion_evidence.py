@@ -22,6 +22,7 @@ from runner.stable_promotion_readiness import (
 )
 from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
+from runner.workflow_engine import infer_risk_level, should_record_tool
 
 
 def _run(*args: str, cwd: Path | None = None) -> str:
@@ -353,6 +354,28 @@ def test_mcp_tool_is_visible_and_action_scoped(tmp_path: Path) -> None:
     )
     assert preview["ok"] is True
     assert preview["data"]["can_apply"] is True
+    assert isinstance(preview["data"]["workflow_id"], str)
+    applied = server.call_tool_for_agent(
+        "manage_stable_promotion_evidence",
+        {"action": "apply", "preview_id": preview["data"]["preview_id"]},
+    )
+    assert applied["ok"] is True
+    assert applied["data"]["workflow_id"] == preview["data"]["workflow_id"]
+
+
+def test_workflow_audit_classifies_all_stable_evidence_actions() -> None:
+    expected_risks = {
+        "inspect": "info",
+        "status": "info",
+        "preview": "preview",
+        "apply": "commit",
+        "discard": "preview",
+    }
+
+    for action, risk in expected_risks.items():
+        assert should_record_tool("manage_stable_promotion_evidence", action) is True
+        assert infer_risk_level("manage_stable_promotion_evidence", action) == risk
+    assert should_record_tool("manage_stable_promotion_evidence", "unknown") is False
 
 
 def test_service_routed_preview_preserves_project_name_for_apply(tmp_path: Path) -> None:
