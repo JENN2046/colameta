@@ -1919,6 +1919,29 @@ function operatorInboxActionKeyFromAction(action) {{
   return String(action.action || action.tool || "operator_inbox_item");
 }}
 
+function operatorInboxRecordPayload(item, actionKey) {{
+  item = item || {{}};
+  const payload = item.copy_payload && typeof item.copy_payload === "object" ? item.copy_payload : {{}};
+  const actionId = payload.action_id || payload.action || item.item_id || actionKey || item.tool || "operator_inbox_item";
+  return {{
+    tool: "record_product_console_action_result",
+    arguments: {{
+      action_id: actionId,
+      tool: item.tool || payload.tool || "",
+      mode: item.required_scope === "mcp:commit" ? "commit" : item.required_scope === "mcp:preview" ? "preview" : "read",
+      status: "updated",
+      message: "<operator-confirmed short result summary>",
+      result_ok: true,
+      action_fingerprint: item.action_fingerprint || payload.action_fingerprint || "",
+    }},
+    source_action_key: actionKey || operatorInboxActionKey(item),
+    source_item_id: item.item_id || "",
+    source_component: item.component || "",
+    required_scope: "mcp:commit",
+    gate_level: "explicit_operator_record_required",
+  }};
+}}
+
 function operatorInboxFeedbackFor(actionKey) {{
   if (!operatorInboxRunFeedback || operatorInboxRunFeedback.actionKey !== actionKey) return null;
   return operatorInboxRunFeedback;
@@ -2621,6 +2644,7 @@ function renderOperatorInboxItem(item) {{
   const followupItemId = item.copy_payload && item.copy_payload.item_id ? String(item.copy_payload.item_id) : "";
   const itemComponent = item.component ? String(item.component) : "";
   const payload = JSON.stringify(item.copy_payload || {{ tool: item.tool || "", arguments: item.arguments || {{}} }}, null, 2);
+  const recordPayload = JSON.stringify(operatorInboxRecordPayload(item, actionKey), null, 2);
   const nextAction = JSON.stringify({{
     action: item.item_id || item.tool || "operator_inbox_item",
     tool: item.tool || "",
@@ -2637,12 +2661,14 @@ function renderOperatorInboxItem(item) {{
     : canRun
     ? "运行只读 operator inbox 项：" + itemLabel
     : "需要更高权限，不能在 Web Console 直接运行：" + itemLabel;
+  const recordLabel = "复制 operator inbox 结果记录模板：" + itemLabel;
   let h = `<div class="operator-inbox-item" tabindex="-1" data-operator-inbox-key="${{escAttr(actionKey)}}" data-operator-inbox-followup-item-id="${{escAttr(followupItemId)}}" data-operator-inbox-component="${{escAttr(itemComponent)}}">`;
   h += `<div class="operator-inbox-head"><div class="operator-inbox-title">${{esc(itemLabel)}}</div><span class="badge ${{canRun ? "badge-ok" : "badge-warn"}}">${{esc(item.required_scope || "-")}}</span></div>`;
   h += `<div class="operator-inbox-meta"><span>${{esc(item.source || "-")}}</span><span>${{esc(item.component || "-")}}</span><span>${{esc(item.tool || "-")}}</span><span>${{esc(item.gate_level || "-")}}</span></div>`;
   h += `<div class="operator-inbox-why">${{esc(item.why || "Review this operator inbox item.")}}</div>`;
   h += `<div class="operator-inbox-actions">`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
+  h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(recordPayload)}}" aria-label="${{escAttr(recordLabel)}}" title="${{escAttr(recordLabel)}}">Copy record</button>`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" data-operator-inbox-action-label="${{escAttr(itemLabel)}}" data-operator-inbox-component="${{escAttr(itemComponent)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
   h += `</div>`;
   if (feedback) {{

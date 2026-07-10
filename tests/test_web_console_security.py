@@ -1005,6 +1005,15 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operatorInboxRunTrailFeedback" in page
         assert "OPERATOR_INBOX_RUN_TRAIL_LIMIT" in page
         assert "LOCAL_TRAIL_BOUNDARY_TEXT" in page
+        assert "operatorInboxRecordPayload" in page
+        assert 'tool: "record_product_console_action_result"' in page
+        assert "source_action_key" in page
+        assert "source_item_id" in page
+        assert "source_component" in page
+        assert "explicit_operator_record_required" in page
+        assert "Copy record" in page
+        assert "复制 operator inbox 结果记录模板：" in page
+        assert "recordPayload" in page
         assert "setOperatorInboxRunFeedback" in page
         assert "pushOperatorInboxRunTrail" in page
         assert "clearOperatorInboxRunTrail" in page
