@@ -108,6 +108,7 @@ h3 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin: 12px 0 6px; }
 .registry-action-trail-item.running { color: #d29922; }
 .registry-action-trail-item.completed { color: #3fb950; }
 .registry-action-trail-item.failed { color: #f85149; }
+.local-trail-boundary { color: #8b949e; font-size: 10px; line-height: 1.4; margin-bottom: 6px; }
 .layout-center .service-boundary { color: #8b949e; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; margin-top: 8px; padding-top: 8px; }
 
 .layout-right .action-btn { display: block; width: 100%; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: left; margin-bottom: 6px; }
@@ -397,6 +398,7 @@ let activeRightTab = RIGHT_TAB_DEFAULT;
 let operatorInboxRunFeedback = null;
 let operatorInboxRunTrail = [];
 const OPERATOR_INBOX_RUN_TRAIL_LIMIT = 5;
+const LOCAL_TRAIL_BOUNDARY_TEXT = "仅本会话显示；只保存操作摘要，不保存 payload 或 arguments。";
 const TODO_PAGE_SIZE_DEFAULT = 8;
 const TODO_PAGE_SIZE_MIN = 3;
 const TODO_PAGE_SIZE_MAX = 20;
@@ -2270,6 +2272,7 @@ function renderProjectManagementModal(data) {{
 function renderRegistryActionTrail() {{
   let h = `<div class="registry-action-trail" aria-label="最近项目管理操作">`;
   h += `<div class="registry-action-trail-title">最近项目管理操作</div>`;
+  h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
   if (!registryActionTrail.length) {{
     h += `<div class="registry-action-trail-item">暂无最近操作。</div>`;
   }} else {{
@@ -2421,6 +2424,7 @@ function operatorInboxNumericCount(value, fallback) {{
 function renderOperatorInboxRunTrail() {{
   let h = `<div class="operator-inbox-run-trail" aria-label="最近 operator inbox Run">`;
   h += `<div class="operator-inbox-run-trail-title">最近 Run</div>`;
+  h += `<div class="local-trail-boundary">${{esc(LOCAL_TRAIL_BOUNDARY_TEXT)}}</div>`;
   if (!operatorInboxRunTrail.length) {{
     h += `<div class="operator-inbox-run-trail-item">暂无最近 Run。</div>`;
   }} else {{

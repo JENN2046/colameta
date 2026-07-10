@@ -909,6 +909,9 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "setRegistryActionStatus" in page
         assert "registryActionTrail" in page
         assert "REGISTRY_ACTION_TRAIL_LIMIT" in page
+        assert "LOCAL_TRAIL_BOUNDARY_TEXT" in page
+        assert "仅本会话显示；只保存操作摘要，不保存 payload 或 arguments。" in page
+        assert 'class="local-trail-boundary"' in page
         assert "pushRegistryActionTrail" in page
         assert "renderRegistryActionTrail" in page
         assert "最近项目管理操作" in page
@@ -943,6 +946,7 @@ class WebConsoleSecurityTests(unittest.TestCase):
         assert "operatorInboxRunFeedback" in page
         assert "operatorInboxRunTrail" in page
         assert "OPERATOR_INBOX_RUN_TRAIL_LIMIT" in page
+        assert "LOCAL_TRAIL_BOUNDARY_TEXT" in page
         assert "setOperatorInboxRunFeedback" in page
         assert "pushOperatorInboxRunTrail" in page
         assert "renderOperatorInboxRunTrail" in page
