@@ -15,6 +15,7 @@ from runner.execution_profile import (
 )
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
+from runner.work_item_governance.references import resolve_execution_attempt_binding
 from runner.workspace import ProjectWorkspace
 from schemas.plan import BuildRunnerPlan
 from schemas.state import BuildRunnerState
@@ -407,6 +408,7 @@ class CodexExecutor:
         codex_run: CodexRunResult,
     ) -> None:
         try:
+            attempt_binding = resolve_execution_attempt_binding(plan, version)
             conversation_id = codex_run.conversation_id
             has_resume_hint = bool(conversation_id)
             if codex_run.used_resume:
@@ -431,6 +433,7 @@ class CodexExecutor:
                 log_path=log_path,
                 summary_path=summary_path,
                 source=source,
+                **attempt_binding,
             )
         except Exception as rec_exc:
             rec_msg = f"record_execution_session_failed:{rec_exc.__class__.__name__}:{str(rec_exc)[:300]}"

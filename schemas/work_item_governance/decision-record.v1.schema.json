@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/work-item-governance/decision-record.v1.schema.json",
+  "title": "ColaMeta Decision Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "decision_id", "work_item_id", "task_version", "actor", "action",
+    "evidence_artifact_ids", "authority_basis", "principal_context", "reason", "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "decision_record.v1"},
+    "decision_id": {"$ref": "definitions.v1.schema.json#/$defs/decisionId"},
+    "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+    "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+    "actor": {"$ref": "definitions.v1.schema.json#/$defs/actor"},
+    "action": {"enum": ["approve", "approve_submission", "accept", "cancel", "reject", "request_changes", "submit"]},
+    "evidence_artifact_ids": {
+      "type": "array", "maxItems": 1024, "uniqueItems": true,
+      "items": {"$ref": "definitions.v1.schema.json#/$defs/artifactId"}
+    },
+    "authority_basis": {"$ref": "definitions.v1.schema.json#/$defs/authorityBasis"},
+    "principal_context": {"$ref": "definitions.v1.schema.json#/$defs/principalContext"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "supersedes_decision_id": {
+      "anyOf": [{"$ref": "definitions.v1.schema.json#/$defs/decisionId"}, {"type": "null"}]
+    },
+    "source_event_key": {"type": ["string", "null"], "maxLength": 1024},
+    "created_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"}
+  }
+}

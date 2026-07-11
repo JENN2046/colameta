@@ -84,7 +84,7 @@ def run_once_preview_artifact(
     created_at: str,
     expires_at: str,
 ) -> dict[str, Any]:
-    return {
+    artifact = {
         "preview_id": preview_id,
         "artifact_kind": "run_once",
         "project_root": project_root,
@@ -109,6 +109,10 @@ def run_once_preview_artifact(
             "execution_branch_ready": preflight_result.get("execution_branch_ready", False),
         },
     }
+    for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs"):
+        if field in preflight_result:
+            artifact[field] = preflight_result[field]
+    return artifact
 
 
 def run_bounded_preview_artifact(
@@ -130,7 +134,7 @@ def run_bounded_preview_artifact(
     created_at: str,
     expires_at: str,
 ) -> dict[str, Any]:
-    return {
+    artifact = {
         "preview_id": preview_id,
         "artifact_kind": "run_bounded",
         "project_root": project_root,
@@ -165,6 +169,10 @@ def run_bounded_preview_artifact(
             "execution_branch_ready": preflight.get("execution_branch_ready", False),
         },
     }
+    for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs"):
+        if field in preflight:
+            artifact[field] = preflight[field]
+    return artifact
 
 
 def recheck_report_preview_artifact(

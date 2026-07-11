@@ -1,0 +1,173 @@
+{
+  "schema_version": "work_item_governance_closeout_receipt.v1",
+  "stage_id": "WIG_R1_AUTHORITY_AND_LIFECYCLE_CLOSEOUT",
+  "generated_at": "2026-07-11T11:17:07Z",
+  "verification_window": {
+    "started_at": "2026-07-11T11:06:26Z",
+    "ended_at": "2026-07-11T11:17:07Z",
+    "timezone": "UTC"
+  },
+  "outcome": {
+    "r1_implementation": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+    "authority_blocker_code_status": "CLOSED_PENDING_INDEPENDENT_REVIEW",
+    "shadow_ledger_code_readiness": "READY_FOR_INDEPENDENT_REVIEW",
+    "authoritative_gate_activation": "NOT_ENABLED_NOT_AUTHORIZED",
+    "phase_4_production_composition": "INTEGRATED",
+    "phase_5_legacy_deprecation": "INTENTIONALLY_DEFERRED_PENDING_USAGE_MEASUREMENT",
+    "commit_performed": false,
+    "push_performed": false,
+    "stable_promotion_performed": false,
+    "stable_promotion_authorized": false
+  },
+  "source_binding": {
+    "base_git_head": "3459532564ce738ff8f0a7decea4a5d92c57e3fc",
+    "branch": "main",
+    "worktree_clean": false,
+    "implementation_file_count": 64,
+    "implementation_manifest_sha256": "22e0e974558df5c16056de2e9666cc3f93ac57861df719a39d04dbd3ee36447c",
+    "implementation_manifest_algorithm": "sha256(canonical-json([{path,status,bytes,sha256},...]))",
+    "manifest_exclusions": [
+      "AGENTS* protected user assets",
+      "R1_CLOSEOUT_RECEIPT.json self-reference",
+      "generated __pycache__ and coverage data",
+      ".colameta runtime/private data"
+    ],
+    "note": "The implementation is an uncommitted review candidate bound to the base HEAD plus the content manifest; this receipt is not an exact-commit release authorization."
+  },
+  "protected_user_assets": {
+    "unchanged_during_implementation": true,
+    "assets": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "93f35d00c48c99d357adc74101d5944a809bc5a8e54347c4470ba51e41b1fbef"
+      },
+      {
+        "path": "AGENTS - 副本.amd",
+        "sha256": "6a0ca4bfeaccc8f7ce360f33e05a4a970fa10903dcc425c8cc59b479e6ee8152"
+      },
+      {
+        "path": "AGENTS - 副本.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      },
+      {
+        "path": "AGENTS.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      }
+    ],
+    "staged": false,
+    "committed": false
+  },
+  "verification": [
+    {
+      "name": "focused_work_item_governance",
+      "command": ".venv/bin/pytest -q --tb=short tests/test_work_item_governance_contracts.py tests/test_work_item_shadow_ledger.py tests/test_work_item_gate_delivery.py tests/test_work_item_side_context_isolation.py tests/test_work_item_mcp_surface.py tests/test_execution_envelope_v2.py",
+      "exit_code": 0,
+      "result": "58 passed",
+      "duration_seconds": 8.69
+    },
+    {
+      "name": "full_pytest",
+      "command": ".venv/bin/pytest -q",
+      "exit_code": 0,
+      "result": "1088 passed, 55 subtests passed",
+      "duration_seconds": 72.39
+    },
+    {
+      "name": "coverage_full_pytest",
+      "command": ".venv/bin/pytest -q --cov=runner --cov=adapters --cov=scripts --cov-report=term",
+      "exit_code": 0,
+      "result": "1088 passed, 55 subtests passed; 51502 statements, 24134 missed, 53 percent total",
+      "runner_only_coverage_percent": 56,
+      "duration_seconds": 92.82
+    },
+    {
+      "name": "ruff",
+      "command": ".venv/bin/ruff check .",
+      "exit_code": 0,
+      "result": "All checks passed"
+    },
+    {
+      "name": "git_diff_whitespace",
+      "command": "git diff --check",
+      "exit_code": 0,
+      "result": "no whitespace errors"
+    },
+    {
+      "name": "bandit_r1_medium_high",
+      "command": ".venv/bin/bandit -q -r runner/work_item_governance runner/work_item_commands.py runner/work_item_mcp_adapter.py runner/work_item_principal_adapter.py runner/commander_projections.py runner/app_submission_work_items.py runner/stable_promotion_work_item.py -c pyproject.toml -ll",
+      "exit_code": 0,
+      "result": "0 medium, 0 high findings"
+    },
+    {
+      "name": "bandit_repository_high_gate",
+      "command": ".venv/bin/bandit -q -r runner scripts adapters -c pyproject.toml -lll",
+      "exit_code": 0,
+      "result": "0 high findings"
+    },
+    {
+      "name": "bandit_repository_informational_baseline",
+      "command": ".venv/bin/bandit -q -r runner scripts adapters -c pyproject.toml -f json",
+      "exit_code": 1,
+      "expected_nonzero_due_to_baseline_findings": true,
+      "result": {
+        "high": 0,
+        "medium": 14,
+        "low": 337,
+        "files_skipped": 0
+      },
+      "release_interpretation": "High gate passes and R1 medium/high scope passes; repository-wide low/medium baseline remains visible and is not represented as zero-warning."
+    },
+    {
+      "name": "pip_audit",
+      "command": ".venv/bin/pip-audit",
+      "exit_code": 0,
+      "result": "No known vulnerabilities found"
+    },
+    {
+      "name": "wheel_build_and_schema_inventory",
+      "command": ".venv/bin/pip wheel . --no-deps --no-build-isolation --wheel-dir <temporary-directory>",
+      "exit_code": 0,
+      "wheel": "colameta-0.1.2-py3-none-any.whl",
+      "wheel_sha256": "f55b83ea172e4d33aa79726bff2b6cf6706520f66f1f40547e1aea0583beb825",
+      "wheel_entry_count": 227,
+      "governance_schema_count": 10,
+      "required_r1_modules_present": true
+    },
+    {
+      "name": "self_hosting_smoke",
+      "command": ".venv/bin/python scripts/self_hosting_smoke.py --help",
+      "exit_code": 0,
+      "result": "wheel built, installed into isolated runtime venv, packages imported, colameta help executed; self-hosting smoke passed"
+    },
+    {
+      "name": "ledger_residue_check",
+      "command": "find .colameta/ledger -maxdepth 1 -type f -print",
+      "exit_code": 0,
+      "result": "0 files"
+    }
+  ],
+  "required_negative_tests": [
+    "test_caller_cannot_self_assert_commander_authority",
+    "test_untrusted_actor_cannot_record_accept_decision",
+    "test_submitted_task_cannot_add_new_version_without_revision_gate",
+    "test_returned_for_revision_requires_request_changes_decision",
+    "test_new_task_version_must_pass_submission_gate",
+    "test_terminal_work_item_rejects_new_runtime_attempt",
+    "test_stale_task_version_rejects_new_runtime_attempt",
+    "test_historical_attempt_has_no_dispatch_authority",
+    "test_post_accept_artifact_not_part_of_acceptance_manifest",
+    "test_stable_promotion_rejects_artifact_not_bound_to_acceptance_gate",
+    "test_restore_rejects_active_writer",
+    "test_commander_runtime_uses_three_owned_projections"
+  ],
+  "runtime_and_release_boundary": {
+    "project_feature_setting_observed": {
+      "shadow_ledger_enabled": false,
+      "gate_mode": "shadow"
+    },
+    "authoritative_gate_enabled_by_this_work": false,
+    "stable_runtime_changed": false,
+    "deployment_receipt_created": false,
+    "next_required_action": "independent review of this source-bound candidate, followed by a separate commit decision; stable promotion still requires clean exact-commit authorization"
+  }
+}

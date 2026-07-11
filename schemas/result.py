@@ -84,3 +84,6 @@ class VersionRunResult:
     log_file: str
     started_at: str
     completed_at: str
+    work_item_id: Optional[str] = None
+    task_version: Optional[int] = None
+    attempt_id: Optional[str] = None

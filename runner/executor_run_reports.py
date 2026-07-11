@@ -16,6 +16,7 @@ from runner.executor_validation_truth import (
     summarize_legacy_validation_results,
     validation_truth_from_summary,
 )
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 REPORTS_SUBDIR = primary_project_runner_relpath("reports", "executor-runs")
 AUDITS_SUBDIR = primary_project_runner_relpath("audits", "executor-runs")
@@ -121,6 +122,10 @@ class ExecutorRunReportStore:
         execution_lineage: dict[str, Any] | None = None,
         completion_evidence: dict[str, Any] | None = None,
         token_usage: dict[str, Any] | None = None,
+        work_item_id: str | None = None,
+        task_version: int | None = None,
+        attempt_id: str | None = None,
+        artifact_refs: list[str] | None = None,
     ) -> dict[str, Any]:
         _validate_version(version)
         now = finished_at or _now_iso()
@@ -138,6 +143,17 @@ class ExecutorRunReportStore:
             summary_validation_command_records,
             executor_report_text=full_report_md,
         )
+        work_item_binding: dict[str, Any] = {}
+        if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
+            work_item_binding = {
+                "work_item_id": work_item_id,
+                "task_version": task_version,
+                "attempt_id": attempt_id,
+                "artifact_refs": list(artifact_refs or []),
+            }
+            binding_rejections = optional_work_item_reference_rejections(work_item_binding)
+            if binding_rejections:
+                raise ValueError(f"invalid Work Item report binding: {binding_rejections}")
 
         try:
             os.makedirs(version_dir, exist_ok=True)
@@ -189,6 +205,7 @@ class ExecutorRunReportStore:
                     "report_markdown_full_available": has_executor_report,
                     "truncated": truncated,
                 }
+                report.update(work_item_binding)
                 if os.path.exists(json_file) or os.path.exists(md_file):
                     continue
                 try:

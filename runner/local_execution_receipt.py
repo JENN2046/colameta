@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from runner.work_item_governance.references import (
+    optional_work_item_reference_projection,
+    optional_work_item_reference_rejections,
+)
+
 
 RECEIPT_CHECK_PASSED = "receipt_check_passed"
 RECEIPT_CHECK_FAILED_CLOSED = "receipt_check_failed_closed"
@@ -134,6 +139,17 @@ def validate_local_execution_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
             rejected_fields.add(field)
             rejection_reasons.append(_reason("REFERENCE_FIELD_INVALID", f"{field} must be a non-empty object.", {"field": field}))
 
+    work_item_rejections = optional_work_item_reference_rejections(receipt)
+    for rejection in work_item_rejections:
+        rejected_fields.add(str(rejection["field"]))
+        rejection_reasons.append(
+            _reason(
+                str(rejection["code"]),
+                "Optional Work Item receipt binding is invalid or incomplete.",
+                {"field": rejection["field"]},
+            )
+        )
+
     command_attempts = receipt.get("command_attempts")
     if execution_result in {"executed", "executed_with_failures"} and not _non_empty_list(command_attempts):
         rejected_fields.add("command_attempts")
@@ -241,7 +257,7 @@ def _receipt_result(
     known_conflicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     passed = not rejection_reasons
-    return {
+    result = {
         "receipt_check_result": RECEIPT_CHECK_PASSED if passed else RECEIPT_CHECK_FAILED_CLOSED,
         "validation_result": "passed" if passed else "failed_closed",
         "recognized_fields": [field for field in REQUIRED_RECEIPT_FIELDS if field in receipt],
@@ -267,6 +283,8 @@ def _receipt_result(
         "emits_gate_event": False,
         "writes_delivery_state": False,
     }
+    result.update(optional_work_item_reference_projection(receipt))
+    return result
 
 
 def _invalid_validation_results(value: Any) -> list[Any]:

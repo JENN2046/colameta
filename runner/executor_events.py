@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from runner.sensitive_redaction import redact_sensitive_text
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 
 EVENT_TYPES = frozenset({
@@ -111,6 +112,13 @@ class ExecutorEventStore:
                 "timestamp": datetime.now(timezone.utc).astimezone().isoformat(),
                 "data": redacted,
             }
+            work_item_binding = {
+                field: event_context.get(field)
+                for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
+                if field in event_context
+            }
+            if work_item_binding and not optional_work_item_reference_rejections(work_item_binding):
+                record.update(work_item_binding)
         else:
             record = {
                 "schema_version": self.SCHEMA_VERSION,

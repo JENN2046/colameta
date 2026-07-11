@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/work-item-governance/execution-attempt.v1.schema.json",
+  "title": "ColaMeta Execution Attempt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "attempt_id", "work_item_id", "task_version", "status",
+    "objective_ref", "metadata", "attempt_kind", "dispatch_authorized",
+    "historical_reason", "imported", "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "execution_attempt.v1"},
+    "attempt_id": {"$ref": "definitions.v1.schema.json#/$defs/attemptId"},
+    "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+    "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+    "status": {"enum": ["claimed", "running", "completed", "failed", "cancelled"]},
+    "objective_ref": {"type": ["string", "null"], "maxLength": 8192},
+    "metadata": {"$ref": "definitions.v1.schema.json#/$defs/metadata"},
+    "attempt_kind": {"enum": ["runtime", "historical"]},
+    "dispatch_authorized": {"type": "boolean"},
+    "historical_reason": {"type": ["string", "null"], "maxLength": 65536},
+    "imported": {"type": "boolean"},
+    "source_event_key": {"type": ["string", "null"], "maxLength": 1024},
+    "completion_event_key": {"type": ["string", "null"], "maxLength": 1024},
+    "created_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"},
+    "completed_at": {
+      "anyOf": [{"$ref": "definitions.v1.schema.json#/$defs/timestamp"}, {"type": "null"}]
+    }
+  }
+}

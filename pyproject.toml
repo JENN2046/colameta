@@ -31,6 +31,7 @@ colameta = "scripts.runner_cli:main"
 
 [project.optional-dependencies]
 test = [
+    "jsonschema>=4.23,<5",
     "pytest>=9.0.3,<10",
     "setuptools>=68",
     "wheel>=0.43",
@@ -47,6 +48,7 @@ include = ["runner", "runner.*", "adapters", "adapters.*", "schemas", "schemas.*
 
 [tool.setuptools.package-data]
 runner = ["py.typed"]
+schemas = ["work_item_governance/*.json"]
 
 [tool.ruff]
 target-version = "py310"

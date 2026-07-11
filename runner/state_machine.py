@@ -8,6 +8,7 @@ from runner.acceptance_runner import AcceptanceRunner
 from runner.audit_builder import AuditBuilder
 from runner.prompt_builder import PromptBuilder
 from runner.scope_checker import ScopeChecker
+from runner.work_item_governance.references import resolve_plan_work_item_reference
 import os
 
 class RunnerStateMachine:
@@ -125,6 +126,7 @@ class RunnerStateMachine:
         self.state.updated_at = self._now()
         current_v_state.last_run_id = run_id
         
+        work_item_reference = resolve_plan_work_item_reference(self.plan, current_v_plan)
         return VersionRunResult(
             run_id=run_id,
             version=current_v_plan.version,
@@ -137,7 +139,10 @@ class RunnerStateMachine:
             audit_file=audit_file_path,
             log_file="",
             started_at=acc_result.started_at,
-            completed_at=acc_result.completed_at
+            completed_at=acc_result.completed_at,
+            work_item_id=work_item_reference.get("work_item_id"),
+            task_version=work_item_reference.get("task_version"),
+            attempt_id=work_item_reference.get("attempt_id"),
         )
 
     def run_acceptance_only(self) -> VersionRunResult:

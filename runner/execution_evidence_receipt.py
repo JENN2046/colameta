@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from runner.work_item_governance.references import optional_work_item_reference_rejections
+
 from runner.executor_report import (
     EXECUTOR_REPORT_READY,
     ExecutorReportError,
@@ -84,6 +86,10 @@ def build_execution_evidence_receipt(
     stage_taskbook_hash: str,
     executor_report_records: list[dict[str, Any]],
     evidence_hashes: dict[str, Any],
+    work_item_id: str | None = None,
+    task_version: int | None = None,
+    attempt_id: str | None = None,
+    artifact_refs: list[str] | None = None,
 ) -> dict[str, Any]:
     blockers: list[dict[str, Any]] = []
     executor_report_refs: list[dict[str, Any]] = []
@@ -94,6 +100,23 @@ def build_execution_evidence_receipt(
     changed_files_count = 0
     validation_truth_count = 0
     scope_summary_count = 0
+
+    work_item_binding: dict[str, Any] = {}
+    if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
+        work_item_binding = {
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "attempt_id": attempt_id,
+            "artifact_refs": list(artifact_refs or []),
+        }
+        for rejection in optional_work_item_reference_rejections(work_item_binding):
+            blockers.append(
+                _blocker(
+                    str(rejection["code"]).lower(),
+                    "Evidence Receipt Work Item binding is invalid or incomplete.",
+                    {"field": rejection["field"]},
+                )
+            )
 
     if not executor_report_records:
         blockers.append(_blocker("executor_report_records_missing", "Evidence receipt requires at least one executor report record.", {}))
@@ -211,6 +234,7 @@ def build_execution_evidence_receipt(
         "emits_gate_event": False,
         "writes_delivery_state": False,
     }
+    receipt.update(work_item_binding)
     assert_execution_evidence_receipt_contract(receipt)
     return receipt
 
@@ -231,6 +255,13 @@ def assert_execution_evidence_receipt_contract(receipt: dict[str, Any]) -> None:
             "EVIDENCE_RECEIPT_STATUS_INVALID",
             "Execution evidence receipt status is unsupported.",
             details={"evidence_receipt_status": status},
+        )
+    binding_rejections = optional_work_item_reference_rejections(receipt)
+    if binding_rejections and status == EVIDENCE_RECEIPT_READY:
+        raise ExecutionEvidenceReceiptError(
+            "EVIDENCE_RECEIPT_WORK_ITEM_BINDING_INVALID",
+            "Ready Evidence Receipt Work Item binding is invalid or incomplete.",
+            details={"rejections": binding_rejections},
         )
     blockers = _list_or_empty(receipt.get("failures_and_blockers"))
     if status == EVIDENCE_RECEIPT_READY and blockers:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from runner._internal_utils import now_iso as _now_iso, run_git as _run_git_base
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 if TYPE_CHECKING:
     from runner.development_target import ResolvedDevelopmentTarget
@@ -939,6 +940,10 @@ class ExecutorSessionStore:
         log_path: str | None = None,
         summary_path: str | None = None,
         source: str = "executor_result",
+        work_item_id: str | None = None,
+        task_version: int | None = None,
+        attempt_id: str | None = None,
+        artifact_refs: list[str] | None = None,
     ) -> dict[str, Any]:
         os.makedirs(self.runtime_dir, exist_ok=True)
         now = _now_iso()
@@ -976,6 +981,17 @@ class ExecutorSessionStore:
             source=source.strip() or "executor_result",
         )
         payload = asdict(record)
+        if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
+            work_item_binding = {
+                "work_item_id": work_item_id,
+                "task_version": task_version,
+                "attempt_id": attempt_id,
+                "artifact_refs": list(artifact_refs or []),
+            }
+            binding_rejections = optional_work_item_reference_rejections(work_item_binding)
+            if binding_rejections:
+                raise ValueError(f"invalid Work Item session binding: {binding_rejections}")
+            payload.update(work_item_binding)
         self._write_manifest(payload)
         result = {
             "ok": True,

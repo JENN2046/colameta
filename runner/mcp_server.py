@@ -73,6 +73,9 @@ from runner.release_submission_readiness import (
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
+from runner.app_submission_work_items import AppSubmissionWorkItemCommands
+from runner.commander_projections import CommanderProjectionService
+from runner.stable_promotion_work_item import StablePromotionWorkItemReader
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
     build_stage_parallel_closeout_packet,
@@ -87,6 +90,19 @@ from runner.stage_parallel_executor_results import build_stage_parallel_executor
 from runner.stage_parallel_next_action import build_stage_parallel_next_action_packet
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
+from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_mcp_adapter import (
+    WORK_ITEM_APPLY_TOOLS,
+    WORK_ITEM_MCP_TOOLS,
+    WORK_ITEM_PREVIEW_TOOLS,
+    WORK_ITEM_READ_TOOLS,
+    execute_work_item_mcp_command,
+    work_item_mcp_tool_specs,
+)
+from runner.work_item_principal_adapter import (
+    current_work_item_principal,
+    work_item_principal_scope,
+)
 from runner.runner_paths import (
     is_project_runner_path,
     resolve_project_runner_dir,
@@ -154,7 +170,6 @@ REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES: dict[str, str] = {
     "mcp:plan": "REMOTE_MCP_PLAN_DENIED",
 }
 
-
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_agent_consumer_contract",
@@ -213,7 +228,7 @@ NORMAL_EXPOSED_TOOLS = (
     "list_executor_run_reports",
     "get_executor_run_report",
     "inspect_executor_activity",
-)
+) + WORK_ITEM_MCP_TOOLS
 
 MAINTAINER_EXTRA_TOOLS = (
     "get_project_identity",
@@ -612,6 +627,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_workflow_run",
     "list_workflow_runs",
     "get_workflow_run",
+    *WORK_ITEM_MCP_TOOLS,
 }
 
 
@@ -904,6 +920,9 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_workflow_run",
     }
     policies = {name: _static_policy(name, "mcp:read") for name in read_tools}
+    policies.update({name: _static_policy(name, "mcp:read") for name in WORK_ITEM_READ_TOOLS})
+    policies.update({name: _static_policy(name, "mcp:preview") for name in WORK_ITEM_PREVIEW_TOOLS})
+    policies.update({name: _static_policy(name, "mcp:commit") for name in WORK_ITEM_APPLY_TOOLS})
     for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
         policies[name] = _static_policy(name, "mcp:preview")
     for name in (
@@ -1246,6 +1265,12 @@ class MCPPlanningBridgeServer:
             "list_workflow_runs": self._tool_list_workflow_runs,
             "get_workflow_run": self._tool_get_workflow_run,
         }
+        self.tools.update(
+            {
+                name: (lambda params, command_name=name: self._tool_work_item_command(command_name, params))
+                for name in WORK_ITEM_MCP_TOOLS
+            }
+        )
         self.tool_defs = [
             MCPToolDef(
                 name="list_registered_projects",
@@ -1634,7 +1659,11 @@ class MCPPlanningBridgeServer:
                         "project_name": {
                             "type": "string",
                             "description": "可选。按已登记 project_name 路由读取目标项目稳定晋升预检；服务模式下必须显式提供。",
-                        }
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "description": "可选。把预检绑定到最终 Acceptance Gate 的冻结证据清单。",
+                        },
                     },
                     "required": [],
                     "additionalProperties": False,
@@ -1664,6 +1693,10 @@ class MCPPlanningBridgeServer:
                         "candidate_head": {
                             "type": "string",
                             "description": "preview/status 可选。精确候选 commit；省略时使用当前 HEAD。",
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "description": "可选。验证 candidate 是否属于最终 Acceptance Gate 的冻结证据清单。",
                         },
                         "preview_id": {
                             "type": "string",
@@ -4430,6 +4463,27 @@ class MCPPlanningBridgeServer:
                 output_schema=common_output_schema,
             ),
         ]
+        self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
+
+    def _work_item_tool_definitions(self, output_schema: dict[str, Any]) -> list[MCPToolDef]:
+        return [
+            MCPToolDef(output_schema=output_schema, **spec)
+            for spec in work_item_mcp_tool_specs(self.project_hint)
+        ]
+
+    def _tool_work_item_command(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool(name, params, require_managed=False)
+        clean = self._strip_project_name_param(params)
+        try:
+            return execute_work_item_mcp_command(
+                self.project_root,
+                name,
+                clean,
+                principal_context=current_work_item_principal(),
+            )
+        except WorkItemGovernanceError as exc:
+            raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
 
     def validate_project(self, mode: str | None = None) -> None:
         if not os.path.isdir(self.project_root):
@@ -7441,6 +7495,7 @@ class MCPPlanningBridgeServer:
             "get_workflow_run",
             "todo_read",
             "decision_read",
+            *WORK_ITEM_READ_TOOLS,
         }
 
     def _is_actions_consequential_tool(self, tool_name: str) -> bool:
@@ -7736,7 +7791,15 @@ class MCPPlanningBridgeServer:
         safe_params = params if isinstance(params, dict) else {}
         is_error = not bool(structured_tool_result.get("ok"))
         tool_name = str(structured_tool_result.get("tool") or "unknown_tool")
-        if self._json_char_count(structured_tool_result) <= MCP_TARGET_TOOL_RESULT_CHARS:
+        # The Commander widget consumes structuredContent directly. Keep its
+        # manifest intact up to the existing hard response ceiling; generic
+        # tools retain the lower packaging target.
+        target_chars = (
+            MCP_HARD_TOOL_RESULT_CHARS
+            if tool_name == "render_commander_app"
+            else MCP_TARGET_TOOL_RESULT_CHARS
+        )
+        if self._json_char_count(structured_tool_result) <= target_chars:
             if is_error:
                 err_msg = str(structured_tool_result.get("message") or "unknown error")
                 text_payload = f"{tool_name} failed: {err_msg}"
@@ -7953,6 +8016,10 @@ class MCPPlanningBridgeServer:
                         "notes": {"type": "string"},
                     },
                     "additionalProperties": True,
+                },
+                "work_item_id": {
+                    "type": "string",
+                    "description": "可选。通过 App Submission Application Command 引用现有 Work Item。",
                 },
             },
             "required": [],
@@ -8731,7 +8798,8 @@ class MCPPlanningBridgeServer:
         if relay_scope_error is not None:
             return relay_scope_error
         try:
-            data = tool(params)
+            with work_item_principal_scope(auth_context):
+                data = tool(params)
             result = {"ok": True, "tool": name, "data": data}
             if isinstance(data, dict) and isinstance(data.get("_meta"), dict):
                 clean_data = dict(data)
@@ -10563,7 +10631,7 @@ class MCPPlanningBridgeServer:
     def _tool_get_release_submission_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
-        return build_release_submission_readiness(
+        result = build_release_submission_readiness(
             project_root,
             project_name=project_name,
             app_name=params.get("app_name") if isinstance(params.get("app_name"), str) else None,
@@ -10584,6 +10652,21 @@ class MCPPlanningBridgeServer:
             if isinstance(params.get("submission_materials"), dict)
             else None,
         )
+        work_item_id = params.get("work_item_id")
+        if isinstance(work_item_id, str) and work_item_id.strip():
+            try:
+                result["work_item_reference"] = AppSubmissionWorkItemCommands(
+                    project_root
+                ).reference_existing(work_item_id.strip())
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
+        result["work_item_command_boundary"] = {
+            "create_path": ["preview_work_item_create", "apply_work_item_create"],
+            "reference_path": "get_work_item",
+            "direct_ledger_write": False,
+            "automatic_work_item_creation": False,
+        }
+        return result
 
     def _tool_init_submission_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
@@ -10766,6 +10849,26 @@ class MCPPlanningBridgeServer:
             **apps_connector_closeout,
             "release_submission_evidence": release_submission_evidence,
         }
+        domain_projections = CommanderProjectionService(
+            project_root,
+            service_operations_reader=lambda: {
+                "source": "connector_runtime_health_projection",
+                "overall_status": connector_summary.get("overall_status"),
+                "local_service_status": connector_summary.get("local_service_status"),
+                "external_connector_status": connector_summary.get("external_connector_status"),
+                "operator_closeout_status": connector_summary.get("operator_closeout_status"),
+            },
+            app_submission_reader=lambda: {
+                "source": release_submission_evidence.get("source"),
+                "status": release_submission_evidence.get("status"),
+                "ready": release_submission_evidence.get("ready") is True,
+                "blocker_codes": copy.deepcopy(release_submission_evidence.get("blocker_codes") or []),
+                "needs_attention_codes": copy.deepcopy(
+                    release_submission_evidence.get("needs_attention_codes") or []
+                ),
+                "safe_next_action": copy.deepcopy(release_submission_evidence.get("safe_next_action")),
+            },
+        ).project()["sections"]
         app_status = str(connector_summary.get("overall_status") or "unknown")
         readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
@@ -10834,6 +10937,7 @@ class MCPPlanningBridgeServer:
             "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
             "connector": connector_summary,
+            "domain_projections": domain_projections,
             "registered_projects": self._web_gpt_registered_project_summary(),
             "profiles": profiles,
             "initial_reads": [
@@ -10864,6 +10968,7 @@ class MCPPlanningBridgeServer:
             "commander_panel": {
                 "primary_sections": [
                     "agent_operator_flow",
+                    "work_item_governance",
                     "service_readiness",
                     "apps_connector_closeout",
                     "release_submission_evidence",
@@ -11176,12 +11281,19 @@ class MCPPlanningBridgeServer:
             if params.get("project_name") is not None
             else None
         )
-        return self._build_stable_promotion_readiness_packet(project_root, project_name)
+        return self._build_stable_promotion_readiness_packet(
+            project_root,
+            project_name,
+            work_item_id=params.get("work_item_id")
+            if isinstance(params.get("work_item_id"), str)
+            else None,
+        )
 
     def _build_stable_promotion_readiness_packet(
         self,
         project_root: str,
         project_name: str | None,
+        work_item_id: str | None = None,
     ) -> dict[str, Any]:
         result = get_stable_promotion_readiness(
             project_root,
@@ -11202,6 +11314,21 @@ class MCPPlanningBridgeServer:
                 safe_next_action = packet.get("safe_next_action") if isinstance(packet, dict) else None
                 if isinstance(safe_next_action, dict):
                     _inject_project_name_into_action(safe_next_action, project_name)
+        if work_item_id:
+            exact_commit = str(
+                (result.get("project") or {}).get("head")
+                or (result.get("git") or {}).get("head")
+                or ""
+            )
+            try:
+                result["work_item_acceptance_candidate"] = StablePromotionWorkItemReader(
+                    project_root
+                ).inspect_accepted_candidate(
+                    work_item_id=work_item_id,
+                    exact_commit=exact_commit,
+                )
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
         return result
 
     def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -11216,6 +11343,20 @@ class MCPPlanningBridgeServer:
             return self._route_project_name_tool("manage_stable_promotion_evidence", params, require_managed=True)
         manager = MCPStablePromotionEvidenceManager(self.project_root)
         result = manager.handle(action, params)
+        work_item_id = params.get("work_item_id")
+        if isinstance(work_item_id, str) and work_item_id.strip():
+            exact_commit = params.get("candidate_head")
+            if not isinstance(exact_commit, str) or not exact_commit:
+                exact_commit = str(git_checkout_metadata(self.project_root).get("head") or "")
+            try:
+                result["work_item_acceptance_candidate"] = StablePromotionWorkItemReader(
+                    self.project_root
+                ).inspect_accepted_candidate(
+                    work_item_id=work_item_id.strip(),
+                    exact_commit=exact_commit,
+                )
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
         self._record_workflow_if_needed("manage_stable_promotion_evidence", action, params, result)
         return self._with_project_identity(result)
 
