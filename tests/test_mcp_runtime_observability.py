@@ -4265,6 +4265,52 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert "must-not-return" not in serialized
         assert "raw_token" not in serialized
 
+    def test_commander_app_manifest_embedded_flow_does_not_refresh_manifest_recursively(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        completed_console = {
+            "completion_surface": {
+                "status": "ready",
+                "ready": True,
+                "gap_count": 0,
+                "blocker_codes": [],
+                "needs_attention_codes": [],
+                "followup_queue": {"status": "ready", "next_item": None},
+            }
+        }
+
+        with (
+            patch(
+                "runner.mcp_server.build_service_readiness_summary",
+                return_value={"status": "ready", "safe_next_actions": [], "primary_blocker": None},
+            ),
+            patch(
+                "runner.mcp_server.build_apps_connector_closeout_packet",
+                return_value={
+                    "status": "ready",
+                    "connector_closeout_check": {
+                        "tool": "get_connector_runtime_health_status",
+                        "arguments": {"project_name": "demo-project"},
+                    },
+                },
+            ),
+            patch("runner.mcp_server.build_product_console_map", return_value=completed_console),
+            patch.object(server, "_apps_connector_release_submission_evidence", return_value={"status": "ready"}),
+        ):
+            result = server.call_tool_for_agent(
+                "get_commander_app_manifest",
+                {"project_name": "demo-project", "profile_id": "web_gpt_commander"},
+            )
+
+        assert result["ok"] is True, result
+        embedded = result["data"]["agent_operator_flow"]
+        assert embedded["primary_next_action"]["action_id"] == "continue_with_requested_work"
+        assert embedded["primary_next_action"]["tool"] == "run_mcp_workflow"
+        assert embedded["primary_next_action"]["arguments"]["workflow"] == "thin_governed_loop_preview"
+        assert embedded["primary_next_action"]["tool"] != "get_commander_app_manifest"
+
     def test_product_readiness_tools_are_read_only_and_use_product_packet(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=False)

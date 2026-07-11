@@ -9528,6 +9528,24 @@ class MCPPlanningBridgeServer:
         )
         if product_console_next is not None:
             return product_console_next, embedded_packets
+        if params.get("_embedded_in_commander_manifest") is True:
+            return self._agent_flow_action(
+                action_id="continue_with_requested_work",
+                label="Continue with the requested work",
+                tool="run_mcp_workflow",
+                arguments={
+                    **project_args,
+                    "workflow": "thin_governed_loop_preview",
+                    "phase": "preview",
+                    "input_mode": "draft",
+                    "draft_seed": {"task_tier": "M0-M2"},
+                },
+                reason=(
+                    "Commander readiness and closeout are complete; continue through the bounded read-only task packet "
+                    "instead of refreshing the manifest recursively."
+                ),
+                expected_output="codex_execution_packet plus bounded task scope and validation guidance.",
+            ), embedded_packets
         return self._agent_flow_action(
             action_id="read_commander_manifest",
             label="Read Commander manifest",
@@ -10755,7 +10773,11 @@ class MCPPlanningBridgeServer:
             "details_tool": "get_runtime_version_status",
             "details_arguments": project_args,
         }
-        flow_args = {"profile_id": flow_profile_id, "include_advanced_context": False}
+        flow_args = {
+            "profile_id": flow_profile_id,
+            "include_advanced_context": False,
+            "_embedded_in_commander_manifest": True,
+        }
         if self.service_mode or params.get("project_name") is not None:
             flow_args.update(project_args)
         if tunnel_client is not None:
