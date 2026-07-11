@@ -448,7 +448,7 @@ false。之后刷新 readiness、人工审核最终文件，才调用 `mark_subm
 危险操作确认；成功后只修改这个 key 的 ready 字段并刷新队列。
 
 本地 Web Console 的 **INBOX** 也提供 stable promotion artifact receipt 工作区。`status` 是受读权限
-保护且无副作用的复验；`preview` 只写短时 runtime 元数据，并且只返回 exact-HEAD manifest 摘要；
+保护且无副作用的复验；两个写调用除 CSRF/origin 门禁外也必须通过同一份 Web 读认证。`preview` 只写短时 runtime 元数据，并且只返回 exact-HEAD manifest 摘要；
 `apply` 必须经过一次性危险操作确认，持久化 receipt 后立即从 Git object database 重新计算验证。
 Web 响应不包含完整文件条目。这个工作区不能替换或重启 stable、push、release、deploy，也不能代替
 Commander 的精确授权。

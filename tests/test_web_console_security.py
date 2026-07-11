@@ -230,6 +230,7 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'dangerousPostAction("/api/stable-promotion/evidence/apply"' in page
         assert "Open receipt workspace" in page
         assert "不会替换或重启稳定服务" in page
+        assert 'headers["X-ColaMeta-Read-Auth"] = WEB_READ_AUTH' in page
 
     def test_evidence_workspace_keeps_revision_and_ready_review_entries_in_one_queue(self) -> None:
         if shutil.which("node") is None:
@@ -639,6 +640,17 @@ The release operator reviewed the final exported asset in the local Web Console.
         self.assertEqual(status, 403)
         self.assertEqual(csrf_denied["error_code"], "WEB_CSRF_INVALID")
 
+        status, read_denied = json_request(
+            preview_url,
+            method="POST",
+            payload=preview_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(read_denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
         status, preview = json_request(
             preview_url,
             method="POST",
@@ -646,6 +658,7 @@ The release operator reviewed the final exported asset in the local Web Console.
             csrf_token=csrf,
             origin=self.valid_origin(),
             host_header=self.valid_host(),
+            web_read_token=read_token,
         )
         self.assertEqual(status, 200)
         self.assertTrue(preview["ok"])
@@ -664,11 +677,23 @@ The release operator reviewed the final exported asset in the local Web Console.
             csrf_token=csrf,
             origin=self.valid_origin(),
             host_header=self.valid_host(),
+            web_read_token=read_token,
         )
         self.assertEqual(status, 403)
         self.assertEqual(unconfirmed["error_code"], "DANGEROUS_CONFIRMATION_REQUIRED")
 
         confirmation_id = self.dangerous_preview("/api/stable-promotion/evidence/apply", apply_payload)
+        status, apply_read_denied = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(apply_read_denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
         status, applied = json_request(
             apply_url,
             method="POST",
@@ -676,6 +701,7 @@ The release operator reviewed the final exported asset in the local Web Console.
             csrf_token=csrf,
             origin=self.valid_origin(),
             host_header=self.valid_host(),
+            web_read_token=read_token,
         )
         self.assertEqual(status, 200)
         self.assertTrue(applied["ok"])

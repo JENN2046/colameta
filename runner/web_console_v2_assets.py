@@ -351,7 +351,9 @@ function readHeaders() {{
   return WEB_READ_AUTH ? {{ "X-ColaMeta-Read-Auth": WEB_READ_AUTH }} : {{}};
 }}
 function jsonHeaders() {{
-  return {{ "Content-Type": "application/json", "X-ColaMeta-CSRF": CSRF_TOKEN }};
+  const headers = {{ "Content-Type": "application/json", "X-ColaMeta-CSRF": CSRF_TOKEN }};
+  if (WEB_READ_AUTH) headers["X-ColaMeta-Read-Auth"] = WEB_READ_AUTH;
+  return headers;
 }}
 const DANGEROUS_REGISTRY_ACTIONS = new Set([
   "project_registry_unregister",

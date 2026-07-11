@@ -1010,8 +1010,9 @@ the evidence targets the exact candidate HEAD, and
 execute a restore or authorize stable replacement.
 
 The local Web Console **INBOX** exposes the same receipt preparation as a
-bounded workspace. `status` is an authenticated, side-effect-free read;
-`preview` writes only short-lived runtime metadata and returns a manifest
+bounded workspace. `status` is an authenticated, side-effect-free read, and
+both write calls require the same Web read authentication in addition to the
+normal CSRF/origin guards. `preview` writes only short-lived runtime metadata and returns a manifest
 summary; `apply` requires a one-use dangerous confirmation, persists the
 exact-HEAD receipt, and immediately recomputes it for verification. The Web
 response never includes full manifest file entries. This workspace does not

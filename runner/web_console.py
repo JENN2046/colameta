@@ -131,6 +131,10 @@ PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/stable-promotion/evidence/preview",
     "/api/stable-promotion/evidence/apply",
 })
+READ_AUTHENTICATED_WEB_POST_PATHS = frozenset({
+    "/api/stable-promotion/evidence/preview",
+    "/api/stable-promotion/evidence/apply",
+})
 
 DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
     "/api/jobs/start",
@@ -694,6 +698,16 @@ class WebConsoleServer:
                     if write_guard is not None:
                         self._send_guard_result(write_guard)
                         return
+                    if path in READ_AUTHENTICATED_WEB_POST_PATHS:
+                        read_guard = server._validate_web_read_request(
+                            headers=self.headers,
+                            web_host=host,
+                            web_port=port,
+                            web_read_token=active_web_read_token,
+                        )
+                        if read_guard is not None:
+                            self._send_guard_result(read_guard)
+                            return
                     dangerous_guard, dangerous_receipt = server._validate_dangerous_action_request(
                         path,
                         body or {},
