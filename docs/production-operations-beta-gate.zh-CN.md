@@ -109,6 +109,8 @@ CI/offline 形态检查：
 
 默认 timer 不使用 `--fail-on-not-ready`，避免普通采集在 systemd 中形成持续
 失败噪声。
+它会复用尚在 freshness window 内且绑定当前 HEAD 的 connector receipt；超过窗口后会自然
+回到 `CONNECTOR_SMOKE_STALE`，不会永久保绿。
 
 ## 4. ChatGPT Connector Smoke 补证
 
@@ -125,6 +127,14 @@ smoke 后，只回灌脱敏字段：
 
 fresh 默认窗口为 24 小时。允许用 `--connector-smoke-fresh-hours` 收窄窗口，
 范围为 `1..24`。
+
+当这次检查同时使用 `--write-status` 时，写出的 ops packet 会带 schema 和
+`receipt_digest`。后续 `ops-check`、`doctor`、Product Console 和 MCP readiness 在没有
+再次显式提供 connector smoke 参数时，会从同一个固定本地状态文件只提取 smoke 状态和
+观察时间，并重新执行当前所有 ops checks。receipt 必须是普通文件、归当前用户所有、不可被
+group/world 写、大小不超过 1 MiB，而且 project root、candidate HEAD、expected HEAD、
+public base URL、schema 和 digest 都要匹配；HEAD 改变、过期、篡改、符号链接或错误绑定都会
+fail closed。显式提供的新 smoke evidence 始终优先，不会被旧 receipt 覆盖。
 
 `--connector-smoke-status` 只会原样保留 allowlisted 状态值，例如 `ready`、
 `missing`、`stale`、`failed`、`needs_attention`、`blocked`、

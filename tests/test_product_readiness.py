@@ -31,6 +31,10 @@ def _ops_packet(*, status: str = "ready", connector_status: str = "ready") -> di
         "reason_codes": [],
         "blocker_codes": [],
         "needs_attention_codes": [] if status == "ready" else ["CONNECTOR_SMOKE_MISSING"],
+        "connector_smoke_receipt": {
+            "status": "loaded",
+            "reason_code": "CONNECTOR_SMOKE_RECEIPT_LOADED",
+        },
         "not_authorized_actions": ["restart_service", "stable_replacement"],
     }
 
@@ -49,7 +53,25 @@ def test_product_readiness_ready_packet_is_read_only() -> None:
     assert packet["chatgpt_app"]["main_entry"] == "render_commander_app"
     assert packet["chatgpt_app"]["full_loop_authority_tool"] == "get_full_loop_authority_status"
     assert packet["full_loop_authority"]["status"] == "disabled"
+    assert packet["ops_check"]["connector_smoke_receipt"]["status"] == "loaded"
     assert packet["authority_boundary"]["does_not_authorize_commit_or_push"] is True
+
+
+def test_explicit_connector_smoke_disables_ambient_receipt_loading() -> None:
+    captured: dict[str, object] = {}
+
+    def builder(*args: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return _ops_packet()
+
+    build_product_readiness_packet(
+        "/tmp/project",
+        connector_smoke={"status": "ready", "last_observed_at": "2026-07-09T00:00:00Z"},
+        connector_smoke_receipt_path="/tmp/status.json",
+        ops_packet_builder=builder,
+    )
+
+    assert captured["connector_smoke_receipt_path"] is None
 
 
 def test_product_readiness_picks_primary_blocker_and_runbook() -> None:

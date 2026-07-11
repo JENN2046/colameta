@@ -780,7 +780,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             contextlib.redirect_stdout(stdout),
-            patch.object(runner_cli, "build_production_ops_packet", return_value=packet),
+            patch.object(runner_cli, "build_production_ops_packet", return_value=packet) as builder,
         ):
             result = runner_cli._run_ops_check(
                 [
@@ -799,6 +799,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert written["beta_gate_ready"] is True
         payload = json.loads(stdout.getvalue())
         assert payload["status_written_path"] == str(status_path)
+        assert builder.call_args.kwargs["connector_smoke_receipt_path"] == str(status_path)
 
     def test_ops_check_write_status_handles_io_failure(self) -> None:
         from scripts import runner_cli

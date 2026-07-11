@@ -873,6 +873,16 @@ same handoff into one read-only call and adds a stable replacement drift hint.
 Web Commander also surfaces an `Apps smoke packet` copy action. Prefer that
 call; use the connector health call only as the metadata-refresh fallback.
 
+After a successful external Apps call, persist only the allowlisted smoke status
+and observation time with `colameta ops-check --connector-smoke-status ready
+--connector-smoke-observed-at <iso8601> --write-status
+~/.local/state/colameta/ops/last-status.json`. Later `ops-check`, `doctor`, Product
+Console, and MCP readiness calls can reuse that receipt without repeating the
+flags. Reuse is fail-closed: the fixed local file must be a same-owner,
+non-symlink, non-group/world-writable regular file of at most 1 MiB, and its
+schema, digest, project, exact candidate/expected HEAD, public URL, and freshness
+must still verify. Explicit new evidence always wins over a stored receipt.
+
 Never put these into evidence:
 
 ```text

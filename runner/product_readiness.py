@@ -9,6 +9,7 @@ from runner.production_ops import (
     BLOCKED,
     DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     DEFAULT_PUBLIC_BASE_URL,
+    DEFAULT_STATUS_PATH,
     NEEDS_ATTENTION,
     READY,
     build_production_ops_packet,
@@ -37,6 +38,7 @@ def build_product_readiness_packet(
     expected_head: str | None = None,
     no_network: bool = False,
     connector_smoke: dict[str, Any] | None = None,
+    connector_smoke_receipt_path: str | None = DEFAULT_STATUS_PATH,
     connector_smoke_fresh_hours: int = DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     command_runner: Callable[[list[str]], Any] | None = None,
     preflight_runner: Callable[..., dict[str, Any]] | None = None,
@@ -52,6 +54,7 @@ def build_product_readiness_packet(
         expected_head=expected_head,
         no_network=no_network,
         connector_smoke=connector_smoke,
+        connector_smoke_receipt_path=(connector_smoke_receipt_path if connector_smoke is None else None),
         connector_smoke_fresh_hours=connector_smoke_fresh_hours,
         command_runner=command_runner,
         preflight_runner=preflight_runner,
@@ -122,6 +125,11 @@ def build_product_readiness_packet(
             "reason_codes": list(ops_packet.get("reason_codes") or []),
             "blocker_codes": list(ops_packet.get("blocker_codes") or []),
             "needs_attention_codes": list(ops_packet.get("needs_attention_codes") or []),
+            "connector_smoke_receipt": (
+                dict(ops_packet.get("connector_smoke_receipt"))
+                if isinstance(ops_packet.get("connector_smoke_receipt"), dict)
+                else {"status": "unknown", "reason_code": "CONNECTOR_SMOKE_RECEIPT_STATUS_UNKNOWN"}
+            ),
         },
         "authority_boundary": _authority_boundary(),
         "not_authorized_actions": list(ops_packet.get("not_authorized_actions") or _not_authorized_actions()),
