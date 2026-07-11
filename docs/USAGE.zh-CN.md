@@ -446,6 +446,10 @@ false。之后刷新 readiness、人工审核最终文件，才调用 `mark_subm
 显式确认该 key 在 manifest 中绑定的全部 ref；ColaMeta 会把每个已复核文件 digest 与 manifest digest
 绑定成短时 Ready preview。任一正文或 manifest 变化都会使 apply 失败，而且 apply 仍需独立的一次性
 危险操作确认；成功后只修改这个 key 的 ready 字段并刷新队列。
+对于 `mcp_tool_info`、`security_review` 和 `metadata_snapshot`，编辑器还提供“载入事实草稿”。
+它通过 Web 读认证读取同一份已脱敏的当前服务事实，只把文本放进本地浏览器编辑器，不写 evidence 文件、
+也不标 ready。自动文本会保留 draft 或 pending-review 声明，因此操作者仍须人工校正和复核；未清掉这些
+未完成声明时，既有 revision preview 会继续拒绝。
 
 本地 Web Console 的 **INBOX** 也提供 stable promotion artifact receipt 工作区。`status` 是受读权限
 保护且无副作用的复验；两个写调用除 CSRF/origin 门禁外也必须通过同一份 Web 读认证。`preview` 只写短时 runtime 元数据，并且只返回 exact-HEAD manifest 摘要；

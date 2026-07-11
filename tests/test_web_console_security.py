@@ -225,6 +225,9 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'id="evidence-ready-confirm-ref"' in page
         assert "Ready 必须显式查看当前 key 的全部文件" in page
         assert 'evidenceReadyReview.content = ""' in page
+        assert "/api/submission-evidence/auto-draft/context" in page
+        assert 'id="evidence-revision-auto-draft"' in page
+        assert "请人工校正并移除 draft/pending" in page
         assert "/api/stable-promotion/evidence/status" in page
         assert "/api/stable-promotion/evidence/preview" in page
         assert 'dangerousPostAction("/api/stable-promotion/evidence/apply"' in page
@@ -455,10 +458,17 @@ class WebConsoleSecurityTests(unittest.TestCase):
         host: str = HOST,
         allow_external_web: bool = False,
         web_read_token: str | None = None,
+        service_mode: bool = False,
     ) -> None:
         from runner.web_console import WebConsoleServer
 
-        self.server = WebConsoleServer(str(self.project))
+        self.server = WebConsoleServer(str(self.project), service_mode=service_mode)
+        if service_mode:
+            registered = self.server.project_registry.register_project(
+                str(self.project),
+                project_mode="managed",
+            )
+            assert registered.get("ok") is True
         original_switch_executor = self.server._api_switch_executor
 
         def safe_switch_executor(body: dict[str, Any]) -> dict[str, Any]:
@@ -810,6 +820,66 @@ The release operator reviewed the final exported asset in the local Web Console.
             for path in workflow_paths
         )
         self.assertNotIn(final.strip(), workflow_text)
+
+    def test_submission_evidence_auto_draft_context_is_read_guarded_and_side_effect_free(self) -> None:
+        self.start_web(service_mode=True)
+        read_token = self.read_token_from_page()
+        url = (
+            f"http://{HOST}:{self.port}/api/submission-evidence/auto-draft/context"
+            "?key=mcp_tool_info"
+        )
+
+        status, denied = json_request(url)
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
+        invalid_url = (
+            f"http://{HOST}:{self.port}/api/submission-evidence/auto-draft/context"
+            "?key=screenshots"
+        )
+        status, invalid = json_request(invalid_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error_code"], "SUBMISSION_EVIDENCE_AUTO_DRAFT_KEY_UNSUPPORTED")
+
+        assert self.server is not None
+        registry_project = self.server.project_registry.get_project(str(self.project))["project"]
+        registry_name = str(registry_project["project_name"])
+        with patch("runner.web_console.build_project_identity", return_value={"project_name": "wrong-inferred-name"}):
+            status, draft = json_request(url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(draft["ok"])
+        self.assertTrue(draft["read_only"])
+        self.assertFalse(draft["side_effects"])
+        self.assertTrue(draft["local_web_only"])
+        self.assertEqual(draft["key"], "mcp_tool_info")
+        self.assertIn("## tool_inventory", draft["draft_content"])
+        self.assertIn(f"Project name: {registry_name}", draft["draft_content"])
+        self.assertNotIn("wrong-inferred-name", draft["draft_content"])
+        self.assertIn("## safety_boundaries", draft["draft_content"])
+        self.assertEqual(len(draft["draft_sha256"]), 64)
+        self.assertTrue(draft["requires_operator_edit_and_review"])
+        self.assertTrue(draft["ready_field_remains_false"])
+        self.assertTrue(draft["authority_boundary"]["does_not_write_files"])
+        metadata_url = (
+            f"http://{HOST}:{self.port}/api/submission-evidence/auto-draft/context"
+            "?key=metadata_snapshot"
+        )
+        status, metadata = json_request(metadata_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(metadata["ok"])
+        self.assertIn("Service mode: true", metadata["draft_content"])
+        status, public_state = json_request(
+            f"http://{HOST}:{self.port}/api/v2/status",
+            web_read_token=read_token,
+            timeout=8,
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn(draft["draft_content"], json.dumps(public_state, ensure_ascii=False))
+        self.assertNotIn(metadata["draft_content"], json.dumps(public_state, ensure_ascii=False))
+        assert self.server is not None
+        workflow_dir = Path(self.server.runner_dir) / "runtime/workflows"
+        self.assertEqual(list(workflow_dir.glob("*.json")), [])
 
     def test_submission_evidence_ready_review_is_digest_bound_and_dangerous_confirmed(self) -> None:
         _, final = self.prepare_submission_evidence_revision()

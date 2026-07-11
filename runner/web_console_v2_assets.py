@@ -446,6 +446,7 @@ let evidenceReadyReview = {{
   key: "", ref: "", refs: [], content: "", context: null, reviewed: {{}}, preview: null,
   state: "idle", message: "", busy: false,
 }};
+const EVIDENCE_AUTO_DRAFT_KEYS = new Set(["mcp_tool_info", "security_review", "metadata_snapshot"]);
 let stablePromotionEvidence = {{
   candidateHead: "", status: null, preview: null,
   state: "idle", message: "", busy: false,
@@ -3144,6 +3145,33 @@ async function openEvidenceRevisionEditor(key, ref) {{
   }}
 }}
 
+async function loadEvidenceAutoDraft() {{
+  const key = evidenceRevisionEditor.key;
+  if (!EVIDENCE_AUTO_DRAFT_KEYS.has(key) || evidenceRevisionEditor.busy) return;
+  evidenceRevisionEditor.busy = true;
+  evidenceRevisionEditor.preview = null;
+  evidenceRevisionEditor.state = "loading_draft";
+  evidenceRevisionEditor.message = "正在从当前服务事实生成受控草稿…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const resp = await fetch(
+      "/api/submission-evidence/auto-draft/context?key=" + encodeURIComponent(key),
+      {{ cache: "no-store", headers: readHeaders() }}
+    );
+    const draft = await resp.json();
+    if (!draft.ok) throw new Error(draft.message || draft.error_code || "自动草稿不可用。");
+    evidenceRevisionEditor.content = String(draft.draft_content || "");
+    evidenceRevisionEditor.state = "editing";
+    evidenceRevisionEditor.message = "已载入当前事实草稿；请人工校正并移除 draft/pending 等未完成声明，否则摘要预览会拒绝。";
+  }} catch (e) {{
+    evidenceRevisionEditor.state = "failed";
+    evidenceRevisionEditor.message = String(e);
+  }} finally {{
+    evidenceRevisionEditor.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
 async function previewEvidenceRevision() {{
   if (evidenceRevisionEditor.busy || !evidenceRevisionEditor.key || !evidenceRevisionEditor.ref) return;
   const textarea = $("evidence-revision-content");
@@ -3348,6 +3376,8 @@ function bindEvidenceRevisionActions(root) {{
   }});
   const previewButton = $("evidence-revision-preview");
   if (previewButton) previewButton.addEventListener("click", previewEvidenceRevision);
+  const autoDraftButton = $("evidence-revision-auto-draft");
+  if (autoDraftButton) autoDraftButton.addEventListener("click", loadEvidenceAutoDraft);
   const applyButton = $("evidence-revision-apply");
   if (applyButton) applyButton.addEventListener("click", applyEvidenceRevision);
   const confirmReviewButton = $("evidence-ready-confirm-ref");
@@ -3396,7 +3426,9 @@ function renderEvidenceRevisionWorkspace(data) {{
     h += `<div class="evidence-editor-meta">required sections: ${{esc((ctx.required_sections || []).join(", ") || "-")}}<br>current sha256: ${{esc(ctx.current_sha256 || "-")}}${{preview.proposed_sha256 ? `<br>proposed sha256: ${{esc(preview.proposed_sha256)}}` : ""}}</div>`;
     h += `<label class="key" for="evidence-revision-content">完整替换 Markdown</label>`;
     h += `<textarea id="evidence-revision-content" spellcheck="false"${{disabled ? " disabled" : ""}}>${{esc(evidenceRevisionEditor.content)}}</textarea>`;
-    h += `<div class="operator-inbox-actions"><button type="button" id="evidence-revision-preview" class="operator-inbox-btn"${{disabled ? " disabled" : ""}}>1. 生成预览</button><button type="button" id="evidence-revision-apply" class="operator-inbox-btn"${{evidenceRevisionEditor.busy || !preview.preview_id ? " disabled" : ""}}>2. 确认并应用</button></div>`;
+    h += `<div class="operator-inbox-actions">`;
+    if (EVIDENCE_AUTO_DRAFT_KEYS.has(evidenceRevisionEditor.key)) h += `<button type="button" id="evidence-revision-auto-draft" class="operator-inbox-btn"${{disabled ? " disabled" : ""}}>载入事实草稿</button>`;
+    h += `<button type="button" id="evidence-revision-preview" class="operator-inbox-btn"${{disabled ? " disabled" : ""}}>1. 生成预览</button><button type="button" id="evidence-revision-apply" class="operator-inbox-btn"${{evidenceRevisionEditor.busy || !preview.preview_id ? " disabled" : ""}}>2. 确认并应用</button></div>`;
     h += `<div id="evidence-revision-status" class="evidence-editor-status ${{escAttr(evidenceRevisionEditor.state)}}" role="status" aria-live="polite">${{esc(evidenceRevisionEditor.message)}}</div>`;
     h += `</div>`;
   }}

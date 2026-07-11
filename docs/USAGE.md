@@ -472,6 +472,12 @@ binds every reviewed file digest plus the manifest digest into a short-lived
 ready preview; any content or manifest change invalidates apply, and a separate
 one-use dangerous confirmation is still required. Apply changes only the one
 ready field and refreshes the queue.
+For `mcp_tool_info`, `security_review`, and `metadata_snapshot`, the editor also
+offers **Load facts draft**. It reads the same sanitized current-service draft
+behind Web read authentication and places the text only in the local editor; it
+does not write the evidence file or mark ready. Generated text intentionally
+retains draft or pending-review declarations, so the operator must correct and
+review it before the existing revision preview will accept it.
 
 ```text
 manage_submission_evidence_revision(
