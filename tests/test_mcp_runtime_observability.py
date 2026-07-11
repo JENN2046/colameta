@@ -4303,6 +4303,14 @@ vm.runInThisContext({json.dumps(widget_script)});
                 "get_commander_app_manifest",
                 {"project_name": "demo-project", "profile_id": "web_gpt_commander"},
             )
+            external_result = server.call_tool_for_agent(
+                "get_agent_operator_flow_packet",
+                {
+                    "project_name": "demo-project",
+                    "profile_id": "web_gpt_commander",
+                    "_embedded_in_commander_manifest": True,
+                },
+            )
 
         assert result["ok"] is True, result
         embedded = result["data"]["agent_operator_flow"]
@@ -4310,6 +4318,8 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert embedded["primary_next_action"]["tool"] == "run_mcp_workflow"
         assert embedded["primary_next_action"]["arguments"]["workflow"] == "thin_governed_loop_preview"
         assert embedded["primary_next_action"]["tool"] != "get_commander_app_manifest"
+        assert external_result["ok"] is True
+        assert external_result["data"]["primary_next_action"]["tool"] == "get_commander_app_manifest"
 
     def test_product_readiness_tools_are_read_only_and_use_product_packet(self) -> None:
         project = self.make_git_checkout(managed=True)
