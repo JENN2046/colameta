@@ -104,8 +104,14 @@ SENSITIVE_WEB_GET_PATHS = frozenset({
     "/api/job-status",
     "/api/project-registry",
     "/api/submission-evidence/revision/context",
+    "/api/submission-evidence/auto-draft/context",
     "/api/submission-evidence/ready/context",
     "/api/stable-promotion/evidence/status",
+})
+WEB_SUBMISSION_EVIDENCE_AUTO_DRAFT_KEYS = frozenset({
+    "mcp_tool_info",
+    "security_review",
+    "metadata_snapshot",
 })
 PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/jobs/start",
@@ -659,6 +665,12 @@ class WebConsoleServer:
                     self._send_json(server._api_submission_evidence_revision_context({
                         "key": query.get("key", [""])[0],
                         "ref": query.get("ref", [""])[0],
+                    }))
+                    return
+                if path == "/api/submission-evidence/auto-draft/context":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    self._send_json(server._api_submission_evidence_auto_draft_context({
+                        "key": query.get("key", [""])[0],
                     }))
                     return
                 if path == "/api/submission-evidence/ready/context":
@@ -4030,6 +4042,76 @@ class WebConsoleServer:
             return self._json_safe(
                 MCPSubmissionEvidenceRevisionManager(self.project_root).editor_context(params)
             )
+
+    def _api_submission_evidence_auto_draft_context(self, params: dict[str, Any]) -> dict[str, Any]:
+        key = str(params.get("key") or "").strip()
+        if key not in WEB_SUBMISSION_EVIDENCE_AUTO_DRAFT_KEYS:
+            return {
+                "ok": False,
+                "error_code": "SUBMISSION_EVIDENCE_AUTO_DRAFT_KEY_UNSUPPORTED",
+                "message": "Choose a submission evidence key whose draft can be derived from current service facts.",
+                "supported_keys": sorted(WEB_SUBMISSION_EVIDENCE_AUTO_DRAFT_KEYS),
+            }
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            from runner.mcp_server import MCPPlanningBridgeServer, MCPToolInputError
+
+            draft_server = MCPPlanningBridgeServer(
+                self.project_root,
+                service_mode=self.service_mode,
+            )
+            draft_server.project_registry = self.project_registry
+            draft_params: dict[str, Any] = {"selected_keys": [key]}
+            if self.service_mode:
+                project_name = str(build_project_identity(self.project_root).get("project_name") or "").strip()
+                if project_name:
+                    draft_params["project_name"] = project_name
+            try:
+                result = draft_server._tool_get_submission_evidence_auto_draft(draft_params)
+            except MCPToolInputError as exc:
+                return {
+                    "ok": False,
+                    "error_code": exc.error_code,
+                    "message": exc.message,
+                    "key": key,
+                }
+            entries = result.get("draft_entries") if isinstance(result, dict) else None
+            entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
+            shape = entry.get("copyable_entry_shape") if isinstance(entry, dict) else None
+            content = shape.get("content") if isinstance(shape, dict) else None
+            filename = shape.get("filename") if isinstance(shape, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                return {
+                    "ok": False,
+                    "error_code": "SUBMISSION_EVIDENCE_AUTO_DRAFT_UNAVAILABLE",
+                    "message": "Current service facts did not produce a usable evidence draft.",
+                    "key": key,
+                }
+            return self._json_safe({
+                "ok": True,
+                "source": "web_submission_evidence_auto_draft_context",
+                "schema_version": "web_submission_evidence_auto_draft_context.v1",
+                "read_only": True,
+                "side_effects": False,
+                "local_web_only": True,
+                "key": key,
+                "filename": str(filename or ""),
+                "draft_content": content,
+                "draft_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "content_included": True,
+                "requires_operator_edit_and_review": True,
+                "ready_field_remains_false": True,
+                "authority_boundary": {
+                    "authenticated_local_web_read": True,
+                    "does_not_write_files": True,
+                    "does_not_mark_ready_fields": True,
+                    "does_not_create_openai_app_draft": True,
+                    "does_not_submit_or_publish": True,
+                },
+            })
 
     def _api_submission_evidence_ready_context(self, params: dict[str, Any]) -> dict[str, Any]:
         project_lock = getattr(self, "_project_context_lock", None)
