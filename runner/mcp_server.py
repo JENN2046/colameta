@@ -9188,7 +9188,12 @@ class MCPPlanningBridgeServer:
             "tool_surface_guidance": self._tool_surface_guidance_for_actions(first_reads),
         }
 
-    def _tool_get_agent_operator_flow_packet(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _tool_get_agent_operator_flow_packet(
+        self,
+        params: dict[str, Any],
+        *,
+        embedded_in_commander_manifest: bool = False,
+    ) -> dict[str, Any]:
         profile_id, selected_profile, profiles = self._select_service_entry_profile(params)
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
@@ -9242,6 +9247,7 @@ class MCPPlanningBridgeServer:
             readiness=readiness,
             apps_connector_closeout=apps_connector_closeout,
             product_console_completion=product_console_completion,
+            embedded_in_commander_manifest=embedded_in_commander_manifest,
         )
         token_recovery = apps_connector_closeout.get("token_expired_recovery")
         if not isinstance(token_recovery, dict):
@@ -9419,6 +9425,7 @@ class MCPPlanningBridgeServer:
         readiness: dict[str, Any],
         apps_connector_closeout: dict[str, Any],
         product_console_completion: dict[str, Any],
+        embedded_in_commander_manifest: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         embedded_packets: dict[str, Any] = {}
         if flow_mode == "parallel_stage":
@@ -9528,6 +9535,24 @@ class MCPPlanningBridgeServer:
         )
         if product_console_next is not None:
             return product_console_next, embedded_packets
+        if embedded_in_commander_manifest:
+            return self._agent_flow_action(
+                action_id="continue_with_requested_work",
+                label="Continue with the requested work",
+                tool="run_mcp_workflow",
+                arguments={
+                    **project_args,
+                    "workflow": "thin_governed_loop_preview",
+                    "phase": "preview",
+                    "input_mode": "draft",
+                    "draft_seed": {"task_tier": "M0-M2"},
+                },
+                reason=(
+                    "Commander readiness and closeout are complete; continue through the bounded read-only task packet "
+                    "instead of refreshing the manifest recursively."
+                ),
+                expected_output="codex_execution_packet plus bounded task scope and validation guidance.",
+            ), embedded_packets
         return self._agent_flow_action(
             action_id="read_commander_manifest",
             label="Read Commander manifest",
@@ -10755,10 +10780,20 @@ class MCPPlanningBridgeServer:
             "details_tool": "get_runtime_version_status",
             "details_arguments": project_args,
         }
-        flow_args = {"profile_id": flow_profile_id, "include_advanced_context": False}
+        flow_args = {
+            "profile_id": flow_profile_id,
+            "include_advanced_context": False,
+        }
         if self.service_mode or params.get("project_name") is not None:
             flow_args.update(project_args)
-        agent_operator_flow = self._tool_get_agent_operator_flow_packet(flow_args)
+        if tunnel_client is not None:
+            flow_args["tunnel_client"] = tunnel_client
+        if control_plane is not None:
+            flow_args["control_plane"] = control_plane
+        agent_operator_flow = self._tool_get_agent_operator_flow_packet(
+            flow_args,
+            embedded_in_commander_manifest=True,
+        )
         flow_profile_summary = {
             "profile_id": flow_profile_id,
             "display_name": flow_profile.get("display_name"),

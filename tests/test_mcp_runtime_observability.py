@@ -4185,6 +4185,15 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert data["agent_operator_flow"]["source"] == "agent_operator_flow_packet"
         assert data["agent_operator_flow"]["profile_id"] == "reviewer_agent"
         assert data["agent_operator_flow"]["current_state"]["resolved_flow_mode"] == "review"
+        embedded_readiness = data["agent_operator_flow"]["current_state"]["readiness"]
+        embedded_connector = data["agent_operator_flow"]["current_state"]["connector"]
+        assert embedded_readiness["status"] == data["readiness"]["status"]
+        assert embedded_connector["external_connector_status"] == data["connector"]["external_connector_status"]
+        assert embedded_connector["operator_closeout"] == data["connector"]["operator_closeout_status"]
+        assert (
+            embedded_connector["evidence_gap_count"]
+            == data["connector"]["operator_closeout"]["evidence_gap_count"]
+        )
         assert data["agent_operator_flow"]["persona_safe_next_tool"] == "manage_workflow_run"
         assert data["agent_operator_flow"]["primary_next_action"]["tool"]
         assert data["initial_reads"][2]["arguments"]["profile_id"] == "reviewer_agent"
@@ -4255,6 +4264,62 @@ vm.runInThisContext({json.dumps(widget_script)});
         serialized = json.dumps(rejected, ensure_ascii=False)
         assert "must-not-return" not in serialized
         assert "raw_token" not in serialized
+
+    def test_commander_app_manifest_embedded_flow_does_not_refresh_manifest_recursively(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        completed_console = {
+            "completion_surface": {
+                "status": "ready",
+                "ready": True,
+                "gap_count": 0,
+                "blocker_codes": [],
+                "needs_attention_codes": [],
+                "followup_queue": {"status": "ready", "next_item": None},
+            }
+        }
+
+        with (
+            patch(
+                "runner.mcp_server.build_service_readiness_summary",
+                return_value={"status": "ready", "safe_next_actions": [], "primary_blocker": None},
+            ),
+            patch(
+                "runner.mcp_server.build_apps_connector_closeout_packet",
+                return_value={
+                    "status": "ready",
+                    "connector_closeout_check": {
+                        "tool": "get_connector_runtime_health_status",
+                        "arguments": {"project_name": "demo-project"},
+                    },
+                },
+            ),
+            patch("runner.mcp_server.build_product_console_map", return_value=completed_console),
+            patch.object(server, "_apps_connector_release_submission_evidence", return_value={"status": "ready"}),
+        ):
+            result = server.call_tool_for_agent(
+                "get_commander_app_manifest",
+                {"project_name": "demo-project", "profile_id": "web_gpt_commander"},
+            )
+            external_result = server.call_tool_for_agent(
+                "get_agent_operator_flow_packet",
+                {
+                    "project_name": "demo-project",
+                    "profile_id": "web_gpt_commander",
+                    "_embedded_in_commander_manifest": True,
+                },
+            )
+
+        assert result["ok"] is True, result
+        embedded = result["data"]["agent_operator_flow"]
+        assert embedded["primary_next_action"]["action_id"] == "continue_with_requested_work"
+        assert embedded["primary_next_action"]["tool"] == "run_mcp_workflow"
+        assert embedded["primary_next_action"]["arguments"]["workflow"] == "thin_governed_loop_preview"
+        assert embedded["primary_next_action"]["tool"] != "get_commander_app_manifest"
+        assert external_result["ok"] is True
+        assert external_result["data"]["primary_next_action"]["tool"] == "get_commander_app_manifest"
 
     def test_product_readiness_tools_are_read_only_and_use_product_packet(self) -> None:
         project = self.make_git_checkout(managed=True)
