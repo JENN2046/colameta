@@ -444,6 +444,10 @@ let evidenceReadyReview = {{
   key: "", ref: "", refs: [], content: "", context: null, reviewed: {{}}, preview: null,
   state: "idle", message: "", busy: false,
 }};
+let stablePromotionEvidence = {{
+  candidateHead: "", status: null, preview: null,
+  state: "idle", message: "", busy: false,
+}};
 let operatorInboxRunFeedback = null;
 let operatorInboxRunTrail = [];
 let operatorInboxRunTrailFeedback = "";
@@ -1985,6 +1989,19 @@ function bindOperatorInboxActions(root) {{
       copyTextToClipboard(this.getAttribute("data-copy-operator-inbox") || "", this);
     }});
   }});
+  root.querySelectorAll("[data-open-stable-promotion-evidence]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      openStablePromotionEvidence(this.getAttribute("data-candidate-head") || "");
+    }});
+  }});
+  const promotionRefresh = $("stable-promotion-evidence-refresh");
+  if (promotionRefresh) promotionRefresh.addEventListener("click", function() {{
+    loadStablePromotionEvidenceStatus(stablePromotionEvidence.candidateHead);
+  }});
+  const promotionPreview = $("stable-promotion-evidence-preview");
+  if (promotionPreview) promotionPreview.addEventListener("click", previewStablePromotionEvidence);
+  const promotionApply = $("stable-promotion-evidence-apply");
+  if (promotionApply) promotionApply.addEventListener("click", applyStablePromotionEvidence);
   root.querySelectorAll("[data-record-product-followup]").forEach(function(btn) {{
     btn.addEventListener("click", async function() {{
       if (this.disabled) return;
@@ -2084,6 +2101,103 @@ function bindOperatorInboxActions(root) {{
       }}
     }});
   }});
+}}
+
+async function loadStablePromotionEvidenceStatus(candidateHead) {{
+  if (!candidateHead || stablePromotionEvidence.busy) return;
+  stablePromotionEvidence.candidateHead = candidateHead;
+  stablePromotionEvidence.busy = true;
+  stablePromotionEvidence.state = "loading";
+  stablePromotionEvidence.message = "正在重新计算并验证 exact-head receipt 状态…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const query = "?candidate_head=" + encodeURIComponent(candidateHead);
+    const resp = await fetch("/api/stable-promotion/evidence/status" + query, {{ cache: "no-store", headers: readHeaders() }});
+    const status = await resp.json();
+    if (!status.ok) throw new Error(status.message || status.error_code || "读取晋级证据状态失败。");
+    stablePromotionEvidence.status = status;
+    const active = status.active_preview && typeof status.active_preview === "object" ? status.active_preview : null;
+    stablePromotionEvidence.preview = active && active.can_apply === true ? active : null;
+    stablePromotionEvidence.state = status.verified === true ? "verified" : stablePromotionEvidence.preview ? "preview_ready" : "missing";
+    stablePromotionEvidence.message = status.verified === true
+      ? "Receipt 已从 Git object database 重新计算并验证，仍不授权部署或重启。"
+      : stablePromotionEvidence.preview
+      ? "发现仍有效的一次性预览，可继续确认并持久化 receipt。"
+      : "尚无当前候选 receipt；可先生成只包含 exact-commit 摘要的预览。";
+  }} catch (e) {{
+    stablePromotionEvidence.state = "failed";
+    stablePromotionEvidence.message = String(e);
+  }} finally {{
+    stablePromotionEvidence.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+function openStablePromotionEvidence(candidateHead) {{
+  if (!candidateHead) return;
+  showRightTab("operator-inbox");
+  if (stablePromotionEvidence.candidateHead !== candidateHead) {{
+    stablePromotionEvidence = {{ candidateHead: candidateHead, status: null, preview: null, state: "idle", message: "", busy: false }};
+  }}
+  loadStablePromotionEvidenceStatus(candidateHead);
+}}
+
+async function previewStablePromotionEvidence() {{
+  const candidateHead = stablePromotionEvidence.candidateHead;
+  if (!candidateHead || stablePromotionEvidence.busy) return;
+  stablePromotionEvidence.busy = true;
+  stablePromotionEvidence.preview = null;
+  stablePromotionEvidence.state = "previewing";
+  stablePromotionEvidence.message = "正在从 Git object database 计算完整 tracked-file manifest…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const resp = await fetch("/api/stable-promotion/evidence/preview", {{
+      method: "POST", headers: jsonHeaders(), cache: "no-store",
+      body: JSON.stringify({{ candidate_head: candidateHead }}),
+    }});
+    const preview = await resp.json();
+    if (!preview.ok) throw new Error(preview.message || preview.error_code || "晋级证据预览失败。");
+    stablePromotionEvidence.preview = preview;
+    stablePromotionEvidence.state = preview.can_apply === true ? "preview_ready" : "blocked";
+    stablePromotionEvidence.message = preview.can_apply === true
+      ? "预览已绑定 HEAD、origin/main 与完整 manifest；确认后只写 runtime receipt。"
+      : "预览存在阻断，未开放持久化。";
+  }} catch (e) {{
+    stablePromotionEvidence.state = "failed";
+    stablePromotionEvidence.message = String(e);
+  }} finally {{
+    stablePromotionEvidence.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+async function applyStablePromotionEvidence() {{
+  const preview = stablePromotionEvidence.preview || {{}};
+  if (!preview.preview_id || preview.can_apply !== true || stablePromotionEvidence.busy) return;
+  stablePromotionEvidence.busy = true;
+  stablePromotionEvidence.state = "applying";
+  stablePromotionEvidence.message = "等待一次性危险操作确认；本操作不会替换或重启稳定服务…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const result = await dangerousPostAction("/api/stable-promotion/evidence/apply", {{ preview_id: preview.preview_id }});
+    if (!result.ok) throw new Error(result.message || result.error_code || "持久化晋级 receipt 失败。");
+    stablePromotionEvidence.preview = null;
+    stablePromotionEvidence.status = result.evidence_status || result;
+    stablePromotionEvidence.state = "verified";
+    stablePromotionEvidence.message = "Receipt 已持久化并复验；状态将自动刷新，稳定替换仍需精确授权。";
+    try {{
+      latestStatusData = await fetchStatus();
+      latestStatusSignature = statusSignature(latestStatusData);
+    }} catch (refreshError) {{
+      stablePromotionEvidence.message = "Receipt 已验证，但全局状态自动刷新失败；请手动刷新。";
+    }}
+  }} catch (e) {{
+    stablePromotionEvidence.state = "failed";
+    stablePromotionEvidence.message = String(e);
+  }} finally {{
+    stablePromotionEvidence.busy = false;
+    render(latestStatusData || {{}});
+  }}
 }}
 
 function operatorInboxActionKey(item) {{
@@ -2844,6 +2958,8 @@ function renderOperatorInboxItem(item) {{
     }},
   }});
   const canRun = item.can_run_now === true && item.required_scope === "mcp:read" && item.tool && item.item_signature;
+  const isStablePromotionEvidence = item.source === "stable_promotion" && item.tool === "manage_stable_promotion_evidence";
+  const candidateHead = item.arguments && item.arguments.candidate_head ? String(item.arguments.candidate_head) : "";
   const isRunning = feedback && feedback.state === "running";
   const copyLabel = "复制 operator inbox 调用：" + itemLabel;
   const runLabel = isRunning
@@ -2860,7 +2976,36 @@ function renderOperatorInboxItem(item) {{
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(payload)}}" aria-label="${{escAttr(copyLabel)}}" title="${{escAttr(copyLabel)}}">Copy</button>`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-copy" data-copy-operator-inbox="${{escAttr(recordPayload)}}" aria-label="${{escAttr(recordLabel)}}" title="${{escAttr(recordLabel)}}">Copy record</button>`;
   h += `<button type="button" class="operator-inbox-btn operator-inbox-run" data-run-operator-inbox="${{escAttr(nextAction)}}" data-operator-inbox-action-key="${{escAttr(actionKey)}}" data-operator-inbox-action-label="${{escAttr(itemLabel)}}" data-operator-inbox-component="${{escAttr(itemComponent)}}" aria-label="${{escAttr(runLabel)}}" title="${{escAttr(runLabel)}}" aria-busy="${{isRunning ? "true" : "false"}}" aria-disabled="${{canRun && !isRunning ? "false" : "true"}}" ${{canRun && !isRunning ? "" : "disabled"}}>${{isRunning ? "Running" : (canRun ? "Run" : "Gate")}}</button>`;
+  if (isStablePromotionEvidence && candidateHead) {{
+    h += `<button type="button" class="operator-inbox-btn" data-open-stable-promotion-evidence="true" data-candidate-head="${{escAttr(candidateHead)}}">Open receipt workspace</button>`;
+  }}
   h += `</div>`;
+  if (isStablePromotionEvidence && stablePromotionEvidence.candidateHead === candidateHead) {{
+    const status = stablePromotionEvidence.status || {{}};
+    const preview = stablePromotionEvidence.preview || {{}};
+    const manifest = preview.manifest || status.manifest || {{}};
+    const blockers = Array.isArray(preview.blockers) ? preview.blockers : [];
+    const isolation = preview.worktree_isolation || status.worktree_isolation || {{}};
+    const verified = status.verified === true || stablePromotionEvidence.state === "verified";
+    h += `<div class="operator-inbox-run-impact ${{escAttr(stablePromotionEvidence.state)}}" role="status" aria-live="polite">`;
+    h += `<div>${{esc(stablePromotionEvidence.message || "准备 exact-head receipt 工作区。")}}</div>`;
+    h += `<div class="operator-inbox-action-meta">candidate ${{esc(candidateHead)}}`;
+    if (manifest.manifest_sha256) h += ` ｜ manifest ${{esc(String(manifest.manifest_sha256))}}`;
+    if (manifest.file_count === 0 || manifest.file_count) h += ` ｜ files ${{esc(manifest.file_count)}}`;
+    h += `</div>`;
+    if (isolation.status) {{
+      h += `<div class="operator-inbox-action-meta">worktree ${{esc(isolation.status)}} ｜ worktree content used: ${{isolation.worktree_content_used === true ? "yes" : "no"}}</div>`;
+    }}
+    if (blockers.length) {{
+      h += `<div class="operator-inbox-action-status failed">${{esc(blockers.map(function(x) {{ return x.code || x.message || String(x); }}).join(" ｜ "))}}</div>`;
+    }}
+    if (status.receipt_path) h += `<div class="operator-inbox-action-meta">receipt ${{esc(status.receipt_path)}}${{status.receipt_digest ? " ｜ " + esc(status.receipt_digest) : ""}}</div>`;
+    h += `<div class="operator-inbox-actions">`;
+    h += `<button type="button" id="stable-promotion-evidence-refresh" class="operator-inbox-btn"${{stablePromotionEvidence.busy ? " disabled" : ""}}>刷新并复验</button>`;
+    h += `<button type="button" id="stable-promotion-evidence-preview" class="operator-inbox-btn"${{stablePromotionEvidence.busy || verified ? " disabled" : ""}}>1. 生成预览</button>`;
+    h += `<button type="button" id="stable-promotion-evidence-apply" class="operator-inbox-btn"${{stablePromotionEvidence.busy || preview.can_apply !== true || !preview.preview_id ? " disabled" : ""}}>2. 确认并持久化</button>`;
+    h += `</div><div class="operator-inbox-action-meta">Receipt 只绑定 exact Git commit；不会替换 stable、重启服务、push、release 或 deploy。</div></div>`;
+  }}
   if (feedback) {{
     h += `<div class="operator-inbox-action-status ${{escAttr(feedback.state || "")}}" role="status" aria-live="polite">${{esc(feedback.message || "")}}</div>`;
     h += `<div class="operator-inbox-action-meta">${{esc(feedback.source || "来自刚才的 Run 操作")}} ｜ ${{esc(feedback.timestamp || "")}}</div>`;
