@@ -842,7 +842,11 @@ The release operator reviewed the final exported asset in the local Web Console.
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["error_code"], "SUBMISSION_EVIDENCE_AUTO_DRAFT_KEY_UNSUPPORTED")
 
-        status, draft = json_request(url, web_read_token=read_token)
+        assert self.server is not None
+        registry_project = self.server.project_registry.get_project(str(self.project))["project"]
+        registry_name = str(registry_project["project_name"])
+        with patch("runner.web_console.build_project_identity", return_value={"project_name": "wrong-inferred-name"}):
+            status, draft = json_request(url, web_read_token=read_token)
         self.assertEqual(status, 200)
         self.assertTrue(draft["ok"])
         self.assertTrue(draft["read_only"])
@@ -850,6 +854,8 @@ The release operator reviewed the final exported asset in the local Web Console.
         self.assertTrue(draft["local_web_only"])
         self.assertEqual(draft["key"], "mcp_tool_info")
         self.assertIn("## tool_inventory", draft["draft_content"])
+        self.assertIn(f"Project name: {registry_name}", draft["draft_content"])
+        self.assertNotIn("wrong-inferred-name", draft["draft_content"])
         self.assertIn("## safety_boundaries", draft["draft_content"])
         self.assertEqual(len(draft["draft_sha256"]), 64)
         self.assertTrue(draft["requires_operator_edit_and_review"])

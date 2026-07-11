@@ -4066,9 +4066,17 @@ class WebConsoleServer:
             draft_server.project_registry = self.project_registry
             draft_params: dict[str, Any] = {"selected_keys": [key]}
             if self.service_mode:
-                project_name = str(build_project_identity(self.project_root).get("project_name") or "").strip()
-                if project_name:
-                    draft_params["project_name"] = project_name
+                lookup = self.project_registry.get_project(self.project_root)
+                project = lookup.get("project") if isinstance(lookup, dict) else None
+                project_name = str(project.get("project_name") or "").strip() if isinstance(project, dict) else ""
+                if not project_name:
+                    return {
+                        "ok": False,
+                        "error_code": str(lookup.get("error_code") or "PROJECT_NOT_REGISTERED"),
+                        "message": str(lookup.get("message") or "The active Web project is not registered."),
+                        "key": key,
+                    }
+                draft_params["project_name"] = project_name
             try:
                 result = draft_server._tool_get_submission_evidence_auto_draft(draft_params)
             except MCPToolInputError as exc:
