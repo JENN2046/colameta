@@ -51,6 +51,7 @@ from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.mcp_project_memory import MCPProjectMemoryManager
 from runner.mcp_todolist import MCPTodoListManager
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
+from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
 from runner.workflow_engine import record_tool_call, should_record_tool
 from runner.acceptance_workflow import AcceptanceRerunService
 from runner.checkpoint_review_workflow import CheckpointReviewService
@@ -104,6 +105,7 @@ SENSITIVE_WEB_GET_PATHS = frozenset({
     "/api/project-registry",
     "/api/submission-evidence/revision/context",
     "/api/submission-evidence/ready/context",
+    "/api/stable-promotion/evidence/status",
 })
 PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/jobs/start",
@@ -126,6 +128,12 @@ PROTECTED_WEB_POST_PATHS = frozenset({
     "/api/submission-evidence/revision/apply",
     "/api/submission-evidence/ready/preview",
     "/api/submission-evidence/ready/apply",
+    "/api/stable-promotion/evidence/preview",
+    "/api/stable-promotion/evidence/apply",
+})
+READ_AUTHENTICATED_WEB_POST_PATHS = frozenset({
+    "/api/stable-promotion/evidence/preview",
+    "/api/stable-promotion/evidence/apply",
 })
 
 DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
@@ -144,6 +152,7 @@ DANGEROUS_WEB_CONFIRMATION_ROUTES = frozenset({
     "/api/v2/action",
     "/api/submission-evidence/revision/apply",
     "/api/submission-evidence/ready/apply",
+    "/api/stable-promotion/evidence/apply",
 })
 
 DANGEROUS_DIRECT_EXECUTOR_ROUTES = {
@@ -659,6 +668,12 @@ class WebConsoleServer:
                         "ref": query.get("ref", [""])[0],
                     }))
                     return
+                if path == "/api/stable-promotion/evidence/status":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    self._send_json(server._api_stable_promotion_evidence("status", {
+                        "candidate_head": query.get("candidate_head", [""])[0],
+                    }))
+                    return
                 if path == "/v2/":
                     self._send_html(server._render_v2_index_html(active_web_read_token if embed_web_read_token else ""))
                     return
@@ -683,6 +698,16 @@ class WebConsoleServer:
                     if write_guard is not None:
                         self._send_guard_result(write_guard)
                         return
+                    if path in READ_AUTHENTICATED_WEB_POST_PATHS:
+                        read_guard = server._validate_web_read_request(
+                            headers=self.headers,
+                            web_host=host,
+                            web_port=port,
+                            web_read_token=active_web_read_token,
+                        )
+                        if read_guard is not None:
+                            self._send_guard_result(read_guard)
+                            return
                     dangerous_guard, dangerous_receipt = server._validate_dangerous_action_request(
                         path,
                         body or {},
@@ -788,6 +813,15 @@ class WebConsoleServer:
                 if path == "/api/submission-evidence/ready/apply":
                     self._send_json(server._with_dangerous_action_receipt(
                         server._api_submission_evidence_ready("apply", body or {}),
+                        dangerous_receipt,
+                    ))
+                    return
+                if path == "/api/stable-promotion/evidence/preview":
+                    self._send_json(server._api_stable_promotion_evidence("preview", body or {}))
+                    return
+                if path == "/api/stable-promotion/evidence/apply":
+                    self._send_json(server._with_dangerous_action_receipt(
+                        server._api_stable_promotion_evidence("apply", body or {}),
                         dangerous_receipt,
                     ))
                     return
@@ -1191,6 +1225,23 @@ class WebConsoleServer:
                     "title": "Mark reviewed submission evidence ready",
                     "target": key or "one preview-bound evidence key",
                     "rollback_guidance": "Set the corresponding ready field false and repeat human review if the confirmation was incorrect.",
+                },
+            }
+        if route == "/api/stable-promotion/evidence/apply":
+            preview_id = str(payload.get("preview_id") or "").strip()
+            return {
+                "action_type": "stable_promotion_evidence_apply",
+                "risk_class": "stable_promotion_artifact_receipt_write",
+                "target_summary": {
+                    "preview_id_present": bool(preview_id),
+                    "preview_id": "REDACTED" if preview_id else "",
+                    "writes_runtime_receipt_only": True,
+                    "does_not_replace_or_restart_stable": True,
+                },
+                "display_summary": {
+                    "title": "Persist stable promotion artifact receipt",
+                    "target": "preview-bound exact-HEAD manifest receipt",
+                    "rollback_guidance": "Preserve an invalid receipt for investigation; a valid receipt is immutable evidence and does not deploy code.",
                 },
             }
         if route == "/api/v2/action":
@@ -4039,6 +4090,31 @@ class WebConsoleServer:
                 record = record_tool_call(
                     self.project_root,
                     "mark_submission_evidence_ready_fields",
+                    action,
+                    clean_params,
+                    result,
+                )
+                warning = record.get("warning")
+                if warning:
+                    result["workflow_record_warning"] = str(warning)
+                workflow_id = record.get("workflow_id")
+                if isinstance(workflow_id, str) and workflow_id.strip():
+                    result["workflow_id"] = workflow_id.strip()
+            return self._json_safe(result)
+
+    def _api_stable_promotion_evidence(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        project_lock = getattr(self, "_project_context_lock", None)
+        if not hasattr(project_lock, "acquire"):
+            project_lock = threading.RLock()
+            self._project_context_lock = project_lock
+        with project_lock:
+            clean_params = dict(params)
+            clean_params.pop("confirmation_id", None)
+            result = MCPStablePromotionEvidenceManager(self.project_root).handle(action, clean_params)
+            if action != "status" and should_record_tool("manage_stable_promotion_evidence", action):
+                record = record_tool_call(
+                    self.project_root,
+                    "manage_stable_promotion_evidence",
                     action,
                     clean_params,
                     result,

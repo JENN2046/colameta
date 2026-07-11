@@ -225,6 +225,12 @@ class WebConsoleV2ProductFollowupRenderingTests(unittest.TestCase):
         assert 'id="evidence-ready-confirm-ref"' in page
         assert "Ready 必须显式查看当前 key 的全部文件" in page
         assert 'evidenceReadyReview.content = ""' in page
+        assert "/api/stable-promotion/evidence/status" in page
+        assert "/api/stable-promotion/evidence/preview" in page
+        assert 'dangerousPostAction("/api/stable-promotion/evidence/apply"' in page
+        assert "Open receipt workspace" in page
+        assert "不会替换或重启稳定服务" in page
+        assert 'headers["X-ColaMeta-Read-Auth"] = WEB_READ_AUTH' in page
 
     def test_evidence_workspace_keeps_revision_and_ready_review_entries_in_one_queue(self) -> None:
         if shutil.which("node") is None:
@@ -577,6 +583,145 @@ The release operator reviewed the final exported asset in the local Web Console.
         manifest["evidence"]["logo"] = "docs/submission/logo.md"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return draft, final
+
+    def prepare_stable_promotion_repo(self) -> str:
+        origin = self.tmp_path / "origin.git"
+        commands = [
+            (["git", "init", "--bare", str(origin)], self.tmp_path),
+            (["git", "init"], self.project),
+            (["git", "config", "user.email", "test@example.invalid"], self.project),
+            (["git", "config", "user.name", "ColaMeta Web Test"], self.project),
+        ]
+        (self.project / ".gitignore").write_text(".colameta/runtime/\n", encoding="utf-8")
+        for command, cwd in commands:
+            completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False, timeout=15)
+            assert completed.returncode == 0, completed.stderr
+        for command in (
+            ["git", "add", "--all"],
+            ["git", "commit", "-m", "web stable promotion fixture"],
+            ["git", "branch", "-M", "main"],
+            ["git", "remote", "add", "origin", str(origin)],
+            ["git", "push", "-u", "origin", "main"],
+        ):
+            completed = subprocess.run(command, cwd=self.project, capture_output=True, text=True, check=False, timeout=15)
+            assert completed.returncode == 0, completed.stderr
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, capture_output=True, text=True, check=False, timeout=15
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout.strip()
+
+    def test_stable_promotion_receipt_web_flow_is_read_guarded_preview_bound_and_confirmed(self) -> None:
+        head = self.prepare_stable_promotion_repo()
+        self.start_web()
+        read_token = self.read_token_from_page()
+        csrf = self.csrf_token_from_page()
+        status_url = (
+            f"http://{HOST}:{self.port}/api/stable-promotion/evidence/status"
+            f"?candidate_head={head}"
+        )
+
+        status, denied = json_request(status_url)
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
+        status, missing = json_request(status_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(missing["ok"])
+        self.assertEqual(missing["status"], "missing")
+        self.assertFalse(missing["verified"])
+        assert self.server is not None
+        workflow_dir = Path(self.server.runner_dir) / "runtime/workflows"
+        self.assertEqual(list(workflow_dir.glob("*.json")), [])
+
+        preview_url = f"http://{HOST}:{self.port}/api/stable-promotion/evidence/preview"
+        preview_payload = {"candidate_head": head}
+        status, csrf_denied = json_request(preview_url, method="POST", payload=preview_payload)
+        self.assertEqual(status, 403)
+        self.assertEqual(csrf_denied["error_code"], "WEB_CSRF_INVALID")
+
+        status, read_denied = json_request(
+            preview_url,
+            method="POST",
+            payload=preview_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(read_denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
+        status, preview = json_request(
+            preview_url,
+            method="POST",
+            payload=preview_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            web_read_token=read_token,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(preview["ok"])
+        self.assertTrue(preview["can_apply"])
+        self.assertEqual(preview["candidate_head"], head)
+        self.assertTrue(preview["manifest"]["file_entries_omitted_from_response"])
+        self.assertNotIn("files", preview["manifest"])
+        self.assertTrue(preview["authority_boundary"]["does_not_replace_stable_service"])
+
+        apply_url = f"http://{HOST}:{self.port}/api/stable-promotion/evidence/apply"
+        apply_payload = {"preview_id": preview["preview_id"]}
+        status, unconfirmed = json_request(
+            apply_url,
+            method="POST",
+            payload=apply_payload,
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            web_read_token=read_token,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(unconfirmed["error_code"], "DANGEROUS_CONFIRMATION_REQUIRED")
+
+        confirmation_id = self.dangerous_preview("/api/stable-promotion/evidence/apply", apply_payload)
+        status, apply_read_denied = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(apply_read_denied["error_code"], "WEB_READ_AUTH_REQUIRED")
+
+        status, applied = json_request(
+            apply_url,
+            method="POST",
+            payload={**apply_payload, "confirmation_id": confirmation_id},
+            csrf_token=csrf,
+            origin=self.valid_origin(),
+            host_header=self.valid_host(),
+            web_read_token=read_token,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(applied["ok"])
+        self.assertEqual(applied["status"], "recorded")
+        self.assertEqual(applied["evidence_status"]["status"], "verified_current")
+        self.assertTrue(applied["dangerous_action_receipt"]["confirmation_validated"])
+        self.assertEqual(applied["dangerous_action_receipt"]["confirmation_id"], "REDACTED")
+
+        status, verified = json_request(status_url, web_read_token=read_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(verified["verified"])
+        self.assertEqual(verified["status"], "verified_current")
+        self.assertEqual(verified["candidate_head"], head)
+        self.assertEqual(verified["manifest"]["manifest_sha256"], preview["manifest"]["manifest_sha256"])
+        workflow_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (Path(self.server.runner_dir) / "runtime/workflows").glob("*.json")
+        )
+        self.assertIn("manage_stable_promotion_evidence", workflow_text)
+        self.assertIn('"risk_level": "commit"', workflow_text)
 
     def test_submission_evidence_local_web_editor_is_read_guarded_preview_bound_and_confirmed(self) -> None:
         draft, final = self.prepare_submission_evidence_revision()
