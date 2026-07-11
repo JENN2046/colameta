@@ -440,6 +440,10 @@ let evidenceRevisionEditor = {{
   key: "", ref: "", content: "", context: null, preview: null,
   state: "idle", message: "", busy: false,
 }};
+let evidenceReadyReview = {{
+  key: "", ref: "", refs: [], content: "", context: null, reviewed: {{}}, preview: null,
+  state: "idle", message: "", busy: false,
+}};
 let operatorInboxRunFeedback = null;
 let operatorInboxRunTrail = [];
 let operatorInboxRunTrailFeedback = "";
@@ -934,9 +938,12 @@ function render(data) {{
   latestStatusData = data || {{}};
   const activeProjectRoot = currentProjectRootForSwitcher(latestStatusData);
   const editorProjectRoot = evidenceRevisionEditor.context && evidenceRevisionEditor.context.project_root
-    ? String(evidenceRevisionEditor.context.project_root) : "";
+    ? String(evidenceRevisionEditor.context.project_root)
+    : evidenceReadyReview.context && evidenceReadyReview.context.project_root
+    ? String(evidenceReadyReview.context.project_root) : "";
   if (editorProjectRoot && activeProjectRoot && editorProjectRoot !== activeProjectRoot) {{
     evidenceRevisionEditor = {{ key: "", ref: "", content: "", context: null, preview: null, state: "idle", message: "", busy: false }};
+    evidenceReadyReview = {{ key: "", ref: "", refs: [], content: "", context: null, reviewed: {{}}, preview: null, state: "idle", message: "", busy: false }};
   }}
   latestStatusSignature = statusSignature(latestStatusData);
   clearStaleOperatorInboxFeedback(latestStatusData);
@@ -2937,6 +2944,7 @@ function evidenceRevisionEntries(data) {{
     for (const ref of refs) {{
       const fileState = reviewStates.find(function(item) {{ return String(item.ref) === ref; }}) || {{}};
       entries.push({{
+        mode: "revise",
         key: String(entry.key),
         ref: ref,
         readyField: String(entry.ready_field || ""),
@@ -2946,11 +2954,29 @@ function evidenceRevisionEntries(data) {{
       }});
     }}
   }}
+  const reviewEntries = Array.isArray(fillPlan.review_entries) ? fillPlan.review_entries : [];
+  for (const entry of reviewEntries) {{
+    if (!entry || !entry.key) continue;
+    const refs = Array.isArray(entry.refs) ? entry.refs.map(String) : [];
+    for (const ref of refs) {{
+      entries.push({{
+        mode: "review",
+        key: String(entry.key),
+        ref: ref,
+        keyRefs: refs,
+        readyField: String(entry.ready_field || ""),
+        purpose: String(entry.purpose || ""),
+        requiredSections: Array.isArray(entry.required_sections) ? entry.required_sections.map(String) : [],
+        reasonCodes: [],
+      }});
+    }}
+  }}
   return entries;
 }}
 
 async function openEvidenceRevisionEditor(key, ref) {{
   activeRightTab = "evidence";
+  evidenceReadyReview = {{ key: "", ref: "", refs: [], content: "", context: null, reviewed: {{}}, preview: null, state: "idle", message: "", busy: false }};
   evidenceRevisionEditor = {{ key: key, ref: ref, content: "", context: null, preview: null, state: "loading", message: "正在读取受控证据正文…", busy: true }};
   renderRightColumn(latestStatusData || {{}});
   try {{
@@ -3013,6 +3039,8 @@ async function applyEvidenceRevision() {{
     }});
     if (!result.ok) throw new Error(result.message || result.error_code || "证据应用失败。");
     evidenceRevisionEditor.preview = null;
+    evidenceRevisionEditor.content = "";
+    evidenceRevisionEditor.context = null;
     evidenceRevisionEditor.state = "applied";
     evidenceRevisionEditor.message = "证据已应用，ready 字段保持 false；状态已自动刷新，请完成人工复核后再标记 ready。";
     try {{
@@ -3030,11 +3058,132 @@ async function applyEvidenceRevision() {{
   }}
 }}
 
+async function openEvidenceReadyReview(key, ref) {{
+  activeRightTab = "evidence";
+  evidenceRevisionEditor = {{ key: "", ref: "", content: "", context: null, preview: null, state: "idle", message: "", busy: false }};
+  const sameKey = evidenceReadyReview.key === key;
+  const priorReviewed = sameKey ? evidenceReadyReview.reviewed : {{}};
+  evidenceReadyReview = {{
+    key: key, ref: ref, refs: sameKey ? evidenceReadyReview.refs : [], content: "", context: null,
+    reviewed: priorReviewed, preview: null, state: "loading", message: "正在读取最终证据供人工复核…", busy: true,
+  }};
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const query = "?key=" + encodeURIComponent(key) + "&ref=" + encodeURIComponent(ref);
+    const resp = await fetch("/api/submission-evidence/ready/context" + query, {{ cache: "no-store", headers: readHeaders() }});
+    const context = await resp.json();
+    if (!context.ok) throw new Error(context.message || context.error_code || "读取最终证据失败。");
+    evidenceReadyReview.context = context;
+    evidenceReadyReview.content = String(context.current_content || "");
+    evidenceReadyReview.refs = Array.isArray(context.key_refs) ? context.key_refs.map(String) : [ref];
+    if (evidenceReadyReview.reviewed[ref] && evidenceReadyReview.reviewed[ref] !== context.current_sha256) {{
+      evidenceReadyReview.reviewed = {{}};
+      evidenceReadyReview.message = "文件摘要已变化；该 key 的人工复核进度已重置。";
+    }} else {{
+      evidenceReadyReview.message = "请阅读完整正文，再显式确认当前文件已人工复核。";
+    }}
+    evidenceReadyReview.state = "reviewing";
+  }} catch (e) {{
+    evidenceReadyReview.state = "failed";
+    evidenceReadyReview.message = String(e);
+  }} finally {{
+    evidenceReadyReview.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+function confirmCurrentEvidenceReview() {{
+  const context = evidenceReadyReview.context || {{}};
+  if (!context.ref || !context.current_sha256) return;
+  evidenceReadyReview.reviewed[context.ref] = context.current_sha256;
+  evidenceReadyReview.preview = null;
+  evidenceReadyReview.state = "reviewing";
+  const reviewedCount = Object.keys(evidenceReadyReview.reviewed).filter(function(ref) {{
+    return evidenceReadyReview.refs.includes(ref);
+  }}).length;
+  evidenceReadyReview.message = "已复核 " + reviewedCount + " / " + evidenceReadyReview.refs.length + " 个文件。";
+  renderRightColumn(latestStatusData || {{}});
+}}
+
+function evidenceReadyReviewComplete() {{
+  if (!evidenceReadyReview.refs.length) return false;
+  return evidenceReadyReview.refs.every(function(ref) {{ return !!evidenceReadyReview.reviewed[ref]; }});
+}}
+
+async function previewEvidenceReady() {{
+  if (evidenceReadyReview.busy || !evidenceReadyReviewComplete()) return;
+  evidenceReadyReview.busy = true;
+  evidenceReadyReview.preview = null;
+  evidenceReadyReview.state = "previewing";
+  evidenceReadyReview.message = "正在绑定清单与全部已复核文件摘要…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const reviewedRefs = evidenceReadyReview.refs.map(function(ref) {{
+      return {{ ref: ref, current_sha256: evidenceReadyReview.reviewed[ref] }};
+    }});
+    const resp = await fetch("/api/submission-evidence/ready/preview", {{
+      method: "POST", headers: jsonHeaders(), cache: "no-store",
+      body: JSON.stringify({{ key: evidenceReadyReview.key, reviewed_refs: reviewedRefs }}),
+    }});
+    const preview = await resp.json();
+    if (!preview.ok) throw new Error(preview.message || preview.error_code || "Ready 预览失败。");
+    evidenceReadyReview.preview = preview;
+    evidenceReadyReview.state = "preview_ready";
+    evidenceReadyReview.message = "Ready 预览已绑定全部文件摘要；下一步只会标记当前 key。";
+  }} catch (e) {{
+    evidenceReadyReview.state = "failed";
+    evidenceReadyReview.message = String(e);
+  }} finally {{
+    evidenceReadyReview.busy = false;
+    renderRightColumn(latestStatusData || {{}});
+  }}
+}}
+
+async function applyEvidenceReady() {{
+  const preview = evidenceReadyReview.preview || {{}};
+  if (evidenceReadyReview.busy || !preview.preview_id) return;
+  evidenceReadyReview.busy = true;
+  evidenceReadyReview.state = "applying";
+  evidenceReadyReview.message = "等待一次性确认后标记单项 ready…";
+  renderRightColumn(latestStatusData || {{}});
+  try {{
+    const result = await dangerousPostAction("/api/submission-evidence/ready/apply", {{
+      preview_id: preview.preview_id,
+      key: evidenceReadyReview.key,
+    }});
+    if (!result.ok) throw new Error(result.message || result.error_code || "标记 ready 失败。");
+    evidenceReadyReview.preview = null;
+    evidenceReadyReview.content = "";
+    evidenceReadyReview.context = null;
+    evidenceReadyReview.refs = [];
+    evidenceReadyReview.reviewed = {{}};
+    evidenceReadyReview.state = "ready_marked";
+    evidenceReadyReview.message = "当前证据 key 已标记 ready；状态已刷新到下一项。";
+    try {{
+      latestStatusData = await fetchStatus();
+      latestStatusSignature = statusSignature(latestStatusData);
+    }} catch (refreshError) {{
+      evidenceReadyReview.message = "Ready 已写入，但状态自动刷新失败；请手动刷新。";
+    }}
+  }} catch (e) {{
+    evidenceReadyReview.state = "failed";
+    evidenceReadyReview.message = String(e);
+  }} finally {{
+    evidenceReadyReview.busy = false;
+    render(latestStatusData || {{}});
+  }}
+}}
+
 function bindEvidenceRevisionActions(root) {{
   if (!root) return;
   root.querySelectorAll("[data-open-evidence-revision]").forEach(function(btn) {{
     btn.addEventListener("click", function() {{
       openEvidenceRevisionEditor(this.getAttribute("data-evidence-key") || "", this.getAttribute("data-evidence-ref") || "");
+    }});
+  }});
+  root.querySelectorAll("[data-open-evidence-ready-review]").forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      openEvidenceReadyReview(this.getAttribute("data-evidence-key") || "", this.getAttribute("data-evidence-ref") || "");
     }});
   }});
   const textarea = $("evidence-revision-content");
@@ -3054,22 +3203,39 @@ function bindEvidenceRevisionActions(root) {{
   if (previewButton) previewButton.addEventListener("click", previewEvidenceRevision);
   const applyButton = $("evidence-revision-apply");
   if (applyButton) applyButton.addEventListener("click", applyEvidenceRevision);
+  const confirmReviewButton = $("evidence-ready-confirm-ref");
+  if (confirmReviewButton) confirmReviewButton.addEventListener("click", confirmCurrentEvidenceReview);
+  const readyPreviewButton = $("evidence-ready-preview");
+  if (readyPreviewButton) readyPreviewButton.addEventListener("click", previewEvidenceReady);
+  const readyApplyButton = $("evidence-ready-apply");
+  if (readyApplyButton) readyApplyButton.addEventListener("click", applyEvidenceReady);
 }}
 
 function renderEvidenceRevisionWorkspace(data) {{
   const entries = evidenceRevisionEntries(data);
-  let h = `<div class="evidence-workspace-summary">本地受控编辑区 ｜ review required ${{entries.length}}<br>选择清单绑定的 Markdown，编辑后先预览，再通过一次性确认应用；应用不会把 ready 字段设为 true。</div>`;
+  const reviseCount = entries.filter(function(entry) {{ return entry.mode === "revise"; }}).length;
+  const readyReviewCount = entries.filter(function(entry) {{ return entry.mode === "review"; }}).length;
+  let h = `<div class="evidence-workspace-summary">本地受控证据区 ｜ 待修订 ${{reviseCount}} ｜ 待人工复核 ${{readyReviewCount}}<br>修订使用正文摘要绑定；Ready 必须显式查看当前 key 的全部文件并生成独立预览。</div>`;
   if (!entries.length) {{
     h += `<div class="empty-state">当前没有需要修订的未完成证据。</div>`;
   }} else {{
     h += `<div class="evidence-workspace-list">`;
     for (const entry of entries) {{
-      const selected = evidenceRevisionEditor.key === entry.key && evidenceRevisionEditor.ref === entry.ref;
-      const reasons = entry.reasonCodes.length ? entry.reasonCodes.join(", ") : "review_required";
+      const selected = entry.mode === "revise"
+        ? evidenceRevisionEditor.key === entry.key && evidenceRevisionEditor.ref === entry.ref
+        : evidenceReadyReview.key === entry.key && evidenceReadyReview.ref === entry.ref;
+      const reasons = entry.mode === "review"
+        ? (evidenceReadyReview.reviewed[entry.ref] ? "reviewed" : "human review")
+        : (entry.reasonCodes.length ? entry.reasonCodes.join(", ") : "review_required");
+      const badgeClass = entry.mode === "review" && evidenceReadyReview.reviewed[entry.ref] ? "badge badge-ok" : "badge badge-warn";
       h += `<div class="evidence-workspace-item${{selected ? " selected" : ""}}">`;
-      h += `<div class="operator-inbox-head"><div><div class="operator-inbox-title">${{esc(entry.key)}}</div><div class="evidence-workspace-ref">${{esc(entry.ref)}}</div></div><span class="badge badge-warn">${{esc(reasons)}}</span></div>`;
+      h += `<div class="operator-inbox-head"><div><div class="operator-inbox-title">${{esc(entry.key)}}</div><div class="evidence-workspace-ref">${{esc(entry.ref)}}</div></div><span class="${{badgeClass}}">${{esc(reasons)}}</span></div>`;
       if (entry.purpose) h += `<div class="operator-inbox-why">${{esc(entry.purpose)}}</div>`;
-      h += `<div class="operator-inbox-actions"><button type="button" class="operator-inbox-btn" data-open-evidence-revision="true" data-evidence-key="${{escAttr(entry.key)}}" data-evidence-ref="${{escAttr(entry.ref)}}">${{selected ? "重新载入" : "编辑"}}</button></div>`;
+      if (entry.mode === "review") {{
+        h += `<div class="operator-inbox-actions"><button type="button" class="operator-inbox-btn" data-open-evidence-ready-review="true" data-evidence-key="${{escAttr(entry.key)}}" data-evidence-ref="${{escAttr(entry.ref)}}">${{selected ? "重新载入" : "查看并复核"}}</button></div>`;
+      }} else {{
+        h += `<div class="operator-inbox-actions"><button type="button" class="operator-inbox-btn" data-open-evidence-revision="true" data-evidence-key="${{escAttr(entry.key)}}" data-evidence-ref="${{escAttr(entry.ref)}}">${{selected ? "重新载入" : "编辑"}}</button></div>`;
+      }}
       h += `</div>`;
     }}
     h += `</div>`;
@@ -3085,6 +3251,24 @@ function renderEvidenceRevisionWorkspace(data) {{
     h += `<textarea id="evidence-revision-content" spellcheck="false"${{disabled ? " disabled" : ""}}>${{esc(evidenceRevisionEditor.content)}}</textarea>`;
     h += `<div class="operator-inbox-actions"><button type="button" id="evidence-revision-preview" class="operator-inbox-btn"${{disabled ? " disabled" : ""}}>1. 生成预览</button><button type="button" id="evidence-revision-apply" class="operator-inbox-btn"${{evidenceRevisionEditor.busy || !preview.preview_id ? " disabled" : ""}}>2. 确认并应用</button></div>`;
     h += `<div id="evidence-revision-status" class="evidence-editor-status ${{escAttr(evidenceRevisionEditor.state)}}" role="status" aria-live="polite">${{esc(evidenceRevisionEditor.message)}}</div>`;
+    h += `</div>`;
+  }}
+  if (evidenceReadyReview.key && evidenceReadyReview.ref) {{
+    const ctx = evidenceReadyReview.context || {{}};
+    const preview = evidenceReadyReview.preview || {{}};
+    const reviewedCount = evidenceReadyReview.refs.filter(function(ref) {{ return !!evidenceReadyReview.reviewed[ref]; }}).length;
+    const currentReviewed = !!(ctx.ref && evidenceReadyReview.reviewed[ctx.ref] === ctx.current_sha256);
+    h += `<div class="evidence-editor">`;
+    h += `<div class="operator-inbox-title">人工复核 ${{esc(evidenceReadyReview.key)}} ｜ ${{esc(evidenceReadyReview.ref)}}</div>`;
+    h += `<div class="evidence-editor-meta">ready field: ${{esc(ctx.ready_field || "-")}}<br>review progress: ${{reviewedCount}} / ${{evidenceReadyReview.refs.length}}<br>current sha256: ${{esc(ctx.current_sha256 || "-")}}${{preview.manifest_sha256 ? `<br>bound manifest sha256: ${{esc(preview.manifest_sha256)}}` : ""}}</div>`;
+    h += `<label class="key" for="evidence-ready-content">只读最终 Markdown</label>`;
+    h += `<textarea id="evidence-ready-content" spellcheck="false" readonly${{evidenceReadyReview.busy || !ctx.current_sha256 ? " disabled" : ""}}>${{esc(evidenceReadyReview.content)}}</textarea>`;
+    h += `<div class="operator-inbox-actions">`;
+    h += `<button type="button" id="evidence-ready-confirm-ref" class="operator-inbox-btn"${{evidenceReadyReview.busy || !ctx.current_sha256 || currentReviewed ? " disabled" : ""}}>1. 确认已复核此文件</button>`;
+    h += `<button type="button" id="evidence-ready-preview" class="operator-inbox-btn"${{evidenceReadyReview.busy || !evidenceReadyReviewComplete() ? " disabled" : ""}}>2. 生成 Ready 预览</button>`;
+    h += `<button type="button" id="evidence-ready-apply" class="operator-inbox-btn"${{evidenceReadyReview.busy || !preview.preview_id ? " disabled" : ""}}>3. 确认并标记 Ready</button>`;
+    h += `</div>`;
+    h += `<div class="evidence-editor-status ${{escAttr(evidenceReadyReview.state)}}" role="status" aria-live="polite">${{esc(evidenceReadyReview.message)}}</div>`;
     h += `</div>`;
   }}
   return h;

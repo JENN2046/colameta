@@ -283,6 +283,10 @@ def infer_risk_level(tool_name: str, action: str) -> str:
             "apply": "write",
             "discard": "preview",
         },
+        "mark_submission_evidence_ready_fields": {
+            "preview": "preview",
+            "apply": "write",
+        },
         "run_mcp_workflow": {
             "auto_preview": "preview",
             "project_status": "info",
@@ -427,6 +431,7 @@ def should_record_tool(tool_name: str, action: str) -> bool:
         "init_submission_evidence": {"apply"},
         "fill_submission_evidence_files": {"apply"},
         "manage_submission_evidence_revision": {"preview", "apply", "discard"},
+        "mark_submission_evidence_ready_fields": {"preview", "apply"},
         "todo_read": {"todo_read"},
         "todo_add": {"todo_add"},
         "todo_update": {"update"},

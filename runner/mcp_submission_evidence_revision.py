@@ -20,6 +20,7 @@ from runner.release_submission_readiness import (
     _normalize_evidence_ref,
     _normalize_submission_evidence_output_ref,
     _submission_evidence_unfinished_content_reason_codes,
+    mark_submission_evidence_ready_fields,
 )
 from runner.tool_result import error_result
 
@@ -28,6 +29,8 @@ SUBMISSION_EVIDENCE_REVISION_SOURCE = "submission_evidence_revision"
 SUBMISSION_EVIDENCE_REVISION_VERSION = "submission_evidence_revision.v1"
 SUBMISSION_EVIDENCE_REVISION_PREVIEW_TTL_SECONDS = 1800
 SUBMISSION_EVIDENCE_REVISION_PREVIEW_DIR = ".colameta/runtime/submission-evidence-revision-previews"
+SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE = "submission_evidence_ready_review"
+SUBMISSION_EVIDENCE_READY_REVIEW_VERSION = "submission_evidence_ready_review.v1"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -112,6 +115,209 @@ class MCPSubmissionEvidenceRevisionManager:
                 "does_not_expose_content_through_mcp_packets": True,
             },
         }
+
+    def ready_review_context(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return complete evidence text for explicit local human review."""
+        key = str(params.get("key") or "").strip()
+        ref = str(params.get("ref") or "").strip()
+        validation_error = self._validate_key_ref(key, ref, action="ready review context")
+        if validation_error is not None:
+            return validation_error
+        target = self._load_target(key, ref, require_review_required=False)
+        if target.get("ok") is not True:
+            return target
+        if target["reason_codes"]:
+            return self._error(
+                "SUBMISSION_EVIDENCE_READY_REVIEW_BLOCKED",
+                "Evidence still declares unfinished content and must be revised before ready review.",
+                key=key,
+                ref=target["ref"],
+                reason_codes=target["reason_codes"],
+            )
+        if target["ready_field_value"] is True:
+            return self._error(
+                "SUBMISSION_EVIDENCE_ALREADY_READY",
+                "This evidence key is already marked ready.",
+                key=key,
+                ref=target["ref"],
+            )
+        current_content = str(target["current_content"])
+        return {
+            "ok": True,
+            "source": SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_READY_REVIEW_VERSION,
+            "action": "review_context",
+            "status": "ready_for_human_review",
+            "project_root": self.project_root,
+            "key": key,
+            "ref": target["ref"],
+            "key_refs": target["manifest_refs"],
+            "ready_field": target["ready_field"],
+            "current_content": current_content,
+            "current_sha256": _sha256_text(current_content),
+            "current_size_bytes": len(current_content.encode("utf-8")),
+            "manifest_sha256": target["manifest_sha256"],
+            "required_sections": self._required_sections(key),
+            "content_included": True,
+            "local_web_only": True,
+            "authority_boundary": {
+                "authenticated_local_web_read": True,
+                "explicit_per_ref_human_review_required": True,
+                "does_not_mark_ready": True,
+                "does_not_expose_content_through_mcp_packets": True,
+            },
+        }
+
+    def ready_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        key = str(params.get("key") or "").strip()
+        reviewed_refs = params.get("reviewed_refs")
+        if key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY:
+            return self._error(
+                "SUBMISSION_EVIDENCE_KEY_INVALID",
+                "Choose a supported submission evidence key.",
+                accepted_keys=sorted(SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY),
+            )
+        targets = self._load_ready_review_targets(key)
+        if targets.get("ok") is not True:
+            return targets
+        expected_refs = targets["refs"]
+        reviewed = self._normalize_reviewed_refs(reviewed_refs)
+        if reviewed.get("ok") is not True:
+            return reviewed
+        reviewed_by_ref = reviewed["reviewed_by_ref"]
+        expected_by_ref = {item["ref"]: item["current_sha256"] for item in expected_refs}
+        if reviewed_by_ref != expected_by_ref:
+            return self._error(
+                "SUBMISSION_EVIDENCE_READY_REVIEW_INCOMPLETE",
+                "Every manifest-bound ref must be explicitly reviewed at its current digest.",
+                key=key,
+                expected_refs=[item["ref"] for item in expected_refs],
+                reviewed_refs=sorted(reviewed_by_ref),
+                missing_or_changed_refs=sorted(
+                    ref for ref, digest in expected_by_ref.items() if reviewed_by_ref.get(ref) != digest
+                ),
+            )
+        preview_id = self._store.create_id("evidence_ready_")
+        preview_record = {
+            "artifact_kind": SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_READY_REVIEW_VERSION,
+            "preview_id": preview_id,
+            "created_at": self._store.now_iso(),
+            "expires_at": self._store.expires_at(),
+            "project_root": self.project_root,
+            "action": "ready_preview",
+            "tool": "mark_submission_evidence_ready_fields",
+            "key": key,
+            "ready_field": targets["ready_field"],
+            "manifest_sha256": targets["manifest_sha256"],
+            "refs": expected_refs,
+        }
+        self._store.write(preview_id, preview_record)
+        return {
+            "ok": True,
+            "source": SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_READY_REVIEW_VERSION,
+            "action": "preview",
+            "status": "ready_preview_ready",
+            "preview_id": preview_id,
+            "project_root": self.project_root,
+            "key": key,
+            "ready_field": targets["ready_field"],
+            "manifest_sha256": targets["manifest_sha256"],
+            "reviewed_refs": expected_refs,
+            "reviewed_ref_count": len(expected_refs),
+            "content_included": False,
+            "expires_at": preview_record["expires_at"],
+            "confirmation": {
+                "required": True,
+                "preview_id": preview_id,
+                "action": "apply",
+                "key": key,
+                "manifest_sha256": targets["manifest_sha256"],
+            },
+            "authority_boundary": self._ready_authority_boundary(),
+        }
+
+    def ready_apply(self, params: dict[str, Any]) -> dict[str, Any]:
+        preview_id = str(params.get("preview_id") or "").strip()
+        if not preview_id:
+            return self._error("INVALID_PREVIEW_ID", "ready apply requires a non-empty preview_id.")
+        guard = confirmation_apply_guard(self._store, preview_id, project_root=self.project_root)
+        if guard.get("ok") is not True:
+            return self._error(
+                str(guard.get("error_code") or "PREVIEW_NOT_FOUND"),
+                "Ready review preview was not found, usable, or bound to this project.",
+                preview_id=preview_id,
+            )
+        record = guard.get("payload")
+        if not isinstance(record, dict) or record.get("artifact_kind") != SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE:
+            return self._error("PREVIEW_KIND_MISMATCH", "preview_id does not identify an evidence ready review.")
+        key = str(record.get("key") or "")
+        requested_key = str(params.get("key") or "").strip()
+        if requested_key != key:
+            return self._error(
+                "SUBMISSION_EVIDENCE_READY_PREVIEW_KEY_MISMATCH",
+                "Requested key does not match the ready review preview.",
+                requested_key=requested_key,
+                preview_key=key,
+            )
+        refs = record.get("refs")
+        if (
+            key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY
+            or record.get("tool") != "mark_submission_evidence_ready_fields"
+            or record.get("action") != "ready_preview"
+            or not _is_sha256(record.get("manifest_sha256"))
+            or not isinstance(refs, list)
+            or not refs
+        ):
+            return self._error("PREVIEW_CONTENT_INVALID", "Stored ready review preview metadata is invalid.")
+        targets = self._load_ready_review_targets(key)
+        if targets.get("ok") is not True:
+            return targets
+        if targets["manifest_sha256"] != record["manifest_sha256"]:
+            return self._error(
+                "SUBMISSION_EVIDENCE_MANIFEST_CHANGED",
+                "Submission materials changed after ready review; review the evidence again.",
+                key=key,
+            )
+        current_by_ref = {item["ref"]: item["current_sha256"] for item in targets["refs"]}
+        recorded_by_ref = {
+            str(item.get("ref") or ""): str(item.get("current_sha256") or "")
+            for item in refs
+            if isinstance(item, dict)
+        }
+        if current_by_ref != recorded_by_ref:
+            return self._error(
+                "SUBMISSION_EVIDENCE_REVIEWED_CONTENT_CHANGED",
+                "Evidence content changed after human review; review every ref again.",
+                key=key,
+                changed_refs=sorted(ref for ref, digest in current_by_ref.items() if recorded_by_ref.get(ref) != digest),
+            )
+        result = mark_submission_evidence_ready_fields(
+            self.project_root,
+            keys=[key],
+            review_confirmation="human_reviewed",
+            update_notes=False,
+            expected_manifest_sha256=str(record["manifest_sha256"]),
+            expected_ref_sha256_by_key={key: current_by_ref},
+        )
+        if result.get("ok") is not True:
+            return result
+        self._store.delete(preview_id)
+        safe_result = dict(result)
+        safe_result.update({
+            "source": SUBMISSION_EVIDENCE_READY_REVIEW_SOURCE,
+            "schema_version": SUBMISSION_EVIDENCE_READY_REVIEW_VERSION,
+            "action": "apply",
+            "status": "ready_marked",
+            "preview_id": preview_id,
+            "key": key,
+            "reviewed_refs": targets["refs"],
+            "content_included": False,
+            "manifest_notes_preserved": True,
+            "authority_boundary": self._ready_authority_boundary(),
+        })
+        return safe_result
 
     def _preview(self, params: dict[str, Any]) -> dict[str, Any]:
         key = str(params.get("key") or "").strip()
@@ -477,7 +683,121 @@ class MCPSubmissionEvidenceRevisionManager:
             "current_content": current_content,
             "reason_codes": reason_codes,
             "ready_field": SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[key],
+            "ready_field_value": manifest.get(SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[key]) is True,
+            "manifest_refs": normalized_manifest_refs,
         }
+
+    def _load_ready_review_targets(self, key: str) -> dict[str, Any]:
+        snapshot = self._read_bound_file_bytes(
+            DEFAULT_SUBMISSION_MATERIALS_REL_PATH,
+            max_bytes=RELEASE_SUBMISSION_MATERIALS_MAX_BYTES,
+            symlink_error="SUBMISSION_EVIDENCE_MANIFEST_SYMLINK_NOT_ALLOWED",
+            read_error="SUBMISSION_MATERIALS_READ_FAILED",
+        )
+        if snapshot.get("ok") is not True:
+            return snapshot
+        try:
+            manifest = json.loads(snapshot["content_bytes"].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return self._error(
+                "SUBMISSION_MATERIALS_READ_FAILED",
+                "Submission materials manifest could not be loaded for ready review.",
+                error_type=exc.__class__.__name__,
+            )
+        evidence = manifest.get("evidence") if isinstance(manifest, dict) else None
+        refs = self._normalized_manifest_refs(
+            _coerce_evidence_refs(evidence.get(key)) if isinstance(evidence, dict) else []
+        )
+        if not refs:
+            return self._error(
+                "SUBMISSION_EVIDENCE_REF_REQUIRED",
+                "Ready review requires at least one manifest-bound evidence ref.",
+                key=key,
+            )
+        loaded: list[dict[str, Any]] = []
+        manifest_sha256 = ""
+        ready_field = SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY[key]
+        for ref in refs:
+            target = self._load_target(key, ref, require_review_required=False)
+            if target.get("ok") is not True:
+                return target
+            if target["manifest_refs"] != refs or (
+                manifest_sha256 and target["manifest_sha256"] != manifest_sha256
+            ):
+                return self._error(
+                    "SUBMISSION_EVIDENCE_MANIFEST_CHANGED",
+                    "Submission materials changed while preparing ready review; try again.",
+                    key=key,
+                )
+            if target["reason_codes"]:
+                return self._error(
+                    "SUBMISSION_EVIDENCE_READY_REVIEW_BLOCKED",
+                    "Every evidence ref must be complete before human ready review.",
+                    key=key,
+                    ref=ref,
+                    reason_codes=target["reason_codes"],
+                )
+            if target["ready_field_value"] is True:
+                return self._error(
+                    "SUBMISSION_EVIDENCE_ALREADY_READY",
+                    "This evidence key is already marked ready.",
+                    key=key,
+                    ready_field=ready_field,
+                )
+            manifest_sha256 = str(target["manifest_sha256"])
+            content = str(target["current_content"])
+            loaded.append({
+                "ref": ref,
+                "current_sha256": _sha256_text(content),
+                "current_size_bytes": len(content.encode("utf-8")),
+            })
+        return {
+            "ok": True,
+            "key": key,
+            "ready_field": ready_field,
+            "manifest_sha256": manifest_sha256,
+            "refs": loaded,
+        }
+
+    def _normalize_reviewed_refs(self, reviewed_refs: Any) -> dict[str, Any]:
+        if not isinstance(reviewed_refs, list) or not reviewed_refs:
+            return self._error(
+                "SUBMISSION_EVIDENCE_READY_REVIEW_REQUIRED",
+                "ready preview requires explicit reviewed ref digests.",
+            )
+        reviewed_by_ref: dict[str, str] = {}
+        for index, item in enumerate(reviewed_refs):
+            if not isinstance(item, dict):
+                return self._error(
+                    "SUBMISSION_EVIDENCE_READY_REVIEW_INVALID",
+                    "Each reviewed ref must contain ref and current_sha256.",
+                    index=index,
+                )
+            ref = str(item.get("ref") or "").strip()
+            digest = str(item.get("current_sha256") or "").strip()
+            if not ref or not _is_sha256(digest) or ref in reviewed_by_ref:
+                return self._error(
+                    "SUBMISSION_EVIDENCE_READY_REVIEW_INVALID",
+                    "Reviewed refs must be unique and include a valid current_sha256.",
+                    index=index,
+                    ref=ref,
+                )
+            reviewed_by_ref[ref] = digest
+        return {"ok": True, "reviewed_by_ref": reviewed_by_ref}
+
+    def _validate_key_ref(self, key: str, ref: str, *, action: str) -> dict[str, Any] | None:
+        if key not in SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY:
+            return self._error(
+                "SUBMISSION_EVIDENCE_KEY_INVALID",
+                "Choose a supported submission evidence key.",
+                accepted_keys=sorted(SUBMISSION_EVIDENCE_READY_FIELD_BY_KEY),
+            )
+        if not ref:
+            return self._error(
+                "SUBMISSION_EVIDENCE_REF_REQUIRED",
+                f"{action} requires the manifest-bound evidence ref.",
+            )
+        return None
 
     def _read_bound_file_bytes(
         self,
@@ -604,6 +924,16 @@ class MCPSubmissionEvidenceRevisionManager:
             "preview_bound_apply": True,
             "ready_field_remains_false": True,
             "does_not_return_evidence_content": True,
+            "does_not_submit_app_for_review": True,
+            "does_not_publish_app": True,
+        }
+
+    def _ready_authority_boundary(self) -> dict[str, Any]:
+        return {
+            "one_evidence_key_only": True,
+            "all_manifest_refs_digest_bound": True,
+            "explicit_human_review_required": True,
+            "does_not_change_evidence_content": True,
             "does_not_submit_app_for_review": True,
             "does_not_publish_app": True,
         }
