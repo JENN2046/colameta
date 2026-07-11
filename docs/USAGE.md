@@ -882,6 +882,9 @@ flags. Reuse is fail-closed: the fixed local file must be a same-owner,
 non-symlink, non-group/world-writable regular file of at most 1 MiB, and its
 schema, digest, project, exact candidate/expected HEAD, public URL, and freshness
 must still verify. Explicit new evidence always wins over a stored receipt.
+The writer uses a unique temporary file, forces mode `0600`, and then replaces
+the target atomically, so a group-writable process umask cannot create a receipt
+that the loader immediately rejects.
 
 Never put these into evidence:
 

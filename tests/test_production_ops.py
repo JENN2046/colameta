@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -1368,6 +1369,43 @@ class ProductionOpsTests(unittest.TestCase):
         assert second["checks"]["connector_smoke"]["evidence_source"] == "persisted_ops_status_receipt"
         assert second["connector_smoke_receipt"]["status"] == "loaded"
         assert second["connector_smoke_receipt"]["candidate_head"] == HEAD
+
+    def test_status_writer_forces_private_mode_under_group_writable_umask(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        status_path.parent.mkdir()
+        status_path.write_text("stale\n", encoding="utf-8")
+        status_path.chmod(0o664)
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        previous_umask = os.umask(0o002)
+        try:
+            write_status_packet(str(status_path), packet, project_root=str(self.project), json_dumps=json.dumps)
+        finally:
+            os.umask(previous_umask)
+
+        assert status_path.stat().st_mode & 0o777 == 0o600
+        reloaded = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+        assert reloaded["connector_smoke_receipt"]["status"] == "loaded"
+        assert reloaded["connector_smoke_ready"] is True
 
     def test_status_receipt_is_rejected_after_candidate_head_changes(self) -> None:
         from runner.production_ops import build_production_ops_packet, write_status_packet

@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import tarfile
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -217,11 +218,24 @@ def write_status_packet(path: str, packet: dict[str, Any], *, project_root: str,
     resolved = validate_status_write_path(path, project_root=project_root)
     parent = os.path.dirname(resolved)
     os.makedirs(parent, exist_ok=True)
-    tmp = f"{resolved}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(json_dumps(packet))
-        handle.write("\n")
-    os.replace(tmp, resolved)
+    fd, tmp = tempfile.mkstemp(prefix=f".{Path(resolved).name}.", suffix=".tmp", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json_dumps(packet))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, resolved)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
     return resolved
 
 
