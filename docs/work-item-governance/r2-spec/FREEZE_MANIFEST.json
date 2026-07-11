@@ -1,0 +1,167 @@
+{
+  "schema_version": "wig_p3_canary_a1_r2_spec_freeze_manifest.v3",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "supersedes_freeze_manifest_sha256": "5272431b672489d8ee810fd9fb51f97011bbdc22259bf1b0467d240439e5baf3",
+  "generated_at": "2026-07-11T18:54:28Z",
+  "status": "SPEC_CANDIDATE_READY_FOR_INDEPENDENT_REVIEW",
+  "source_baseline": {
+    "commit": "53d8939af22b019b2df2b555b85869ac39c5bba2",
+    "tree": "255caefec1fcbe2c56f4c19673cc8c37cefe2427",
+    "branch": "main",
+    "role": "accepted_core_baseline",
+    "valid_as_r2_final_commit": false
+  },
+  "package_binding": {
+    "file_count_excluding_manifest": 12,
+    "total_bytes_excluding_manifest": 193108,
+    "file_list_root_algorithm": "sha256(concatenated UTF-8 '<sha256>  <relative_path>\\n' lines sorted bytewise by relative_path)",
+    "file_list_root_sha256": "355f0a90b21149ffef8fe11116865d99e2283fdc5be9a49dd8a93eecc4fb7368",
+    "manifest_self_digest_included": false,
+    "files": [
+      {
+        "path": "docs/work-item-governance/R2_SPEC_FREEZE.md",
+        "bytes": 39553,
+        "sha256": "19ef73cc265c1f137e56fc3c250280d759a0af17fca0926e04c05b584aeefe45"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/S1_CLOSEOUT_RECEIPT.json",
+        "bytes": 8525,
+        "sha256": "f96df54f515bcea9b8c69d1bd60574c2b45c0ec99a406fd7906e8b98d7fd3ff2"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/activation-envelope.v1.schema.json",
+        "bytes": 6839,
+        "sha256": "1384acb47aca5318ae4f805bb852e18f381b8777cf4836614cd1058215002df7"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/activation-lease-event.v1.schema.json",
+        "bytes": 12355,
+        "sha256": "7c5c385d0c28f63de904e19ef7dc43dd388920c4026a45d83d8a1f8f0bc7700d"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/activation-lease.v1.schema.json",
+        "bytes": 24194,
+        "sha256": "3cadfb18823e6d3d294488863048a490950c85e0071eae0bda6e0557610a6561"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/authoritative-canary-tool-allowlist.v1.json",
+        "bytes": 6281,
+        "sha256": "1ab80b07ca8a7c3482faa2885f7a8b35b61766273310add6ae14b007695d17d0"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/negative-test-matrix.v1.json",
+        "bytes": 18246,
+        "sha256": "acbda3a26d7e28e3a6f1821c45b5e68b539abc88b695683f2f1d7c0d76ee6fc6"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/preflight-receipt.v1.schema.json",
+        "bytes": 14409,
+        "sha256": "ba0ba8e8e9e1c3dde3f7927199483fea29696ab7fe8d210ae1cca30dcf75832d"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/r2-closeout-receipt.v1.schema.json",
+        "bytes": 28177,
+        "sha256": "5addaae08cf244695d8c717702ae270f76fa6a9f37078b5d36ea980d0f39eaf1"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/synthetic-fixture-contract.v1.schema.json",
+        "bytes": 15097,
+        "sha256": "bb37d80b5fccbedf5dbb7542eb86e3e5059405852d1328486746a0124af0198e"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/work-item-write-command-matrix.v1.json",
+        "bytes": 7882,
+        "sha256": "b4eefb9ad535442a2c0888a9b53497a2af1ad4d8a25fd8309e85b027224b4caa"
+      },
+      {
+        "path": "docs/work-item-governance/r2-spec/write-path-inventory.v1.json",
+        "bytes": 11550,
+        "sha256": "9bec4696e1c0728005c514bfd017c489197a93e24ef409627267bd53a4a7e6f3"
+      }
+    ]
+  },
+  "frozen_counts": {
+    "authoritative_canary_tools": 14,
+    "work_item_write_commands": 16,
+    "allowed_work_item_write_commands": 7,
+    "denied_work_item_write_commands": 9,
+    "minimum_negative_tests": 81,
+    "maximum_lease_events": 40
+  },
+  "validation": {
+    "all_json_parsed_without_duplicate_keys": true,
+    "six_json_schemas_meta_validated": true,
+    "strict_rfc3339_checker_registered_and_tested": true,
+    "source_apply_matrix_exact_match": true,
+    "allowlist_unique_exact_count": true,
+    "allowed_write_matrix_lease_allowlist_exact_match": true,
+    "denied_write_matrix_lease_denylist_exact_match": true,
+    "lease_prepared_claimed_active_conditionals_validated": true,
+    "lease_monotonic_deadline_shape_validated": true,
+    "authenticated_request_context_exact_lease_binding_required": true,
+    "complete_runtime_path_and_process_identity_binding_validated": true,
+    "machine_wire_contracts_validated": true,
+    "fixture_cross_field_semantics_required": true,
+    "lease_event_lifecycle_semantics_validated": true,
+    "closeout_positive_instance_validated": true,
+    "closeout_exact_zero_table_names_validated": true,
+    "closeout_exact_lease_and_evidence_export_binding_validated": true,
+    "adversarial_false_pass_receipts_rejected": true,
+    "review_endpoint_exact_bytes_validated": false,
+    "review_findings_closed": 23,
+    "credential_material_present": false
+  },
+  "review_bundle": {
+    "path": "docs/WIG-P3-CANARY-A1-R2-S1-R3-review/manifest.json",
+    "git_tracking": "EXCLUDED_BY_LOCAL_GIT_INFO_EXCLUDE",
+    "contains_credentials": false,
+    "contains_tokens": false,
+    "contains_ledger_or_backup_bytes": false,
+    "independent_review": "PENDING"
+  },
+  "protected_user_assets": {
+    "modified_by_spec_preparation": false,
+    "staged": false,
+    "committed": false,
+    "assets": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "93f35d00c48c99d357adc74101d5944a809bc5a8e54347c4470ba51e41b1fbef"
+      },
+      {
+        "path": "AGENTS - 副本.amd",
+        "sha256": "6a0ca4bfeaccc8f7ce360f33e05a4a970fa10903dcc425c8cc59b479e6ee8152"
+      },
+      {
+        "path": "AGENTS - 副本.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      },
+      {
+        "path": "AGENTS.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      }
+    ]
+  },
+  "runtime_boundary": {
+    "existing_shadow_canary_restarted": false,
+    "a1_snapshot_refreshed": false,
+    "gate_mode_changed": false,
+    "authoritative_activation_performed": false,
+    "stable_promotion_performed": false,
+    "push_performed": false,
+    "existing_service_modified": false
+  },
+  "authority": {
+    "spec_preparation": "AUTHORIZED_AND_COMPLETED",
+    "independent_spec_review": "PENDING",
+    "implementation": "NOT_AUTHORIZED",
+    "migration": "NOT_AUTHORIZED",
+    "new_canary_deployment": "NOT_AUTHORIZED",
+    "runtime_restart": "NOT_AUTHORIZED",
+    "snapshot_refresh": "NOT_AUTHORIZED",
+    "authoritative_activation": "NOT_AUTHORIZED",
+    "commit": "NOT_AUTHORIZED",
+    "push": "NOT_AUTHORIZED",
+    "stable_promotion": "NOT_AUTHORIZED"
+  }
+}

@@ -66,7 +66,7 @@ def test_explicit_create_is_idempotent_and_has_secure_sqlite_settings(tmp_path: 
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         connection.execute("PRAGMA foreign_keys=ON")
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_preview_is_ttl_bound_project_bound_and_content_bound(tmp_path: Path) -> None:

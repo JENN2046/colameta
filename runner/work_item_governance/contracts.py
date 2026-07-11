@@ -4,7 +4,7 @@ import re
 from typing import Final
 
 
-CURRENT_LEDGER_SCHEMA_VERSION: Final = 4
+CURRENT_LEDGER_SCHEMA_VERSION: Final = 5
 LEDGER_RELATIVE_PATH: Final = ".colameta/ledger/work-items.sqlite3"
 LEDGER_DATA_CLASSIFICATION: Final = "project_local_durable"
 
@@ -67,6 +67,9 @@ ID_PREFIXES: Final = {
     "attempt_event": "attempt_event",
     "acceptance_manifest": "acceptance_manifest",
     "preview": "preview",
+    "activation_lease": "lease",
+    "activation_lease_event": "lease_event",
+    "activation_envelope": "envelope",
 }
 
 UUID7_TEXT_PATTERN: Final = (

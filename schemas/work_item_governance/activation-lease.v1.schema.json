@@ -1,0 +1,735 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/specs/work-item-governance/activation-lease.v1.schema.json",
+  "title": "ColaMeta Authoritative Canary Activation Lease v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lease_id",
+    "authorization_id",
+    "authorization_digest",
+    "activation_envelope_digest",
+    "spec_manifest_digest",
+    "activation_envelope_schema_digest",
+    "synthetic_fixture_schema_digest",
+    "preflight_receipt_schema_digest",
+    "lease_event_schema_digest",
+    "source_binding",
+    "runtime_binding",
+    "principal_binding",
+    "bootstrap",
+    "window",
+    "scope",
+    "fixture_bindings",
+    "quotas",
+    "usage",
+    "policy",
+    "maintenance",
+    "failure_behavior",
+    "status",
+    "state_version",
+    "created_at",
+    "updated_at"
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "maxLength": 64
+    },
+    "work_item_id": {
+      "type": "string",
+      "pattern": "^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^attempt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^artifact_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^decision_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "gate_event_id": {
+      "type": "string",
+      "pattern": "^gate_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "work_item_activation_lease.v1"
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "authorization_id": {
+      "type": "string",
+      "pattern": "^WIG-P3-CANARY-A1-R2(?:-[A-Z0-9]+)*$",
+      "maxLength": 128
+    },
+    "authorization_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_envelope_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "spec_manifest_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_envelope_schema_digest": {"$ref": "#/$defs/sha256"},
+    "synthetic_fixture_schema_digest": {"$ref": "#/$defs/sha256"},
+    "preflight_receipt_schema_digest": {"$ref": "#/$defs/sha256"},
+    "lease_event_schema_digest": {"$ref": "#/$defs/sha256"},
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core_baseline_commit",
+        "implementation_commit",
+        "implementation_tree",
+        "wheel_sha256"
+      ],
+      "properties": {
+        "core_baseline_commit": {
+          "const": "53d8939af22b019b2df2b555b85869ac39c5bba2"
+        },
+        "implementation_commit": {
+          "allOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}
+          ]
+        },
+        "implementation_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "wheel_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "runtime_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "runtime_instance_nonce",
+        "expected_process_identity",
+        "claimed_process_identity",
+        "listener_attested_at",
+        "listener_attestation_digest",
+        "authenticated_request_context_binding_digest",
+        "monotonic_clock",
+        "monotonic_claim_ns",
+        "monotonic_deadline_ns",
+        "bind_address",
+        "port",
+        "canary_root_digest",
+        "activation_envelope_path_digest",
+        "claimed_activation_envelope_path_digest",
+        "runtime_executable_path_digest",
+        "cwd_path_digest",
+        "settings_path_digest",
+        "home_path_digest",
+        "xdg_config_path_digest",
+        "xdg_state_path_digest",
+        "xdg_cache_path_digest",
+        "registry_path_digest",
+        "registry_project_count",
+        "project_name",
+        "project_root_digest",
+        "ledger_path_digest",
+        "backup_path_digest",
+        "token_file_path_digest",
+        "fixture_root_path_digest",
+        "ledger_schema_version",
+        "database_generation",
+        "preflight_receipt_digest",
+        "preflight_observed_at",
+        "preflight_valid_until",
+        "maximum_preflight_age_seconds",
+        "fresh_ledger_baseline_digest",
+        "pre_activation_backup_receipt_digest",
+        "pre_activation_backup_sha256",
+        "tool_allowlist_digest",
+        "command_matrix_digest",
+        "global_registry_fallback",
+        "public_endpoint_created",
+        "relay_enabled",
+        "tunnel_enabled",
+        "proxy_enabled"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "runtime_instance_nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{32,256}$"
+        },
+        "expected_process_identity": {"$ref": "#/$defs/sha256"},
+        "claimed_process_identity": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/sha256"}
+          ]
+        },
+        "listener_attested_at": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/timestamp"}
+          ]
+        },
+        "listener_attestation_digest": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/sha256"}
+          ]
+        },
+        "authenticated_request_context_binding_digest": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/sha256"}
+          ]
+        },
+        "monotonic_clock": {"const": "CLOCK_MONOTONIC"},
+        "monotonic_claim_ns": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "integer", "minimum": 0}
+          ]
+        },
+        "monotonic_deadline_ns": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "integer", "minimum": 1}
+          ]
+        },
+        "bind_address": {
+          "const": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "canary_root_digest": {"$ref": "#/$defs/sha256"},
+        "activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "claimed_activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_executable_path_digest": {"$ref": "#/$defs/sha256"},
+        "cwd_path_digest": {"$ref": "#/$defs/sha256"},
+        "settings_path_digest": {"$ref": "#/$defs/sha256"},
+        "home_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_config_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_state_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_cache_path_digest": {"$ref": "#/$defs/sha256"},
+        "registry_path_digest": {"$ref": "#/$defs/sha256"},
+        "registry_project_count": {"const": 1},
+        "project_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "project_root_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ledger_path_digest": {"$ref": "#/$defs/sha256"},
+        "backup_path_digest": {"$ref": "#/$defs/sha256"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"},
+        "fixture_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_schema_version": {"const": 5},
+        "database_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preflight_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "preflight_observed_at": {"$ref": "#/$defs/timestamp"},
+        "preflight_valid_until": {"$ref": "#/$defs/timestamp"},
+        "maximum_preflight_age_seconds": {"const": 120},
+        "fresh_ledger_baseline_digest": {"$ref": "#/$defs/sha256"},
+        "pre_activation_backup_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "pre_activation_backup_sha256": {"$ref": "#/$defs/sha256"},
+        "tool_allowlist_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "command_matrix_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "global_registry_fallback": {"const": false},
+        "public_endpoint_created": {"const": false},
+        "relay_enabled": {"const": false},
+        "tunnel_enabled": {"const": false},
+        "proxy_enabled": {"const": false}
+      }
+    },
+    "principal_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal_id",
+        "principal_kind",
+        "session_ref",
+        "caller_auth_mode",
+        "principal_authenticated_by",
+        "permissions"
+      ],
+      "properties": {
+        "principal_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "principal_kind": {"enum": ["human", "service", "agent"]},
+        "session_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "caller_auth_mode": {
+          "const": "token"
+        },
+        "principal_authenticated_by": {
+          "const": "local_session"
+        },
+        "permissions": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "work_item.accept"},
+            {"const": "work_item.approve"},
+            {"const": "work_item.cancel"},
+            {"const": "work_item.ready"},
+            {"const": "work_item.return_for_revision"},
+            {"const": "work_item.start_delivery"},
+            {"const": "work_item.submit"}
+          ],
+          "items": false,
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "activation_envelope_source",
+        "listener_before_claim",
+        "claim_transaction",
+        "process_identity_algorithm",
+        "envelope_claim_operation",
+        "unclaimed_envelope_after_claim",
+        "claim_recovery",
+        "request_dispatch_before_listener_attestation",
+        "listener_attestation_event",
+        "claim_reusable_after_failure",
+        "claim_reusable_after_process_exit"
+      ],
+      "properties": {
+        "mode": {"const": "one_shot_pre_listener_process_claim"},
+        "activation_envelope_source": {"const": "isolated_0600_file"},
+        "listener_before_claim": {"const": false},
+        "claim_transaction": {"const": "BEGIN_IMMEDIATE"},
+        "process_identity_algorithm": {
+          "const": "sha256(canonical_json({pid,process_start_ticks,boot_id,executable_sha256,runtime_instance_nonce}))"
+        },
+        "envelope_claim_operation": {
+          "const": "atomic_noreplace_move_to_process_identity_claim_path_then_fsync_parent"
+        },
+        "unclaimed_envelope_after_claim": {"const": "must_be_absent"},
+        "claim_recovery": {"const": "deny_reuse_require_new_authorization"},
+        "request_dispatch_before_listener_attestation": {"const": false},
+        "listener_attestation_event": {"const": "listener_attested"},
+        "claim_reusable_after_failure": {"const": false},
+        "claim_reusable_after_process_exit": {"const": false}
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issued_at", "not_before", "expires_at", "maximum_runtime_seconds"],
+      "properties": {
+        "issued_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "not_before": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "maximum_runtime_seconds": {
+          "const": 1800
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin_kind",
+        "allowed_origin_prefix",
+        "authorized_work_item_id",
+        "synthetic_fixture_contract_digest",
+        "authorized_create_command_digest",
+        "authorized_task_version_payload_digests",
+        "objective_ref_prefix",
+        "fixture_root_digest",
+        "artifact_uri_scheme",
+        "allowed_artifact_kinds",
+        "external_associations_allowed",
+        "plan_version_refs_allowed",
+        "real_git_commit_artifacts_allowed"
+      ],
+      "properties": {
+        "origin_kind": {
+          "const": "manual"
+        },
+        "allowed_origin_prefix": {
+          "const": "synthetic://WIG-P3-AUTH-CANARY-A1-R2/"
+        },
+        "authorized_work_item_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/work_item_id"}
+          ]
+        },
+        "synthetic_fixture_contract_digest": {"$ref": "#/$defs/sha256"},
+        "authorized_create_command_digest": {"$ref": "#/$defs/sha256"},
+        "authorized_task_version_payload_digests": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sha256"}
+        },
+        "objective_ref_prefix": {
+          "const": "synthetic://WIG-P3-AUTH-CANARY-A1-R2/objective/"
+        },
+        "fixture_root_digest": {"$ref": "#/$defs/sha256"},
+        "artifact_uri_scheme": {"const": "file"},
+        "allowed_artifact_kinds": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "evidence_receipt"},
+            {"const": "report"},
+            {"const": "test_report"},
+            {"const": "validation"}
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "external_associations_allowed": {"const": false},
+        "plan_version_refs_allowed": {"const": false},
+        "real_git_commit_artifacts_allowed": {"const": false}
+      }
+    },
+    "fixture_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_ids",
+        "artifact_ids",
+        "decision_ids",
+        "gate_event_ids"
+      ],
+      "properties": {
+        "attempt_ids": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/attempt_id"}
+        },
+        "artifact_ids": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/artifact_id"}
+        },
+        "decision_ids": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/decision_id"}
+        },
+        "gate_event_ids": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/gate_event_id"}
+        }
+      }
+    },
+    "quotas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_new_work_items",
+        "maximum_task_versions",
+        "maximum_runtime_attempts",
+        "maximum_artifacts",
+        "maximum_decisions",
+        "maximum_applied_gate_events",
+        "maximum_rejected_gate_events",
+        "maximum_gate_events_total",
+        "maximum_lease_events"
+      ],
+      "properties": {
+        "maximum_new_work_items": {"const": 1},
+        "maximum_task_versions": {"const": 2},
+        "maximum_runtime_attempts": {"const": 2},
+        "maximum_artifacts": {"const": 4},
+        "maximum_decisions": {"const": 4},
+        "maximum_applied_gate_events": {"const": 8},
+        "maximum_rejected_gate_events": {"const": 8},
+        "maximum_gate_events_total": {"const": 16},
+        "maximum_lease_events": {"const": 40}
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "new_work_items",
+        "task_versions",
+        "runtime_attempts",
+        "artifacts",
+        "decisions",
+        "applied_gate_events",
+        "rejected_gate_events",
+        "gate_events_total",
+        "lease_events"
+      ],
+      "properties": {
+        "new_work_items": {"type": "integer", "minimum": 0, "maximum": 1},
+        "task_versions": {"type": "integer", "minimum": 0, "maximum": 2},
+        "runtime_attempts": {"type": "integer", "minimum": 0, "maximum": 2},
+        "artifacts": {"type": "integer", "minimum": 0, "maximum": 4},
+        "decisions": {"type": "integer", "minimum": 0, "maximum": 4},
+        "applied_gate_events": {"type": "integer", "minimum": 0, "maximum": 8},
+        "rejected_gate_events": {"type": "integer", "minimum": 0, "maximum": 8},
+        "gate_events_total": {"type": "integer", "minimum": 0, "maximum": 16},
+        "lease_events": {"type": "integer", "minimum": 0, "maximum": 40}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_write_commands",
+        "denied_write_commands",
+        "unknown_command",
+        "authenticated_request_context_required",
+        "request_context_mode",
+        "request_context_binding_algorithm",
+        "control_plane_domain_writes",
+        "lease_event_idempotency",
+        "fact_reconciliation"
+      ],
+      "properties": {
+        "allowed_write_commands": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "apply_work_item_create"},
+            {"const": "add_task_version"},
+            {"const": "create_execution_attempt"},
+            {"const": "complete_execution_attempt"},
+            {"const": "register_artifact_reference"},
+            {"const": "record_review_decision"},
+            {"const": "apply_work_item_transition"}
+          ],
+          "items": false,
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        },
+        "denied_write_commands": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "apply_legacy_work_item_import"},
+            {"const": "bind_historical_execution_attempt"},
+            {"const": "apply_blocker"},
+            {"const": "clear_blocker"},
+            {"const": "create_delivery_receipt"},
+            {"const": "retry_delivery"},
+            {"const": "acknowledge_delivery"},
+            {"const": "record_outbox_delivery_result"},
+            {"const": "recover_outbox_event"}
+          ],
+          "items": false,
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true
+        },
+        "unknown_command": {
+          "const": "deny"
+        },
+        "authenticated_request_context_required": {"const": true},
+        "request_context_mode": {
+          "const": "sealed_token_verified_listener_attested_context"
+        },
+        "request_context_binding_algorithm": {
+          "const": "sha256(canonical_json({lease_id,authorization_digest,claimed_process_identity,runtime_instance_nonce,listener_attestation_digest,principal_id,session_ref}))"
+        },
+        "control_plane_domain_writes": {"const": "denied"},
+        "lease_event_idempotency": {
+          "const": "new_domain_fact_at_most_one_event_exact_replay_zero_events"
+        },
+        "fact_reconciliation": {
+          "const": "actual_primary_and_denied_table_counts_must_match_lease_usage"
+        }
+      }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restore", "migration", "backup", "export"],
+      "properties": {
+        "restore": {"const": "denied_during_activation_window"},
+        "migration": {"const": "pre_activation_exact_schema_only"},
+        "backup": {"const": "control_plane_only_outside_active_window"},
+        "export": {"const": "read_only_control_plane_after_write_freeze"}
+      }
+    },
+    "failure_behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authentication_failure",
+        "ordinary_domain_rejection",
+        "hard_guard_violation",
+        "expiration",
+        "internal_guard_error",
+        "reads_after_write_freeze"
+      ],
+      "properties": {
+        "authentication_failure": {"const": "reject_without_lease_mutation"},
+        "ordinary_domain_rejection": {"const": "reject_or_record_domain_fact_without_lease_freeze"},
+        "hard_guard_violation": {"const": "reject_domain_mutation_and_write_freeze_lease"},
+        "expiration": {"const": "reject_preview_and_write_even_without_watchdog"},
+        "internal_guard_error": {"const": "reject_domain_mutation_and_write_freeze_lease"},
+        "reads_after_write_freeze": {"const": "allowed_for_closeout"}
+      }
+    },
+    "status": {
+      "enum": ["prepared", "claimed", "active", "write_frozen", "expired", "closed", "revoked"]
+    },
+    "state_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "prepared"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "state_version": {"const": 0},
+          "usage": {
+            "properties": {"lease_events": {"const": 1}}
+          },
+          "runtime_binding": {
+            "properties": {
+              "claimed_process_identity": {"type": "null"},
+              "listener_attested_at": {"type": "null"},
+              "listener_attestation_digest": {"type": "null"},
+              "authenticated_request_context_binding_digest": {"type": "null"},
+              "monotonic_claim_ns": {"type": "null"},
+              "monotonic_deadline_ns": {"type": "null"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"const": "claimed"}
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "state_version": {"const": 1},
+          "usage": {
+            "properties": {"lease_events": {"const": 2}}
+          },
+          "runtime_binding": {
+            "properties": {
+              "claimed_process_identity": {"$ref": "#/$defs/sha256"},
+              "listener_attested_at": {"type": "null"},
+              "listener_attestation_digest": {"type": "null"},
+              "authenticated_request_context_binding_digest": {"type": "null"},
+              "monotonic_claim_ns": {"type": "integer", "minimum": 0},
+              "monotonic_deadline_ns": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"enum": ["active", "write_frozen", "expired", "closed"]}
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "state_version": {"minimum": 2},
+          "usage": {
+            "properties": {"lease_events": {"minimum": 3}}
+          },
+          "runtime_binding": {
+            "properties": {
+              "claimed_process_identity": {"$ref": "#/$defs/sha256"},
+              "listener_attested_at": {"$ref": "#/$defs/timestamp"},
+              "listener_attestation_digest": {"$ref": "#/$defs/sha256"},
+              "authenticated_request_context_binding_digest": {"$ref": "#/$defs/sha256"},
+              "monotonic_claim_ns": {"type": "integer", "minimum": 0},
+              "monotonic_deadline_ns": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"const": "revoked"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "state_version": {"minimum": 1},
+          "usage": {
+            "properties": {"lease_events": {"minimum": 2}}
+          }
+        }
+      }
+    }
+  ]
+}

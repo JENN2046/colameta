@@ -63,6 +63,26 @@ SIDE_CONTEXT_FORBIDDEN_IMPORT_PREFIXES = (
     "runner.work_item_governance.service",
 )
 WORK_ITEM_CORE_PACKAGE = "runner.work_item_governance"
+LEASE_CONTROLLED_WRITE_METHODS = (
+    "apply_work_item_create",
+    "add_task_version",
+    "create_execution_attempt",
+    "complete_execution_attempt",
+    "register_artifact_reference",
+    "record_review_decision",
+    "apply_work_item_transition",
+)
+LEASE_DENIED_WRITE_METHODS = (
+    "apply_legacy_work_item_import",
+    "bind_historical_execution_attempt",
+    "apply_blocker",
+    "clear_blocker",
+    "create_delivery_receipt",
+    "retry_delivery",
+    "acknowledge_delivery",
+    "record_outbox_delivery_result",
+    "recover_outbox_event",
+)
 
 
 def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
@@ -112,6 +132,36 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 violations.append(
                     {"rule": "transport_bypasses_application_command", "path": str(path.relative_to(root)), "import": imported}
                 )
+    service_path = core_root / "service.py"
+    if service_path.is_file():
+        service_calls = _method_calls(service_path)
+        for method in LEASE_CONTROLLED_WRITE_METHODS:
+            required_call = "_apply_create" if method == "apply_work_item_create" else "_activation_begin"
+            if required_call not in service_calls.get(method, set()):
+                violations.append(
+                    {
+                        "rule": "activation_lease_write_path_missing",
+                        "path": str(service_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+        if "_activation_begin" not in service_calls.get("_apply_create", set()):
+            violations.append(
+                {
+                    "rule": "activation_lease_create_transaction_missing",
+                    "path": str(service_path.relative_to(root)),
+                    "import": "_apply_create",
+                }
+            )
+        for method in LEASE_DENIED_WRITE_METHODS:
+            if "_deny_activation_command" not in service_calls.get(method, set()):
+                violations.append(
+                    {
+                        "rule": "activation_denied_write_path_missing",
+                        "path": str(service_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
     return {
         "ok": not violations,
         "schema_version": "work_item_architecture_check.v1",
@@ -149,3 +199,23 @@ def _imports(path: Path) -> list[str]:
             imports.append(node.module)
             imports.extend(f"{node.module}.{alias.name}" for alias in node.names)
     return imports
+
+
+def _method_calls(path: Path) -> dict[str, set[str]]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return {}
+    result: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls: set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                if isinstance(child.func, ast.Attribute):
+                    calls.add(child.func.attr)
+                elif isinstance(child.func, ast.Name):
+                    calls.add(child.func.id)
+        result[node.name] = calls
+    return result

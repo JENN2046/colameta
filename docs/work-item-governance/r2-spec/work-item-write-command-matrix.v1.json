@@ -1,0 +1,192 @@
+{
+  "schema_version": "work_item_write_command_matrix.v1",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "source_contract": "runner/work_item_mcp_adapter.py:WORK_ITEM_APPLY_TOOLS",
+  "expected_source_command_count": 16,
+  "allowed_count": 7,
+  "denied_count": 9,
+  "default_policy": "deny",
+  "commands": [
+    {
+      "name": "apply_work_item_create",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "bind_generated_id_atomically_after_first_success",
+      "quota_effect": {
+        "new_work_items": 1,
+        "task_versions": 1
+      },
+      "idempotency": "exact replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum one successful create",
+        "origin.kind must be manual",
+        "origin.ref must match allowed prefix",
+        "normalized Create digest must match synthetic Fixture contract",
+        "create and Lease Work Item binding share one transaction",
+        "after Lease binding, an exact replay of the successful Create is resolved before new-create scope rejection and returns the bound Work Item without fact, quota or Lease Event"
+      ]
+    },
+    {
+      "name": "apply_legacy_work_item_import",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "historical import is outside the synthetic Authoritative Canary"
+    },
+    {
+      "name": "add_task_version",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_only",
+      "quota_effect": {
+        "task_versions": 1
+      },
+      "idempotency": "source_event_key replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum two Task Versions including the initial version",
+        "payload digest must match the next ordered synthetic Task Version digest",
+        "current lifecycle rules still apply"
+      ]
+    },
+    {
+      "name": "create_execution_attempt",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_and_current_task_version_only",
+      "quota_effect": {
+        "runtime_attempts": 1
+      },
+      "idempotency": "source_event_key replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum two Runtime Attempts",
+        "objective and Task Version must match the next synthetic Fixture slot",
+        "submitted and terminal Work Items remain ineligible"
+      ]
+    },
+    {
+      "name": "bind_historical_execution_attempt",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "historical/reference-only execution is outside the live Canary scope"
+    },
+    {
+      "name": "complete_execution_attempt",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_and_authorized_runtime_attempt_only",
+      "quota_effect": {
+        "attempt_events": "count newly inserted completion event",
+        "artifacts": "count every nested Artifact newly inserted by completion"
+      },
+      "idempotency": "source_event_key replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "nested Artifacts share the same transaction and global Artifact quota",
+        "all nested Artifact URIs, kinds and digests match the synthetic Fixture policy",
+        "Historical Attempts never become dispatchable or completable"
+      ]
+    },
+    {
+      "name": "register_artifact_reference",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_and_task_version_only",
+      "quota_effect": {
+        "artifacts": 1
+      },
+      "idempotency": "source_event_key replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum four total Artifacts across direct and nested registration",
+        "file URI resolves below the exact Fixture root and kind is allowlisted",
+        "digest and terminal-state checks remain mandatory"
+      ]
+    },
+    {
+      "name": "record_review_decision",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_and_task_version_only",
+      "quota_effect": {
+        "decisions": 1
+      },
+      "idempotency": "source_event_key replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum four Decisions",
+        "action and Task Version match the synthetic lifecycle scenario",
+        "trusted Principal and policy-derived authority remain mandatory"
+      ]
+    },
+    {
+      "name": "apply_work_item_transition",
+      "classification": "lease_controlled_write",
+      "allowed": true,
+      "work_item_scope": "authorized_work_item_and_current_task_version_only",
+      "quota_effect": {
+        "applied_gate_events": "increment only for new transition_applied facts",
+        "rejected_gate_events": "increment only for new transition_rejected facts",
+        "gate_events_total": "increment for every new Gate Event",
+        "derived_facts": "Audit, Outbox and Acceptance Manifest remain transactionally bounded"
+      },
+      "idempotency": "preview/idempotency replay creates no fact and consumes no quota",
+      "special_invariants": [
+        "maximum eight applied Gate Events",
+        "maximum eight rejected Gate Events",
+        "maximum sixteen total Gate Events",
+        "transition and bound evidence IDs match the synthetic lifecycle scenario",
+        "Gate, Work Item CAS, Lease usage, Audit, Outbox and Acceptance Manifest share one transaction"
+      ]
+    },
+    {
+      "name": "apply_blocker",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "changes effective Gate conditions and is unnecessary for the initial Canary"
+    },
+    {
+      "name": "clear_blocker",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "changes effective Gate conditions and is unnecessary for the initial Canary"
+    },
+    {
+      "name": "create_delivery_receipt",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "Delivery is outside Phase 3 synthetic Gate activation scope"
+    },
+    {
+      "name": "retry_delivery",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "Delivery is outside Phase 3 synthetic Gate activation scope"
+    },
+    {
+      "name": "acknowledge_delivery",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "Delivery is outside Phase 3 synthetic Gate activation scope"
+    },
+    {
+      "name": "record_outbox_delivery_result",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "Outbox dispatch mutation is outside the Canary endpoint"
+    },
+    {
+      "name": "recover_outbox_event",
+      "classification": "denied",
+      "allowed": false,
+      "reason": "Outbox recovery is a separately authorized control-plane operation"
+    }
+  ],
+  "global_invariants": [
+    "all allowed writes require the exact active Lease",
+    "all allowed writes require a sealed Token-authenticated request context bound to the exact Lease, authorization, current process and persisted Listener attestation",
+    "a trusted Principal without that request context is insufficient",
+    "all denied and unknown commands fail before domain mutation",
+    "trusted Principal context is required for every allowed write",
+    "authorization and quota fields are never accepted from command bodies",
+    "every normalized command matches the Lease-bound synthetic Fixture contract",
+    "actual bounded and denied-table counts reconcile with Lease usage before every write",
+    "a newly committed command creates at most one Lease Event and exact replay creates none",
+    "idempotency resolution and quota accounting share the domain transaction"
+  ]
+}

@@ -1,0 +1,767 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/specs/work-item-governance/r2-closeout-receipt.v1.schema.json",
+  "title": "ColaMeta R2 implementation closeout receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_purpose",
+    "stage_id",
+    "generated_at",
+    "verification_window",
+    "source_binding",
+    "spec_binding",
+    "authentication",
+    "runtime_isolation",
+    "restricted_surface",
+    "fresh_ledger",
+    "activation_lease",
+    "verification",
+    "gaps",
+    "blockers",
+    "protected_user_assets",
+    "safety",
+    "result"
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_object": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "maxLength": 64
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "command_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "command", "started_at", "ended_at", "exit_code", "passed", "result", "evidence_ref", "evidence_sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "command": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "ended_at": {"$ref": "#/$defs/timestamp"},
+        "exit_code": {"type": "integer"},
+        "passed": {"type": "boolean"},
+        "result": {"type": ["string", "object", "array"]},
+        "evidence_ref": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,2048}$"
+        },
+        "evidence_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "summary", "evidence_ref", "evidence_sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "severity": {"enum": ["low", "medium", "high", "blocking"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "evidence_ref": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,2048}$"
+        },
+        "evidence_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "protected_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "wig_p3_canary_a1_r2_closeout_receipt.v1"
+    },
+    "receipt_purpose": {
+      "const": "isolated_implementation_conformance_not_deployed_canary_activation"
+    },
+    "stage_id": {
+      "const": "WIG-P3-CANARY-A1-R2"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "verification_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at", "timezone"],
+      "properties": {
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "ended_at": {"$ref": "#/$defs/timestamp"},
+        "timezone": {"const": "UTC"}
+      }
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core_baseline_commit",
+        "implementation_commit",
+        "implementation_tree",
+        "wheel_sha256",
+        "tracked_source_clean"
+      ],
+      "properties": {
+        "core_baseline_commit": {
+          "const": "53d8939af22b019b2df2b555b85869ac39c5bba2"
+        },
+        "implementation_commit": {
+          "allOf": [
+            {"$ref": "#/$defs/git_object"},
+            {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}
+          ]
+        },
+        "implementation_tree": {"$ref": "#/$defs/git_object"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"},
+        "tracked_source_clean": {"const": true}
+      }
+    },
+    "spec_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "freeze_manifest_sha256",
+        "tool_allowlist_sha256",
+        "command_matrix_sha256",
+        "write_path_inventory_sha256",
+        "activation_envelope_schema_sha256",
+        "synthetic_fixture_schema_sha256",
+        "preflight_receipt_schema_sha256",
+        "lease_schema_sha256",
+        "lease_event_schema_sha256",
+        "closeout_receipt_schema_sha256",
+        "negative_test_matrix_sha256",
+        "json_schema_dialect",
+        "format_assertions_enabled",
+        "date_time_checker"
+      ],
+      "properties": {
+        "freeze_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "tool_allowlist_sha256": {"$ref": "#/$defs/sha256"},
+        "command_matrix_sha256": {"$ref": "#/$defs/sha256"},
+        "write_path_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "activation_envelope_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "synthetic_fixture_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "preflight_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "lease_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "lease_event_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "closeout_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "negative_test_matrix_sha256": {"$ref": "#/$defs/sha256"},
+        "json_schema_dialect": {"const": "https://json-schema.org/draft/2020-12/schema"},
+        "format_assertions_enabled": {"const": true},
+        "date_time_checker": {"const": "explicit_strict_rfc3339_registered"}
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auth_mode",
+        "token_source",
+        "token_generation_algorithm",
+        "token_entropy_bits",
+        "token_generation_evidence_digest",
+        "auth_file_mode",
+        "auth_parent_directories_mode",
+        "no_token_rejected",
+        "wrong_token_rejected",
+        "weak_token_configuration_rejected",
+        "correct_token_accepted",
+        "token_absent_from_public_surfaces",
+        "one_time_token_revoked_after_test",
+        "revoked_token_rejected"
+      ],
+      "properties": {
+        "auth_mode": {"const": "token"},
+        "token_source": {"const": "isolated_xdg_auth_json"},
+        "token_generation_algorithm": {"const": "os_csprng_256_bits_minimum_base64url"},
+        "token_entropy_bits": {"type": "integer", "minimum": 256, "maximum": 4096},
+        "token_generation_evidence_digest": {"$ref": "#/$defs/sha256"},
+        "auth_file_mode": {"const": "0600"},
+        "auth_parent_directories_mode": {"enum": ["0700", "stricter_than_0700"]},
+        "no_token_rejected": {"const": true},
+        "wrong_token_rejected": {"const": true},
+        "weak_token_configuration_rejected": {"const": true},
+        "correct_token_accepted": {"const": true},
+        "token_absent_from_public_surfaces": {"const": true},
+        "one_time_token_revoked_after_test": {"const": true},
+        "revoked_token_rejected": {"const": true}
+      }
+    },
+    "runtime_isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "home_under_canary_root",
+        "xdg_config_under_canary_root",
+        "xdg_state_under_canary_root",
+        "xdg_cache_under_canary_root",
+        "registry_under_canary_root",
+        "global_registry_not_selected",
+        "global_registry_not_open",
+        "registry_project_count",
+        "runtime_executable_under_canary_root",
+        "cwd_under_canary_root",
+        "project_root_under_canary_root",
+        "settings_under_canary_root",
+        "ledger_under_canary_root",
+        "backup_under_canary_root",
+        "token_file_under_canary_root",
+        "fixture_root_under_canary_root",
+        "activation_envelope_under_canary_root",
+        "claimed_activation_envelope_under_canary_root",
+        "bind_address",
+        "port",
+        "preclaim_listener_count",
+        "postclaim_listener_count",
+        "listener_attestation_digest",
+        "authenticated_request_context_binding_digest",
+        "request_dispatch_before_listener_attestation",
+        "public_endpoint_created",
+        "relay_enabled",
+        "tunnel_enabled",
+        "proxy_enabled",
+        "background_side_effect_workers_started"
+      ],
+      "properties": {
+        "home_under_canary_root": {"const": true},
+        "xdg_config_under_canary_root": {"const": true},
+        "xdg_state_under_canary_root": {"const": true},
+        "xdg_cache_under_canary_root": {"const": true},
+        "registry_under_canary_root": {"const": true},
+        "global_registry_not_selected": {"const": true},
+        "global_registry_not_open": {"const": true},
+        "registry_project_count": {"const": 1},
+        "runtime_executable_under_canary_root": {"const": true},
+        "cwd_under_canary_root": {"const": true},
+        "project_root_under_canary_root": {"const": true},
+        "settings_under_canary_root": {"const": true},
+        "ledger_under_canary_root": {"const": true},
+        "backup_under_canary_root": {"const": true},
+        "token_file_under_canary_root": {"const": true},
+        "fixture_root_under_canary_root": {"const": true},
+        "activation_envelope_under_canary_root": {"const": true},
+        "claimed_activation_envelope_under_canary_root": {"const": true},
+        "bind_address": {"const": "127.0.0.1"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "preclaim_listener_count": {"const": 0},
+        "postclaim_listener_count": {"const": 1},
+        "listener_attestation_digest": {"$ref": "#/$defs/sha256"},
+        "authenticated_request_context_binding_digest": {"$ref": "#/$defs/sha256"},
+        "request_dispatch_before_listener_attestation": {"const": false},
+        "public_endpoint_created": {"const": false},
+        "relay_enabled": {"const": false},
+        "tunnel_enabled": {"const": false},
+        "proxy_enabled": {"const": false},
+        "background_side_effect_workers_started": {"const": false}
+      }
+    },
+    "restricted_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "listed_tool_count",
+        "listed_tools_sha256",
+        "definition_dispatch_exact_match",
+        "hidden_jsonrpc_call_rejected",
+        "direct_alias_rejected",
+        "actions_disabled",
+        "agent_dispatch_enforced"
+      ],
+      "properties": {
+        "profile": {"const": "authoritative_canary"},
+        "listed_tool_count": {"const": 14},
+        "listed_tools_sha256": {"$ref": "#/$defs/sha256"},
+        "definition_dispatch_exact_match": {"const": true},
+        "hidden_jsonrpc_call_rejected": {"const": true},
+        "direct_alias_rejected": {"const": true},
+        "actions_disabled": {"const": true},
+        "agent_dispatch_enforced": {"const": true}
+      }
+    },
+    "fresh_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "database_generation",
+        "business_fact_counts_before",
+        "external_associations_before",
+        "attempt_events_before",
+        "prior_activation_leases_for_authorization",
+        "fresh_ledger_baseline_digest",
+        "preflight_receipt_digest",
+        "preflight_observed_at",
+        "preflight_valid_until",
+        "preflight_age_seconds_at_claim",
+        "preview_signing_key_preprovisioned",
+        "backup_receipt_digest",
+        "backup_sha256",
+        "integrity_check",
+        "foreign_key_violations"
+      ],
+      "properties": {
+        "schema_version": {"const": 5},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "business_fact_counts_before": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "work_items",
+            "task_versions",
+            "execution_attempts",
+            "artifact_refs",
+            "decision_records",
+            "gate_events",
+            "acceptance_manifests",
+            "delivery_receipts",
+            "audit_events",
+            "blocker_events",
+            "outbox_events",
+            "inbox_events"
+          ],
+          "properties": {
+            "work_items": {"const": 0},
+            "task_versions": {"const": 0},
+            "execution_attempts": {"const": 0},
+            "artifact_refs": {"const": 0},
+            "decision_records": {"const": 0},
+            "gate_events": {"const": 0},
+            "acceptance_manifests": {"const": 0},
+            "delivery_receipts": {"const": 0},
+            "audit_events": {"const": 0},
+            "blocker_events": {"const": 0},
+            "outbox_events": {"const": 0},
+            "inbox_events": {"const": 0}
+          }
+        },
+        "external_associations_before": {"const": 0},
+        "attempt_events_before": {"const": 0},
+        "prior_activation_leases_for_authorization": {"const": 0},
+        "fresh_ledger_baseline_digest": {"$ref": "#/$defs/sha256"},
+        "preflight_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "preflight_observed_at": {"$ref": "#/$defs/timestamp"},
+        "preflight_valid_until": {"$ref": "#/$defs/timestamp"},
+        "preflight_age_seconds_at_claim": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "preview_signing_key_preprovisioned": {"const": true},
+        "backup_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "backup_sha256": {"$ref": "#/$defs/sha256"},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0}
+      }
+    },
+    "activation_lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "authorization_id",
+        "authorization_digest",
+        "activation_envelope_digest",
+        "synthetic_fixture_contract_digest",
+        "claimed_envelope_path_digest",
+        "expected_process_identity",
+        "claimed_process_identity",
+        "listener_attestation_digest",
+        "authenticated_request_context_binding_digest",
+        "principal_id",
+        "principal_kind",
+        "session_ref",
+        "principal_binding_digest",
+        "evidence_export_root_path_digest",
+        "lease_snapshot_digest",
+        "lease_snapshot_export_relative_path",
+        "lease_snapshot_export_sha256",
+        "lease_event_schema_digest",
+        "lease_event_count",
+        "lease_event_root_sha256",
+        "lease_event_root_algorithm",
+        "lease_event_export_relative_path",
+        "lease_event_export_sha256",
+        "lease_event_chain_verified",
+        "lease_event_semantics_verified",
+        "lease_event_state_version_sequence_verified",
+        "final_status",
+        "final_state_version",
+        "schema_valid",
+        "one_shot_pre_listener_claim_verified",
+        "pre_listener_envelope_atomic_claim_verified",
+        "post_bind_listener_attestation_verified",
+        "valid_lease_principal_without_request_context_rejected",
+        "request_context_exact_lease_binding_verified",
+        "claimed_process_identity_verified",
+        "expected_and_claimed_process_identity_match_verified",
+        "failed_or_crashed_claim_not_reusable_verified",
+        "synthetic_fixture_contract_verified",
+        "synthetic_fixture_cross_field_semantics_verified",
+        "fresh_preflight_binding_verified",
+        "path_containment_and_digest_recomputation_verified",
+        "transactional_first_binding_verified",
+        "complete_command_matrix_verified",
+        "nested_fact_quota_verified",
+        "actual_fact_reconciliation_verified",
+        "idempotent_replay_no_double_charge_verified",
+        "idempotent_replay_no_lease_event_verified",
+        "maximum_lease_events_verified",
+        "invalid_window_semantics_rejected_verified",
+        "monotonic_deadline_bound_verified",
+        "hard_expiry_without_watchdog_verified",
+        "process_restart_invalidates_lease_verified",
+        "inactive_lease_removes_dispatch_authority_verified",
+        "background_side_effect_workers_absent_verified",
+        "direct_python_bypass_rejected",
+        "restore_during_window_rejected"
+      ],
+      "properties": {
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "authorization_id": {
+          "type": "string",
+          "pattern": "^WIG-P3-CANARY-A1-R2(?:-[A-Z0-9]+)*$",
+          "maxLength": 128
+        },
+        "authorization_digest": {"$ref": "#/$defs/sha256"},
+        "activation_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "synthetic_fixture_contract_digest": {"$ref": "#/$defs/sha256"},
+        "claimed_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "expected_process_identity": {"$ref": "#/$defs/sha256"},
+        "claimed_process_identity": {"$ref": "#/$defs/sha256"},
+        "listener_attestation_digest": {"$ref": "#/$defs/sha256"},
+        "authenticated_request_context_binding_digest": {"$ref": "#/$defs/sha256"},
+        "principal_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "principal_kind": {"enum": ["human", "service", "agent"]},
+        "session_ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "principal_binding_digest": {"$ref": "#/$defs/sha256"},
+        "evidence_export_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "lease_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "lease_snapshot_export_relative_path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,2048}$"
+        },
+        "lease_snapshot_export_sha256": {"$ref": "#/$defs/sha256"},
+        "lease_event_schema_digest": {"$ref": "#/$defs/sha256"},
+        "lease_event_count": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 40
+        },
+        "lease_event_root_sha256": {"$ref": "#/$defs/sha256"},
+        "lease_event_root_algorithm": {
+          "const": "sha256(canonical_json(event_digest_array_ordered_by_contiguous_sequence))"
+        },
+        "lease_event_export_relative_path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,2048}$"
+        },
+        "lease_event_export_sha256": {"$ref": "#/$defs/sha256"},
+        "lease_event_chain_verified": {"const": true},
+        "lease_event_semantics_verified": {"const": true},
+        "lease_event_state_version_sequence_verified": {"const": true},
+        "final_status": {
+          "enum": ["write_frozen", "expired", "closed", "revoked"]
+        },
+        "final_state_version": {"type": "integer", "minimum": 4},
+        "schema_valid": {"const": true},
+        "one_shot_pre_listener_claim_verified": {"const": true},
+        "pre_listener_envelope_atomic_claim_verified": {"const": true},
+        "post_bind_listener_attestation_verified": {"const": true},
+        "valid_lease_principal_without_request_context_rejected": {"const": true},
+        "request_context_exact_lease_binding_verified": {"const": true},
+        "claimed_process_identity_verified": {"const": true},
+        "expected_and_claimed_process_identity_match_verified": {"const": true},
+        "failed_or_crashed_claim_not_reusable_verified": {"const": true},
+        "synthetic_fixture_contract_verified": {"const": true},
+        "synthetic_fixture_cross_field_semantics_verified": {"const": true},
+        "fresh_preflight_binding_verified": {"const": true},
+        "path_containment_and_digest_recomputation_verified": {"const": true},
+        "transactional_first_binding_verified": {"const": true},
+        "complete_command_matrix_verified": {"const": true},
+        "nested_fact_quota_verified": {"const": true},
+        "actual_fact_reconciliation_verified": {"const": true},
+        "idempotent_replay_no_double_charge_verified": {"const": true},
+        "idempotent_replay_no_lease_event_verified": {"const": true},
+        "maximum_lease_events_verified": {"const": true},
+        "invalid_window_semantics_rejected_verified": {"const": true},
+        "monotonic_deadline_bound_verified": {"const": true},
+        "hard_expiry_without_watchdog_verified": {"const": true},
+        "process_restart_invalidates_lease_verified": {"const": true},
+        "inactive_lease_removes_dispatch_authority_verified": {"const": true},
+        "background_side_effect_workers_absent_verified": {"const": true},
+        "direct_python_bypass_rejected": {"const": true},
+        "restore_during_window_rejected": {"const": true}
+      }
+    },
+    "verification": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "schema_contract_validation"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "focused_negative_tests"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "concurrency_tests"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "full_pytest"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "ruff"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "architecture_checks"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "bandit_changed_scope"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "pip_audit"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "wheel_source_inventory"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "runtime_isolation_smoke"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "protected_assets_hash_check"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/command_result"},
+            {"properties": {"name": {"const": "review_bundle_accessibility"}}}
+          ]
+        }
+      ],
+      "items": false,
+      "minItems": 12,
+      "maxItems": 12,
+      "uniqueItems": true
+    },
+    "gaps": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "blockers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "protected_user_assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unchanged", "staged", "committed", "assets"],
+      "properties": {
+        "unchanged": {"const": true},
+        "staged": {"const": false},
+        "committed": {"const": false},
+        "assets": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "allOf": [
+                {"$ref": "#/$defs/protected_asset"},
+                {
+                  "properties": {
+                    "path": {"const": "AGENTS.md"},
+                    "sha256": {"const": "93f35d00c48c99d357adc74101d5944a809bc5a8e54347c4470ba51e41b1fbef"}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/protected_asset"},
+                {
+                  "properties": {
+                    "path": {"const": "AGENTS - 副本.amd"},
+                    "sha256": {"const": "6a0ca4bfeaccc8f7ce360f33e05a4a970fa10903dcc425c8cc59b479e6ee8152"}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/protected_asset"},
+                {
+                  "properties": {
+                    "path": {"const": "AGENTS - 副本.md:Zone.Identifier"},
+                    "sha256": {"const": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/protected_asset"},
+                {
+                  "properties": {
+                    "path": {"const": "AGENTS.md:Zone.Identifier"},
+                    "sha256": {"const": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"}
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existing_canary_restarted",
+        "a1_snapshot_refreshed",
+        "authoritative_activation_performed",
+        "isolated_conformance_harness_used",
+        "deployed_canary_activation_performed",
+        "existing_service_modified",
+        "stable_runtime_modified",
+        "real_work_item_used",
+        "push_performed",
+        "stable_promotion_performed"
+      ],
+      "properties": {
+        "existing_canary_restarted": {"const": false},
+        "a1_snapshot_refreshed": {"const": false},
+        "authoritative_activation_performed": {"const": false},
+        "isolated_conformance_harness_used": {"const": true},
+        "deployed_canary_activation_performed": {"const": false},
+        "existing_service_modified": {"const": false},
+        "stable_runtime_modified": {"const": false},
+        "real_work_item_used": {"const": false},
+        "push_performed": {"const": false},
+        "stable_promotion_performed": {"const": false}
+      }
+    },
+    "result": {
+      "enum": ["PASS", "PASS_WITH_GAPS", "BLOCKED"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"result": {"const": "PASS"}},
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "activation_lease": {
+            "properties": {"final_status": {"const": "closed"}}
+          },
+          "gaps": {"maxItems": 0},
+          "blockers": {"maxItems": 0}
+        },
+        "not": {
+          "anyOf": [
+            {
+              "properties": {
+                "verification": {
+                  "contains": {
+                    "properties": {"exit_code": {"not": {"const": 0}}},
+                    "required": ["exit_code"]
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "verification": {
+                  "contains": {
+                    "properties": {"passed": {"const": false}},
+                    "required": ["passed"]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"result": {"const": "PASS_WITH_GAPS"}},
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "activation_lease": {
+            "properties": {"final_status": {"const": "closed"}}
+          },
+          "gaps": {"minItems": 1},
+          "blockers": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"result": {"const": "BLOCKED"}},
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {"blockers": {"minItems": 1}}
+      }
+    }
+  ]
+}

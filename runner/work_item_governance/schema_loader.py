@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from importlib import resources
 from typing import Any
 
@@ -18,7 +20,52 @@ SCHEMA_FILES = {
     "delivery_receipt.v1": "delivery-receipt.v1.schema.json",
     "acceptance_evidence_manifest.v1": "acceptance-evidence-manifest.v1.schema.json",
     "execution_envelope.v2": "execution-envelope.v2.schema.json",
+    "work_item_activation_envelope.v1": "activation-envelope.v1.schema.json",
+    "work_item_synthetic_fixture_contract.v1": "synthetic-fixture-contract.v1.schema.json",
+    "work_item_authoritative_canary_preflight_receipt.v1": "preflight-receipt.v1.schema.json",
+    "work_item_activation_lease.v1": "activation-lease.v1.schema.json",
+    "work_item_activation_lease_event.v1": "activation-lease-event.v1.schema.json",
+    "wig_p3_canary_a1_r2_closeout_receipt.v1": "r2-closeout-receipt.v1.schema.json",
 }
+
+CONTRACT_FILES = {
+    "authoritative_canary_tool_allowlist.v1": "authoritative-canary-tool-allowlist.v1.json",
+    "work_item_write_command_matrix.v1": "work-item-write-command-matrix.v1.json",
+}
+
+_RFC3339_PATTERN = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _strict_rfc3339(value: Any) -> bool:
+    if not isinstance(value, str):
+        return True
+    if _RFC3339_PATTERN.fullmatch(value) is None:
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _load_resource_json(filename: str) -> Any:
+    resource = resources.files("schemas").joinpath("work_item_governance", filename)
+    return json.loads(
+        resource.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_keys,
+    )
 
 
 def load_governance_schema(schema_version: str) -> dict[str, Any]:
@@ -29,10 +76,9 @@ def load_governance_schema(schema_version: str) -> dict[str, Any]:
             "Work Item Governance schema version is unsupported.",
             details={"schema_version": schema_version, "supported": sorted(SCHEMA_FILES)},
         )
-    resource = resources.files("schemas").joinpath("work_item_governance", filename)
     try:
-        value = json.loads(resource.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = _load_resource_json(filename)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise WorkItemGovernanceError(
             "SCHEMA_LOAD_FAILED",
             "Work Item Governance schema could not be loaded.",
@@ -49,6 +95,27 @@ def load_governance_schema(schema_version: str) -> dict[str, Any]:
 
 def load_all_governance_schemas() -> dict[str, dict[str, Any]]:
     return {version: load_governance_schema(version) for version in SCHEMA_FILES}
+
+
+def load_governance_contract(contract_version: str) -> dict[str, Any]:
+    filename = CONTRACT_FILES.get(contract_version)
+    if filename is None:
+        raise WorkItemGovernanceError(
+            "CONTRACT_VERSION_UNSUPPORTED",
+            "Work Item Governance contract version is unsupported.",
+            details={"contract_version": contract_version, "supported": sorted(CONTRACT_FILES)},
+        )
+    try:
+        value = _load_resource_json(filename)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise WorkItemGovernanceError(
+            "CONTRACT_LOAD_FAILED",
+            "Work Item Governance contract could not be loaded.",
+            details={"contract_version": contract_version, "reason": str(exc)},
+        ) from exc
+    if not isinstance(value, dict):
+        raise WorkItemGovernanceError("CONTRACT_INVALID", "Work Item Governance contract must be an object.")
+    return value
 
 
 def validate_governance_record(schema_version: str, value: Any) -> Any:
@@ -75,7 +142,9 @@ def validate_governance_record(schema_version: str, value: Any) -> Any:
         for candidate in schemas.values()
     ]
     registry = Registry().with_resources(resources)
-    validator = Draft202012Validator(schema, registry=registry, format_checker=FormatChecker())
+    format_checker = FormatChecker()
+    format_checker.checks("date-time", raises=())(_strict_rfc3339)
+    validator = Draft202012Validator(schema, registry=registry, format_checker=format_checker)
     errors = sorted(validator.iter_errors(value), key=lambda item: list(item.absolute_path))
     if errors:
         first = errors[0]

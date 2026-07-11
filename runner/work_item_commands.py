@@ -5,6 +5,10 @@ from typing import Any, Callable
 
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.principal import PrincipalContext
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    AuthoritativeCanaryRequestContext,
+)
 from runner.work_item_governance.service import WorkItemApplicationService
 
 
@@ -19,16 +23,38 @@ class WorkItemCommandGateway:
         enabled: bool | None = None,
         authoritative_transitions: bool | None = None,
         principal_context: PrincipalContext | None = None,
+        authoritative_canary: bool = False,
+        authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
+        request_context: AuthoritativeCanaryRequestContext | None = None,
     ) -> None:
         self.project_root = str(Path(project_root).expanduser().resolve())
         self.principal_context = principal_context
+        self.authoritative_canary = authoritative_canary
+        self.authenticated_request_proof = authenticated_request_proof
         self.service = service_factory(
             self.project_root,
-            enabled=enabled,
+            enabled=True if authoritative_canary else enabled,
             authoritative_transitions=authoritative_transitions,
+            authoritative_canary=authoritative_canary,
+            principal_context=principal_context,
+            request_context=request_context,
         )
 
     def execute(self, name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if (
+            self.authoritative_canary
+            and name != "get_work_item_governance_status"
+            and self.service.request_context is None
+        ):
+            if self.service.activation_guard is None:
+                raise WorkItemGovernanceError(
+                    "ACTIVATION_LEASE_REQUIRED",
+                    "Authoritative Canary commands require an Activation Lease guard.",
+                )
+            self.service.request_context = self.service.activation_guard.mint_request_context(
+                proof=self.authenticated_request_proof,
+                principal_context=self.principal_context,
+            )
         value = dict(params or {})
         handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "preview_work_item_create": self._preview_create,
@@ -156,10 +182,16 @@ def execute_work_item_command(
     enabled: bool | None = None,
     authoritative_transitions: bool | None = None,
     principal_context: PrincipalContext | None = None,
+    authoritative_canary: bool = False,
+    authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
+    request_context: AuthoritativeCanaryRequestContext | None = None,
 ) -> dict[str, Any]:
     return WorkItemCommandGateway(
         project_root,
         enabled=enabled,
         authoritative_transitions=authoritative_transitions,
         principal_context=principal_context,
+        authoritative_canary=authoritative_canary,
+        authenticated_request_proof=authenticated_request_proof,
+        request_context=request_context,
     ).execute(name, params)

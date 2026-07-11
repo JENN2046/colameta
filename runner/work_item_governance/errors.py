@@ -17,3 +17,15 @@ class WorkItemGovernanceError(ValueError):
             "message": str(self),
             "details": self.details,
         }
+
+
+class CommitWorkItemRejection(Exception):
+    """Commit control-plane evidence, then surface the contained domain error.
+
+    Only the Activation Lease guard uses this path, and only before a domain
+    mutation has occurred in the surrounding transaction.
+    """
+
+    def __init__(self, error: WorkItemGovernanceError) -> None:
+        super().__init__(str(error))
+        self.error = error

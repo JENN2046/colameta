@@ -1,0 +1,434 @@
+{
+  "schema_version": "authoritative_canary_negative_test_matrix.v1",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "minimum_test_count": 81,
+  "tests": [
+    {
+      "id": "auth_no_token_rejected",
+      "layer": "authentication",
+      "expected": "HTTP 401; no Principal; no Ledger fact"
+    },
+    {
+      "id": "auth_wrong_token_rejected",
+      "layer": "authentication",
+      "expected": "HTTP 401; no Principal; no Ledger fact"
+    },
+    {
+      "id": "auth_correct_token_maps_only_to_bound_local_principal",
+      "layer": "authentication",
+      "expected": "request proceeds with exact Lease-bound Principal/session"
+    },
+    {
+      "id": "token_absent_from_cmdline_environment_logs_bundle_and_git",
+      "layer": "secret_boundary",
+      "expected": "all scans empty; auth.json mode 0600 under isolated 0700 parent"
+    },
+    {
+      "id": "weak_or_low_entropy_token_configuration_rejected",
+      "layer": "authentication",
+      "expected": "startup fails before listener bind unless Token is generated from at least 256 OS-CSPRNG bits"
+    },
+    {
+      "id": "command_body_actor_authority_principal_or_lease_rejected",
+      "layer": "trusted_context",
+      "expected": "fail closed with no fact"
+    },
+    {
+      "id": "principal_or_session_mismatch_rejected",
+      "layer": "trusted_context",
+      "expected": "fail closed before domain mutation"
+    },
+    {
+      "id": "valid_lease_and_principal_without_authenticated_request_context_rejected",
+      "layer": "trusted_context",
+      "expected": "direct Python/Application call fails before domain access even with exact active Lease and trusted Principal"
+    },
+    {
+      "id": "forged_stale_or_other_runtime_request_context_rejected",
+      "layer": "trusted_context",
+      "expected": "JSON body, prior request, prior process or mismatched Listener-attestation capability cannot authorize Preview or write"
+    },
+    {
+      "id": "request_context_from_other_lease_or_authorization_rejected",
+      "layer": "trusted_context",
+      "expected": "even with matching process, Principal and session, a capability bound to another Lease or authorization fails before domain access"
+    },
+    {
+      "id": "tools_list_is_exact_frozen_14",
+      "layer": "restricted_surface",
+      "expected": "set equality; no missing or extra tool"
+    },
+    {
+      "id": "startup_tool_definition_or_dispatch_set_mismatch_refused",
+      "layer": "restricted_surface",
+      "expected": "nonzero startup failure"
+    },
+    {
+      "id": "jsonrpc_tools_call_hidden_tool_rejected",
+      "layer": "restricted_surface",
+      "expected": "manage_git and every nonlisted tool denied with no side effect"
+    },
+    {
+      "id": "direct_named_jsonrpc_tool_alias_rejected",
+      "layer": "restricted_surface",
+      "expected": "method not found or policy denied with no side effect"
+    },
+    {
+      "id": "resources_and_unknown_protocol_methods_rejected",
+      "layer": "restricted_surface",
+      "expected": "resources list is empty/disabled; resource reads and unknown methods cannot reach dispatch"
+    },
+    {
+      "id": "http_actions_disabled_for_canary",
+      "layer": "restricted_surface",
+      "expected": "route unavailable; cannot call hidden or allowed tools through Actions"
+    },
+    {
+      "id": "call_tool_for_agent_hidden_tool_rejected",
+      "layer": "restricted_surface",
+      "expected": "central deny also applies to in-process Agent dispatch"
+    },
+    {
+      "id": "routed_project_other_project_rejected",
+      "layer": "project_scope",
+      "expected": "only exact Lease-bound project accepted; project_root override denied"
+    },
+    {
+      "id": "fresh_ledger_business_fact_baseline_zero",
+      "layer": "fresh_ledger",
+      "expected": "all 12 frozen business tables, including audit_events and blocker_events, have zero rows before activation"
+    },
+    {
+      "id": "old_d1_or_a1_backup_not_accepted_as_r2_baseline",
+      "layer": "fresh_ledger",
+      "expected": "source/generation/empty-count binding mismatch fails closed"
+    },
+    {
+      "id": "preview_signing_key_missing_during_activation_rejected",
+      "layer": "unguarded_write_path",
+      "expected": "no implicit key creation and no Preview issued"
+    },
+    {
+      "id": "authoritative_startup_without_exact_prepared_lease_and_envelope_refused",
+      "layer": "activation_lease",
+      "expected": "pre-listener Canary bootstrap refuses startup; writes also require the successfully claimed active Lease"
+    },
+    {
+      "id": "direct_python_authoritative_service_without_lease_rejected",
+      "layer": "activation_lease",
+      "expected": "all writes denied despite authoritative_transitions=True"
+    },
+    {
+      "id": "expired_not_yet_marked_lease_rejects_preview_and_write",
+      "layer": "activation_lease",
+      "expected": "transaction-time clock check freezes writes without watchdog"
+    },
+    {
+      "id": "not_before_future_lease_rejected",
+      "layer": "activation_lease",
+      "expected": "Preview and write denied"
+    },
+    {
+      "id": "wrong_authorization_spec_source_runtime_or_policy_digest_rejected",
+      "layer": "activation_lease",
+      "expected": "fail closed before domain mutation"
+    },
+    {
+      "id": "closed_revoked_or_write_frozen_lease_rejected",
+      "layer": "activation_lease",
+      "expected": "Preview and write denied; Read remains available"
+    },
+    {
+      "id": "claimed_lease_without_listener_attestation_rejects_preview_and_write",
+      "layer": "activation_lease",
+      "expected": "claimed is not active; no request context can be minted and direct Application calls fail"
+    },
+    {
+      "id": "wrong_origin_kind_or_prefix_rejected",
+      "layer": "work_item_scope",
+      "expected": "create Preview or Apply denied and Lease remains unbound"
+    },
+    {
+      "id": "concurrent_first_create_binds_exactly_one_work_item",
+      "layer": "work_item_scope",
+      "expected": "one success/idempotent replay at most; all competing IDs rejected"
+    },
+    {
+      "id": "post_bind_second_work_item_create_rejected",
+      "layer": "work_item_scope",
+      "expected": "maximum_new_work_items remains one"
+    },
+    {
+      "id": "successful_create_exact_replay_after_binding_no_charge",
+      "layer": "idempotency",
+      "expected": "exact successful Create replay resolves before new-create scope rejection and adds no fact, quota or Lease Event"
+    },
+    {
+      "id": "command_referencing_non_bound_work_item_rejected",
+      "layer": "work_item_scope",
+      "expected": "fail closed before domain lookup/mutation"
+    },
+    {
+      "id": "each_fact_quota_rejects_next_new_fact",
+      "layer": "quota",
+      "expected": "Task Version, Attempt, Artifact and Decision limits enforced atomically"
+    },
+    {
+      "id": "complete_attempt_nested_artifacts_share_artifact_quota",
+      "layer": "quota",
+      "expected": "completion rolls back if nested Artifacts exceed total four"
+    },
+    {
+      "id": "applied_rejected_and_total_gate_quotas_enforced",
+      "layer": "quota",
+      "expected": "8 applied, 8 rejected and 16 total hard maxima"
+    },
+    {
+      "id": "exact_idempotent_replay_no_double_charge",
+      "layer": "idempotency",
+      "expected": "usage and domain row counts unchanged on replay"
+    },
+    {
+      "id": "idempotency_conflict_rejected_without_charge",
+      "layer": "idempotency",
+      "expected": "domain and Lease usage unchanged"
+    },
+    {
+      "id": "all_nine_denied_work_item_commands_fail_closed",
+      "layer": "command_matrix",
+      "expected": "each command denied centrally and by application policy"
+    },
+    {
+      "id": "restore_migration_and_signing_key_creation_denied_while_active",
+      "layer": "maintenance",
+      "expected": "no maintenance mutation; active Ledger unchanged"
+    },
+    {
+      "id": "watchdog_failure_does_not_extend_write_window",
+      "layer": "expiry_and_rollback",
+      "expected": "service rejects writes after expires_at; closeout restart returns verified Shadow"
+    },
+    {
+      "id": "monotonic_deadline_missing_inverted_or_extended_rejected",
+      "layer": "expiry_and_rollback",
+      "expected": "claimed and later Lease states require the bound process CLOCK_MONOTONIC values and a deadline delta no greater than 1800 seconds"
+    },
+    {
+      "id": "process_restart_invalidates_active_runtime_binding",
+      "layer": "expiry_and_rollback",
+      "expected": "old Lease cannot resume or reset its monotonic deadline; fresh review is required"
+    },
+    {
+      "id": "inactive_lease_removes_attempt_dispatch_authority",
+      "layer": "expiry_and_rollback",
+      "expected": "diagnostic Read remains available but dispatch_authorized is false"
+    },
+    {
+      "id": "schema_v4_to_v5_migration_is_forward_transactional_and_nonactivating",
+      "layer": "compatibility",
+      "expected": "existing facts preserved; rollback on failure; no active Lease or mode escalation"
+    },
+    {
+      "id": "shadow_and_unbound_paths_do_not_require_activation_lease",
+      "layer": "compatibility",
+      "expected": "existing no-Work-Item and Shadow behavior remains unchanged outside authoritative_canary"
+    },
+    {
+      "id": "no_background_outbox_delivery_or_side_context_worker",
+      "layer": "composition_isolation",
+      "expected": "Gate Outbox facts remain pending; no Delivery, Stable, Product, Connector or Executor side effect occurs"
+    },
+    {
+      "id": "activation_claim_does_not_open_listener_before_commit",
+      "layer": "activation_bootstrap",
+      "expected": "preclaim listener count is zero while Lease is prepared or claim validation is incomplete"
+    },
+    {
+      "id": "bootstrap_process_exit_before_envelope_invalidates_preflight_identity",
+      "layer": "activation_bootstrap",
+      "expected": "a replacement process has a different identity and cannot consume the old Preflight or receive its prepared Lease"
+    },
+    {
+      "id": "atomic_envelope_claim_crash_before_lease_activation_not_reusable",
+      "layer": "activation_bootstrap",
+      "expected": "unclaimed envelope path remains absent after crash; a new process is denied and new authorization is required"
+    },
+    {
+      "id": "orphan_envelope_or_prepared_lease_partial_issuance_not_claimable",
+      "layer": "activation_bootstrap",
+      "expected": "an envelope without its transactionally issued prepared Lease is sealed or removed, and a prepared Lease without a durable exact envelope is never committed"
+    },
+    {
+      "id": "post_bind_listener_attestation_precedes_request_dispatch",
+      "layer": "activation_bootstrap",
+      "expected": "exactly one loopback listener is attested after Lease claim; mismatch closes the socket and no request is served"
+    },
+    {
+      "id": "failed_or_crashed_activation_claim_is_not_reusable",
+      "layer": "activation_bootstrap",
+      "expected": "old envelope/Lease cannot be claimed by a later process; new authorization required"
+    },
+    {
+      "id": "prepared_claimed_and_active_readiness_shape_enforced",
+      "layer": "activation_bootstrap",
+      "expected": "prepared has null process/listener fields, claimed has process identity only, and active has persisted Listener and request-context binding digests"
+    },
+    {
+      "id": "process_identity_and_listener_attestation_digests_recompute",
+      "layer": "activation_bootstrap",
+      "expected": "Preflight inputs reproduce process identity; persisted socket evidence reproduces Listener and request-context binding digests"
+    },
+    {
+      "id": "synthetic_create_command_digest_mismatch_rejected",
+      "layer": "synthetic_fixture",
+      "expected": "Origin Prefix alone is insufficient; Lease remains unbound"
+    },
+    {
+      "id": "synthetic_task_version_payload_digest_mismatch_rejected",
+      "layer": "synthetic_fixture",
+      "expected": "only the next ordered Fixture Task Version is accepted"
+    },
+    {
+      "id": "synthetic_fixture_cross_field_lifecycle_or_slot_mismatch_rejected",
+      "layer": "synthetic_fixture",
+      "expected": "command sequences, required command names, Runtime Attempt objectives, Decision actions, lifecycle transitions, Artifact declarations and generated placeholders must agree"
+    },
+    {
+      "id": "artifact_outside_fixture_root_or_real_git_commit_rejected",
+      "layer": "synthetic_fixture",
+      "expected": "resolved path containment, kind and digest checks fail closed"
+    },
+    {
+      "id": "external_association_or_plan_version_reference_rejected",
+      "layer": "synthetic_fixture",
+      "expected": "no real Plan, project or external association enters the synthetic Work Item"
+    },
+    {
+      "id": "preflight_older_than_120_seconds_rejected",
+      "layer": "fresh_preflight",
+      "expected": "Lease claim fails before listener exposure"
+    },
+    {
+      "id": "preflight_backup_or_baseline_digest_mismatch_rejected",
+      "layer": "fresh_preflight",
+      "expected": "Lease claim fails before mutation or listener exposure"
+    },
+    {
+      "id": "preflight_missing_or_escaping_executable_cwd_settings_token_fixture_or_claim_path_rejected",
+      "layer": "fresh_preflight",
+      "expected": "every raw root-relative path resolves below the exact Canary root and recomputes its frozen digest before Lease claim"
+    },
+    {
+      "id": "intervening_normal_write_after_preflight_detected",
+      "layer": "fresh_preflight",
+      "expected": "zero baseline recheck fails even though database_generation is unchanged"
+    },
+    {
+      "id": "actual_fact_count_and_lease_usage_mismatch_freezes",
+      "layer": "fact_reconciliation",
+      "expected": "domain write rejected; one deduplicated freeze event; no partial fact"
+    },
+    {
+      "id": "idempotent_replay_does_not_append_lease_event",
+      "layer": "lease_event_bound",
+      "expected": "domain, usage and activation_lease_events counts remain unchanged"
+    },
+    {
+      "id": "maximum_lease_events_enforced",
+      "layer": "lease_event_bound",
+      "expected": "event 41 is rejected and effective writes freeze"
+    },
+    {
+      "id": "lease_event_type_transition_or_state_sequence_mismatch_rejected",
+      "layer": "lease_event_bound",
+      "expected": "event type, lifecycle edge, command evidence, contiguous sequence and state versions must satisfy the frozen Lease Event semantics"
+    },
+    {
+      "id": "invalid_window_order_or_duration_rejected",
+      "layer": "expiry_and_rollback",
+      "expected": "issued/not-before/expiry inversion or duration above 1800 seconds fails validation"
+    },
+    {
+      "id": "invalid_datetime_format_or_verification_time_order_rejected",
+      "layer": "evidence_schema",
+      "expected": "Draft 2020-12 format assertions reject invalid timestamps and semantic validation rejects end-before-start or out-of-window command evidence"
+    },
+    {
+      "id": "home_xdg_registry_or_global_fallback_mismatch_rejected",
+      "layer": "runtime_isolation",
+      "expected": "process exits before listener exposure"
+    },
+    {
+      "id": "non_loopback_public_relay_tunnel_or_proxy_path_rejected",
+      "layer": "runtime_isolation",
+      "expected": "Preflight fails and no endpoint is exposed"
+    },
+    {
+      "id": "terminal_closeout_revokes_one_time_token",
+      "layer": "secret_boundary",
+      "expected": "old Token returns 401 and no plaintext copy remains"
+    },
+    {
+      "id": "closeout_schema_requires_exact_zero_table_names",
+      "layer": "evidence_schema",
+      "expected": "twelve arbitrary zero-valued keys are rejected; all exact business-table names are required"
+    },
+    {
+      "id": "closeout_receipt_missing_or_mismatched_exact_lease_binding_rejected",
+      "layer": "evidence_schema",
+      "expected": "Lease ID, authorization/envelope/snapshot digests, process identity, final state, ordered event root/count and digest-bound evidence references are mandatory"
+    },
+    {
+      "id": "closeout_pass_with_nonzero_exit_unclosed_lease_fake_assets_or_gaps_rejected",
+      "layer": "evidence_schema",
+      "expected": "PASS requires exact verification slots at exit zero and passed=true, closed Lease, exact protected paths and empty gaps/blockers"
+    },
+    {
+      "id": "closeout_missing_or_mutated_lease_snapshot_or_event_export_rejected",
+      "layer": "evidence_schema",
+      "expected": "sanitized snapshot and ordered Event exports must match their file digests and independently reproduce the Lease snapshot, each Event digest, chain and root"
+    },
+    {
+      "id": "closeout_pass_with_explicit_failed_verification_rejected",
+      "layer": "evidence_schema",
+      "expected": "result PASS cannot validate when any frozen verification slot has passed=false even if its process exit code is zero"
+    },
+    {
+      "id": "fixture_envelope_preflight_and_lease_event_schemas_bind_recomputable_payloads",
+      "layer": "evidence_schema",
+      "expected": "all four payloads validate, all referenced digests recompute, Event sequences are contiguous and hash chained"
+    },
+    {
+      "id": "duplicate_json_keys_nan_or_noncanonical_digest_input_rejected",
+      "layer": "evidence_schema",
+      "expected": "all signed, digested and machine-contract payloads use the frozen finite canonical JSON profile and duplicate object keys fail parsing"
+    },
+    {
+      "id": "sanitized_review_bundle_endpoint_bytes_match_local_hashes",
+      "layer": "evidence_accessibility",
+      "expected": "both approved read endpoints return every machine contract and root Manifest as exact untruncated UTF-8 bytes whose SHA-256 matches the bundle"
+    }
+  ],
+  "suite_requirements": {
+    "focused_unit_and_integration": "all tests above pass",
+    "concurrency": [
+      "first Work Item binding",
+      "quota last-slot contention",
+      "idempotent replay contention",
+      "expiry boundary"
+    ],
+    "regression": [
+      "full pytest",
+      "ruff",
+      "existing Shadow and unbound compatibility paths",
+      "architecture dependency checks"
+    ],
+    "security": [
+      "Bandit changed scope",
+      "pip-audit",
+      "secret scans",
+      "path and permission checks",
+      "request size and unknown-tool fail-closed checks"
+    ]
+  }
+}

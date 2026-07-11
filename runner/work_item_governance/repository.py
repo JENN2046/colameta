@@ -15,7 +15,7 @@ from runner.work_item_governance.contracts import (
     DEFAULT_BUSY_TIMEOUT_MS,
     LEDGER_RELATIVE_PATH,
 )
-from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.errors import CommitWorkItemRejection, WorkItemGovernanceError
 
 
 def _migration_v1() -> tuple[str, ...]:
@@ -319,11 +319,110 @@ def _migration_v4() -> tuple[str, ...]:
     )
 
 
+def _migration_v5() -> tuple[str, ...]:
+    return (
+        """
+        CREATE TABLE activation_leases (
+            lease_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (schema_version = 'work_item_activation_lease.v1'),
+            authorization_id TEXT NOT NULL UNIQUE,
+            authorization_digest TEXT NOT NULL CHECK (length(authorization_digest) = 64),
+            activation_envelope_digest TEXT NOT NULL CHECK (length(activation_envelope_digest) = 64),
+            spec_manifest_digest TEXT NOT NULL CHECK (length(spec_manifest_digest) = 64),
+            expected_process_identity TEXT NOT NULL CHECK (length(expected_process_identity) = 64),
+            claimed_process_identity TEXT,
+            listener_attested_at TEXT,
+            listener_attestation_digest TEXT,
+            request_context_binding_digest TEXT,
+            monotonic_claim_ns INTEGER,
+            monotonic_deadline_ns INTEGER,
+            not_before TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            maximum_runtime_seconds INTEGER NOT NULL CHECK (maximum_runtime_seconds = 1800),
+            authorized_work_item_id TEXT,
+            source_binding_json TEXT NOT NULL CHECK (json_valid(source_binding_json)),
+            runtime_binding_json TEXT NOT NULL CHECK (json_valid(runtime_binding_json)),
+            principal_binding_json TEXT NOT NULL CHECK (json_valid(principal_binding_json)),
+            bootstrap_json TEXT NOT NULL CHECK (json_valid(bootstrap_json)),
+            scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
+            fixture_json TEXT NOT NULL CHECK (json_valid(fixture_json)),
+            fixture_bindings_json TEXT NOT NULL CHECK (json_valid(fixture_bindings_json)),
+            quotas_json TEXT NOT NULL CHECK (json_valid(quotas_json)),
+            usage_json TEXT NOT NULL CHECK (json_valid(usage_json)),
+            policy_json TEXT NOT NULL CHECK (json_valid(policy_json)),
+            maintenance_json TEXT NOT NULL CHECK (json_valid(maintenance_json)),
+            failure_behavior_json TEXT NOT NULL CHECK (json_valid(failure_behavior_json)),
+            status TEXT NOT NULL CHECK (
+              status IN ('prepared','claimed','active','write_frozen','expired','closed','revoked')
+            ),
+            state_version INTEGER NOT NULL CHECK (state_version >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (authorized_work_item_id) REFERENCES work_items(work_item_id) ON DELETE RESTRICT,
+            CHECK (claimed_process_identity IS NULL OR length(claimed_process_identity) = 64),
+            CHECK (listener_attestation_digest IS NULL OR length(listener_attestation_digest) = 64),
+            CHECK (request_context_binding_digest IS NULL OR length(request_context_binding_digest) = 64),
+            CHECK (monotonic_claim_ns IS NULL OR monotonic_claim_ns >= 0),
+            CHECK (monotonic_deadline_ns IS NULL OR monotonic_deadline_ns > 0)
+        )
+        """,
+        """
+        CREATE TABLE activation_lease_events (
+            lease_event_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (schema_version = 'work_item_activation_lease_event.v1'),
+            lease_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 40),
+            event_type TEXT NOT NULL CHECK (
+              event_type IN (
+                'lease_issued','process_claimed','listener_attested','command_committed',
+                'domain_rejected','lease_write_frozen','lease_expired','lease_closed','lease_revoked'
+              )
+            ),
+            status_before TEXT,
+            status_after TEXT NOT NULL,
+            state_version_before INTEGER NOT NULL CHECK (state_version_before >= 0),
+            state_version_after INTEGER NOT NULL CHECK (state_version_after >= 0),
+            claimed_process_identity TEXT,
+            listener_attestation_digest TEXT,
+            request_context_binding_digest TEXT,
+            command_name TEXT,
+            source_event_key_digest TEXT,
+            domain_fact_delta_digest TEXT,
+            principal_binding_digest TEXT,
+            reason_code TEXT,
+            previous_event_digest TEXT,
+            event_digest TEXT NOT NULL CHECK (length(event_digest) = 64),
+            event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+            created_at TEXT NOT NULL,
+            UNIQUE (lease_id, sequence),
+            UNIQUE (lease_id, source_event_key_digest),
+            FOREIGN KEY (lease_id) REFERENCES activation_leases(lease_id) ON DELETE RESTRICT,
+            CHECK (claimed_process_identity IS NULL OR length(claimed_process_identity) = 64),
+            CHECK (listener_attestation_digest IS NULL OR length(listener_attestation_digest) = 64),
+            CHECK (request_context_binding_digest IS NULL OR length(request_context_binding_digest) = 64),
+            CHECK (source_event_key_digest IS NULL OR length(source_event_key_digest) = 64),
+            CHECK (domain_fact_delta_digest IS NULL OR length(domain_fact_delta_digest) = 64),
+            CHECK (principal_binding_digest IS NULL OR length(principal_binding_digest) = 64),
+            CHECK (previous_event_digest IS NULL OR length(previous_event_digest) = 64)
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_activation_single_live_lease "
+        "ON activation_leases((1)) WHERE status IN ('claimed','active','write_frozen')",
+        "CREATE INDEX idx_activation_lease_status ON activation_leases(status, updated_at)",
+        "CREATE INDEX idx_activation_events_lease ON activation_lease_events(lease_id, sequence)",
+        "CREATE TRIGGER activation_lease_events_no_update BEFORE UPDATE ON activation_lease_events "
+        "BEGIN SELECT RAISE(ABORT, 'append-only table'); END",
+        "CREATE TRIGGER activation_lease_events_no_delete BEFORE DELETE ON activation_lease_events "
+        "BEGIN SELECT RAISE(ABORT, 'append-only table'); END",
+    )
+
+
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: _migration_v1(),
     2: _migration_v2(),
     3: _migration_v3(),
     4: _migration_v4(),
+    5: _migration_v5(),
 }
 
 
@@ -509,6 +608,9 @@ class SQLiteWorkItemLedger:
             try:
                 yield connection
                 connection.commit()
+            except CommitWorkItemRejection as exc:
+                connection.commit()
+                raise exc.error from exc
             except Exception:
                 connection.rollback()
                 raise
@@ -530,6 +632,25 @@ class SQLiteWorkItemLedger:
     def schema_version(self) -> int:
         with self.read_connection() as connection:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
+    def assert_exact_schema_without_migration(self) -> int:
+        """Verify a preflighted Ledger without running a startup migration."""
+
+        with self._maintenance_lock(exclusive=False):
+            if not self.path.is_file():
+                raise WorkItemGovernanceError(
+                    "ACTIVATION_LEDGER_MISSING",
+                    "Authoritative Canary requires its preflighted Ledger.",
+                )
+            with self._connect(readonly=True) as connection:
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version != CURRENT_LEDGER_SCHEMA_VERSION:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_SCHEMA_MISMATCH",
+                "Authoritative Canary refuses startup migration or schema drift.",
+                details={"expected": CURRENT_LEDGER_SCHEMA_VERSION, "actual": version},
+            )
+        return version
 
     def database_generation(self) -> int:
         with self.read_connection() as connection:
@@ -566,6 +687,28 @@ class SQLiteWorkItemLedger:
             raise WorkItemGovernanceError("LEDGER_SIGNING_KEY_INVALID", "Ledger preview signing key is invalid.") from exc
         if len(key) != 32:
             raise WorkItemGovernanceError("LEDGER_SIGNING_KEY_INVALID", "Ledger preview signing key has an invalid size.")
+        return key
+
+    def get_existing_signing_key(self) -> bytes:
+        with self.read_connection() as connection:
+            row = connection.execute("SELECT value FROM ledger_meta WHERE key='preview_signing_key'").fetchone()
+        if row is None:
+            raise WorkItemGovernanceError(
+                "LEDGER_SIGNING_KEY_MISSING",
+                "The Authoritative Canary requires a preprovisioned Preview signing key.",
+            )
+        try:
+            key = bytes.fromhex(str(row["value"]))
+        except ValueError as exc:
+            raise WorkItemGovernanceError(
+                "LEDGER_SIGNING_KEY_INVALID",
+                "Ledger preview signing key is invalid.",
+            ) from exc
+        if len(key) != 32:
+            raise WorkItemGovernanceError(
+                "LEDGER_SIGNING_KEY_INVALID",
+                "Ledger preview signing key has an invalid size.",
+            )
         return key
 
     def integrity_check(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:

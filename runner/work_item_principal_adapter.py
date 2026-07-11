@@ -11,16 +11,44 @@ from runner.work_item_governance.principal import (
     trusted_principal_context,
 )
 from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    _issue_authenticated_token_request_proof,
+)
 
 
 _CURRENT_PRINCIPAL: ContextVar[PrincipalContext | None] = ContextVar(
     "colameta_work_item_principal",
     default=None,
 )
+_CURRENT_TOKEN_REQUEST_PROOF: ContextVar[AuthenticatedTokenRequestProof | None] = ContextVar(
+    "colameta_work_item_token_request_proof",
+    default=None,
+)
 
 
 def current_work_item_principal() -> PrincipalContext | None:
     return _CURRENT_PRINCIPAL.get()
+
+
+def current_authenticated_token_request_proof() -> AuthenticatedTokenRequestProof | None:
+    return _CURRENT_TOKEN_REQUEST_PROOF.get()
+
+
+@contextmanager
+def work_item_authenticated_request_scope(
+    auth_context: dict[str, Any] | None,
+) -> Iterator[AuthenticatedTokenRequestProof | None]:
+    proof = (
+        _issue_authenticated_token_request_proof()
+        if isinstance(auth_context, dict) and auth_context.get("mode") == "token"
+        else None
+    )
+    token = _CURRENT_TOKEN_REQUEST_PROOF.set(proof)
+    try:
+        yield proof
+    finally:
+        _CURRENT_TOKEN_REQUEST_PROOF.reset(token)
 
 
 @contextmanager

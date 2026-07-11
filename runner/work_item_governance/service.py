@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
+from runner.work_item_governance.activation import AuthoritativeCanaryGuard, ActivationWriteSession
 from runner.work_item_governance.contracts import (
     ARTIFACT_KINDS,
     DECISION_ACTIONS,
@@ -28,6 +29,7 @@ from runner.work_item_governance.principal import (
     authorize_principal,
     permission_for_decision,
 )
+from runner.work_item_governance.request_context import AuthoritativeCanaryRequestContext
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 from runner.work_item_governance.settings import load_work_item_governance_settings
 from runner.work_item_governance.validation import (
@@ -75,6 +77,9 @@ class WorkItemApplicationService:
         authoritative_transitions: bool | None = None,
         ledger: SQLiteWorkItemLedger | None = None,
         now: Callable[[], datetime] = utc_now,
+        authoritative_canary: bool = False,
+        principal_context: PrincipalContext | None = None,
+        request_context: AuthoritativeCanaryRequestContext | None = None,
     ) -> None:
         self.project_root = Path(project_root).expanduser().resolve()
         settings = load_work_item_governance_settings(self.project_root)
@@ -84,9 +89,24 @@ class WorkItemApplicationService:
         else:
             self.gate_mode = "authoritative" if authoritative_transitions else "shadow"
         self.authoritative_transitions = self.gate_mode == "authoritative"
+        self.authoritative_canary = bool(authoritative_canary)
+        if self.authoritative_canary and not self.authoritative_transitions:
+            raise WorkItemGovernanceError(
+                "AUTHORITATIVE_CANARY_MODE_INVALID",
+                "The Authoritative Canary composition requires authoritative Gate evaluation.",
+            )
         self.ledger = ledger or SQLiteWorkItemLedger(self.project_root)
+        if self.authoritative_canary:
+            self.ledger.assert_exact_schema_without_migration()
         self.now = now
-        self.previews = PreviewCodec(self.ledger, now=now)
+        self.principal_context = principal_context
+        self.request_context = request_context
+        self.activation_guard = AuthoritativeCanaryGuard(self.ledger, now=now) if self.authoritative_canary else None
+        self.previews = PreviewCodec(
+            self.ledger,
+            now=now,
+            allow_signing_key_creation=not self.authoritative_canary,
+        )
 
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -97,12 +117,93 @@ class WorkItemApplicationService:
             "data_classification": "project_local_durable",
             "automatic_creation": False,
             "automatic_history_backfill": False,
+            "authoritative_canary": self.authoritative_canary,
+            "effective_authoritative_writes": (
+                "lease_controlled" if self.authoritative_canary else self.authoritative_transitions
+            ),
         }
         if self.enabled and self.ledger.path.exists():
             result["ledger_schema_version"] = self.ledger.schema_version()
             result["database_generation"] = self.ledger.database_generation()
             result["integrity"] = self.ledger.integrity_check()
+            if self.activation_guard is not None:
+                result["activation_lease"] = self.activation_guard.runtime_status()
         return result
+
+    def _activation_preview(self, command_name: str, normalized_command: dict[str, Any]) -> None:
+        if self.activation_guard is None:
+            return
+        self.activation_guard.authorize_preview(
+            command_name=command_name,
+            normalized_command=normalized_command,
+            principal_context=self.principal_context,
+            request_context=self.request_context,
+        )
+
+    def _activation_begin(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        command_name: str,
+        normalized_command: dict[str, Any],
+        source_event_key: str,
+        principal_context: PrincipalContext | None = None,
+    ) -> ActivationWriteSession | None:
+        if self.activation_guard is None:
+            return None
+        return self.activation_guard.begin_write(
+            connection,
+            command_name=command_name,
+            normalized_command=normalized_command,
+            source_event_key=source_event_key,
+            principal_context=principal_context or self.principal_context,
+            request_context=self.request_context,
+        )
+
+    def _deny_activation_command(
+        self,
+        command_name: str,
+        *,
+        principal_context: PrincipalContext | None = None,
+    ) -> None:
+        if self.activation_guard is None:
+            return
+        with self.ledger.write_transaction() as connection:
+            self.activation_guard.deny_command(
+                connection,
+                command_name=command_name,
+                principal_context=principal_context or self.principal_context,
+                request_context=self.request_context,
+            )
+
+    @staticmethod
+    def _activation_domain_delta(**overrides: int) -> dict[str, int]:
+        delta = {
+            "work_items": 0,
+            "task_versions": 0,
+            "runtime_attempts": 0,
+            "attempt_events": 0,
+            "artifacts": 0,
+            "decisions": 0,
+            "applied_gate_events": 0,
+            "rejected_gate_events": 0,
+            "audit_events": 0,
+            "outbox_events": 0,
+            "acceptance_manifests": 0,
+        }
+        unknown = set(overrides) - set(delta)
+        if unknown:
+            raise AssertionError(f"unknown activation domain facts: {sorted(unknown)}")
+        delta.update(overrides)
+        return delta
+
+    @staticmethod
+    def _activation_artifact_command(artifact: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: (None if key == "artifact_id" and not artifact["_artifact_id_supplied"] else value)
+            for key, value in artifact.items()
+            if not key.startswith("_")
+        }
 
     def _require_enabled(self) -> None:
         if not self.enabled:
@@ -135,6 +236,7 @@ class WorkItemApplicationService:
     ) -> dict[str, Any]:
         self._require_enabled()
         normalized = self._normalize_create_command(command, imported=False)
+        self._activation_preview("apply_work_item_create", normalized)
         work_item_id = new_stable_id("work_item")
         preview = self.previews.issue(
             "work_item_create",
@@ -163,6 +265,7 @@ class WorkItemApplicationService:
         ttl_seconds: int = 300,
     ) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("apply_legacy_work_item_import")
         normalized = self._normalize_legacy_import_command(command)
         work_item_id = new_stable_id("work_item")
         preview = self.previews.issue(
@@ -182,6 +285,7 @@ class WorkItemApplicationService:
 
     def apply_legacy_work_item_import(self, preview: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("apply_legacy_work_item_import")
         verified = self.previews.verify(preview, expected_operation="legacy_work_item_import")
         command = self._normalize_legacy_import_command(verified["command"])
         return self._apply_create(verified, command, creation_operation="legacy_import")
@@ -296,6 +400,12 @@ class WorkItemApplicationService:
         created_at = isoformat_utc(self.now())
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="apply_work_item_create",
+                    normalized_command=command,
+                    source_event_key=idempotency_key or preview_id,
+                )
                 existing = connection.execute(
                     "SELECT * FROM work_items WHERE creation_preview_id=?",
                     (preview_id,),
@@ -328,6 +438,15 @@ class WorkItemApplicationService:
                             existing_id = str(origin_existing["work_item_id"])
                             idempotent = True
                         else:
+                            if activation is not None:
+                                activation.authorize_new(
+                                    work_item_id=None,
+                                    fact_delta={"new_work_items": 1, "task_versions": 1},
+                                    domain_fact_delta=self._activation_domain_delta(
+                                        work_items=1,
+                                        task_versions=1,
+                                    ),
+                                )
                             connection.execute(
                                 """
                                 INSERT INTO work_items(
@@ -364,8 +483,12 @@ class WorkItemApplicationService:
                                 source_event_key=f"{preview_id}:task:1",
                                 created_at=created_at,
                             )
+                            if activation is not None:
+                                activation.commit_new(work_item_id=work_item_id)
                             existing_id = work_item_id
                             idempotent = False
+                if idempotent and activation is not None:
+                    activation.authorize_replay(work_item_id=existing_id)
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation=creation_operation) from exc
         result = self.get_work_item(existing_id)
@@ -393,6 +516,8 @@ class WorkItemApplicationService:
     def get_work_item(self, work_item_id: str) -> dict[str, Any]:
         self._require_enabled()
         require_stable_id(work_item_id, "work_item")
+        if self.activation_guard is not None:
+            self.activation_guard.assert_read_scope(work_item_id)
         with self.ledger.read_connection() as connection:
             row = connection.execute("SELECT * FROM work_items WHERE work_item_id=?", (work_item_id,)).fetchone()
             if row is None:
@@ -415,6 +540,29 @@ class WorkItemApplicationService:
             raise WorkItemGovernanceError("WORK_ITEM_STATE_INVALID", "Work Item state filter is invalid.")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
             raise WorkItemGovernanceError("LIST_LIMIT_INVALID", "List limit must be between 1 and 200.")
+        if self.activation_guard is not None:
+            bound = self.activation_guard.authorized_work_item_id()
+            if bound is None:
+                items: list[dict[str, Any]] = []
+            else:
+                with self.ledger.read_connection() as connection:
+                    row = connection.execute(
+                        "SELECT * FROM work_items WHERE work_item_id=?",
+                        (bound,),
+                    ).fetchone()
+                    items = (
+                        []
+                        if row is None or (state is not None and row["state"] != state)
+                        else [self._materialize_work_item(connection, row, include_children=False)]
+                    )
+            return {
+                "schema_version": "work_item_list.v1",
+                "items": items,
+                "count": len(items),
+                "next_cursor": None,
+                "authoritative_for_delivery_state": True,
+                "shadow_read_model": False,
+            }
         params: list[Any] = []
         if state is not None:
             params.append(state)
@@ -448,6 +596,8 @@ class WorkItemApplicationService:
     def get_work_item_timeline(self, work_item_id: str) -> dict[str, Any]:
         self._require_enabled()
         require_stable_id(work_item_id, "work_item")
+        if self.activation_guard is not None:
+            self.activation_guard.assert_read_scope(work_item_id)
         with self.ledger.read_connection() as connection:
             exists = connection.execute(
                 "SELECT 1 FROM work_items WHERE work_item_id=?", (work_item_id,)
@@ -520,6 +670,8 @@ class WorkItemApplicationService:
         normalized_attempt_id = require_stable_id(attempt_id, "attempt")
         normalized_work_item_id = require_stable_id(work_item_id, "work_item")
         normalized_task_version = require_positive_integer(task_version, "task_version")
+        if self.activation_guard is not None:
+            self.activation_guard.assert_read_scope(normalized_work_item_id)
         with self.ledger.read_connection() as connection:
             attempt = connection.execute(
                 "SELECT * FROM execution_attempts WHERE attempt_id=?",
@@ -541,6 +693,8 @@ class WorkItemApplicationService:
             reasons.append("REVISION_GATE_REQUIRED")
         if int(work_item["current_task_version"]) != normalized_task_version:
             reasons.append("TASK_VERSION_STALE")
+        if self.activation_guard is not None and not self.activation_guard.dispatch_authority_active():
+            reasons.append("ACTIVATION_LEASE_INACTIVE")
         return {
             "schema_version": "execution_attempt_dispatch_authority.v1",
             "attempt_id": normalized_attempt_id,
@@ -568,9 +722,21 @@ class WorkItemApplicationService:
         self._reject_sensitive_fields(task, "task")
         task_digest = canonical_sha256(task)
         source_event_key = require_text(value.get("source_event_key"), "source_event_key", max_length=1024)
+        activation_command = {
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "task": task,
+            "source_event_key": source_event_key,
+        }
         created_at = isoformat_utc(self.now())
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="add_task_version",
+                    normalized_command=activation_command,
+                    source_event_key=source_event_key,
+                )
                 existing = connection.execute(
                     "SELECT * FROM task_versions WHERE source_event_key=?", (source_event_key,)
                 ).fetchone()
@@ -581,6 +747,8 @@ class WorkItemApplicationService:
                         or existing["payload_digest"] != task_digest
                     ):
                         raise WorkItemGovernanceError("IDEMPOTENCY_CONFLICT", "Task Version event key is already in use.")
+                    if activation is not None:
+                        activation.authorize_replay(work_item_id=work_item_id)
                     idempotent = True
                 else:
                     work_item = self._work_item_row(connection, work_item_id)
@@ -598,6 +766,12 @@ class WorkItemApplicationService:
                             "Task Version must be the next positive integer.",
                             details={"expected": expected, "actual": task_version},
                         )
+                    if activation is not None:
+                        activation.authorize_new(
+                            work_item_id=work_item_id,
+                            fact_delta={"task_versions": 1},
+                            domain_fact_delta=self._activation_domain_delta(task_versions=1),
+                        )
                     self._insert_task_version(
                         connection,
                         work_item_id=work_item_id,
@@ -614,6 +788,8 @@ class WorkItemApplicationService:
                         """,
                         (task_version, created_at, work_item_id),
                     )
+                    if activation is not None:
+                        activation.commit_new(work_item_id=work_item_id)
                     idempotent = False
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="add_task_version") from exc
@@ -653,9 +829,16 @@ class WorkItemApplicationService:
             "attempt_kind": "runtime",
             "dispatch_authorized": True,
         }
+        activation_command = {**claim_payload, "source_event_key": source_event_key}
         created_at = isoformat_utc(self.now())
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="create_execution_attempt",
+                    normalized_command=activation_command,
+                    source_event_key=source_event_key,
+                )
                 existing = connection.execute(
                     "SELECT * FROM execution_attempts WHERE source_event_key=?", (source_event_key,)
                 ).fetchone()
@@ -698,6 +881,8 @@ class WorkItemApplicationService:
                     if immutable_mismatch or event_mismatch or legacy_mutable_mismatch:
                         raise WorkItemGovernanceError("IDEMPOTENCY_CONFLICT", "Attempt event key is already in use.")
                     attempt_id = str(existing["attempt_id"])
+                    if activation is not None:
+                        activation.authorize_replay(work_item_id=work_item_id)
                     idempotent = True
                 else:
                     work_item = self._work_item_row(connection, work_item_id)
@@ -721,6 +906,15 @@ class WorkItemApplicationService:
                             },
                         )
                     self._assert_task_exists(connection, work_item_id, task_version)
+                    if activation is not None:
+                        activation.authorize_new(
+                            work_item_id=work_item_id,
+                            fact_delta={"runtime_attempts": 1},
+                            domain_fact_delta=self._activation_domain_delta(
+                                runtime_attempts=1,
+                                attempt_events=1,
+                            ),
+                        )
                     connection.execute(
                         """
                         INSERT INTO execution_attempts(
@@ -754,6 +948,11 @@ class WorkItemApplicationService:
                             canonical_json(claim_payload), created_at,
                         ),
                     )
+                    if activation is not None:
+                        activation.commit_new(
+                            work_item_id=work_item_id,
+                            generated_ids={"attempt_ids": [attempt_id]},
+                        )
                     idempotent = False
                 row = connection.execute("SELECT * FROM execution_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
         except sqlite3.IntegrityError as exc:
@@ -763,16 +962,53 @@ class WorkItemApplicationService:
     def register_artifact_reference(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
         normalized = self._normalize_artifact_command(command)
+        activation_command = self._activation_artifact_command(normalized)
         created_at = isoformat_utc(self.now())
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="register_artifact_reference",
+                    normalized_command=activation_command,
+                    source_event_key=normalized["source_event_key"],
+                )
+                existing = connection.execute(
+                    "SELECT * FROM artifact_refs WHERE source_event_key=?",
+                    (normalized["source_event_key"],),
+                ).fetchone()
+                if existing is None:
+                    existing = connection.execute(
+                        """
+                        SELECT * FROM artifact_refs
+                        WHERE work_item_id=? AND kind=? AND immutable_ref=?
+                        """,
+                        (
+                            normalized["work_item_id"],
+                            normalized["kind"],
+                            normalized["immutable_ref"],
+                        ),
+                    ).fetchone()
+                if existing is None and activation is not None:
+                    activation.authorize_new(
+                        work_item_id=normalized["work_item_id"],
+                        fact_delta={"artifacts": 1},
+                        domain_fact_delta=self._activation_domain_delta(artifacts=1),
+                    )
                 row, idempotent = self._insert_artifact(connection, normalized, created_at=created_at)
+                if not idempotent and activation is not None:
+                    activation.commit_new(
+                        work_item_id=normalized["work_item_id"],
+                        generated_ids={"artifact_ids": [str(row["artifact_id"])]},
+                    )
+                elif idempotent and activation is not None:
+                    activation.authorize_replay(work_item_id=normalized["work_item_id"])
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="register_artifact_reference") from exc
         return {"artifact": self._materialize_artifact(row), "idempotent_replay": idempotent}
 
     def bind_historical_execution_attempt(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("bind_historical_execution_attempt")
         value = require_object(command, "command", non_empty=True)
         allowed = {
             "work_item_id", "task_version", "attempt_id", "status", "objective_ref", "metadata",
@@ -923,10 +1159,26 @@ class WorkItemApplicationService:
                 for artifact in normalized_artifacts
             ],
         }
+        activation_command = {
+            "attempt_id": attempt_id,
+            "status": status,
+            "source_event_key": source_event_key,
+            "metadata": metadata,
+            "artifacts": [
+                self._activation_artifact_command(artifact)
+                for artifact in normalized_artifacts
+            ],
+        }
         completed_at = isoformat_utc(self.now())
         event_id = new_stable_id("attempt_event")
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="complete_execution_attempt",
+                    normalized_command=activation_command,
+                    source_event_key=source_event_key,
+                )
                 attempt = connection.execute(
                     "SELECT * FROM execution_attempts WHERE attempt_id=?", (attempt_id,)
                 ).fetchone()
@@ -946,6 +1198,8 @@ class WorkItemApplicationService:
                         or json.loads(prior["payload_json"]) != completion_payload
                     ):
                         raise WorkItemGovernanceError("IDEMPOTENCY_CONFLICT", "Completion event key is already in use.")
+                    if activation is not None:
+                        activation.authorize_replay(work_item_id=str(attempt["work_item_id"]))
                     idempotent = True
                 else:
                     if attempt["completion_event_key"] is not None:
@@ -964,6 +1218,15 @@ class WorkItemApplicationService:
                                 "ARTIFACT_CONTEXT_MISMATCH",
                                 "Completion artifact Work Item/Task Version does not match the Attempt.",
                             )
+                    if activation is not None:
+                        activation.authorize_new(
+                            work_item_id=str(attempt["work_item_id"]),
+                            fact_delta={"artifacts": len(normalized_artifacts)},
+                            domain_fact_delta=self._activation_domain_delta(
+                                attempt_events=1,
+                                artifacts=len(normalized_artifacts),
+                            ),
+                        )
                     connection.execute(
                         """
                         UPDATE execution_attempts
@@ -989,6 +1252,13 @@ class WorkItemApplicationService:
                     )
                     for artifact in normalized_artifacts:
                         self._insert_artifact(connection, artifact, created_at=completed_at)
+                    if activation is not None:
+                        activation.commit_new(
+                            work_item_id=str(attempt["work_item_id"]),
+                            generated_ids={
+                                "artifact_ids": [artifact["artifact_id"] for artifact in normalized_artifacts]
+                            },
+                        )
                     idempotent = False
                 row = connection.execute("SELECT * FROM execution_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
                 artifacts = connection.execute(
@@ -1051,9 +1321,29 @@ class WorkItemApplicationService:
             if supersedes == decision_id:
                 raise WorkItemGovernanceError("DECISION_SUPERSEDES_SELF", "Decision cannot supersede itself.")
         source_event_key = require_text(value.get("source_event_key"), "source_event_key", max_length=1024)
+        activation_command = {
+            "decision_id": decision_id if decision_id_supplied else None,
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "action": action,
+            "evidence_artifact_ids": artifact_ids,
+            "reason": reason,
+            "supersedes_decision_id": supersedes,
+            "source_event_key": source_event_key,
+            "actor": actor,
+            "authority_basis": authority_basis,
+            "principal_context": principal,
+        }
         created_at = isoformat_utc(self.now())
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="record_review_decision",
+                    normalized_command=activation_command,
+                    source_event_key=source_event_key,
+                    principal_context=principal_context,
+                )
                 existing = connection.execute(
                     "SELECT * FROM decision_records WHERE source_event_key=?", (source_event_key,)
                 ).fetchone()
@@ -1072,6 +1362,8 @@ class WorkItemApplicationService:
                     ):
                         raise WorkItemGovernanceError("IDEMPOTENCY_CONFLICT", "Decision event key is already in use.")
                     row = existing
+                    if activation is not None:
+                        activation.authorize_replay(work_item_id=work_item_id)
                     idempotent = True
                 else:
                     work_item = self._work_item_row(connection, work_item_id)
@@ -1092,6 +1384,12 @@ class WorkItemApplicationService:
                                 "SUPERSEDED_DECISION_INVALID",
                                 "Superseded Decision must exist in the same Work Item and Task Version.",
                             )
+                    if activation is not None:
+                        activation.authorize_new(
+                            work_item_id=work_item_id,
+                            fact_delta={"decisions": 1},
+                            domain_fact_delta=self._activation_domain_delta(decisions=1),
+                        )
                     connection.execute(
                         """
                         INSERT INTO decision_records(
@@ -1109,6 +1407,11 @@ class WorkItemApplicationService:
                     row = connection.execute(
                         "SELECT * FROM decision_records WHERE decision_id=?", (decision_id,)
                     ).fetchone()
+                    if activation is not None:
+                        activation.commit_new(
+                            work_item_id=work_item_id,
+                            generated_ids={"decision_ids": [decision_id]},
+                        )
                     idempotent = False
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="record_review_decision") from exc
@@ -1136,6 +1439,7 @@ class WorkItemApplicationService:
                 current_state=str(work_item["state"]),
             )
             evaluation = self._evaluate_transition(connection, work_item, normalized)
+        self._activation_preview("apply_work_item_transition", normalized)
         gate_event_id = new_stable_id("gate_event")
         preview = self.previews.issue(
             "work_item_transition",
@@ -1182,6 +1486,13 @@ class WorkItemApplicationService:
         command_digest = canonical_sha256(command)
         try:
             with self.ledger.write_transaction() as connection:
+                activation = self._activation_begin(
+                    connection,
+                    command_name="apply_work_item_transition",
+                    normalized_command=command,
+                    source_event_key=command.get("idempotency_key") or preview_id,
+                    principal_context=principal_context,
+                )
                 existing = connection.execute(
                     "SELECT * FROM gate_events WHERE preview_id=?", (preview_id,)
                 ).fetchone()
@@ -1196,6 +1507,8 @@ class WorkItemApplicationService:
                             "Gate idempotency key is already bound to different content.",
                         )
                     gate_row = existing
+                    if activation is not None:
+                        activation.authorize_replay(work_item_id=command["work_item_id"])
                     idempotent = True
                 else:
                     work_item = self._work_item_row(connection, command["work_item_id"])
@@ -1207,6 +1520,33 @@ class WorkItemApplicationService:
                         {},
                     )
                     transition_result = str(requirements.get("transition_result", "state_advanced"))
+                    if activation is not None:
+                        if outcome == "transition_applied":
+                            quota_delta = {
+                                "applied_gate_events": 1,
+                                "gate_events_total": 1,
+                            }
+                            domain_delta = self._activation_domain_delta(
+                                applied_gate_events=1,
+                                audit_events=1,
+                                outbox_events=1,
+                                acceptance_manifests=(1 if command["target_state"] == "accepted" else 0),
+                            )
+                        else:
+                            quota_delta = {
+                                "rejected_gate_events": 1,
+                                "gate_events_total": 1,
+                            }
+                            domain_delta = self._activation_domain_delta(
+                                rejected_gate_events=1,
+                                audit_events=1,
+                                outbox_events=1,
+                            )
+                        activation.authorize_new(
+                            work_item_id=command["work_item_id"],
+                            fact_delta=quota_delta,
+                            domain_fact_delta=domain_delta,
+                        )
                     if evaluation["eligible"]:
                         cursor = connection.execute(
                             """
@@ -1304,6 +1644,16 @@ class WorkItemApplicationService:
                     gate_row = connection.execute(
                         "SELECT * FROM gate_events WHERE gate_event_id=?", (gate_event_id,)
                     ).fetchone()
+                    if activation is not None:
+                        activation.commit_new(
+                            work_item_id=command["work_item_id"],
+                            event_type=(
+                                "command_committed"
+                                if outcome == "transition_applied"
+                                else "domain_rejected"
+                            ),
+                            generated_ids={"gate_event_ids": [gate_event_id]},
+                        )
                     idempotent = False
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="apply_work_item_transition") from exc
@@ -1563,9 +1913,11 @@ class WorkItemApplicationService:
     # ------------------------------------------------------------------
 
     def apply_blocker(self, command: dict[str, Any]) -> dict[str, Any]:
+        self._deny_activation_command("apply_blocker")
         return self._record_blocker_event(command, event_type="blocker_applied")
 
     def clear_blocker(self, command: dict[str, Any]) -> dict[str, Any]:
+        self._deny_activation_command("clear_blocker")
         return self._record_blocker_event(command, event_type="blocker_cleared")
 
     def _record_blocker_event(self, command: dict[str, Any], *, event_type: str) -> dict[str, Any]:
@@ -1650,6 +2002,7 @@ class WorkItemApplicationService:
 
     def create_delivery_receipt(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("create_delivery_receipt")
         value = require_object(command, "command", non_empty=True)
         allowed = {"delivery_receipt_id", "work_item_id", "task_version", "destination", "payload_digest", "idempotency_key"}
         if set(value) - allowed:
@@ -1715,6 +2068,7 @@ class WorkItemApplicationService:
 
     def retry_delivery(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("retry_delivery")
         value = require_object(command, "command", non_empty=True)
         allowed = {"delivery_receipt_id", "source_event_key", "error", "delivered"}
         if set(value) - allowed:
@@ -1799,6 +2153,7 @@ class WorkItemApplicationService:
 
     def acknowledge_delivery(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("acknowledge_delivery")
         value = require_object(command, "command", non_empty=True)
         allowed = {"delivery_receipt_id", "source", "source_event_key"}
         if set(value) - allowed:
@@ -1881,6 +2236,7 @@ class WorkItemApplicationService:
 
     def record_outbox_delivery_result(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("record_outbox_delivery_result")
         value = require_object(command, "command", non_empty=True)
         allowed = {"outbox_event_id", "source_event_key", "delivered", "error"}
         if set(value) - allowed:
@@ -1946,6 +2302,7 @@ class WorkItemApplicationService:
 
     def recover_outbox_event(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
+        self._deny_activation_command("recover_outbox_event")
         value = require_object(command, "command", non_empty=True)
         allowed = {"outbox_event_id", "source_event_key", "reason"}
         if set(value) - allowed:
@@ -2006,6 +2363,11 @@ class WorkItemApplicationService:
 
     def backup_ledger(self, destination: str | os.PathLike[str]) -> dict[str, Any]:
         self._require_enabled()
+        if self.activation_guard is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_BACKUP_DENIED",
+                "Ledger Backup is a pre/post-window local control-plane operation.",
+            )
         return self.ledger.backup_to(destination)
 
     def restore_ledger(
@@ -2015,6 +2377,11 @@ class WorkItemApplicationService:
         expected_database_generation: int,
     ) -> dict[str, Any]:
         self._require_enabled()
+        if self.activation_guard is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_RESTORE_DENIED",
+                "Ledger restore is denied while the Authoritative Canary composition is active.",
+            )
         return self.ledger.restore_from_backup(
             source,
             expected_database_generation=expected_database_generation,
@@ -2022,6 +2389,11 @@ class WorkItemApplicationService:
 
     def export_audit_package(self) -> dict[str, Any]:
         self._require_enabled()
+        if self.activation_guard is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_EXPORT_DENIED",
+                "Canary evidence export is available only through the local closeout control plane.",
+            )
         return self.ledger.export_audit_package()
 
     # ------------------------------------------------------------------

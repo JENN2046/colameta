@@ -44,9 +44,11 @@ class PreviewCodec:
         ledger: SQLiteWorkItemLedger,
         *,
         now: Callable[[], datetime] = utc_now,
+        allow_signing_key_creation: bool = True,
     ) -> None:
         self.ledger = ledger
         self.now = now
+        self.allow_signing_key_creation = allow_signing_key_creation
         self.project_binding = canonical_sha256({"project_root": str(Path(ledger.project_root).resolve())})
 
     def issue(
@@ -130,8 +132,13 @@ class PreviewCodec:
 
     def _sign(self, preview: dict[str, Any]) -> str:
         unsigned = {key: value for key, value in preview.items() if key != "signature"}
+        key = (
+            self.ledger.get_or_create_signing_key()
+            if self.allow_signing_key_creation
+            else self.ledger.get_existing_signing_key()
+        )
         return hmac.new(
-            self.ledger.get_or_create_signing_key(),
+            key,
             canonical_json(unsigned).encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()

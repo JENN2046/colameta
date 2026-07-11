@@ -1,0 +1,189 @@
+{
+  "schema_version": "authoritative_canary_tool_allowlist.v1",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "profile": "authoritative_canary",
+  "default_policy": "deny",
+  "expected_tool_count": 14,
+  "enforcement": {
+    "tool_definitions": "exact_match_required",
+    "central_dispatch": "exact_match_required",
+    "jsonrpc_tools_call": "enforced",
+    "direct_named_jsonrpc_tool_methods": "disabled",
+    "http_actions": "disabled",
+    "call_tool_for_agent": "enforced",
+    "cloud_agent_dispatch": "enforced",
+    "routed_project_dispatch": "enforced",
+    "unknown_tool": "deny",
+    "authenticated_request_context": "sealed_token_verified_listener_attested_context_bound_to_exact_lease_and_authorization_required_for_preview_and_write",
+    "active_lease_requires_persisted_listener_attestation": true,
+    "terminal_lease_read_behavior": "stop_endpoint_revoke_old_token_use_offline_control_plane",
+    "startup_set_mismatch": "refuse_startup"
+  },
+  "project_binding": {
+    "project_name": "exact_lease_binding_required",
+    "project_root_override": "denied",
+    "registry_project_count": 1
+  },
+  "protocol": {
+    "allowed_methods": [
+      "initialize",
+      "notifications/initialized",
+      "ping",
+      "health",
+      "tools/list",
+      "tools/call"
+    ],
+    "resources": "disabled_or_empty",
+    "unknown_method": "deny"
+  },
+  "tools": [
+    {
+      "name": "get_work_item_governance_status",
+      "class": "read",
+      "mcp_scope": "mcp:read",
+      "active_lease_required": false,
+      "authorized_work_item_binding_required": false
+    },
+    {
+      "name": "get_work_item",
+      "class": "read",
+      "mcp_scope": "mcp:read",
+      "active_lease_required": false,
+      "authorized_work_item_binding_required": true
+    },
+    {
+      "name": "list_work_items",
+      "class": "read",
+      "mcp_scope": "mcp:read",
+      "active_lease_required": false,
+      "authorized_work_item_binding_required": false,
+      "result_constraint": "fresh Ledger may expose at most the one Lease-bound Work Item"
+    },
+    {
+      "name": "get_work_item_timeline",
+      "class": "read",
+      "mcp_scope": "mcp:read",
+      "active_lease_required": false,
+      "authorized_work_item_binding_required": true
+    },
+    {
+      "name": "get_execution_attempt_dispatch_authority",
+      "class": "read",
+      "mcp_scope": "mcp:read",
+      "active_lease_required": false,
+      "authorized_work_item_binding_required": true,
+      "result_constraint": "dispatch_authorized must be false unless the exact Lease is active and runtime binding is current"
+    },
+    {
+      "name": "preview_work_item_create",
+      "class": "preview",
+      "mcp_scope": "mcp:preview",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": false,
+      "constraints": [
+        "trusted Principal and session match Lease",
+        "origin.kind is manual",
+        "origin.ref starts with frozen synthetic prefix",
+        "normalized Create digest matches the Lease-bound synthetic Fixture contract",
+        "Lease has no bound Work Item"
+      ]
+    },
+    {
+      "name": "preview_work_item_transition",
+      "class": "preview",
+      "mcp_scope": "mcp:preview",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true
+    },
+    {
+      "name": "apply_work_item_create",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": false,
+      "quota_facts": ["work_items", "task_versions"],
+      "atomic_first_work_item_binding": true,
+      "post_binding_exact_replay": "allowed_only_after_lease_and_request_context_validation_and_before_new_create_scope_rejection"
+    },
+    {
+      "name": "add_task_version",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["task_versions"]
+    },
+    {
+      "name": "create_execution_attempt",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["runtime_attempts"]
+    },
+    {
+      "name": "complete_execution_attempt",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["attempt_events", "artifacts"],
+      "nested_fact_accounting_required": true
+    },
+    {
+      "name": "register_artifact_reference",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["artifacts"]
+    },
+    {
+      "name": "record_review_decision",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["decisions"]
+    },
+    {
+      "name": "apply_work_item_transition",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": [
+        "applied_gate_events",
+        "rejected_gate_events",
+        "gate_events_total",
+        "audit_events",
+        "outbox_events",
+        "acceptance_manifests"
+      ],
+      "nested_fact_accounting_required": true
+    }
+  ],
+  "explicitly_absent_categories": [
+    "all non-Work-Item tools",
+    "legacy import",
+    "historical attempt binding",
+    "blocker mutation",
+    "delivery mutation",
+    "outbox mutation",
+    "stable promotion",
+    "product submission mutation",
+    "Git mutation",
+    "file mutation",
+    "project mutation",
+    "executor management"
+  ]
+}
