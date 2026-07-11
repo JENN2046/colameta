@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import ipaddress
 import json
 import os
 import re
+import stat
 import subprocess
 import tarfile
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +22,8 @@ from urllib.parse import urlparse
 
 DEFAULT_PUBLIC_BASE_URL = "https://colameta-mcp.skmt617.top"
 DEFAULT_STATUS_PATH = "~/.local/state/colameta/ops/last-status.json"
+PRODUCTION_OPS_PACKET_VERSION = "production_ops_beta_gate.v1"
+MAX_STATUS_RECEIPT_BYTES = 1024 * 1024
 DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS = 24
 DEFAULT_CLOUDFLARED_SERVICE = "cloudflared-colameta-mcp-prod.service"
 DEFAULT_STABLE_SERVICE = "colameta-stable.service"
@@ -72,6 +77,7 @@ def build_production_ops_packet(
     backup_dir: str = DEFAULT_BACKUP_DIR,
     no_network: bool = False,
     connector_smoke: dict[str, Any] | None = None,
+    connector_smoke_receipt_path: str | None = None,
     connector_smoke_fresh_hours: int = DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
     preflight_runner: Callable[..., dict[str, Any]] | None = None,
@@ -88,6 +94,17 @@ def build_production_ops_packet(
         public_base_url,
         resolve_https_dns=not no_network,
     )
+    receipt_status = _connector_smoke_receipt_not_used(
+        "explicit_connector_smoke" if connector_smoke is not None else "receipt_path_not_configured"
+    )
+    if connector_smoke is None and connector_smoke_receipt_path:
+        connector_smoke, receipt_status = load_connector_smoke_receipt(
+            connector_smoke_receipt_path,
+            project_root=root,
+            candidate_head=candidate_head,
+            expected_head=target_head,
+            public_base_url=safe_public_base_url,
+        )
 
     checks: dict[str, dict[str, Any]] = {
         "candidate_head": _candidate_head_check(candidate_head, target_head),
@@ -137,6 +154,7 @@ def build_production_ops_packet(
     packet: dict[str, Any] = {
         "ok": True,
         "source": "production_ops_beta_gate",
+        "schema_version": PRODUCTION_OPS_PACKET_VERSION,
         "read_only": True,
         "side_effects": False,
         "project_root": safe_project_root,
@@ -151,6 +169,7 @@ def build_production_ops_packet(
         "expected_head": target_head,
         "stable_runtime_dir": os.path.abspath(os.path.expanduser(stable_runtime_dir)),
         "checks": checks,
+        "connector_smoke_receipt": receipt_status,
         "reason_codes": sorted(set(reason_codes)),
         "blocker_codes": sorted(set(blocker_codes)),
         "needs_attention_codes": sorted(set(needs_attention_codes)),
@@ -181,6 +200,7 @@ def build_production_ops_packet(
         packet["summary"] = "Production operations packet is blocked because secret-like content was detected."
     else:
         packet["checks"]["secret_redaction"] = leak_check
+    packet["receipt_digest"] = _production_ops_packet_digest(packet)
     return packet
 
 
@@ -198,12 +218,185 @@ def write_status_packet(path: str, packet: dict[str, Any], *, project_root: str,
     resolved = validate_status_write_path(path, project_root=project_root)
     parent = os.path.dirname(resolved)
     os.makedirs(parent, exist_ok=True)
-    tmp = f"{resolved}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(json_dumps(packet))
-        handle.write("\n")
-    os.replace(tmp, resolved)
+    fd, tmp = tempfile.mkstemp(prefix=f".{Path(resolved).name}.", suffix=".tmp", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json_dumps(packet))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, resolved)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
     return resolved
+
+
+def load_connector_smoke_receipt(
+    path: str,
+    *,
+    project_root: str,
+    candidate_head: str | None,
+    expected_head: str | None,
+    public_base_url: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Load only fresh-smoke inputs from a bound, integrity-checked ops receipt."""
+    root = os.path.abspath(os.path.expanduser(project_root))
+    if _clean_head(candidate_head) is None or _clean_head(expected_head) is None:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_BINDING_MISMATCH")
+    if public_base_url == REDACTED_PUBLIC_BASE_URL:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_BINDING_MISMATCH")
+    try:
+        resolved = validate_status_write_path(path, project_root=root)
+    except ValueError:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_PATH_REJECTED")
+    safe_path = redact_status_written_path(resolved)
+    try:
+        before = os.lstat(resolved)
+    except FileNotFoundError:
+        return None, _connector_smoke_receipt_missing(safe_path)
+    except OSError:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_UNREADABLE", path=safe_path)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_UNSAFE_FILE", path=safe_path)
+    if hasattr(os, "getuid") and before.st_uid != os.getuid():
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_OWNER_MISMATCH", path=safe_path)
+    if before.st_mode & 0o022:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_PERMISSIONS_UNSAFE", path=safe_path)
+    if before.st_size <= 0 or before.st_size > MAX_STATUS_RECEIPT_BYTES:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_SIZE_INVALID", path=safe_path)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(resolved, flags)
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+                or opened.st_size != before.st_size
+                or (hasattr(os, "getuid") and opened.st_uid != os.getuid())
+                or bool(opened.st_mode & 0o022)
+            ):
+                return None, _connector_smoke_receipt_rejected(
+                    "CONNECTOR_SMOKE_RECEIPT_CHANGED_DURING_READ", path=safe_path
+                )
+            chunks: list[bytes] = []
+            remaining = MAX_STATUS_RECEIPT_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_UNREADABLE", path=safe_path)
+    if len(raw) != before.st_size or len(raw) > MAX_STATUS_RECEIPT_BYTES:
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_SIZE_INVALID", path=safe_path)
+    try:
+        receipt = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_INVALID_JSON", path=safe_path)
+    if not isinstance(receipt, dict):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_INVALID_SCHEMA", path=safe_path)
+    if (
+        receipt.get("source") != "production_ops_beta_gate"
+        or receipt.get("schema_version") != PRODUCTION_OPS_PACKET_VERSION
+        or receipt.get("ok") is not True
+    ):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_INVALID_SCHEMA", path=safe_path)
+    recorded_digest = receipt.get("receipt_digest")
+    if not isinstance(recorded_digest, str) or not secrets.compare_digest(
+        recorded_digest, _production_ops_packet_digest(receipt)
+    ):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_DIGEST_MISMATCH", path=safe_path)
+    if (
+        receipt.get("project_root") != root
+        or receipt.get("candidate_head") != candidate_head
+        or receipt.get("expected_head") != expected_head
+        or receipt.get("public_base_url") != public_base_url
+    ):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_BINDING_MISMATCH", path=safe_path)
+    checks = receipt.get("checks") if isinstance(receipt.get("checks"), dict) else {}
+    secret_check = checks.get("secret_redaction") if isinstance(checks.get("secret_redaction"), dict) else {}
+    smoke_check = checks.get("connector_smoke") if isinstance(checks.get("connector_smoke"), dict) else {}
+    observed_at = smoke_check.get("last_observed_at")
+    receipt_observed_at = receipt.get("observed_at")
+    if (
+        secret_check.get("status") != READY
+        or smoke_check.get("status") != READY
+        or smoke_check.get("reason_code") != "CONNECTOR_SMOKE_READY"
+        or smoke_check.get("connector_status") != "ready"
+        or not isinstance(observed_at, str)
+        or _parse_iso8601(observed_at) is None
+        or not isinstance(receipt_observed_at, str)
+        or _parse_iso8601(receipt_observed_at) is None
+    ):
+        return None, _connector_smoke_receipt_rejected("CONNECTOR_SMOKE_RECEIPT_EVIDENCE_INVALID", path=safe_path)
+    return (
+        {
+            "status": "ready",
+            "last_observed_at": observed_at,
+            "evidence_source": "persisted_ops_status_receipt",
+        },
+        {
+            "status": "loaded",
+            "reason_code": "CONNECTOR_SMOKE_RECEIPT_LOADED",
+            "read_only": True,
+            "side_effects": False,
+            "path": safe_path,
+            "candidate_head": candidate_head,
+            "last_observed_at": observed_at,
+            "receipt_observed_at": receipt_observed_at,
+            "receipt_digest": recorded_digest,
+        },
+    )
+
+
+def _connector_smoke_receipt_not_used(reason: str) -> dict[str, Any]:
+    return {
+        "status": "not_used",
+        "reason_code": "CONNECTOR_SMOKE_RECEIPT_NOT_USED",
+        "reason": reason,
+        "read_only": True,
+        "side_effects": False,
+    }
+
+
+def _connector_smoke_receipt_missing(path: str) -> dict[str, Any]:
+    return {
+        "status": "missing",
+        "reason_code": "CONNECTOR_SMOKE_RECEIPT_MISSING",
+        "read_only": True,
+        "side_effects": False,
+        "path": path,
+    }
+
+
+def _connector_smoke_receipt_rejected(reason_code: str, *, path: str | None = None) -> dict[str, Any]:
+    return {
+        "status": "rejected",
+        "reason_code": reason_code,
+        "read_only": True,
+        "side_effects": False,
+        **({"path": path} if path else {}),
+    }
+
+
+def _production_ops_packet_digest(packet: dict[str, Any]) -> str:
+    payload = {key: value for key, value in packet.items() if key != "receipt_digest"}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def redact_status_written_path(path: str) -> str:
@@ -553,6 +746,11 @@ def _connector_smoke_check(
         return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_MISSING", "Fresh ChatGPT connector smoke evidence was not provided.")
     status = connector_smoke.get("status") or connector_smoke.get("apps_connector_closeout_status")
     observed = connector_smoke.get("last_observed_at") or connector_smoke.get("observed_at")
+    evidence_source = (
+        "persisted_ops_status_receipt"
+        if connector_smoke.get("evidence_source") == "persisted_ops_status_receipt"
+        else "operator_supplied_sanitized_connector_smoke_status"
+    )
     safe_status, status_redacted, status_allowlisted = _connector_smoke_status_for_packet(status)
     safe_observed, observed_redacted, observed_valid = _connector_smoke_observed_at_for_packet(observed)
     if status_redacted or observed_redacted:
@@ -563,6 +761,7 @@ def _connector_smoke_check(
             connector_status=safe_status,
             last_observed_at=safe_observed,
             redacted=True,
+            evidence_source=evidence_source,
         )
     if safe_status != "ready":
         return _check(
@@ -574,6 +773,7 @@ def _connector_smoke_check(
             connector_status_valid=status_allowlisted,
             observed_at_valid=observed_valid,
             redacted=safe_status == REDACTED_CONNECTOR_SMOKE_VALUE or safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
+            evidence_source=evidence_source,
         )
     if not observed_valid:
         return _check(
@@ -584,10 +784,25 @@ def _connector_smoke_check(
             last_observed_at=safe_observed,
             observed_at_valid=False,
             redacted=safe_observed == REDACTED_CONNECTOR_SMOKE_VALUE,
+            evidence_source=evidence_source,
         )
     if not _is_fresh_iso8601(str(safe_observed or ""), fresh_hours=fresh_hours, now=now):
-        return _check(NEEDS_ATTENTION, "CONNECTOR_SMOKE_STALE", "ChatGPT connector smoke evidence is stale.", connector_status=safe_status, last_observed_at=safe_observed)
-    return _check(READY, "CONNECTOR_SMOKE_READY", "Fresh ChatGPT connector smoke evidence is ready.", connector_status=safe_status, last_observed_at=safe_observed)
+        return _check(
+            NEEDS_ATTENTION,
+            "CONNECTOR_SMOKE_STALE",
+            "ChatGPT connector smoke evidence is stale.",
+            connector_status=safe_status,
+            last_observed_at=safe_observed,
+            evidence_source=evidence_source,
+        )
+    return _check(
+        READY,
+        "CONNECTOR_SMOKE_READY",
+        "Fresh ChatGPT connector smoke evidence is ready.",
+        connector_status=safe_status,
+        last_observed_at=safe_observed,
+        evidence_source=evidence_source,
+    )
 
 
 def _redact_connector_smoke_field(value: Any) -> tuple[Any, bool]:

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1335,6 +1336,257 @@ class ProductionOpsTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_status_write_path(str(self.project / "last-status.json"), project_root=str(self.project))
+
+    def test_fresh_exact_head_status_receipt_rehydrates_connector_smoke(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(status_path), first, project_root=str(self.project), json_dumps=json.dumps)
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert second["beta_gate_ready"] is True
+        assert second["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_READY"
+        assert second["checks"]["connector_smoke"]["evidence_source"] == "persisted_ops_status_receipt"
+        assert second["connector_smoke_receipt"]["status"] == "loaded"
+        assert second["connector_smoke_receipt"]["candidate_head"] == HEAD
+
+    def test_status_writer_forces_private_mode_under_group_writable_umask(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        status_path.parent.mkdir()
+        status_path.write_text("stale\n", encoding="utf-8")
+        status_path.chmod(0o664)
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        previous_umask = os.umask(0o002)
+        try:
+            write_status_packet(str(status_path), packet, project_root=str(self.project), json_dumps=json.dumps)
+        finally:
+            os.umask(previous_umask)
+
+        assert status_path.stat().st_mode & 0o777 == 0o600
+        reloaded = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+        assert reloaded["connector_smoke_receipt"]["status"] == "loaded"
+        assert reloaded["connector_smoke_ready"] is True
+
+    def test_status_receipt_is_rejected_after_candidate_head_changes(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(status_path), first, project_root=str(self.project), json_dumps=json.dumps)
+        changed_head = "b" * 40
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=changed_head,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(head=changed_head),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert second["connector_smoke_ready"] is False
+        assert second["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_MISSING"
+        assert second["connector_smoke_receipt"]["reason_code"] == "CONNECTOR_SMOKE_RECEIPT_BINDING_MISMATCH"
+
+    def test_status_receipt_digest_tampering_fails_closed(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(status_path), first, project_root=str(self.project), json_dumps=json.dumps)
+        tampered = json.loads(status_path.read_text(encoding="utf-8"))
+        tampered["checks"]["connector_smoke"]["last_observed_at"] = "2026-07-07T00:30:00Z"
+        status_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert second["connector_smoke_ready"] is False
+        assert second["connector_smoke_receipt"]["reason_code"] == "CONNECTOR_SMOKE_RECEIPT_DIGEST_MISMATCH"
+
+    def test_status_receipt_symlink_fails_closed(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        state_dir = self.tmp_path / "state"
+        target_path = state_dir / "target.json"
+        receipt_path = state_dir / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(target_path), first, project_root=str(self.project), json_dumps=json.dumps)
+        receipt_path.symlink_to(target_path)
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(receipt_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert second["connector_smoke_ready"] is False
+        assert second["connector_smoke_receipt"]["reason_code"] == "CONNECTOR_SMOKE_RECEIPT_UNSAFE_FILE"
+
+    def test_status_receipt_group_writable_permissions_fail_closed(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(status_path), first, project_root=str(self.project), json_dumps=json.dumps)
+        status_path.chmod(0o664)
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert second["connector_smoke_ready"] is False
+        assert second["connector_smoke_receipt"]["reason_code"] == "CONNECTOR_SMOKE_RECEIPT_PERMISSIONS_UNSAFE"
+
+    def test_status_receipt_over_size_limit_fails_closed(self) -> None:
+        from runner.production_ops import MAX_STATUS_RECEIPT_BYTES, build_production_ops_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        status_path.parent.mkdir()
+        status_path.write_bytes(b"x" * (MAX_STATUS_RECEIPT_BYTES + 1))
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=1),
+        )
+
+        assert packet["connector_smoke_ready"] is False
+        assert packet["connector_smoke_receipt"]["reason_code"] == "CONNECTOR_SMOKE_RECEIPT_SIZE_INVALID"
+
+    def test_loaded_status_receipt_still_expires_under_current_freshness_window(self) -> None:
+        from runner.production_ops import build_production_ops_packet, write_status_packet
+
+        status_path = self.tmp_path / "state" / "last-status.json"
+        first = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+        write_status_packet(str(status_path), first, project_root=str(self.project), json_dumps=json.dumps)
+
+        second = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke_receipt_path=str(status_path),
+            command_runner=FakeCommandRunner(),
+            preflight_runner=ready_preflight,
+            now=NOW + timedelta(hours=25),
+        )
+
+        assert second["connector_smoke_receipt"]["status"] == "loaded"
+        assert second["connector_smoke_ready"] is False
+        assert second["checks"]["connector_smoke"]["reason_code"] == "CONNECTOR_SMOKE_STALE"
 
     def test_status_write_path_rejects_secret_like_path(self) -> None:
         from runner.production_ops import validate_status_write_path

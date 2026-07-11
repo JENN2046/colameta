@@ -32,6 +32,7 @@ from runner.runner_paths import (
 from runner.production_ops import (
     DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS,
     DEFAULT_PUBLIC_BASE_URL,
+    DEFAULT_STATUS_PATH,
     build_production_ops_packet,
     redact_project_root,
     redact_status_written_path,
@@ -2114,6 +2115,11 @@ def _run_ops_check(args: list[str]) -> int:
         expected_head=options.get("expected_head") if isinstance(options.get("expected_head"), str) else None,
         no_network=bool(options.get("no_network")),
         connector_smoke=options.get("connector_smoke") if isinstance(options.get("connector_smoke"), dict) else None,
+        connector_smoke_receipt_path=(
+            str(options.get("write_status") or DEFAULT_STATUS_PATH)
+            if not isinstance(options.get("connector_smoke"), dict)
+            else None
+        ),
         connector_smoke_fresh_hours=int(options.get("connector_smoke_fresh_hours") or DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS),
     )
     write_status = options.get("write_status")
