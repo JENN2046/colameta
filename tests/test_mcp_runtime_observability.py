@@ -4185,6 +4185,15 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert data["agent_operator_flow"]["source"] == "agent_operator_flow_packet"
         assert data["agent_operator_flow"]["profile_id"] == "reviewer_agent"
         assert data["agent_operator_flow"]["current_state"]["resolved_flow_mode"] == "review"
+        embedded_readiness = data["agent_operator_flow"]["current_state"]["readiness"]
+        embedded_connector = data["agent_operator_flow"]["current_state"]["connector"]
+        assert embedded_readiness["status"] == data["readiness"]["status"]
+        assert embedded_connector["external_connector_status"] == data["connector"]["external_connector_status"]
+        assert embedded_connector["operator_closeout"] == data["connector"]["operator_closeout_status"]
+        assert (
+            embedded_connector["evidence_gap_count"]
+            == data["connector"]["operator_closeout"]["evidence_gap_count"]
+        )
         assert data["agent_operator_flow"]["persona_safe_next_tool"] == "manage_workflow_run"
         assert data["agent_operator_flow"]["primary_next_action"]["tool"]
         assert data["initial_reads"][2]["arguments"]["profile_id"] == "reviewer_agent"

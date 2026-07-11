@@ -10758,6 +10758,10 @@ class MCPPlanningBridgeServer:
         flow_args = {"profile_id": flow_profile_id, "include_advanced_context": False}
         if self.service_mode or params.get("project_name") is not None:
             flow_args.update(project_args)
+        if tunnel_client is not None:
+            flow_args["tunnel_client"] = tunnel_client
+        if control_plane is not None:
+            flow_args["control_plane"] = control_plane
         agent_operator_flow = self._tool_get_agent_operator_flow_packet(flow_args)
         flow_profile_summary = {
             "profile_id": flow_profile_id,
