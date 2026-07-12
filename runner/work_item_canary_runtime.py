@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ from runner.work_item_governance.activation import (
     AUTHORITATIVE_CANARY_PROFILE,
     ActivationLeaseControlPlane,
     canonical_path_digest,
+    require_authoritative_token_file_binding,
 )
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
@@ -59,21 +59,7 @@ def serve_prepared_authoritative_canary(
                 details={"variable": name},
             )
     store = RunnerGlobalConfigStore(config_dir=str(expected_environment["XDG_CONFIG_HOME"] / "colameta"))
-    auth = store.load_auth(include_secret=True)
-    payload = auth.get("auth") if isinstance(auth, dict) else None
-    token = payload.get("auth_token") if isinstance(payload, dict) else None
     auth_file = Path(store.auth_path()).resolve()
-    if (
-        not auth.get("ok")
-        or not isinstance(token, str)
-        or len(token.encode("utf-8")) < 43
-        or not auth_file.is_file()
-        or stat.S_IMODE(auth_file.stat().st_mode) != 0o600
-    ):
-        raise WorkItemGovernanceError(
-            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
-            "Authoritative Canary Token configuration is missing, weak, or not private.",
-        )
     principal = local_principal_from_environment()
     if principal is None or not principal.trusted or not principal.session_ref:
         raise WorkItemGovernanceError(
@@ -81,6 +67,7 @@ def serve_prepared_authoritative_canary(
             "A trusted session-bound local Principal must be configured before claim.",
         )
     ledger = SQLiteWorkItemLedger(project)
+    token = require_authoritative_token_file_binding(ledger, auth_file)
     control_plane = ActivationLeaseControlPlane(ledger, canary_root=root)
     with ledger.read_connection() as connection:
         lease = connection.execute(

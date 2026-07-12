@@ -94,6 +94,7 @@ from runner.workflow_records import WorkflowRecordStore
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.activation import (
     ActivationLeaseControlPlane,
+    validate_authoritative_bearer_token,
     validate_runtime_policy_contracts,
 )
 from runner.work_item_mcp_adapter import (
@@ -4488,6 +4489,14 @@ class MCPPlanningBridgeServer:
                 raise PlanningBridgeError(
                     "authoritative_canary tool definition set differs from the frozen exact allowlist."
                 )
+            missing_dispatch_handlers = tuple(
+                name for name in AUTHORITATIVE_CANARY_MCP_TOOLS if not callable(self.tools.get(name))
+            )
+            if missing_dispatch_handlers:
+                raise PlanningBridgeError(
+                    "authoritative_canary dispatch handlers differ from the frozen exact allowlist: "
+                    + ", ".join(missing_dispatch_handlers)
+                )
 
     def _work_item_tool_definitions(self, output_schema: dict[str, Any]) -> list[MCPToolDef]:
         return [
@@ -4599,13 +4608,12 @@ class MCPPlanningBridgeServer:
                 raise PlanningBridgeError(
                     "authoritative_canary Token must be loaded from isolated 0600 XDG auth.json."
                 )
-            if (
-                len(auth_token.encode("utf-8")) < 43
-                or re.fullmatch(r"[A-Za-z0-9_-]+", auth_token) is None
-            ):
+            try:
+                validate_authoritative_bearer_token(auth_token)
+            except WorkItemGovernanceError as exc:
                 raise PlanningBridgeError(
-                    "authoritative_canary token must be a CSPRNG-style base64url secret of at least 256 bits."
-                )
+                    "authoritative_canary token must match the exact bound 256-bit CSPRNG format."
+                ) from exc
             if public_base_url is not None or debug_actions:
                 raise PlanningBridgeError(
                     "authoritative_canary forbids public/actions configuration."

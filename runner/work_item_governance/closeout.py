@@ -31,12 +31,14 @@ REQUIRED_VERIFICATION_NAMES = (
 def verify_r2_closeout_receipt(
     receipt: dict[str, Any],
     *,
-    evidence_root: str | Path | None = None,
-    project_root: str | Path | None = None,
+    evidence_root: str | Path,
+    project_root: str | Path,
 ) -> dict[str, Any]:
     """Fail closed on semantic PASS claims that JSON Schema alone cannot prove."""
 
     validate_governance_record("wig_p3_canary_a1_r2_closeout_receipt.v1", receipt)
+    resolved_evidence_root = Path(evidence_root).expanduser().resolve()
+    resolved_project_root = Path(project_root).expanduser().resolve()
     violations: list[str] = []
     verification = receipt["verification"]
     if tuple(item["name"] for item in verification) != REQUIRED_VERIFICATION_NAMES:
@@ -48,17 +50,15 @@ def verify_r2_closeout_receipt(
             violations.append(f"verification_time_order:{item['name']}")
         if item["exit_code"] != 0 or item["passed"] is not True:
             violations.append(f"verification_failed:{item['name']}")
-        if evidence_root is not None:
-            root = Path(evidence_root).expanduser().resolve()
-            target = (root / item["evidence_ref"]).resolve()
-            try:
-                target.relative_to(root)
-            except ValueError:
-                violations.append(f"evidence_path_escape:{item['name']}")
-            if not target.is_file():
-                violations.append(f"evidence_missing:{item['name']}")
-            elif sha256_file(target) != item["evidence_sha256"]:
-                violations.append(f"evidence_digest_mismatch:{item['name']}")
+        target = (resolved_evidence_root / item["evidence_ref"]).resolve()
+        try:
+            target.relative_to(resolved_evidence_root)
+        except ValueError:
+            violations.append(f"evidence_path_escape:{item['name']}")
+        if not target.is_file():
+            violations.append(f"evidence_missing:{item['name']}")
+        elif sha256_file(target) != item["evidence_sha256"]:
+            violations.append(f"evidence_digest_mismatch:{item['name']}")
     window = receipt["verification_window"]
     started = parse_timestamp(window["started_at"], "verification_window.started_at")
     ended = parse_timestamp(window["ended_at"], "verification_window.ended_at")
@@ -77,12 +77,8 @@ def verify_r2_closeout_receipt(
         violations.append("pass_with_findings")
     if result == "PASS_WITH_GAPS" and receipt["blockers"]:
         violations.append("gaps_result_has_blockers")
-    if evidence_root is None:
-        violations.append("evidence_root_required")
-    else:
-        _verify_exported_lease_evidence(receipt, Path(evidence_root), violations)
-    if project_root is not None:
-        _verify_protected_assets(receipt, Path(project_root), violations)
+    _verify_exported_lease_evidence(receipt, resolved_evidence_root, violations)
+    _verify_protected_assets(receipt, resolved_project_root, violations)
     if violations:
         raise WorkItemGovernanceError(
             "R2_CLOSEOUT_SEMANTICS_INVALID",

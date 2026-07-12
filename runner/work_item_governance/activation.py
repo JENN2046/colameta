@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import os
+import re
 import sqlite3
+import stat
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +34,14 @@ from runner.work_item_governance.schema_loader import (
 
 R2_SPEC_FREEZE_MANIFEST_SHA256 = "9bc0209f10dfb9b6b3583db66af443957e598982383bf1c5e88e6029cb4b0404"
 AUTHORITATIVE_CANARY_PROFILE = "authoritative_canary"
+# These are public Ledger metadata keys, not embedded credentials.
+AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY = (  # nosec B105
+    "authoritative_canary_token_file_sha256"
+)
+AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY = (  # nosec B105
+    "authoritative_canary_token_evidence_digest"
+)
+_AUTHORITATIVE_TOKEN_PATTERN = re.compile(r"mvr_([A-Za-z0-9_-]{43})")
 ALLOWED_WRITE_COMMANDS = (
     "apply_work_item_create",
     "add_task_version",
@@ -170,6 +183,141 @@ FRESH_EXECUTION_FACT_COUNT_QUERIES = {
 def canonical_path_digest(path: str | os.PathLike[str]) -> str:
     resolved = Path(path).expanduser().resolve()
     return canonical_sha256({"resolved_posix_path": resolved.as_posix()})
+
+
+def validate_authoritative_bearer_token(token: str) -> str:
+    """Validate the exact 256-bit base64url Canary token representation.
+
+    The format check is not used as proof of CSPRNG provenance; that proof is
+    supplied by the preflight evidence and exact auth-file binding.  It does
+    reject malformed and obviously low-diversity stand-ins before startup.
+    """
+
+    match = _AUTHORITATIVE_TOKEN_PATTERN.fullmatch(token) if isinstance(token, str) else None
+    if match is None:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary Token must use the exact mvr_ + 256-bit base64url format.",
+        )
+    body = match.group(1)
+    try:
+        decoded = base64.urlsafe_b64decode(body + "=")
+    except (ValueError, binascii.Error) as exc:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary Token is not valid base64url.",
+        ) from exc
+    if len(decoded) != 32 or len(set(decoded)) < 16:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary Token does not satisfy the 256-bit material contract.",
+        )
+    return token
+
+
+def read_authoritative_token_file(
+    auth_file: str | os.PathLike[str],
+) -> tuple[str, dict[str, Any]]:
+    """Read one private auth file once and return its validated secret and public evidence."""
+
+    path = Path(auth_file).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path = Path(os.path.abspath(path))
+    if path.is_symlink():
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary auth.json must not be a symbolic link.",
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary auth.json is not readable.",
+        ) from exc
+    try:
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or stat.S_IMODE(file_stat.st_mode) != 0o600
+            or file_stat.st_uid != os.getuid()
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+                "Authoritative Canary auth.json must be an owned 0600 regular file.",
+            )
+        if stat.S_IMODE(path.parent.stat().st_mode) & 0o077:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+                "Authoritative Canary auth.json parent must be 0700 or stricter.",
+            )
+        chunks: list[bytes] = []
+        bytes_read = 0
+        while bytes_read <= 16_384:
+            chunk = os.read(descriptor, min(4096, 16_385 - bytes_read))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if len(raw) > 16_384:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary auth.json exceeds the private control-plane size limit.",
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+            "Authoritative Canary auth.json is invalid JSON.",
+        ) from exc
+    token = payload.get("auth_token") if isinstance(payload, dict) else None
+    validate_authoritative_bearer_token(token)
+    evidence = {
+        "algorithm": "os_csprng_256_bits_minimum_base64url",
+        "entropy_bits": 256,
+        "token_sha256": hashlib.sha256(raw).hexdigest(),
+        "auth_file_path_digest": canonical_path_digest(path),
+    }
+    return token, evidence
+
+
+def require_authoritative_token_file_binding(
+    ledger: SQLiteWorkItemLedger,
+    auth_file: str | os.PathLike[str],
+    *,
+    expected_evidence_digest: str | None = None,
+) -> str:
+    """Require auth.json to match the exact bytes sealed into the fresh Ledger."""
+
+    token, evidence = read_authoritative_token_file(auth_file)
+    evidence_digest = canonical_sha256(evidence)
+    with ledger.read_connection() as connection:
+        rows = connection.execute(
+            "SELECT key,value FROM ledger_meta WHERE key IN (?,?)",
+            (
+                AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+                AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+            ),
+        ).fetchall()
+    binding = {str(row["key"]): str(row["value"]) for row in rows}
+    if (
+        binding.get(AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY) != evidence["token_sha256"]
+        or binding.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY) != evidence_digest
+        or (expected_evidence_digest is not None and expected_evidence_digest != evidence_digest)
+    ):
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_BINDING_MISMATCH",
+            "Authoritative Canary auth.json differs from the exact fresh-Ledger binding.",
+        )
+    return token
 
 
 def _resource_sha256(filename: str) -> str:
@@ -2457,6 +2605,25 @@ class ActivationLeaseControlPlane:
                 "PREFLIGHT_POLICY_BINDING_MISMATCH",
                 "Preflight policy/source/Principal binding differs from the Activation Envelope.",
             )
+        authentication = preflight_receipt["authentication"]
+        token_file = (self.canary_root / authentication["token_file_relative_path"]).resolve()
+        try:
+            token_file.relative_to(self.canary_root)
+        except ValueError as exc:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_BINDING_MISMATCH",
+                "Preflight Token file escapes the isolated Canary root.",
+            ) from exc
+        if canonical_path_digest(token_file) != authentication["token_file_path_digest"]:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_BINDING_MISMATCH",
+                "Preflight Token path differs from its exact digest binding.",
+            )
+        require_authoritative_token_file_binding(
+            self.ledger,
+            token_file,
+            expected_evidence_digest=authentication["token_generation_evidence_digest"],
+        )
         fresh = preflight_receipt["fresh_ledger"]
         baseline = {
             "business_fact_counts": fresh["business_fact_counts"],

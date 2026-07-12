@@ -13,10 +13,13 @@ from runner.project_registry import ProjectRegistry
 from runner.runner_global_config import RunnerGlobalConfigStore
 from runner.work_item_governance.activation import (
     AUTHORITATIVE_CANARY_TOOLS,
+    AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+    AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
     R2_SPEC_FREEZE_MANIFEST_SHA256,
     business_fact_counts,
     canonical_path_digest,
     process_identity_inputs,
+    read_authoritative_token_file,
     validate_runtime_policy_contracts,
     validate_synthetic_fixture_semantics,
 )
@@ -83,12 +86,12 @@ def provision_private_bearer_token(
     auth_file = Path(str(saved["path"])).resolve()
     parent = auth_file.parent
     os.chmod(parent, 0o700)
-    evidence = {
-        "algorithm": "os_csprng_256_bits_minimum_base64url",
-        "entropy_bits": 256,
-        "token_sha256": sha256_file(auth_file),
-        "auth_file_path_digest": canonical_path_digest(auth_file),
-    }
+    saved_token, evidence = read_authoritative_token_file(auth_file)
+    if not secrets.compare_digest(saved_token, token):
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_PROVISION_FAILED",
+            "Private Canary Bearer Token differs from the persisted auth.json.",
+        )
     return PrivateTokenProvisioning(
         token=token,
         auth_file=auth_file,
@@ -168,7 +171,15 @@ def bootstrap_fresh_canary_preflight(
         )
     if token_provisioning.auth_file.resolve() != paths.token_file.resolve():
         raise WorkItemGovernanceError("TOKEN_FILE_PATH_MISMATCH", "Provisioned Token path differs from Preflight.")
-    _validate_private_token_file(paths.token_file)
+    persisted_token, token_evidence = _validate_private_token_file(paths.token_file)
+    if (
+        not secrets.compare_digest(persisted_token, token_provisioning.token)
+        or canonical_sha256(token_evidence) != token_provisioning.evidence_digest
+    ):
+        raise WorkItemGovernanceError(
+            "ACTIVATION_TOKEN_BINDING_MISMATCH",
+            "Provisioned Token evidence differs from the exact private auth.json bytes.",
+        )
     _validate_token_secret_boundary(token_provisioning.token)
     expected_environment = {
         "HOME": paths.home.resolve(),
@@ -235,6 +246,19 @@ def bootstrap_fresh_canary_preflight(
         raise WorkItemGovernanceError("LEDGER_PATH_MISMATCH", "Ledger path differs from the project-local contract.")
     ledger.initialize()
     ledger.get_or_create_signing_key()
+    token_binding_updated_at = isoformat_utc(utc_now())
+    with ledger.write_transaction() as connection:
+        for key, value in (
+            (AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY, token_evidence["token_sha256"]),
+            (AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY, token_provisioning.evidence_digest),
+        ):
+            connection.execute(
+                """
+                INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+                """,
+                (key, value, token_binding_updated_at),
+            )
     with ledger.read_connection() as connection:
         counts = business_fact_counts(connection)
         external_associations = int(
@@ -475,20 +499,8 @@ def _relative_paths(paths: FreshCanaryPaths) -> dict[str, str]:
     return {key: value.resolve().relative_to(root).as_posix() for key, value in names.items()}
 
 
-def _validate_private_token_file(path: Path) -> None:
-    if not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise WorkItemGovernanceError("TOKEN_FILE_PERMISSIONS_INVALID", "Token file must be a 0600 regular file.")
-    if path.stat().st_uid != os.getuid():
-        raise WorkItemGovernanceError("TOKEN_FILE_OWNER_INVALID", "Token file owner differs from the Canary user.")
-    if stat.S_IMODE(path.parent.stat().st_mode) & 0o077:
-        raise WorkItemGovernanceError(
-            "TOKEN_DIRECTORY_PERMISSIONS_INVALID",
-            "Token parent directory must be 0700 or stricter.",
-        )
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    token = payload.get("auth_token") if isinstance(payload, dict) else None
-    if not isinstance(token, str) or len(token.encode("utf-8")) < 43:
-        raise WorkItemGovernanceError("TOKEN_ENTROPY_INVALID", "Token configuration is too weak.")
+def _validate_private_token_file(path: Path) -> tuple[str, dict[str, Any]]:
+    return read_authoritative_token_file(path)
 
 
 def _assert_private_directory(path: Path) -> None:

@@ -672,6 +672,7 @@ class SQLiteWorkItemLedger:
 
     def get_or_create_signing_key(self) -> bytes:
         with self.write_transaction() as connection:
+            self._assert_not_activation_managed(connection, operation="signing_key")
             row = connection.execute("SELECT value FROM ledger_meta WHERE key='preview_signing_key'").fetchone()
             if row is None:
                 value = secrets.token_hex(32)
@@ -747,8 +748,13 @@ class SQLiteWorkItemLedger:
             "supported_schema_version": CURRENT_LEDGER_SCHEMA_VERSION,
         }
 
-    def backup_to(self, destination: str | os.PathLike[str]) -> dict[str, Any]:
-        with self._maintenance_lock(exclusive=False):
+    def backup_to(
+        self,
+        destination: str | os.PathLike[str],
+        *,
+        reject_activation_managed: bool = False,
+    ) -> dict[str, Any]:
+        with self._maintenance_lock(exclusive=reject_activation_managed):
             self._initialize_unlocked()
             destination_path = Path(destination).expanduser().resolve()
             if destination_path == self.path.resolve():
@@ -757,6 +763,8 @@ class SQLiteWorkItemLedger:
             source = self._connect(readonly=True)
             target = sqlite3.connect(str(destination_path), isolation_level=None)
             try:
+                if reject_activation_managed:
+                    self._assert_not_activation_managed(source, operation="backup")
                 generation_row = source.execute(
                     "SELECT value FROM ledger_meta WHERE key='database_generation'"
                 ).fetchone()
@@ -790,6 +798,7 @@ class SQLiteWorkItemLedger:
         source: str | os.PathLike[str],
         *,
         expected_database_generation: int,
+        reject_activation_managed: bool = False,
     ) -> dict[str, Any]:
         if (
             isinstance(expected_database_generation, bool)
@@ -811,6 +820,8 @@ class SQLiteWorkItemLedger:
         with self._maintenance_lock(exclusive=True, blocking=False):
             self._initialize_unlocked()
             with self._connect(readonly=True) as current_connection:
+                if reject_activation_managed:
+                    self._assert_not_activation_managed(current_connection, operation="restore")
                 generation_row = current_connection.execute(
                     "SELECT value FROM ledger_meta WHERE key='database_generation'"
                 ).fetchone()
@@ -835,6 +846,11 @@ class SQLiteWorkItemLedger:
                 source_connection = self._connect(source_path, readonly=True)
                 target_connection = sqlite3.connect(str(temp_path), isolation_level=None)
                 try:
+                    if reject_activation_managed:
+                        self._assert_not_activation_managed(
+                            source_connection,
+                            operation="restore_source",
+                        )
                     source_connection.backup(target_connection)
                 finally:
                     target_connection.close()
@@ -894,7 +910,11 @@ class SQLiteWorkItemLedger:
                     if temp_sidecar.exists():
                         temp_sidecar.unlink()
 
-    def export_audit_package(self) -> dict[str, Any]:
+    def export_audit_package(
+        self,
+        *,
+        reject_activation_managed: bool = False,
+    ) -> dict[str, Any]:
         """Return a structured export; secrets and source/report bodies are absent."""
 
         export_queries = {
@@ -912,19 +932,44 @@ class SQLiteWorkItemLedger:
             "acceptance_manifests": "SELECT * FROM acceptance_manifests",
         }
         records: dict[str, list[dict[str, Any]]] = {}
-        with self.read_connection() as connection:
-            for table, query in export_queries.items():
-                rows = connection.execute(query).fetchall()
-                records[table] = [dict(row) for row in rows]
+        with self._maintenance_lock(exclusive=reject_activation_managed):
+            self._initialize_unlocked()
+            with self._connect(readonly=True) as connection:
+                if reject_activation_managed:
+                    self._assert_not_activation_managed(connection, operation="export")
+                for table, query in export_queries.items():
+                    rows = connection.execute(query).fetchall()
+                    records[table] = [dict(row) for row in rows]
+                ledger_schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         manifest = {
             "schema_version": "work_item_audit_export.v1",
-            "ledger_schema_version": self.schema_version(),
+            "ledger_schema_version": ledger_schema_version,
             "record_counts": {table: len(rows) for table, rows in records.items()},
             "records_digest": canonical_sha256(records),
             "contains_preview_signing_key": False,
             "contains_artifact_bodies": False,
         }
         return {"manifest": manifest, "records": records, "export_digest": canonical_sha256(manifest)}
+
+    @staticmethod
+    def _assert_not_activation_managed(
+        connection: sqlite3.Connection,
+        *,
+        operation: str,
+    ) -> None:
+        lease = connection.execute(
+            "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if lease is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
+                "An activation-managed Ledger cannot be accessed by an unguarded repository operation.",
+                details={
+                    "operation": operation,
+                    "lease_id": str(lease["lease_id"]),
+                    "lease_status": str(lease["status"]),
+                },
+            )
 
     @staticmethod
     def json_text(value: Any) -> str:

@@ -62,6 +62,19 @@ SIDE_CONTEXT_FORBIDDEN_IMPORT_PREFIXES = (
     "runner.work_item_governance.repository",
     "runner.work_item_governance.service",
 )
+DIRECT_WRITE_BOUNDARY_IMPORT_PREFIXES = SIDE_CONTEXT_FORBIDDEN_IMPORT_PREFIXES
+DIRECT_WRITE_BOUNDARY_REEXPORTS = frozenset(
+    {
+        "SQLiteWorkItemLedger",
+        "WorkItemApplicationService",
+    }
+)
+DIRECT_WRITE_BOUNDARY_ALLOWED_PATHS = frozenset(
+    {
+        "runner/work_item_canary_runtime.py",
+        "runner/work_item_commands.py",
+    }
+)
 WORK_ITEM_CORE_PACKAGE = "runner.work_item_governance"
 LEASE_CONTROLLED_WRITE_METHODS = (
     "apply_work_item_create",
@@ -132,9 +145,43 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 violations.append(
                     {"rule": "transport_bypasses_application_command", "path": str(path.relative_to(root)), "import": imported}
                 )
+
+    checked_write_boundary_files = 0
+    side_context_path_set = set(side_context_paths)
+    for source_root_name in ("runner", "scripts", "adapters"):
+        source_root = root / source_root_name
+        if not source_root.is_dir():
+            continue
+        for path in sorted(source_root.rglob("*.py")):
+            checked_write_boundary_files += 1
+            relative = path.relative_to(root).as_posix()
+            if (
+                path.is_relative_to(core_root)
+                or path in side_context_path_set
+                or relative in DIRECT_WRITE_BOUNDARY_ALLOWED_PATHS
+            ):
+                continue
+            imported = _direct_write_boundary_import(path)
+            if imported is not None:
+                violations.append(
+                    {
+                        "rule": "direct_work_item_write_boundary_import",
+                        "path": relative,
+                        "import": imported,
+                    }
+                )
     service_path = core_root / "service.py"
     if service_path.is_file():
         service_calls = _method_calls(service_path)
+        for method, calls in service_calls.items():
+            if method != "_write_transaction" and "write_transaction" in calls:
+                violations.append(
+                    {
+                        "rule": "application_write_bypasses_composition_guard",
+                        "path": str(service_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
         for method in LEASE_CONTROLLED_WRITE_METHODS:
             required_call = "_apply_create" if method == "apply_work_item_create" else "_activation_begin"
             if required_call not in service_calls.get(method, set()):
@@ -168,6 +215,7 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
         "violations": violations,
         "checked_core_files": len(list(core_root.rglob("*.py"))),
         "checked_side_context_files": len(side_context_paths),
+        "checked_write_boundary_files": checked_write_boundary_files,
     }
 
 
@@ -199,6 +247,28 @@ def _imports(path: Path) -> list[str]:
             imports.append(node.module)
             imports.extend(f"{node.module}.{alias.name}" for alias in node.names)
     return imports
+
+
+def _direct_write_boundary_import(path: Path) -> str | None:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == WORK_ITEM_CORE_PACKAGE or alias.name.startswith(
+                    DIRECT_WRITE_BOUNDARY_IMPORT_PREFIXES
+                ):
+                    return alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(DIRECT_WRITE_BOUNDARY_IMPORT_PREFIXES):
+                return node.module
+            if node.module == WORK_ITEM_CORE_PACKAGE:
+                for alias in node.names:
+                    if alias.name in DIRECT_WRITE_BOUNDARY_REEXPORTS or alias.name == "*":
+                        return f"{node.module}.{alias.name}"
+    return None
 
 
 def _method_calls(path: Path) -> dict[str, set[str]]:

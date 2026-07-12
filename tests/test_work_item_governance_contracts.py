@@ -81,3 +81,32 @@ def test_future_operations_module_is_covered_by_architecture_manifest(tmp_path: 
             "import": "runner.work_item_governance.repository",
         },
     ]
+
+
+def test_arbitrary_future_module_cannot_import_work_item_write_boundary(tmp_path: Path) -> None:
+    runner_dir = tmp_path / "runner"
+    core_dir = runner_dir / "work_item_governance"
+    core_dir.mkdir(parents=True)
+    (core_dir / "__init__.py").write_text("", encoding="utf-8")
+    (runner_dir / "future_background_job.py").write_text(
+        "from runner.work_item_governance.service import WorkItemApplicationService\n",
+        encoding="utf-8",
+    )
+    result = check_work_item_architecture(tmp_path)
+    assert result["ok"] is False
+    assert {
+        "rule": "direct_work_item_write_boundary_import",
+        "path": "runner/future_background_job.py",
+        "import": "runner.work_item_governance.service",
+    } in result["violations"]
+
+    (runner_dir / "future_background_job.py").write_text(
+        "from runner.work_item_governance import WorkItemApplicationService\n",
+        encoding="utf-8",
+    )
+    result = check_work_item_architecture(tmp_path)
+    assert {
+        "rule": "direct_work_item_write_boundary_import",
+        "path": "runner/future_background_job.py",
+        "import": "runner.work_item_governance.WorkItemApplicationService",
+    } in result["violations"]

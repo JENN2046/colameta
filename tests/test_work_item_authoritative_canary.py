@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -20,6 +21,11 @@ import runner.mcp_server as mcp_server_module
 from runner.mcp_server import MCPPlanningBridgeServer, PlanningBridgeError
 from runner.work_item_governance.activation import (
     AUTHORITATIVE_CANARY_TOOLS,
+    AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+    AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+    read_authoritative_token_file,
+    require_authoritative_token_file_binding,
+    validate_authoritative_bearer_token,
     validate_runtime_policy_contracts,
     validate_synthetic_fixture_semantics,
 )
@@ -27,6 +33,7 @@ from runner.work_item_governance.canonical import canonical_sha256
 from runner.work_item_governance.closeout import (
     _load_strict_json,
     _verify_exported_event_chain,
+    verify_r2_closeout_receipt,
 )
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
@@ -671,6 +678,175 @@ def test_authoritative_canary_startup_refuses_frozen_tool_set_mismatch(
         MCPPlanningBridgeServer(str(tmp_path), exposure_profile="authoritative_canary")
 
 
+def test_authoritative_canary_startup_refuses_missing_dispatch_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mcp_server_module,
+        "WORK_ITEM_MCP_TOOLS",
+        tuple(name for name in mcp_server_module.WORK_ITEM_MCP_TOOLS if name != "apply_work_item_transition"),
+    )
+    with pytest.raises(PlanningBridgeError, match="dispatch handlers"):
+        MCPPlanningBridgeServer(str(tmp_path), exposure_profile="authoritative_canary")
+
+
+def test_active_lease_blocks_non_canary_composition_downgrade(tmp_path: Path) -> None:
+    principal = all_permissions_principal()
+    fixture, raw = make_fixture(tmp_path, principal)
+    preexisting_service = WorkItemApplicationService(
+        tmp_path,
+        enabled=True,
+        authoritative_transitions=True,
+        principal_context=principal,
+    )
+    guarded_service = install_active_lease(tmp_path, fixture, principal)
+
+    for service in (
+        preexisting_service,
+        WorkItemApplicationService(
+            tmp_path,
+            enabled=True,
+            authoritative_transitions=True,
+            principal_context=principal,
+        ),
+    ):
+        try:
+            preview = service.preview_work_item_create(raw["create"])["preview"]
+        except WorkItemGovernanceError as preview_error:
+            assert preview_error.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+            continue
+        with pytest.raises(WorkItemGovernanceError) as exc_info:
+            service.apply_work_item_create(preview)
+        assert exc_info.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+
+    with guarded_service.ledger.read_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
+        usage = json.loads(connection.execute("SELECT usage_json FROM activation_leases").fetchone()[0])
+    assert usage["new_work_items"] == 0
+    with pytest.raises(WorkItemGovernanceError) as signing_error:
+        guarded_service.ledger.get_or_create_signing_key()
+    assert signing_error.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+
+
+def test_active_lease_blocks_unguarded_maintenance_commands(tmp_path: Path) -> None:
+    principal = all_permissions_principal()
+    fixture, _raw = make_fixture(tmp_path, principal)
+    guarded_service = install_active_lease(tmp_path, fixture, principal)
+    unguarded = WorkItemApplicationService(tmp_path, enabled=True)
+
+    for operation in (
+        lambda: unguarded.backup_ledger(tmp_path / "backup.sqlite3"),
+        unguarded.export_audit_package,
+        lambda: unguarded.restore_ledger(
+            tmp_path / "missing.sqlite3",
+            expected_database_generation=guarded_service.ledger.database_generation(),
+        ),
+    ):
+        with pytest.raises(WorkItemGovernanceError) as exc_info:
+            operation()
+        assert exc_info.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+
+    activation_backup = tmp_path / "activation-backup.sqlite3"
+    guarded_service.ledger.backup_to(activation_backup)
+    clean_project = tmp_path / "clean-project"
+    clean_project.mkdir()
+    clean_service = WorkItemApplicationService(clean_project, enabled=True)
+    clean_generation = clean_service.ledger.database_generation()
+    with pytest.raises(WorkItemGovernanceError) as source_error:
+        clean_service.restore_ledger(
+            activation_backup,
+            expected_database_generation=clean_generation,
+        )
+    assert source_error.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+
+
+def test_restore_rechecks_lease_after_service_precheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "restore-race"
+    project.mkdir()
+    service = WorkItemApplicationService(project, enabled=True)
+    backup = tmp_path / "clean-backup.sqlite3"
+    service.backup_ledger(backup)
+    generation = service.ledger.database_generation()
+    principal = all_permissions_principal()
+    fixture, _raw = make_fixture(project, principal)
+    original_restore = service.ledger.restore_from_backup
+
+    def raced_restore(
+        source: str | os.PathLike[str],
+        *,
+        expected_database_generation: int,
+        reject_activation_managed: bool = False,
+    ) -> dict[str, object]:
+        install_active_lease(project, fixture, principal)
+        return original_restore(
+            source,
+            expected_database_generation=expected_database_generation,
+            reject_activation_managed=reject_activation_managed,
+        )
+
+    monkeypatch.setattr(service.ledger, "restore_from_backup", raced_restore)
+    with pytest.raises(WorkItemGovernanceError) as exc_info:
+        service.restore_ledger(backup, expected_database_generation=generation)
+    assert exc_info.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
+    assert exc_info.value.details["operation"] == "restore"
+
+
+def test_authoritative_token_format_and_exact_file_binding(tmp_path: Path) -> None:
+    token_one = "mvr_" + base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode("ascii")
+    token_two = "mvr_" + base64.urlsafe_b64encode(bytes(range(32, 64))).rstrip(b"=").decode("ascii")
+    assert validate_authoritative_bearer_token(token_one) == token_one
+    for invalid in ("x" * 43, "mvr_" + "x" * 43, "mvr_short"):
+        with pytest.raises(WorkItemGovernanceError) as exc_info:
+            validate_authoritative_bearer_token(invalid)
+        assert exc_info.value.code == "ACTIVATION_TOKEN_CONFIGURATION_INVALID"
+
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    auth_file = private / "auth.json"
+    auth_file.write_text(json.dumps({"auth_token": token_one}), encoding="utf-8")
+    auth_file.chmod(0o600)
+    _token, evidence = read_authoritative_token_file(auth_file)
+    evidence_digest = canonical_sha256(evidence)
+    project = tmp_path / "project"
+    project.mkdir()
+    ledger = SQLiteWorkItemLedger(project)
+    ledger.initialize()
+    with ledger.write_transaction() as connection:
+        connection.executemany(
+            "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
+            (
+                (AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY, evidence["token_sha256"], "2026-07-12T00:00:00Z"),
+                (AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY, evidence_digest, "2026-07-12T00:00:00Z"),
+            ),
+        )
+    assert (
+        require_authoritative_token_file_binding(
+            ledger,
+            auth_file,
+            expected_evidence_digest=evidence_digest,
+        )
+        == token_one
+    )
+
+    auth_file.write_text(json.dumps({"auth_token": token_two}), encoding="utf-8")
+    with pytest.raises(WorkItemGovernanceError) as changed:
+        require_authoritative_token_file_binding(ledger, auth_file)
+    assert changed.value.code == "ACTIVATION_TOKEN_BINDING_MISMATCH"
+
+
+def test_closeout_verification_requires_both_filesystem_roots() -> None:
+    with pytest.raises(TypeError):
+        verify_r2_closeout_receipt({})  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        verify_r2_closeout_receipt({}, evidence_root=Path("."))  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        verify_r2_closeout_receipt({}, project_root=Path("."))  # type: ignore[call-arg]
+
+
 def test_fresh_bootstrap_preflight_runs_under_isolated_process(tmp_path: Path) -> None:
     root = tmp_path / "canary"
     runtime = root / "runtime" / "python"
@@ -680,7 +856,7 @@ def test_fresh_bootstrap_preflight_runs_under_isolated_process(tmp_path: Path) -
     project = root / "project"
     project.mkdir(parents=True)
     script = r'''
-import json, os, sys
+import base64, json, os, sys
 from pathlib import Path
 from runner.work_item_governance.bootstrap import FreshCanaryPaths, bootstrap_fresh_canary_preflight, provision_private_bearer_token
 from runner.work_item_governance.ids import new_stable_id
@@ -744,7 +920,7 @@ def test_failed_single_use_envelope_claim_is_never_reusable(tmp_path: Path) -> N
     project = root / "project"
     project.mkdir(parents=True)
     script = r'''
-import json, os, sys
+import base64, json, os, sys
 from datetime import timedelta
 from pathlib import Path
 from runner.work_item_governance.activation import ActivationLeaseControlPlane
@@ -772,6 +948,14 @@ receipt=bootstrap_fresh_canary_preflight(paths=paths,authorization_id="WIG-P3-CA
 fixture,_raw=make_fixture(project,principal); now=utc_now()
 envelope=build_activation_envelope(preflight_receipt=receipt,synthetic_fixture=fixture,instance_id="claim-test",project_name="claim-test",issued_at=isoformat_utc(now),not_before=isoformat_utc(now),expires_at=isoformat_utc(now+timedelta(seconds=1790)))
 ledger=SQLiteWorkItemLedger(project); control=ActivationLeaseControlPlane(ledger,canary_root=root)
+original_auth=paths.token_file.read_bytes(); changed=json.loads(original_auth)
+changed["auth_token"]="mvr_"+base64.urlsafe_b64encode(bytes(range(32,64))).rstrip(b"=").decode("ascii")
+paths.token_file.write_text(canonical_json(changed),encoding="utf-8"); paths.token_file.chmod(0o600)
+try:
+ control.issue_prepared_lease(activation_envelope=envelope,synthetic_fixture=fixture,preflight_receipt=receipt,envelope_path=paths.activation_envelope)
+except WorkItemGovernanceError as exc:
+ token_binding_code=exc.code
+paths.token_file.write_bytes(original_auth); paths.token_file.chmod(0o600)
 control.issue_prepared_lease(activation_envelope=envelope,synthetic_fixture=fixture,preflight_receipt=receipt,envelope_path=paths.activation_envelope)
 tampered=json.loads(paths.activation_envelope.read_text(encoding="utf-8")); tampered["authorization_digest"]="9"*64
 paths.activation_envelope.write_text(canonical_json(tampered),encoding="utf-8")
@@ -784,7 +968,7 @@ for _index in range(2):
 with ledger.read_connection() as connection:
  status=connection.execute("SELECT status FROM activation_leases WHERE lease_id=?",(lease_id,)).fetchone()[0]
 revoke_private_bearer_token(auth_file=paths.token_file,canary_root=root)
-print(json.dumps({"codes":codes,"status":status,"source_exists":paths.activation_envelope.exists(),"claimed_exists":paths.claimed_activation_envelope.exists()},sort_keys=True))
+print(json.dumps({"codes":codes,"status":status,"source_exists":paths.activation_envelope.exists(),"claimed_exists":paths.claimed_activation_envelope.exists(),"token_binding_code":token_binding_code},sort_keys=True))
 '''
     completed = subprocess.run(
         [str(runtime), "-c", script],
@@ -804,6 +988,7 @@ print(json.dumps({"codes":codes,"status":status,"source_exists":paths.activation
         ],
         "source_exists": False,
         "status": "revoked",
+        "token_binding_code": "ACTIVATION_TOKEN_BINDING_MISMATCH",
     }
 
 

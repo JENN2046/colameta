@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.activation import AuthoritativeCanaryGuard, ActivationWriteSession
@@ -168,12 +169,58 @@ class WorkItemApplicationService:
     ) -> None:
         if self.activation_guard is None:
             return
-        with self.ledger.write_transaction() as connection:
+        with self._write_transaction() as connection:
             self.activation_guard.deny_command(
                 connection,
                 command_name=command_name,
                 principal_context=principal_context or self.principal_context,
                 request_context=self.request_context,
+            )
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open an application write transaction without permitting composition downgrade.
+
+        Once a Ledger has ever contained an Activation Lease, all application writes must
+        continue through the Authoritative Canary guard.  The check deliberately runs
+        after ``BEGIN IMMEDIATE`` so a service instance created before Lease issuance
+        cannot race the control plane and write unaccounted facts.
+        """
+
+        with self.ledger.write_transaction() as connection:
+            if self.activation_guard is None:
+                lease = connection.execute(
+                    "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                if lease is not None:
+                    raise WorkItemGovernanceError(
+                        "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
+                        "A Ledger containing an Activation Lease cannot be mutated by an unguarded application composition.",
+                        details={"lease_id": str(lease["lease_id"]), "lease_status": str(lease["status"])},
+                    )
+            yield connection
+
+    def _assert_unguarded_maintenance_allowed(self, operation: str) -> None:
+        """Keep activation-managed Ledgers behind their dedicated control plane."""
+
+        if self.activation_guard is not None:
+            raise WorkItemGovernanceError(
+                f"ACTIVATION_LEDGER_{operation.upper()}_DENIED",
+                f"Ledger {operation} is denied while the Authoritative Canary composition is active.",
+            )
+        with self.ledger.read_connection() as connection:
+            lease = connection.execute(
+                "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if lease is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
+                "An activation-managed Ledger cannot be accessed through an unguarded maintenance command.",
+                details={
+                    "operation": operation,
+                    "lease_id": str(lease["lease_id"]),
+                    "lease_status": str(lease["status"]),
+                },
             )
 
     @staticmethod
@@ -399,7 +446,7 @@ class WorkItemApplicationService:
         content_digest = canonical_sha256(command)
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="apply_work_item_create",
@@ -730,7 +777,7 @@ class WorkItemApplicationService:
         }
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="add_task_version",
@@ -832,7 +879,7 @@ class WorkItemApplicationService:
         activation_command = {**claim_payload, "source_event_key": source_event_key}
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="create_execution_attempt",
@@ -965,7 +1012,7 @@ class WorkItemApplicationService:
         activation_command = self._activation_artifact_command(normalized)
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="register_artifact_reference",
@@ -1063,7 +1110,7 @@ class WorkItemApplicationService:
         }
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 existing = connection.execute(
                     "SELECT * FROM execution_attempts WHERE source_event_key=?",
                     (source_event_key,),
@@ -1172,7 +1219,7 @@ class WorkItemApplicationService:
         completed_at = isoformat_utc(self.now())
         event_id = new_stable_id("attempt_event")
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="complete_execution_attempt",
@@ -1336,7 +1383,7 @@ class WorkItemApplicationService:
         }
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="record_review_decision",
@@ -1485,7 +1532,7 @@ class WorkItemApplicationService:
         created_at = isoformat_utc(self.now())
         command_digest = canonical_sha256(command)
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
                     command_name="apply_work_item_transition",
@@ -1939,7 +1986,7 @@ class WorkItemApplicationService:
         created_at = isoformat_utc(self.now())
         event_id = new_stable_id("blocker_event")
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 existing = connection.execute(
                     "SELECT * FROM blocker_events WHERE source_event_key=?", (source_event_key,)
                 ).fetchone()
@@ -2021,7 +2068,7 @@ class WorkItemApplicationService:
         idempotency_key = require_text(value.get("idempotency_key"), "idempotency_key", max_length=1024)
         created_at = isoformat_utc(self.now())
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 existing = connection.execute(
                     "SELECT * FROM delivery_receipts WHERE idempotency_key=?", (idempotency_key,)
                 ).fetchone()
@@ -2085,7 +2132,7 @@ class WorkItemApplicationService:
         updated_at = isoformat_utc(now)
         retry_payload = {"delivery_receipt_id": receipt_id, "delivered": delivered, "error": error}
         try:
-            with self.ledger.write_transaction() as connection:
+            with self._write_transaction() as connection:
                 receipt = connection.execute(
                     "SELECT * FROM delivery_receipts WHERE delivery_receipt_id=?", (receipt_id,)
                 ).fetchone()
@@ -2163,7 +2210,7 @@ class WorkItemApplicationService:
         source_event_key = require_text(value.get("source_event_key"), "source_event_key", max_length=1024)
         acknowledged_at = isoformat_utc(self.now())
         acknowledgement_payload = {"delivery_receipt_id": receipt_id}
-        with self.ledger.write_transaction() as connection:
+        with self._write_transaction() as connection:
             receipt = connection.execute(
                 "SELECT * FROM delivery_receipts WHERE delivery_receipt_id=?", (receipt_id,)
             ).fetchone()
@@ -2252,7 +2299,7 @@ class WorkItemApplicationService:
         now = self.now().astimezone(timezone.utc)
         updated_at = isoformat_utc(now)
         result_payload = {"outbox_event_id": event_id, "delivered": delivered, "error": error}
-        with self.ledger.write_transaction() as connection:
+        with self._write_transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM outbox_events WHERE outbox_event_id=?", (event_id,)
             ).fetchone()
@@ -2312,7 +2359,7 @@ class WorkItemApplicationService:
         reason = require_text(value.get("reason"), "reason")
         recovery_payload = {"outbox_event_id": event_id, "reason": reason}
         updated_at = isoformat_utc(self.now())
-        with self.ledger.write_transaction() as connection:
+        with self._write_transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM outbox_events WHERE outbox_event_id=?", (event_id,)
             ).fetchone()
@@ -2363,12 +2410,8 @@ class WorkItemApplicationService:
 
     def backup_ledger(self, destination: str | os.PathLike[str]) -> dict[str, Any]:
         self._require_enabled()
-        if self.activation_guard is not None:
-            raise WorkItemGovernanceError(
-                "ACTIVATION_LEDGER_BACKUP_DENIED",
-                "Ledger Backup is a pre/post-window local control-plane operation.",
-            )
-        return self.ledger.backup_to(destination)
+        self._assert_unguarded_maintenance_allowed("backup")
+        return self.ledger.backup_to(destination, reject_activation_managed=True)
 
     def restore_ledger(
         self,
@@ -2377,24 +2420,17 @@ class WorkItemApplicationService:
         expected_database_generation: int,
     ) -> dict[str, Any]:
         self._require_enabled()
-        if self.activation_guard is not None:
-            raise WorkItemGovernanceError(
-                "ACTIVATION_LEDGER_RESTORE_DENIED",
-                "Ledger restore is denied while the Authoritative Canary composition is active.",
-            )
+        self._assert_unguarded_maintenance_allowed("restore")
         return self.ledger.restore_from_backup(
             source,
             expected_database_generation=expected_database_generation,
+            reject_activation_managed=True,
         )
 
     def export_audit_package(self) -> dict[str, Any]:
         self._require_enabled()
-        if self.activation_guard is not None:
-            raise WorkItemGovernanceError(
-                "ACTIVATION_LEDGER_EXPORT_DENIED",
-                "Canary evidence export is available only through the local closeout control plane.",
-            )
-        return self.ledger.export_audit_package()
+        self._assert_unguarded_maintenance_allowed("export")
+        return self.ledger.export_audit_package(reject_activation_managed=True)
 
     # ------------------------------------------------------------------
     # Internal repository mapping and invariants
