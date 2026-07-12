@@ -4,7 +4,7 @@ import json
 import os
 import secrets
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,10 @@ from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 from runner.work_item_governance.schema_loader import validate_governance_record
+from runner.work_item_governance.source_binding import (
+    seal_runtime_source_attestation,
+    verify_runtime_source_artifacts,
+)
 
 
 PRIVATE_CREDENTIAL_SOURCE = "isolated_xdg_auth_json"
@@ -37,14 +41,24 @@ PRIVATE_DIRECTORY_MODE_TEXT = "0700"
 CSPRNG_EVIDENCE_ALGORITHM = "os_csprng_256_bits_minimum_base64url"
 VERIFIED_TRUE = bool(1)
 VERIFIED_FALSE = bool(0)
+_PRIVATE_TOKEN_PROVISIONING_SEAL = object()
 
 
 @dataclass(frozen=True)
 class PrivateTokenProvisioning:
     token: str
     auth_file: Path
+    token_file_sha256: str
     evidence_digest: str
     entropy_bits: int
+    _seal: object = field(repr=False, compare=False)
+
+    def require_trusted(self) -> None:
+        if self._seal is not _PRIVATE_TOKEN_PROVISIONING_SEAL:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_PROVENANCE_UNTRUSTED",
+                "Token provisioning was not produced by the sealed OS-CSPRNG control plane.",
+            )
 
 
 @dataclass(frozen=True)
@@ -65,6 +79,8 @@ class FreshCanaryPaths:
     fixture_root: Path
     runtime_executable: Path
     cwd: Path
+    source_checkout: Path | None = None
+    wheel_artifact: Path | None = None
 
 
 def provision_private_bearer_token(
@@ -92,11 +108,22 @@ def provision_private_bearer_token(
             "ACTIVATION_TOKEN_PROVISION_FAILED",
             "Private Canary Bearer Token differs from the persisted auth.json.",
         )
+    generation_evidence = {
+        "algorithm": CSPRNG_EVIDENCE_ALGORITHM,
+        "entropy_bits": 256,
+        "token_file_sha256": evidence["token_sha256"],
+        "auth_file_path_digest": evidence["auth_file_path_digest"],
+        "provisioning_event_nonce_digest": canonical_sha256(
+            {"nonce": secrets.token_hex(32), "auth_file_path_digest": evidence["auth_file_path_digest"]}
+        ),
+    }
     return PrivateTokenProvisioning(
         token=token,
         auth_file=auth_file,
-        evidence_digest=canonical_sha256(evidence),
+        token_file_sha256=evidence["token_sha256"],
+        evidence_digest=canonical_sha256(generation_evidence),
         entropy_bits=256,
+        _seal=_PRIVATE_TOKEN_PROVISIONING_SEAL,
     )
 
 
@@ -155,6 +182,8 @@ def bootstrap_fresh_canary_preflight(
         raise WorkItemGovernanceError("CANARY_ROOT_MISSING", "Canary root must already exist.")
     _assert_private_directory(root)
     for field_name, path in vars(paths).items():
+        if path is None:
+            continue
         resolved = path.expanduser().resolve()
         try:
             resolved.relative_to(root)
@@ -169,18 +198,30 @@ def bootstrap_fresh_canary_preflight(
             "FRESH_LEDGER_ALREADY_EXISTS",
             "Fresh Canary bootstrap refuses a pre-existing Ledger.",
         )
+    token_provisioning.require_trusted()
     if token_provisioning.auth_file.resolve() != paths.token_file.resolve():
         raise WorkItemGovernanceError("TOKEN_FILE_PATH_MISMATCH", "Provisioned Token path differs from Preflight.")
     persisted_token, token_evidence = _validate_private_token_file(paths.token_file)
-    if (
-        not secrets.compare_digest(persisted_token, token_provisioning.token)
-        or canonical_sha256(token_evidence) != token_provisioning.evidence_digest
+    if not secrets.compare_digest(
+        persisted_token, token_provisioning.token
+    ) or not secrets.compare_digest(
+        token_evidence["token_sha256"], token_provisioning.token_file_sha256
     ):
         raise WorkItemGovernanceError(
             "ACTIVATION_TOKEN_BINDING_MISMATCH",
             "Provisioned Token evidence differs from the exact private auth.json bytes.",
         )
     _validate_token_secret_boundary(token_provisioning.token)
+    if paths.source_checkout is None or paths.wheel_artifact is None:
+        raise WorkItemGovernanceError(
+            "RUNTIME_SOURCE_ARTIFACT_MISSING",
+            "Preflight requires explicit paths to the exact checkout and Wheel artifact.",
+        )
+    source_attestation = verify_runtime_source_artifacts(
+        checkout_root=paths.source_checkout,
+        wheel_artifact=paths.wheel_artifact,
+        expected_source_binding=source_binding,
+    )
     expected_environment = {
         "HOME": paths.home.resolve(),
         "XDG_CONFIG_HOME": paths.xdg_config.resolve(),
@@ -259,6 +300,11 @@ def bootstrap_fresh_canary_preflight(
                 """,
                 (key, value, token_binding_updated_at),
             )
+        seal_runtime_source_attestation(
+            connection,
+            source_attestation,
+            updated_at=token_binding_updated_at,
+        )
     with ledger.read_connection() as connection:
         counts = business_fact_counts(connection)
         external_associations = int(
@@ -340,7 +386,7 @@ def bootstrap_fresh_canary_preflight(
         "observed_at": isoformat_utc(observed),
         "valid_until": isoformat_utc(valid_until),
         "maximum_age_seconds": 120,
-        "source_binding": source_binding,
+        "source_binding": source_attestation.source_binding,
         "process_identity_inputs": identity,
         "runtime_isolation": runtime_isolation,
         "authentication": {

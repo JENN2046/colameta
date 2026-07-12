@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import stat
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
@@ -30,6 +31,7 @@ from runner.work_item_governance.schema_loader import (
     load_governance_contract,
     validate_governance_record,
 )
+from runner.work_item_governance.source_binding import reverify_runtime_source_binding
 
 
 R2_SPEC_FREEZE_MANIFEST_SHA256 = "9bc0209f10dfb9b6b3583db66af443957e598982383bf1c5e88e6029cb4b0404"
@@ -281,8 +283,8 @@ def read_authoritative_token_file(
     token = payload.get("auth_token") if isinstance(payload, dict) else None
     validate_authoritative_bearer_token(token)
     evidence = {
-        "algorithm": "os_csprng_256_bits_minimum_base64url",
-        "entropy_bits": 256,
+        "algorithm": "exact_auth_file_bytes_sha256",
+        "material_bits": 256,
         "token_sha256": hashlib.sha256(raw).hexdigest(),
         "auth_file_path_digest": canonical_path_digest(path),
     }
@@ -298,7 +300,6 @@ def require_authoritative_token_file_binding(
     """Require auth.json to match the exact bytes sealed into the fresh Ledger."""
 
     token, evidence = read_authoritative_token_file(auth_file)
-    evidence_digest = canonical_sha256(evidence)
     with ledger.read_connection() as connection:
         rows = connection.execute(
             "SELECT key,value FROM ledger_meta WHERE key IN (?,?)",
@@ -310,8 +311,12 @@ def require_authoritative_token_file_binding(
     binding = {str(row["key"]): str(row["value"]) for row in rows}
     if (
         binding.get(AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY) != evidence["token_sha256"]
-        or binding.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY) != evidence_digest
-        or (expected_evidence_digest is not None and expected_evidence_digest != evidence_digest)
+        or binding.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY) is None
+        or (
+            expected_evidence_digest is not None
+            and binding.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY)
+            != expected_evidence_digest
+        )
     ):
         raise WorkItemGovernanceError(
             "ACTIVATION_TOKEN_BINDING_MISMATCH",
@@ -747,6 +752,36 @@ def _lease_record(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _causal_lease_timestamp(
+    connection: sqlite3.Connection,
+    *,
+    lease_id: str,
+    candidate: str,
+) -> str:
+    """Return an RFC 3339 event time that cannot precede the prior event.
+
+    The OS wall clock can step backwards. Lease expiry still uses the earlier
+    persisted-UTC/monotonic deadline, while this allocator keeps the durable
+    audit chronology non-decreasing inside the same serialized write transaction.
+    """
+
+    parse_timestamp(candidate, "activation_lease_event.created_at")
+    previous = connection.execute(
+        "SELECT created_at FROM activation_lease_events "
+        "WHERE lease_id=? ORDER BY sequence DESC LIMIT 1",
+        (lease_id,),
+    ).fetchone()
+    if previous is None:
+        return candidate
+    previous_timestamp = str(previous["created_at"])
+    if parse_timestamp(candidate, "activation_lease_event.created_at") < parse_timestamp(
+        previous_timestamp,
+        "activation_lease_event.previous_created_at",
+    ):
+        return previous_timestamp
+    return candidate
+
+
 def _append_lease_event(
     connection: sqlite3.Connection,
     *,
@@ -763,6 +798,11 @@ def _append_lease_event(
     principal_binding_digest: str | None = None,
     reason_code: str | None = None,
 ) -> dict[str, Any]:
+    created_at = _causal_lease_timestamp(
+        connection,
+        lease_id=str(row["lease_id"]),
+        candidate=created_at,
+    )
     previous = connection.execute(
         "SELECT sequence,event_digest FROM activation_lease_events WHERE lease_id=? ORDER BY sequence DESC LIMIT 1",
         (row["lease_id"],),
@@ -797,6 +837,14 @@ def _append_lease_event(
     }
     event["event_digest"] = canonical_sha256(event)
     validate_governance_record("work_item_activation_lease_event.v1", event)
+    if parse_timestamp(str(row["updated_at"]), "activation_lease.updated_at") < parse_timestamp(
+        created_at,
+        "activation_lease_event.created_at",
+    ):
+        connection.execute(
+            "UPDATE activation_leases SET updated_at=? WHERE lease_id=?",
+            (created_at, row["lease_id"]),
+        )
     connection.execute(
         """
         INSERT INTO activation_lease_events(
@@ -830,9 +878,19 @@ class ActivationWriteSession:
     source_event_key_digest: str
     principal_binding_digest: str
     baseline_fact_counts: dict[str, int]
+    _trust_seal: bytes = field(repr=False, compare=False)
+    _finalized: bool = field(default=False, repr=False, compare=False)
     fixture_slot: dict[str, Any] | None = None
     fact_delta: dict[str, int] | None = None
     domain_fact_delta: dict[str, int] | None = None
+
+    @property
+    def trusted_repository_write_session(self) -> bool:
+        return self.guard._is_issued_write_session(self)
+
+    @property
+    def finalized(self) -> bool:
+        return self._finalized
 
     def authorize_new(
         self,
@@ -879,6 +937,28 @@ class AuthoritativeCanaryGuard:
         self.now = now
         self.monotonic_ns = monotonic_ns
         self.process_identity_provider = process_identity_provider
+        self.__write_session_seal = secrets.token_bytes(32)
+        self.__issued_write_sessions: dict[int, ActivationWriteSession] = {}
+        self.__issued_request_contexts: dict[int, AuthoritativeCanaryRequestContext] = {}
+
+    def _is_issued_write_session(self, session: ActivationWriteSession) -> bool:
+        return (
+            session.guard is self
+            and isinstance(session._trust_seal, bytes)
+            and secrets.compare_digest(session._trust_seal, self.__write_session_seal)
+            and self.__issued_write_sessions.get(id(session)) is session
+            and not session.finalized
+        )
+
+    def _discard_write_session(self, session: ActivationWriteSession) -> None:
+        if self.__issued_write_sessions.get(id(session)) is session:
+            self.__issued_write_sessions.pop(id(session), None)
+
+    def _is_issued_request_context(
+        self,
+        request_context: AuthoritativeCanaryRequestContext,
+    ) -> bool:
+        return self.__issued_request_contexts.get(id(request_context)) is request_context
 
     def mint_request_context(
         self,
@@ -886,7 +966,11 @@ class AuthoritativeCanaryGuard:
         proof: AuthenticatedTokenRequestProof | None,
         principal_context: PrincipalContext | None,
     ) -> AuthoritativeCanaryRequestContext:
-        if proof is None or not proof.trusted:
+        if (
+            type(proof) is not AuthenticatedTokenRequestProof
+            or not proof.structurally_valid()
+            or not proof.active
+        ):
             raise WorkItemGovernanceError(
                 "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
                 "The Authoritative Canary requires a verified Bearer Token request.",
@@ -894,6 +978,27 @@ class AuthoritativeCanaryGuard:
         principal = self._trusted_principal(principal_context)
         with self.ledger.read_connection() as connection:
             row = self._active_row(connection)
+            token_bindings = {
+                str(item["key"]): str(item["value"])
+                for item in connection.execute(
+                    "SELECT key,value FROM ledger_meta WHERE key IN (?,?)",
+                    (
+                        AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+                        AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+                    ),
+                ).fetchall()
+            }
+            if (
+                proof.lease_id != row["lease_id"]
+                or proof.token_file_sha256
+                != token_bindings.get(AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY)
+                or proof.token_evidence_digest
+                != token_bindings.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY)
+            ):
+                raise WorkItemGovernanceError(
+                    "AUTHENTICATED_REQUEST_PROOF_BINDING_MISMATCH",
+                    "Bearer proof does not match the active Lease and private Token binding.",
+                )
             self._validate_time(row)
             self._validate_principal(row, principal)
             runtime = _json(row, "runtime_binding_json")
@@ -912,7 +1017,29 @@ class AuthoritativeCanaryGuard:
                     "REQUEST_CONTEXT_BINDING_MISMATCH",
                     "The active Lease request-context binding is invalid.",
                 )
-        return _mint_authoritative_request_context(
+        config_home = os.environ.get("XDG_CONFIG_HOME")
+        if not isinstance(config_home, str) or not config_home:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_CONFIGURATION_INVALID",
+                "The isolated XDG Token configuration root is unavailable.",
+            )
+        auth_file = Path(config_home).expanduser().resolve() / "colameta" / "auth.json"
+        if runtime.get("token_file_path_digest") != canonical_path_digest(auth_file):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_PATH_BINDING_MISMATCH",
+                "Bearer proof Token path differs from the exact Lease runtime binding.",
+            )
+        auth_token = require_authoritative_token_file_binding(
+            self.ledger,
+            auth_file,
+            expected_evidence_digest=proof.token_evidence_digest,
+        )
+        if not proof.verify_signature(auth_token):
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_PROOF_INVALID",
+                "Bearer proof signature does not match the exact private Token.",
+            )
+        request_context = _mint_authoritative_request_context(
             proof=proof,
             lease_id=str(row["lease_id"]),
             authorization_digest=str(row["authorization_digest"]),
@@ -923,6 +1050,8 @@ class AuthoritativeCanaryGuard:
             session_ref=str(principal.session_ref),
             binding_digest=expected,
         )
+        self.__issued_request_contexts[id(request_context)] = request_context
+        return request_context
 
     def authorized_work_item_id(self) -> str | None:
         """Return the latest Lease binding for bounded read/closeout surfaces."""
@@ -1077,7 +1206,7 @@ class AuthoritativeCanaryGuard:
             )
             raise AssertionError("unreachable")
         connection.execute("SAVEPOINT activation_domain_write")
-        return ActivationWriteSession(
+        session = ActivationWriteSession(
             guard=self,
             connection=connection,
             row=row,
@@ -1088,7 +1217,15 @@ class AuthoritativeCanaryGuard:
             ),
             principal_binding_digest=canonical_sha256(principal.to_record()),
             baseline_fact_counts=_activation_domain_fact_counts(connection),
+            _trust_seal=self.__write_session_seal,
         )
+        self.__issued_write_sessions[id(session)] = session
+        try:
+            self.ledger.authorize_activation_domain_write(connection, session=session)
+        except Exception:
+            self._discard_write_session(session)
+            raise
+        return session
 
     def deny_command(
         self,
@@ -1290,6 +1427,9 @@ class AuthoritativeCanaryGuard:
                 command_name=session.command_name,
             )
         session.connection.execute("RELEASE SAVEPOINT activation_domain_write")
+        self.ledger.finalize_activation_domain_write(session.connection, session=session)
+        session._finalized = True
+        self._discard_write_session(session)
 
     def _commit_new(
         self,
@@ -1322,6 +1462,9 @@ class AuthoritativeCanaryGuard:
             )
             raise AssertionError("unreachable")
         session.connection.execute("RELEASE SAVEPOINT activation_domain_write")
+        self.ledger.finalize_activation_domain_write(session.connection, session=session)
+        session._finalized = True
+        self._discard_write_session(session)
 
     def _commit_new_domain(
         self,
@@ -1423,7 +1566,11 @@ class AuthoritativeCanaryGuard:
                 existing_values.append(value)
             fixture_bindings[field] = existing_values
         next_version = int(row["state_version"]) + 1
-        updated_at = isoformat_utc(self.now())
+        updated_at = _causal_lease_timestamp(
+            connection,
+            lease_id=str(row["lease_id"]),
+            candidate=isoformat_utc(self.now()),
+        )
         cursor = connection.execute(
             """
             UPDATE activation_leases
@@ -1626,7 +1773,10 @@ class AuthoritativeCanaryGuard:
         self._validate_time(row)
         principal = self._trusted_principal(principal_context)
         self._validate_principal(row, principal)
-        if not isinstance(request_context, AuthoritativeCanaryRequestContext) or not request_context.trusted:
+        if (
+            not isinstance(request_context, AuthoritativeCanaryRequestContext)
+            or not request_context.trusted
+        ):
             raise WorkItemGovernanceError(
                 "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
                 "A sealed Token-authenticated request context is required.",
@@ -1651,6 +1801,11 @@ class AuthoritativeCanaryGuard:
             raise WorkItemGovernanceError(
                 "REQUEST_CONTEXT_BINDING_MISMATCH",
                 "Request context is stale or belongs to another Lease or authorization.",
+            )
+        if not self._is_issued_request_context(request_context):
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
+                "Request context was not issued by this exact Application Guard.",
             )
         return principal
 
@@ -1845,7 +2000,11 @@ class AuthoritativeCanaryGuard:
             usage = _json(row, "usage_json")
             if int(usage["lease_events"]) < DEFAULT_QUOTAS["maximum_lease_events"]:
                 usage["lease_events"] = int(usage["lease_events"]) + 1
-                now = isoformat_utc(self.now())
+                now = _causal_lease_timestamp(
+                    connection,
+                    lease_id=str(row["lease_id"]),
+                    candidate=isoformat_utc(self.now()),
+                )
                 connection.execute(
                     """
                     UPDATE activation_leases
@@ -1888,7 +2047,11 @@ class AuthoritativeCanaryGuard:
         next_version = int(row["state_version"]) + 1
         usage = _json(row, "usage_json")
         usage["lease_events"] = int(usage["lease_events"]) + 1
-        now = isoformat_utc(self.now())
+        now = _causal_lease_timestamp(
+            connection,
+            lease_id=str(row["lease_id"]),
+            candidate=isoformat_utc(self.now()),
+        )
         connection.execute(
             """
             UPDATE activation_leases
@@ -2028,6 +2191,10 @@ class ActivationLeaseControlPlane:
             ).fetchone()
         if prepared is None or prepared["status"] != "prepared":
             raise WorkItemGovernanceError("PREPARED_ACTIVATION_LEASE_REQUIRED", "Prepared Lease is missing.")
+        reverify_runtime_source_binding(
+            self.ledger,
+            expected_source_binding=_json(prepared, "source_binding_json"),
+        )
         prepared_runtime = _json(prepared, "runtime_binding_json")
         if canonical_path_digest(claimed) != prepared_runtime["claimed_activation_envelope_path_digest"]:
             raise WorkItemGovernanceError("CLAIMED_ENVELOPE_PATH_MISMATCH", "Claimed Envelope path mismatch.")
@@ -2070,7 +2237,11 @@ class ActivationLeaseControlPlane:
                 runtime["monotonic_deadline_ns"] = deadline_ns
                 usage = _json(row, "usage_json")
                 usage["lease_events"] = 2
-                now = isoformat_utc(self.now())
+                now = _causal_lease_timestamp(
+                    connection,
+                    lease_id=str(row["lease_id"]),
+                    candidate=isoformat_utc(self.now()),
+                )
                 cursor = connection.execute(
                     """
                     UPDATE activation_leases
@@ -2155,7 +2326,11 @@ class ActivationLeaseControlPlane:
                 principal_id=str(principal["principal_id"]),
                 session_ref=str(principal["session_ref"]),
             )
-            now = isoformat_utc(self.now())
+            now = _causal_lease_timestamp(
+                connection,
+                lease_id=str(row["lease_id"]),
+                candidate=isoformat_utc(self.now()),
+            )
             runtime.update(
                 {
                     "listener_attested_at": now,
@@ -2204,7 +2379,11 @@ class ActivationLeaseControlPlane:
             next_version = int(row["state_version"]) + 1
             usage = _json(row, "usage_json")
             usage["lease_events"] += 1
-            now = isoformat_utc(self.now())
+            now = _causal_lease_timestamp(
+                connection,
+                lease_id=str(row["lease_id"]),
+                candidate=isoformat_utc(self.now()),
+            )
             connection.execute(
                 "UPDATE activation_leases SET status='write_frozen',state_version=?,usage_json=?,updated_at=? WHERE lease_id=?",
                 (next_version, canonical_json(usage), now, lease_id),
@@ -2235,7 +2414,11 @@ class ActivationLeaseControlPlane:
             next_version = int(row["state_version"]) + 1
             usage = _json(row, "usage_json")
             usage["lease_events"] += 1
-            now = isoformat_utc(self.now())
+            now = _causal_lease_timestamp(
+                connection,
+                lease_id=str(row["lease_id"]),
+                candidate=isoformat_utc(self.now()),
+            )
             connection.execute(
                 "UPDATE activation_leases SET status='closed',state_version=?,usage_json=?,updated_at=? WHERE lease_id=?",
                 (next_version, canonical_json(usage), now, lease_id),
@@ -2266,7 +2449,11 @@ class ActivationLeaseControlPlane:
             next_version = int(row["state_version"]) + 1
             usage = _json(row, "usage_json")
             usage["lease_events"] += 1
-            now = isoformat_utc(self.now())
+            now = _causal_lease_timestamp(
+                connection,
+                lease_id=str(row["lease_id"]),
+                candidate=isoformat_utc(self.now()),
+            )
             before = str(row["status"])
             connection.execute(
                 "UPDATE activation_leases SET status='revoked',state_version=?,usage_json=?,updated_at=? WHERE lease_id=?",
@@ -2306,12 +2493,19 @@ class ActivationLeaseControlPlane:
                 ).fetchall()
             ]
             lease = _lease_record(row)
+        source_attestation = reverify_runtime_source_binding(
+            self.ledger,
+            expected_source_binding=lease["source_binding"],
+        )
         snapshot_text = canonical_json(lease)
         events_text = canonical_json(events)
+        source_attestation_text = canonical_json(source_attestation.public_evidence())
         snapshot_path = root / "activation-lease-snapshot.json"
         events_path = root / "activation-lease-events.json"
+        source_attestation_path = root / "runtime-source-attestation.json"
         self._write_private_file(snapshot_path, snapshot_text)
         self._write_private_file(events_path, events_text)
+        self._write_private_file(source_attestation_path, source_attestation_text)
         event_digests = [str(event["event_digest"]) for event in events]
         chain = verify_activation_lease_event_chain(self.ledger, lease_id)
         return {
@@ -2322,6 +2516,9 @@ class ActivationLeaseControlPlane:
             "lease_event_root_sha256": canonical_sha256(event_digests),
             "lease_event_export": str(events_path),
             "lease_event_export_sha256": sha256_file(events_path),
+            "runtime_source_attestation_export": str(source_attestation_path),
+            "runtime_source_attestation_sha256": sha256_file(source_attestation_path),
+            "runtime_source_artifact_evidence_digest": source_attestation.evidence_digest,
             "lease_event_chain_verified": chain["chain_verified"],
             "final_status": chain["final_status"],
             "final_state_version": chain["final_state_version"],
@@ -2340,7 +2537,13 @@ class ActivationLeaseControlPlane:
         principal = activation_envelope["principal_binding"]
         fixture_digest = canonical_sha256(synthetic_fixture)
         issued_at = activation_envelope["window"]["issued_at"]
-        updated_at = isoformat_utc(self.now())
+        observed_at = isoformat_utc(self.now())
+        updated_at = (
+            issued_at
+            if parse_timestamp(observed_at, "activation_lease.updated_at")
+            < parse_timestamp(issued_at, "activation_lease.created_at")
+            else observed_at
+        )
         return {
             "schema_version": "work_item_activation_lease.v1",
             "lease_id": activation_envelope["activation_lease_id"],
@@ -2591,6 +2794,10 @@ class ActivationLeaseControlPlane:
         preflight_receipt: dict[str, Any],
     ) -> None:
         policy = validate_runtime_policy_contracts()
+        reverify_runtime_source_binding(
+            self.ledger,
+            expected_source_binding=preflight_receipt["source_binding"],
+        )
         restricted = preflight_receipt["restricted_surface"]
         if (
             activation_envelope["source_binding"] != preflight_receipt["source_binding"]

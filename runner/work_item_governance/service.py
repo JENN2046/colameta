@@ -91,6 +91,7 @@ class WorkItemApplicationService:
             self.gate_mode = "authoritative" if authoritative_transitions else "shadow"
         self.authoritative_transitions = self.gate_mode == "authoritative"
         self.authoritative_canary = bool(authoritative_canary)
+        self.canary_project_marked = settings.authoritative_canary
         if self.authoritative_canary and not self.authoritative_transitions:
             raise WorkItemGovernanceError(
                 "AUTHORITATIVE_CANARY_MODE_INVALID",
@@ -103,10 +104,11 @@ class WorkItemApplicationService:
         self.principal_context = principal_context
         self.request_context = request_context
         self.activation_guard = AuthoritativeCanaryGuard(self.ledger, now=now) if self.authoritative_canary else None
+        self._activation_authorized_transactions: dict[int, ActivationWriteSession] = {}
         self.previews = PreviewCodec(
             self.ledger,
             now=now,
-            allow_signing_key_creation=not self.authoritative_canary,
+            allow_signing_key_creation=not (self.authoritative_canary or self.canary_project_marked),
         )
 
     def status(self) -> dict[str, Any]:
@@ -120,7 +122,13 @@ class WorkItemApplicationService:
             "automatic_history_backfill": False,
             "authoritative_canary": self.authoritative_canary,
             "effective_authoritative_writes": (
-                "lease_controlled" if self.authoritative_canary else self.authoritative_transitions
+                "lease_controlled"
+                if self.authoritative_canary
+                else (
+                    "denied_composition"
+                    if self.canary_project_marked
+                    else self.authoritative_transitions
+                )
             ),
         }
         if self.enabled and self.ledger.path.exists():
@@ -152,7 +160,7 @@ class WorkItemApplicationService:
     ) -> ActivationWriteSession | None:
         if self.activation_guard is None:
             return None
-        return self.activation_guard.begin_write(
+        session = self.activation_guard.begin_write(
             connection,
             command_name=command_name,
             normalized_command=normalized_command,
@@ -160,6 +168,8 @@ class WorkItemApplicationService:
             principal_context=principal_context or self.principal_context,
             request_context=self.request_context,
         )
+        self._activation_authorized_transactions[id(connection)] = session
+        return session
 
     def _deny_activation_command(
         self,
@@ -188,7 +198,13 @@ class WorkItemApplicationService:
         """
 
         with self.ledger.write_transaction() as connection:
+            connection_id = id(connection)
             if self.activation_guard is None:
+                if self.canary_project_marked:
+                    raise WorkItemGovernanceError(
+                        "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
+                        "A project marked for Authoritative Canary execution cannot be mutated by an unguarded application composition.",
+                    )
                 lease = connection.execute(
                     "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
                 ).fetchone()
@@ -198,7 +214,27 @@ class WorkItemApplicationService:
                         "A Ledger containing an Activation Lease cannot be mutated by an unguarded application composition.",
                         details={"lease_id": str(lease["lease_id"]), "lease_status": str(lease["status"])},
                     )
-            yield connection
+            try:
+                yield connection
+                if self.activation_guard is not None:
+                    session = self._activation_authorized_transactions.get(connection_id)
+                    if session is None:
+                        raise WorkItemGovernanceError(
+                            "ACTIVATION_WRITE_NOT_AUTHORIZED",
+                            "Every Authoritative Canary application write must enter the transactional Activation Lease guard.",
+                        )
+                    if not self.ledger.activation_domain_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        raise WorkItemGovernanceError(
+                            "ACTIVATION_WRITE_NOT_FINALIZED",
+                            "Every Authoritative Canary application write must finalize through the transactional Activation Lease guard.",
+                        )
+            finally:
+                session = self._activation_authorized_transactions.pop(connection_id, None)
+                if self.activation_guard is not None and session is not None:
+                    self.activation_guard._discard_write_session(session)
 
     def _assert_unguarded_maintenance_allowed(self, operation: str) -> None:
         """Keep activation-managed Ledgers behind their dedicated control plane."""
@@ -210,12 +246,44 @@ class WorkItemApplicationService:
             )
         with self.ledger.read_connection() as connection:
             lease = connection.execute(
-                "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+                """
+                SELECT lease_id,status FROM activation_leases
+                WHERE status IN ('prepared','claimed','active','write_frozen')
+                ORDER BY created_at DESC LIMIT 1
+                """
             ).fetchone()
         if lease is not None:
             raise WorkItemGovernanceError(
                 "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
                 "An activation-managed Ledger cannot be accessed through an unguarded maintenance command.",
+                details={
+                    "operation": operation,
+                    "lease_id": str(lease["lease_id"]),
+                    "lease_status": str(lease["status"]),
+                },
+            )
+
+    def _assert_internal_activation_write_denied(self, operation: str) -> None:
+        """Reject direct invocation of a legacy helper in a Canary composition.
+
+        Public denied commands freeze the Lease through ``_deny_activation_command``.
+        Private helpers must not be callable as an alternative write entry point.
+        """
+
+        if self.activation_guard is not None or self.canary_project_marked:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_INTERNAL_WRITE_PATH_DENIED",
+                "This internal Work Item write path is unavailable to an Authoritative Canary.",
+                details={"operation": operation},
+            )
+        with self.ledger.read_connection() as connection:
+            lease = connection.execute(
+                "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if lease is not None:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
+                "An activation-managed Ledger cannot be accessed through an unguarded internal write path.",
                 details={
                     "operation": operation,
                     "lease_id": str(lease["lease_id"]),
@@ -1968,6 +2036,7 @@ class WorkItemApplicationService:
         return self._record_blocker_event(command, event_type="blocker_cleared")
 
     def _record_blocker_event(self, command: dict[str, Any], *, event_type: str) -> dict[str, Any]:
+        self._assert_internal_activation_write_denied("record_blocker_event")
         self._require_enabled()
         value = require_object(command, "command", non_empty=True)
         allowed = {"blocker_id", "work_item_id", "task_version", "reason", "actor", "source_event_key"}

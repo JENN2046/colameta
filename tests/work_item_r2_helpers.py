@@ -1,26 +1,68 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from runner.runner_global_config import RunnerGlobalConfigStore
 from runner.work_item_governance.activation import (
+    AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+    AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
     DEFAULT_QUOTAS,
     EMPTY_USAGE,
     R2_SPEC_FREEZE_MANIFEST_SHA256,
-    AuthoritativeCanaryGuard,
+    canonical_path_digest,
     listener_attestation_digest,
     process_identity_inputs,
+    read_authoritative_token_file,
     request_context_binding_digest,
 )
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.principal import PrincipalContext, authorize_principal
-from runner.work_item_governance.request_context import _issue_authenticated_token_request_proof
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
+    token_request_proof_signature,
+)
 from runner.work_item_governance.service import WorkItemApplicationService
+
+
+def _active_test_token_proof(
+    *,
+    auth_token: str,
+    lease_id: str,
+    token_file_sha256: str,
+    token_evidence_digest: str,
+) -> AuthenticatedTokenRequestProof:
+    unsigned = {
+        "schema_version": AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
+        "mode": "token",
+        "lease_id": lease_id,
+        "listener_instance_nonce": "6" * 64,
+        "request_nonce": "7" * 64,
+        "token_file_sha256": token_file_sha256,
+        "token_evidence_digest": token_evidence_digest,
+    }
+    return AuthenticatedTokenRequestProof(
+        mode="token",
+        lease_id=lease_id,
+        listener_instance_nonce=unsigned["listener_instance_nonce"],
+        request_nonce=unsigned["request_nonce"],
+        token_file_sha256=token_file_sha256,
+        token_evidence_digest=token_evidence_digest,
+        signature=token_request_proof_signature(
+            auth_token=auth_token,
+            unsigned_record=unsigned,
+        ),
+        _active_validator=lambda _proof: True,
+    )
 
 
 def all_permissions_principal() -> PrincipalContext:
@@ -519,6 +561,24 @@ def install_active_lease(
 ) -> WorkItemApplicationService:
     seed = WorkItemApplicationService(project, enabled=True)
     seed.ledger.get_or_create_signing_key()
+    token_bytes = hashlib.sha256(str(project.resolve()).encode("utf-8")).digest()
+    auth_token = "mvr_" + base64.urlsafe_b64encode(token_bytes).rstrip(b"=").decode("ascii")
+    test_xdg_config = project / ".test-xdg-config"
+    os.environ["XDG_CONFIG_HOME"] = str(test_xdg_config)
+    token_store = RunnerGlobalConfigStore(config_dir=str(test_xdg_config / "colameta"))
+    saved_token = token_store.save_auth_token(auth_token)
+    assert saved_token["ok"] is True
+    auth_file = Path(str(saved_token["path"])).resolve()
+    auth_file.parent.chmod(0o700)
+    _saved_token, token_file_evidence = read_authoritative_token_file(auth_file)
+    assert _saved_token == auth_token
+    token_evidence_digest = canonical_sha256(
+        {
+            "algorithm": "r3_test_token_binding",
+            "token_file_sha256": token_file_evidence["token_sha256"],
+            "auth_file_path_digest": token_file_evidence["auth_file_path_digest"],
+        }
+    )
     lease_id = new_stable_id("activation_lease")
     nonce = "n" * 32
     identity = process_identity_inputs(nonce)
@@ -551,9 +611,25 @@ def install_active_lease(
         "runtime_instance_nonce": nonce,
         "bind_address": "127.0.0.1",
         "port": 48787,
+        "token_file_path_digest": canonical_path_digest(auth_file),
     }
     claim_ns = time.monotonic_ns()
     with seed.ledger.write_transaction() as connection:
+        connection.executemany(
+            "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
+            (
+                (
+                    AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+                    token_file_evidence["token_sha256"],
+                    isoformat_utc(now),
+                ),
+                (
+                    AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+                    token_evidence_digest,
+                    isoformat_utc(now),
+                ),
+            ),
+        )
         connection.execute(
             """
             INSERT INTO activation_leases(
@@ -632,9 +708,15 @@ def install_active_lease(
         authoritative_canary=True,
         principal_context=principal,
     )
-    guard = AuthoritativeCanaryGuard(service.ledger)
+    guard = service.activation_guard
+    assert guard is not None
     service.request_context = guard.mint_request_context(
-        proof=_issue_authenticated_token_request_proof(),
+        proof=_active_test_token_proof(
+            auth_token=auth_token,
+            lease_id=lease_id,
+            token_file_sha256=token_file_evidence["token_sha256"],
+            token_evidence_digest=token_evidence_digest,
+        ),
         principal_context=principal,
     )
     return service

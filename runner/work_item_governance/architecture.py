@@ -155,6 +155,19 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
         for path in sorted(source_root.rglob("*.py")):
             checked_write_boundary_files += 1
             relative = path.relative_to(root).as_posix()
+            if relative != "runner/work_item_governance/activation.py":
+                for boundary_call in (
+                    "authorize_activation_domain_write",
+                    "finalize_activation_domain_write",
+                ):
+                    if _calls_name(path, boundary_call):
+                        violations.append(
+                            {
+                                "rule": "activation_repository_unlock_bypass",
+                                "path": relative,
+                                "import": boundary_call,
+                            }
+                        )
             if (
                 path.is_relative_to(core_root)
                 or path in side_context_path_set
@@ -178,6 +191,24 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 violations.append(
                     {
                         "rule": "application_write_bypasses_composition_guard",
+                        "path": str(service_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+            if method == "_write_transaction" or "_write_transaction" not in calls:
+                continue
+            if method in LEASE_CONTROLLED_WRITE_METHODS or method == "_apply_create":
+                required_boundary = "_activation_begin"
+            elif method in LEASE_DENIED_WRITE_METHODS:
+                required_boundary = "_deny_activation_command"
+            elif method == "_deny_activation_command":
+                required_boundary = "deny_command"
+            else:
+                required_boundary = "_assert_internal_activation_write_denied"
+            if required_boundary not in calls:
+                violations.append(
+                    {
+                        "rule": "application_write_transaction_unclassified",
                         "path": str(service_path.relative_to(root)),
                         "import": method,
                     }
@@ -206,6 +237,26 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                     {
                         "rule": "activation_denied_write_path_missing",
                         "path": str(service_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+    activation_path = core_root / "activation.py"
+    if activation_path.is_file():
+        activation_calls = _method_calls(activation_path)
+        if "authorize_activation_domain_write" not in activation_calls.get("begin_write", set()):
+            violations.append(
+                {
+                    "rule": "activation_repository_unlock_missing",
+                    "path": str(activation_path.relative_to(root)),
+                    "import": "begin_write",
+                }
+            )
+        for method in ("_authorize_replay", "_commit_new"):
+            if "finalize_activation_domain_write" not in activation_calls.get(method, set()):
+                violations.append(
+                    {
+                        "rule": "activation_repository_relock_missing",
+                        "path": str(activation_path.relative_to(root)),
                         "import": method,
                     }
                 )
@@ -289,3 +340,18 @@ def _method_calls(path: Path) -> dict[str, set[str]]:
                     calls.add(child.func.id)
         result[node.name] = calls
     return result
+
+
+def _calls_name(path: Path, name: str) -> bool:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return False
+    return any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == name)
+            or (isinstance(node.func, ast.Name) and node.func.id == name)
+        )
+        for node in ast.walk(tree)
+    )

@@ -13,7 +13,6 @@ from runner.work_item_governance.principal import (
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.request_context import (
     AuthenticatedTokenRequestProof,
-    _issue_authenticated_token_request_proof,
 )
 
 
@@ -37,13 +36,9 @@ def current_authenticated_token_request_proof() -> AuthenticatedTokenRequestProo
 
 @contextmanager
 def work_item_authenticated_request_scope(
-    auth_context: dict[str, Any] | None,
+    auth_context: object | None,
 ) -> Iterator[AuthenticatedTokenRequestProof | None]:
-    proof = (
-        _issue_authenticated_token_request_proof()
-        if isinstance(auth_context, dict) and auth_context.get("mode") == "token"
-        else None
-    )
+    proof = auth_context if type(auth_context) is AuthenticatedTokenRequestProof else None
     token = _CURRENT_TOKEN_REQUEST_PROOF.set(proof)
     try:
         yield proof
@@ -52,8 +47,14 @@ def work_item_authenticated_request_scope(
 
 
 @contextmanager
-def work_item_principal_scope(auth_context: dict[str, Any] | None) -> Iterator[PrincipalContext | None]:
-    principal = principal_from_auth_context(auth_context)
+def work_item_principal_scope(
+    auth_context: object | None,
+) -> Iterator[PrincipalContext | None]:
+    principal = (
+        local_principal_from_environment()
+        if type(auth_context) is AuthenticatedTokenRequestProof and auth_context.active
+        else principal_from_auth_context(auth_context)
+    )
     token = _CURRENT_PRINCIPAL.set(principal)
     try:
         yield principal
@@ -61,9 +62,13 @@ def work_item_principal_scope(auth_context: dict[str, Any] | None) -> Iterator[P
         _CURRENT_PRINCIPAL.reset(token)
 
 
-def principal_from_auth_context(auth_context: dict[str, Any] | None) -> PrincipalContext | None:
-    if not isinstance(auth_context, dict):
+def principal_from_auth_context(
+    auth_context: object | None,
+) -> PrincipalContext | None:
+    if auth_context is None:
         return local_principal_from_environment()
+    if not isinstance(auth_context, dict):
+        return None
     injected = auth_context.get("principal_context")
     if isinstance(injected, PrincipalContext) and injected.trusted:
         return injected

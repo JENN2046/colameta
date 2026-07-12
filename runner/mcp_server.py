@@ -3,11 +3,13 @@ import copy
 import threading
 import os
 import re
+import secrets
 import sys
 import time
 import hashlib
 import hmac
 import urllib.request
+from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from dataclasses import dataclass
@@ -92,6 +94,11 @@ from runner.stage_parallel_next_action import build_stage_parallel_next_action_p
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
 from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
+    token_request_proof_signature,
+)
 from runner.work_item_governance.activation import (
     ActivationLeaseControlPlane,
     validate_authoritative_bearer_token,
@@ -119,6 +126,9 @@ from runner.runner_paths import (
     resolve_project_runner_plan_path,
     resolve_project_runner_rel_dir,
 )
+
+
+MCPAuthContext = object | None
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -1167,6 +1177,7 @@ class MCPPlanningBridgeServer:
         self.service_mode = service_mode
         self.project_registry = ProjectRegistry()
         self.mcp_exposure_profile = self._get_exposure_profile(exposure_profile)
+        self._token_transport_proof_validator = None
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -4578,6 +4589,8 @@ class MCPPlanningBridgeServer:
         port: int = 8765,
         auth_token: str | None = None,
         auth_token_source: str | None = None,
+        auth_token_file_sha256: str | None = None,
+        auth_token_evidence_digest: str | None = None,
         auth_mode: str | None = None,
         public_base_url: str | None = None,
         oauth_token_ttl_seconds: int = 3600,
@@ -4608,6 +4621,15 @@ class MCPPlanningBridgeServer:
                 raise PlanningBridgeError(
                     "authoritative_canary Token must be loaded from isolated 0600 XDG auth.json."
                 )
+            if not (
+                isinstance(auth_token_file_sha256, str)
+                and re.fullmatch(r"[0-9a-f]{64}", auth_token_file_sha256)
+                and isinstance(auth_token_evidence_digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", auth_token_evidence_digest)
+            ):
+                raise PlanningBridgeError(
+                    "authoritative_canary requires exact Ledger-bound Token evidence digests."
+                )
             try:
                 validate_authoritative_bearer_token(auth_token)
             except WorkItemGovernanceError as exc:
@@ -4631,6 +4653,8 @@ class MCPPlanningBridgeServer:
             raise PlanningBridgeError(f"auth_mode 无效：{resolved_auth_mode}")
         if resolved_auth_mode == "token" and not auth_token:
             raise PlanningBridgeError("token auth mode requires auth_token.")
+        if resolved_auth_mode == "token" and self._token_transport_proof_validator is not None:
+            raise PlanningBridgeError("This MCP server already owns an active Token listener boundary.")
         normalized_public_base_url = public_base_url.rstrip("/") if public_base_url else None
         oauth_provider: MCPOAuthProvider | None = None
         external_oauth_provider: ExternalOAuthProvider | None = None
@@ -4661,6 +4685,78 @@ class MCPPlanningBridgeServer:
                 )
             )
         resource_oauth_provider = external_oauth_provider or oauth_provider
+        listener_dispatch_context: ContextVar[object | None] = ContextVar(
+            f"colameta_token_listener_{id(self)}_{id(object())}",
+            default=None,
+        )
+        listener_instance_nonce = secrets.token_hex(32)
+        active_request_nonces: set[str] = set()
+        resolved_token_file_sha256 = auth_token_file_sha256 or hashlib.sha256(
+            f"non-authoritative-token-file:{auth_token or ''}".encode("utf-8")
+        ).hexdigest()
+        resolved_token_evidence_digest = auth_token_evidence_digest or hashlib.sha256(
+            f"non-authoritative-token-evidence:{auth_token or ''}".encode("utf-8")
+        ).hexdigest()
+        resolved_proof_lease_id = activation_lease_id or "non-authoritative-token-listener"
+
+        def _validate_listener_token_proof(candidate: object) -> bool:
+            if type(candidate) is not AuthenticatedTokenRequestProof:
+                return False
+            if listener_dispatch_context.get() is not candidate:
+                return False
+            proof = candidate
+            if (
+                proof.lease_id != resolved_proof_lease_id
+                or proof.listener_instance_nonce != listener_instance_nonce
+                or proof.request_nonce not in active_request_nonces
+                or proof.token_file_sha256 != resolved_token_file_sha256
+                or proof.token_evidence_digest != resolved_token_evidence_digest
+            ):
+                return False
+            return proof.verify_signature(auth_token or "")
+
+        def _mint_listener_token_proof() -> AuthenticatedTokenRequestProof:
+            request_nonce = secrets.token_hex(32)
+            unsigned = {
+                "schema_version": AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
+                "mode": "token",
+                "lease_id": resolved_proof_lease_id,
+                "listener_instance_nonce": listener_instance_nonce,
+                "request_nonce": request_nonce,
+                "token_file_sha256": resolved_token_file_sha256,
+                "token_evidence_digest": resolved_token_evidence_digest,
+            }
+            return AuthenticatedTokenRequestProof(
+                mode="token",
+                lease_id=resolved_proof_lease_id,
+                listener_instance_nonce=listener_instance_nonce,
+                request_nonce=request_nonce,
+                token_file_sha256=resolved_token_file_sha256,
+                token_evidence_digest=resolved_token_evidence_digest,
+                signature=token_request_proof_signature(
+                    auth_token=auth_token or "",
+                    unsigned_record=unsigned,
+                ),
+                _active_validator=_validate_listener_token_proof,
+            )
+
+        def _activate_listener_token_proof(candidate: object) -> None:
+            if type(candidate) is not AuthenticatedTokenRequestProof:
+                return
+            proof = candidate
+            if (
+                proof.lease_id == resolved_proof_lease_id
+                and proof.listener_instance_nonce == listener_instance_nonce
+                and proof.token_file_sha256 == resolved_token_file_sha256
+                and proof.token_evidence_digest == resolved_token_evidence_digest
+                and proof.verify_signature(auth_token or "")
+            ):
+                active_request_nonces.add(proof.request_nonce)
+
+        def _retire_listener_token_proof(candidate: object) -> None:
+            if type(candidate) is AuthenticatedTokenRequestProof:
+                active_request_nonces.discard(candidate.request_nonce)
+
         rate_limiter = _MCPRateLimiter(
             global_per_minute=MCP_GLOBAL_RATE_LIMIT_PER_MINUTE,
             global_burst=MCP_GLOBAL_RATE_LIMIT_BURST,
@@ -4945,7 +5041,7 @@ class MCPPlanningBridgeServer:
             def _body_timed_out(self) -> bool:
                 return bool(getattr(self, "_request_body_timed_out", False))
 
-            def _auth_context(self) -> dict[str, Any] | None:
+            def _auth_context(self) -> MCPAuthContext:
                 if resolved_auth_mode == "none":
                     return {"mode": "none"}
                 authorization = self.headers.get("Authorization", "")
@@ -4953,7 +5049,9 @@ class MCPPlanningBridgeServer:
                     if not authorization.startswith("Bearer "):
                         return None
                     token = authorization[len("Bearer ") :]
-                    return {"mode": "token"} if hmac.compare_digest(token, auth_token) else None
+                    if not hmac.compare_digest(token, auth_token):
+                        return None
+                    return _mint_listener_token_proof()
                 if resolved_auth_mode == "oauth" and oauth_provider is not None:
                     if not authorization.startswith("Bearer "):
                         return None
@@ -5258,7 +5356,17 @@ class MCPPlanningBridgeServer:
                         return
                     if debug_actions and isinstance(arguments, dict):
                         self._debug_body_keys = list(arguments.keys())
-                    tool_result = server._call_tool(tool_name, arguments, auth_context=auth_context)
+                    _activate_listener_token_proof(auth_context)
+                    dispatch_token = listener_dispatch_context.set(auth_context)
+                    try:
+                        tool_result = server._call_tool(
+                            tool_name,
+                            arguments,
+                            auth_context=auth_context,
+                        )
+                    finally:
+                        listener_dispatch_context.reset(dispatch_token)
+                        _retire_listener_token_proof(auth_context)
                     response_payload = server._package_actions_rest_response(tool_name, arguments, tool_result)
                     self._send_json(200, response_payload)
                     return
@@ -5312,7 +5420,16 @@ class MCPPlanningBridgeServer:
                         },
                     )
                     return
-                response = server._handle_jsonrpc_request(request, auth_context=auth_context)
+                _activate_listener_token_proof(auth_context)
+                dispatch_token = listener_dispatch_context.set(auth_context)
+                try:
+                    response = server._handle_jsonrpc_request(
+                        request,
+                        auth_context=auth_context,
+                    )
+                finally:
+                    listener_dispatch_context.reset(dispatch_token)
+                    _retire_listener_token_proof(auth_context)
                 if response is None:
                     self.send_response(202)
                     self.send_header("Content-Length", "0")
@@ -5373,6 +5490,10 @@ class MCPPlanningBridgeServer:
                     except WorkItemGovernanceError:
                         pass
                 raise
+        installed_token_validator = False
+        if resolved_auth_mode == "token":
+            self._token_transport_proof_validator = _validate_listener_token_proof
+            installed_token_validator = True
         self._httpd = httpd
         try:
             httpd.serve_forever()
@@ -5381,6 +5502,12 @@ class MCPPlanningBridgeServer:
         finally:
             httpd.shutdown()
             httpd.server_close()
+            if (
+                installed_token_validator
+                and self._token_transport_proof_validator
+                is _validate_listener_token_proof
+            ):
+                self._token_transport_proof_validator = None
             if (
                 authoritative_canary
                 and active
@@ -7446,7 +7573,7 @@ class MCPPlanningBridgeServer:
     def _handle_jsonrpc_request(
         self,
         request: dict[str, Any],
-        auth_context: dict[str, Any] | None = None,
+        auth_context: MCPAuthContext = None,
     ) -> dict[str, Any] | None:
         req_id = request.get("id")
         method = request.get("method")
@@ -8959,7 +9086,7 @@ class MCPPlanningBridgeServer:
         self,
         name: Any,
         params: Any,
-        auth_context: dict[str, Any] | None = None,
+        auth_context: MCPAuthContext = None,
     ) -> dict[str, Any]:
         if not isinstance(name, str) or not name:
             return self._tool_error("unknown", "INVALID_TOOL", "tool 名称无效。")
@@ -8977,6 +9104,22 @@ class MCPPlanningBridgeServer:
                 name,
                 "TOOL_NOT_EXPOSED",
                 "The tool is denied by the active server exposure profile.",
+            )
+        listener_proof_validator = self._token_transport_proof_validator
+        transport_authenticated = False
+        if callable(listener_proof_validator) and auth_context is not None:
+            try:
+                transport_authenticated = bool(listener_proof_validator(auth_context))
+            except Exception:
+                transport_authenticated = False
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            and not transport_authenticated
+        ):
+            return self._tool_error(
+                name,
+                "UNAUTHORIZED",
+                "A Token-authenticated HTTP transport capability is required.",
             )
         tool = self.tools.get(name)
         if tool is None:
@@ -9016,7 +9159,9 @@ class MCPPlanningBridgeServer:
         if relay_scope_error is not None:
             return relay_scope_error
         try:
-            with work_item_authenticated_request_scope(auth_context), work_item_principal_scope(auth_context):
+            with work_item_authenticated_request_scope(auth_context), work_item_principal_scope(
+                auth_context
+            ):
                 data = tool(params)
             result = {"ok": True, "tool": name, "data": data}
             if isinstance(data, dict) and isinstance(data.get("_meta"), dict):
@@ -9104,7 +9249,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") not in {"oauth", "external-oauth"}:
             return None
@@ -9126,7 +9271,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
             return None
@@ -9155,7 +9300,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "cloud-relay":
             return None

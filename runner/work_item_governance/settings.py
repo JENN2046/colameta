@@ -10,6 +10,7 @@ from typing import Any
 class WorkItemGovernanceSettings:
     shadow_ledger_enabled: bool = False
     gate_mode: str = "shadow"
+    authoritative_canary: bool = False
 
     @property
     def transitions_authoritative(self) -> bool:
@@ -36,4 +37,9 @@ def load_work_item_governance_settings(project_root: str | Path) -> WorkItemGove
     gate_mode = section.get("gate_mode", "shadow")
     if gate_mode not in {"off", "shadow", "authoritative"}:
         gate_mode = "shadow"
-    return WorkItemGovernanceSettings(shadow_ledger_enabled=enabled, gate_mode=gate_mode)
+    authoritative_canary = section.get("authoritative_canary") is True
+    return WorkItemGovernanceSettings(
+        shadow_ledger_enabled=enabled,
+        gate_mode=gate_mode,
+        authoritative_canary=authoritative_canary,
+    )

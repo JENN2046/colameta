@@ -16,6 +16,7 @@ from runner.work_item_governance.contracts import (
     LEDGER_RELATIVE_PATH,
 )
 from runner.work_item_governance.errors import CommitWorkItemRejection, WorkItemGovernanceError
+from runner.work_item_governance.settings import load_work_item_governance_settings
 
 
 def _migration_v1() -> tuple[str, ...]:
@@ -446,6 +447,7 @@ class SQLiteWorkItemLedger:
         self.maintenance_lock_path = self.path.parent / "work-items.restore.lock"
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self._migrations = dict(migrations or MIGRATIONS)
+        self._activation_transaction_states: dict[int, dict[str, Any]] = {}
 
     def _ensure_storage_path(self) -> None:
         if not self.project_root.is_dir():
@@ -600,24 +602,203 @@ class SQLiteWorkItemLedger:
         os.chmod(self.path, 0o600)
 
     @contextmanager
-    def write_transaction(self) -> Iterator[sqlite3.Connection]:
+    def write_transaction(
+        self,
+    ) -> Iterator[sqlite3.Connection]:
         with self._maintenance_lock(exclusive=False):
             self._initialize_unlocked()
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
+            lease = connection.execute(
+                "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            canary_marked = load_work_item_governance_settings(
+                self.project_root
+            ).authoritative_canary
+            activation_managed = canary_marked or lease is not None
+            restricted = activation_managed
+            transaction_state: dict[str, Any] | None = None
+            if restricted:
+                allowed_write_tables = {"activation_leases", "activation_lease_events"}
+                # Fresh Preflight provisions public binding metadata before its
+                # first Lease is prepared.  Once a Lease exists, ledger_meta is
+                # immutable through the default repository transaction.
+                if lease is None:
+                    allowed_write_tables.add("ledger_meta")
+                transaction_state = {
+                    "connection": connection,
+                    "domain_write_authorized": False,
+                    "allowed_control_tables": frozenset(allowed_write_tables),
+                    "authorized_session": None,
+                    "finalized_session": None,
+                }
+                self._activation_transaction_states[id(connection)] = transaction_state
+                connection.set_authorizer(
+                    self._activation_repository_authorizer(transaction_state)
+                )
             try:
                 yield connection
                 connection.commit()
             except CommitWorkItemRejection as exc:
                 connection.commit()
                 raise exc.error from exc
+            except sqlite3.DatabaseError as exc:
+                connection.rollback()
+                if restricted and "not authorized" in str(exc).lower():
+                    raise WorkItemGovernanceError(
+                        "ACTIVATION_REPOSITORY_WRITE_DENIED",
+                        "An activation-managed Ledger rejects raw repository domain or maintenance writes.",
+                    ) from exc
+                raise
             except Exception:
                 connection.rollback()
                 raise
             finally:
+                self._activation_transaction_states.pop(id(connection), None)
                 connection.close()
                 if self.path.exists():
                     os.chmod(self.path, 0o600)
+
+    @staticmethod
+    def _activation_repository_authorizer(
+        transaction_state: dict[str, Any],
+    ) -> Any:
+        data_write_actions = {
+            sqlite3.SQLITE_INSERT,
+            sqlite3.SQLITE_UPDATE,
+            sqlite3.SQLITE_DELETE,
+        }
+        structural_write_actions = {
+            sqlite3.SQLITE_ALTER_TABLE,
+            sqlite3.SQLITE_ANALYZE,
+            sqlite3.SQLITE_ATTACH,
+            sqlite3.SQLITE_CREATE_INDEX,
+            sqlite3.SQLITE_CREATE_TABLE,
+            sqlite3.SQLITE_CREATE_TEMP_INDEX,
+            sqlite3.SQLITE_CREATE_TEMP_TABLE,
+            sqlite3.SQLITE_CREATE_TEMP_TRIGGER,
+            sqlite3.SQLITE_CREATE_TEMP_VIEW,
+            sqlite3.SQLITE_CREATE_TRIGGER,
+            sqlite3.SQLITE_CREATE_VIEW,
+            sqlite3.SQLITE_DETACH,
+            sqlite3.SQLITE_DROP_INDEX,
+            sqlite3.SQLITE_DROP_TABLE,
+            sqlite3.SQLITE_DROP_TEMP_INDEX,
+            sqlite3.SQLITE_DROP_TEMP_TABLE,
+            sqlite3.SQLITE_DROP_TEMP_TRIGGER,
+            sqlite3.SQLITE_DROP_TEMP_VIEW,
+            sqlite3.SQLITE_DROP_TRIGGER,
+            sqlite3.SQLITE_DROP_VIEW,
+            sqlite3.SQLITE_PRAGMA,
+            sqlite3.SQLITE_REINDEX,
+        }
+
+        def authorize(
+            action: int,
+            argument_one: str | None,
+            _argument_two: str | None,
+            _database: str | None,
+            _trigger: str | None,
+        ) -> int:
+            if action in data_write_actions:
+                if transaction_state["domain_write_authorized"]:
+                    return sqlite3.SQLITE_OK
+                return (
+                    sqlite3.SQLITE_OK
+                    if argument_one in transaction_state["allowed_control_tables"]
+                    else sqlite3.SQLITE_DENY
+                )
+            if action in structural_write_actions:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        return authorize
+
+    def authorize_activation_domain_write(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session: Any,
+    ) -> None:
+        """Unlock one managed transaction only after the Guard sealed it.
+
+        The default repository transaction never accepts a caller-provided
+        boolean or reusable capability.  Its authorizer closure is changed only
+        for the exact connection and trusted ``ActivationWriteSession`` minted
+        by the Guard after Lease/request validation.
+        """
+
+        # Local import avoids the repository/activation module import cycle.
+        from runner.work_item_governance.activation import ActivationWriteSession
+
+        state = self._activation_transaction_states.get(id(connection))
+        if (
+            state is None
+            or state.get("connection") is not connection
+            or state.get("authorized_session") is not None
+            or not isinstance(session, ActivationWriteSession)
+            or session.connection is not connection
+            or session.guard.ledger is not self
+            or not session.trusted_repository_write_session
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_REPOSITORY_CAPABILITY_INVALID",
+                "Repository domain writes require the exact Guard-sealed transaction session.",
+            )
+        row = connection.execute(
+            "SELECT lease_id,status FROM activation_leases WHERE lease_id=?",
+            (session.row["lease_id"],),
+        ).fetchone()
+        if row is None or row["status"] != "active":
+            raise WorkItemGovernanceError(
+                "ACTIVE_ACTIVATION_LEASE_REQUIRED",
+                "Repository domain writes require the active Guard-bound Lease.",
+            )
+        state["domain_write_authorized"] = True
+        state["authorized_session"] = session
+
+    def finalize_activation_domain_write(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session: Any,
+    ) -> None:
+        """Immediately relock the exact managed transaction after Guard finalization."""
+
+        from runner.work_item_governance.activation import ActivationWriteSession
+
+        state = self._activation_transaction_states.get(id(connection))
+        if (
+            state is None
+            or state.get("connection") is not connection
+            or state.get("authorized_session") is not session
+            or state.get("domain_write_authorized") is not True
+            or not isinstance(session, ActivationWriteSession)
+            or session.connection is not connection
+            or session.guard.ledger is not self
+            or not session.guard._is_issued_write_session(session)
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_REPOSITORY_CAPABILITY_INVALID",
+                "Repository relock requires the exact Guard-issued transaction session.",
+            )
+        state["domain_write_authorized"] = False
+        state["finalized_session"] = session
+
+    def activation_domain_write_finalized(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session: Any,
+    ) -> bool:
+        state = self._activation_transaction_states.get(id(connection))
+        return bool(
+            state is not None
+            and state.get("connection") is connection
+            and state.get("authorized_session") is session
+            and state.get("finalized_session") is session
+            and state.get("domain_write_authorized") is False
+        )
 
     @contextmanager
     def read_connection(self) -> Iterator[sqlite3.Connection]:
@@ -752,9 +933,12 @@ class SQLiteWorkItemLedger:
         self,
         destination: str | os.PathLike[str],
         *,
-        reject_activation_managed: bool = False,
+        reject_activation_managed: bool = True,
     ) -> dict[str, Any]:
-        with self._maintenance_lock(exclusive=reject_activation_managed):
+        # Retain the keyword for source compatibility, but never let callers
+        # disable the activation-managed boundary.
+        _ = reject_activation_managed
+        with self._maintenance_lock(exclusive=True):
             self._initialize_unlocked()
             destination_path = Path(destination).expanduser().resolve()
             if destination_path == self.path.resolve():
@@ -763,8 +947,7 @@ class SQLiteWorkItemLedger:
             source = self._connect(readonly=True)
             target = sqlite3.connect(str(destination_path), isolation_level=None)
             try:
-                if reject_activation_managed:
-                    self._assert_not_activation_managed(source, operation="backup")
+                self._assert_not_activation_managed(source, operation="backup")
                 generation_row = source.execute(
                     "SELECT value FROM ledger_meta WHERE key='database_generation'"
                 ).fetchone()
@@ -798,8 +981,9 @@ class SQLiteWorkItemLedger:
         source: str | os.PathLike[str],
         *,
         expected_database_generation: int,
-        reject_activation_managed: bool = False,
+        reject_activation_managed: bool = True,
     ) -> dict[str, Any]:
+        _ = reject_activation_managed
         if (
             isinstance(expected_database_generation, bool)
             or not isinstance(expected_database_generation, int)
@@ -820,8 +1004,7 @@ class SQLiteWorkItemLedger:
         with self._maintenance_lock(exclusive=True, blocking=False):
             self._initialize_unlocked()
             with self._connect(readonly=True) as current_connection:
-                if reject_activation_managed:
-                    self._assert_not_activation_managed(current_connection, operation="restore")
+                self._assert_not_activation_managed(current_connection, operation="restore")
                 generation_row = current_connection.execute(
                     "SELECT value FROM ledger_meta WHERE key='database_generation'"
                 ).fetchone()
@@ -846,11 +1029,10 @@ class SQLiteWorkItemLedger:
                 source_connection = self._connect(source_path, readonly=True)
                 target_connection = sqlite3.connect(str(temp_path), isolation_level=None)
                 try:
-                    if reject_activation_managed:
-                        self._assert_not_activation_managed(
-                            source_connection,
-                            operation="restore_source",
-                        )
+                    self._assert_not_activation_managed(
+                        source_connection,
+                        operation="restore_source",
+                    )
                     source_connection.backup(target_connection)
                 finally:
                     target_connection.close()
@@ -913,9 +1095,11 @@ class SQLiteWorkItemLedger:
     def export_audit_package(
         self,
         *,
-        reject_activation_managed: bool = False,
+        reject_activation_managed: bool = True,
     ) -> dict[str, Any]:
         """Return a structured export; secrets and source/report bodies are absent."""
+
+        _ = reject_activation_managed
 
         export_queries = {
             "work_items": "SELECT * FROM work_items",
@@ -932,11 +1116,10 @@ class SQLiteWorkItemLedger:
             "acceptance_manifests": "SELECT * FROM acceptance_manifests",
         }
         records: dict[str, list[dict[str, Any]]] = {}
-        with self._maintenance_lock(exclusive=reject_activation_managed):
+        with self._maintenance_lock(exclusive=True):
             self._initialize_unlocked()
             with self._connect(readonly=True) as connection:
-                if reject_activation_managed:
-                    self._assert_not_activation_managed(connection, operation="export")
+                self._assert_not_activation_managed(connection, operation="export")
                 for table, query in export_queries.items():
                     rows = connection.execute(query).fetchall()
                     records[table] = [dict(row) for row in rows]
@@ -958,7 +1141,11 @@ class SQLiteWorkItemLedger:
         operation: str,
     ) -> None:
         lease = connection.execute(
-            "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
+            """
+            SELECT lease_id,status FROM activation_leases
+            WHERE status IN ('prepared','claimed','active','write_frozen')
+            ORDER BY created_at DESC LIMIT 1
+            """
         ).fetchone()
         if lease is not None:
             raise WorkItemGovernanceError(

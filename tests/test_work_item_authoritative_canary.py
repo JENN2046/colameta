@@ -9,10 +9,12 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ import pytest
 import runner.mcp_server as mcp_server_module
 from runner.mcp_server import MCPPlanningBridgeServer, PlanningBridgeError
 from runner.work_item_governance.activation import (
+    ActivationLeaseControlPlane,
     AUTHORITATIVE_CANARY_TOOLS,
     AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
     AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
@@ -29,7 +32,7 @@ from runner.work_item_governance.activation import (
     validate_runtime_policy_contracts,
     validate_synthetic_fixture_semantics,
 )
-from runner.work_item_governance.canonical import canonical_sha256
+from runner.work_item_governance.canonical import canonical_json, canonical_sha256
 from runner.work_item_governance.closeout import (
     _load_strict_json,
     _verify_exported_event_chain,
@@ -38,9 +41,11 @@ from runner.work_item_governance.closeout import (
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.principal import trusted_principal_context
+from runner.work_item_governance.preview import utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 from runner.work_item_governance.repository import MIGRATIONS
 from runner.work_item_governance.service import WorkItemApplicationService
+from runtime_artifact_helpers import prepare_exact_runtime_artifacts
 from work_item_r2_helpers import (
     all_permissions_principal,
     install_active_lease,
@@ -529,11 +534,24 @@ from runner.work_item_governance.activation import AuthoritativeCanaryGuard
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.principal import trusted_principal_context
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
-from runner.work_item_governance.request_context import _issue_authenticated_token_request_proof
-import os
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
+    token_request_proof_signature,
+)
+from runner.runner_global_config import RunnerGlobalConfigStore
+import json, os
 principal=trusted_principal_context(principal_id="r2-canary-operator",principal_kind="human",authenticated_by="local_session",granted_permissions={"work_item.ready","work_item.start_delivery","work_item.submit","work_item.accept","work_item.cancel","work_item.return_for_revision","work_item.approve"},session_ref="r2-session")
+ledger=SQLiteWorkItemLedger(Path(os.environ["PROJECT_ROOT"]))
+with ledger.read_connection() as connection:
+ row=connection.execute("SELECT lease_id FROM activation_leases").fetchone()
+ bindings={str(item["key"]):str(item["value"]) for item in connection.execute("SELECT key,value FROM ledger_meta WHERE key LIKE 'authoritative_canary_token_%'").fetchall()}
+auth=RunnerGlobalConfigStore(config_dir=str(Path(os.environ["XDG_CONFIG_HOME"])/"colameta")).load_auth(include_secret=True)
+token=str(auth["auth"]["auth_token"]); lease_id=str(row["lease_id"])
+unsigned={"schema_version":AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,"mode":"token","lease_id":lease_id,"listener_instance_nonce":"6"*64,"request_nonce":"7"*64,"token_file_sha256":bindings["authoritative_canary_token_file_sha256"],"token_evidence_digest":bindings["authoritative_canary_token_evidence_digest"]}
+proof=AuthenticatedTokenRequestProof(mode="token",lease_id=lease_id,listener_instance_nonce="6"*64,request_nonce="7"*64,token_file_sha256=unsigned["token_file_sha256"],token_evidence_digest=unsigned["token_evidence_digest"],signature=token_request_proof_signature(auth_token=token,unsigned_record=unsigned),_active_validator=lambda _proof: True)
 try:
- AuthoritativeCanaryGuard(SQLiteWorkItemLedger(Path(os.environ["PROJECT_ROOT"]))).mint_request_context(proof=_issue_authenticated_token_request_proof(),principal_context=principal)
+ AuthoritativeCanaryGuard(ledger).mint_request_context(proof=proof,principal_context=principal)
 except WorkItemGovernanceError as exc:
  print(exc.code)
  raise SystemExit(0 if exc.code == "ACTIVATION_PROCESS_RESTARTED" else 2)
@@ -748,7 +766,10 @@ def test_active_lease_blocks_unguarded_maintenance_commands(tmp_path: Path) -> N
         assert exc_info.value.code == "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED"
 
     activation_backup = tmp_path / "activation-backup.sqlite3"
-    guarded_service.ledger.backup_to(activation_backup)
+    with sqlite3.connect(guarded_service.ledger.path) as source, sqlite3.connect(
+        activation_backup
+    ) as target:
+        source.backup(target)
     clean_project = tmp_path / "clean-project"
     clean_project.mkdir()
     clean_service = WorkItemApplicationService(clean_project, enabled=True)
@@ -855,6 +876,10 @@ def test_fresh_bootstrap_preflight_runs_under_isolated_process(tmp_path: Path) -
     shutil.copy2(Path(sys.executable).resolve(), runtime)
     project = root / "project"
     project.mkdir(parents=True)
+    source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
+        canary_root=root,
+        repository_root=Path(__file__).resolve().parents[1],
+    )
     script = r'''
 import base64, json, os, sys
 from pathlib import Path
@@ -869,12 +894,14 @@ paths=FreshCanaryPaths(
  token_file=root/"xdg-config/colameta/auth.json", activation_envelope=root/"control/activation.json",
  claimed_activation_envelope=root/"control/claimed.json", fixture_root=project/"synthetic-fixtures",
  runtime_executable=Path(sys.executable).resolve(), cwd=project,
+ source_checkout=Path(os.environ["CANARY_SOURCE_CHECKOUT"]),
+ wheel_artifact=Path(os.environ["CANARY_WHEEL_ARTIFACT"]),
 )
 token=provision_private_bearer_token(xdg_config_home=paths.xdg_config)
 receipt=bootstrap_fresh_canary_preflight(
  paths=paths, authorization_id="WIG-P3-CANARY-A1-R2-TEST", authorization_digest="a"*64,
  activation_lease_id=new_stable_id("activation_lease"), runtime_instance_nonce="n"*32,
- source_binding={"core_baseline_commit":"53d8939af22b019b2df2b555b85869ac39c5bba2","implementation_commit":"d"*40,"implementation_tree":"e"*40,"wheel_sha256":"f"*64},
+ source_binding=json.loads(os.environ["CANARY_SOURCE_BINDING"]),
  principal_binding={"principal_id":"r2-canary-operator","principal_kind":"human","session_ref":"r2-session","authenticated_by":"local_session","permissions":["work_item.accept","work_item.approve","work_item.cancel","work_item.ready","work_item.return_for_revision","work_item.start_delivery","work_item.submit"]},
  project_name="r2-canary", port=48789, token_provisioning=token,
 )
@@ -887,9 +914,12 @@ print(json.dumps({"result":receipt["result"],"schema":receipt["fresh_ledger"]["s
         "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "XDG_STATE_HOME": str(root / "xdg-state"),
         "XDG_CACHE_HOME": str(root / "xdg-cache"),
+        "CANARY_SOURCE_CHECKOUT": str(source_checkout),
+        "CANARY_WHEEL_ARTIFACT": str(wheel_artifact),
+        "CANARY_SOURCE_BINDING": json.dumps(source_binding, sort_keys=True),
         "PYTHONPATH": os.pathsep.join(
             (
-                str(Path(__file__).resolve().parents[1]),
+                str(source_checkout),
                 str(Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"),
             )
         ),
@@ -919,6 +949,10 @@ def test_failed_single_use_envelope_claim_is_never_reusable(tmp_path: Path) -> N
     shutil.copy2(Path(sys.executable).resolve(), runtime)
     project = root / "project"
     project.mkdir(parents=True)
+    source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
+        canary_root=root,
+        repository_root=Path(__file__).resolve().parents[1],
+    )
     script = r'''
 import base64, json, os, sys
 from datetime import timedelta
@@ -940,9 +974,11 @@ paths=FreshCanaryPaths(
  token_file=root/"xdg-config/colameta/auth.json", activation_envelope=root/"control/activation.json",
  claimed_activation_envelope=root/"control/claimed.json", fixture_root=project/"synthetic-fixtures",
  runtime_executable=Path(sys.executable).resolve(), cwd=project,
+ source_checkout=Path(os.environ["CANARY_SOURCE_CHECKOUT"]),
+ wheel_artifact=Path(os.environ["CANARY_WHEEL_ARTIFACT"]),
 )
 token=provision_private_bearer_token(xdg_config_home=paths.xdg_config); lease_id=new_stable_id("activation_lease")
-source={"core_baseline_commit":"53d8939af22b019b2df2b555b85869ac39c5bba2","implementation_commit":"d"*40,"implementation_tree":"e"*40,"wheel_sha256":"f"*64}
+source=json.loads(os.environ["CANARY_SOURCE_BINDING"])
 principal=all_permissions_principal(); binding={"principal_id":principal.principal_id,"principal_kind":principal.principal_kind,"session_ref":principal.session_ref,"authenticated_by":"local_session","permissions":sorted(principal.granted_permissions)}
 receipt=bootstrap_fresh_canary_preflight(paths=paths,authorization_id="WIG-P3-CANARY-A1-R2-TEST",authorization_digest="a"*64,activation_lease_id=lease_id,runtime_instance_nonce="n"*32,source_binding=source,principal_binding=binding,project_name="claim-test",port=48790,token_provisioning=token)
 fixture,_raw=make_fixture(project,principal); now=utc_now()
@@ -970,10 +1006,18 @@ with ledger.read_connection() as connection:
 revoke_private_bearer_token(auth_file=paths.token_file,canary_root=root)
 print(json.dumps({"codes":codes,"status":status,"source_exists":paths.activation_envelope.exists(),"claimed_exists":paths.claimed_activation_envelope.exists(),"token_binding_code":token_binding_code},sort_keys=True))
 '''
+    env = _isolated_subprocess_env(root, source_checkout=source_checkout)
+    env.update(
+        {
+            "CANARY_SOURCE_CHECKOUT": str(source_checkout),
+            "CANARY_WHEEL_ARTIFACT": str(wheel_artifact),
+            "CANARY_SOURCE_BINDING": json.dumps(source_binding, sort_keys=True),
+        }
+    )
     completed = subprocess.run(
         [str(runtime), "-c", script],
         cwd=project,
-        env=_isolated_subprocess_env(root),
+        env=env,
         check=False,
         text=True,
         capture_output=True,
@@ -1000,16 +1044,21 @@ def test_loopback_conformance_requires_token_and_exposes_exact_surface(tmp_path:
     shutil.copy2(Path(sys.executable).resolve(), runtime)
     project = root / "project"
     project.mkdir(parents=True)
+    source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
+        canary_root=root,
+        repository_root=Path(__file__).resolve().parents[1],
+    )
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
     script = r'''
-import os, sys
+import json, os, sys
 from datetime import timedelta
 from pathlib import Path
 from runner.work_item_canary_runtime import serve_prepared_authoritative_canary
 from runner.work_item_governance.activation import ActivationLeaseControlPlane
-from runner.work_item_governance.bootstrap import FreshCanaryPaths, bootstrap_fresh_canary_preflight, build_activation_envelope, provision_private_bearer_token, revoke_private_bearer_token
+from runner.work_item_governance.bootstrap import FreshCanaryPaths, bootstrap_fresh_canary_preflight, build_activation_envelope, provision_private_bearer_token
+from runner.work_item_governance.canonical import canonical_json
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
@@ -1023,12 +1072,17 @@ paths=FreshCanaryPaths(
  token_file=root/"xdg-config/colameta/auth.json", activation_envelope=root/"control/activation.json",
  claimed_activation_envelope=root/"control/claimed.json", fixture_root=project/"synthetic-fixtures",
  runtime_executable=Path(sys.executable).resolve(), cwd=project,
+ source_checkout=Path(os.environ["CANARY_SOURCE_CHECKOUT"]),
+ wheel_artifact=Path(os.environ["CANARY_WHEEL_ARTIFACT"]),
 )
 token=provision_private_bearer_token(xdg_config_home=paths.xdg_config); lease_id=new_stable_id("activation_lease")
-source={"core_baseline_commit":"53d8939af22b019b2df2b555b85869ac39c5bba2","implementation_commit":"d"*40,"implementation_tree":"e"*40,"wheel_sha256":"f"*64}
+source=json.loads(os.environ["CANARY_SOURCE_BINDING"])
 principal=all_permissions_principal(); principal_binding={"principal_id":principal.principal_id,"principal_kind":principal.principal_kind,"session_ref":principal.session_ref,"authenticated_by":"local_session","permissions":sorted(principal.granted_permissions)}
 receipt=bootstrap_fresh_canary_preflight(paths=paths,authorization_id="WIG-P3-CANARY-A1-R2-TEST",authorization_digest="a"*64,activation_lease_id=lease_id,runtime_instance_nonce="n"*32,source_binding=source,principal_binding=principal_binding,project_name="r2-canary",port=port,token_provisioning=token)
-fixture,_raw=make_fixture(project,principal); now=utc_now()
+(root/"evidence/preflight-receipt.json").write_text(canonical_json(receipt),encoding="utf-8")
+fixture,_raw=make_fixture(project,principal)
+(root/"evidence/synthetic-fixture.json").write_text(canonical_json(fixture),encoding="utf-8")
+now=utc_now()
 envelope=build_activation_envelope(preflight_receipt=receipt,synthetic_fixture=fixture,instance_id="r2-conformance",project_name="r2-canary",issued_at=isoformat_utc(now),not_before=isoformat_utc(now),expires_at=isoformat_utc(now+timedelta(seconds=1790)))
 ledger=SQLiteWorkItemLedger(project); control=ActivationLeaseControlPlane(ledger,canary_root=root)
 control.issue_prepared_lease(activation_envelope=envelope,synthetic_fixture=fixture,preflight_receipt=receipt,envelope_path=paths.activation_envelope)
@@ -1039,11 +1093,17 @@ os.environ["COLAMETA_WORK_ITEM_PERMISSIONS"]=" ".join(sorted(principal.granted_p
 serve_prepared_authoritative_canary(canary_root=root,project_root=project,lease_id=lease_id,activation_envelope_path=paths.activation_envelope,claimed_activation_envelope_path=paths.claimed_activation_envelope,port=port)
 control.close(lease_id=lease_id,reason="ephemeral_conformance_complete")
 evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"evidence/lease")
-revoke_private_bearer_token(auth_file=paths.token_file,canary_root=root)
 (root/"evidence/closed.ok").write_text(str(evidence["lease_event_chain_verified"]).lower(),encoding="utf-8")
 '''
-    env = _isolated_subprocess_env(root)
-    env.update({"CANARY_PORT": str(port)})
+    env = _isolated_subprocess_env(root, source_checkout=source_checkout)
+    env.update(
+        {
+            "CANARY_PORT": str(port),
+            "CANARY_SOURCE_CHECKOUT": str(source_checkout),
+            "CANARY_WHEEL_ARTIFACT": str(wheel_artifact),
+            "CANARY_SOURCE_BINDING": json.dumps(source_binding, sort_keys=True),
+        }
+    )
     process = subprocess.Popen(
         [str(runtime), "-c", script],
         cwd=project,
@@ -1144,6 +1204,38 @@ revoke_private_bearer_token(auth_file=paths.token_file,canary_root=root)
     assert process.returncode == 0, stderr
     assert (root / "evidence" / "closed.ok").read_text(encoding="utf-8") == "true"
     assert not (root / "xdg-config" / "colameta" / "auth.json").exists()
+    with socket.socket() as replacement_probe:
+        replacement_probe.bind(("127.0.0.1", 0))
+        replacement_port = int(replacement_probe.getsockname()[1])
+    replacement_token = "r3-replacement-token"
+    replacement_server = MCPPlanningBridgeServer(str(project))
+    replacement_thread = threading.Thread(
+        target=replacement_server.serve_http,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": replacement_port,
+            "auth_mode": "token",
+            "auth_token": replacement_token,
+        },
+        daemon=True,
+    )
+    replacement_thread.start()
+    try:
+        replacement_deadline = time.monotonic() + 5
+        while not hasattr(replacement_server, "_httpd"):
+            if not replacement_thread.is_alive() or time.monotonic() >= replacement_deadline:
+                raise AssertionError("replacement Token verifier failed to start")
+            time.sleep(0.01)
+        assert _http_jsonrpc_status(replacement_port, token, "tools/list") == 401
+        assert _http_jsonrpc_status(replacement_port, replacement_token, "tools/list") == 200
+        (root / "evidence" / "revoked-token-rejected.ok").write_text(
+            "true",
+            encoding="utf-8",
+        )
+    finally:
+        replacement_server._httpd.shutdown()
+        replacement_thread.join(timeout=5)
+        assert not replacement_thread.is_alive()
     with sqlite3.connect(root / "project" / ".colameta" / "ledger" / "work-items.sqlite3") as connection:
         assert connection.execute("SELECT status FROM activation_leases").fetchone()[0] == "closed"
 
@@ -1170,6 +1262,72 @@ def test_exported_lease_event_chain_is_independently_recomputed() -> None:
     assert "lease_event_digest:3" in violations
     assert "lease_event_chain:4" in violations
     assert "lease_event_root" in violations
+
+    events, snapshot, receipt = _closed_lease_event_chain()
+    events[3]["state_version_after"] = 99
+    violations = []
+    _verify_exported_event_chain(
+        events=events,
+        snapshot=snapshot,
+        lease_receipt=receipt,
+        violations=violations,
+    )
+    assert "lease_event_state_version_delta:4" in violations
+
+    events, snapshot, receipt = _closed_lease_event_chain()
+    events[3]["created_at"] = events[1]["created_at"]
+    violations = []
+    _verify_exported_event_chain(
+        events=events,
+        snapshot=snapshot,
+        lease_receipt=receipt,
+        violations=violations,
+    )
+    assert "lease_event_time_order:4" in violations
+
+
+def test_lease_event_timestamp_is_causally_clamped_when_wall_clock_steps_back(
+    tmp_path: Path,
+) -> None:
+    principal = all_permissions_principal()
+    fixture, _raw = make_fixture(tmp_path, principal)
+    service = install_active_lease(tmp_path, fixture, principal)
+    with service.ledger.read_connection() as connection:
+        lease_id = str(connection.execute("SELECT lease_id FROM activation_leases").fetchone()[0])
+        previous_created_at = str(
+            connection.execute(
+                "SELECT created_at FROM activation_lease_events "
+                "WHERE lease_id=? ORDER BY sequence DESC LIMIT 1",
+                (lease_id,),
+            ).fetchone()[0]
+        )
+    rollback_time = utc_now() - timedelta(days=1)
+    control = ActivationLeaseControlPlane(
+        service.ledger,
+        canary_root=tmp_path,
+        now=lambda: rollback_time,
+    )
+
+    control.freeze(lease_id=lease_id, reason="clock_rollback_test")
+    control.close(lease_id=lease_id, reason="clock_rollback_test")
+
+    with service.ledger.read_connection() as connection:
+        created_at = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT created_at FROM activation_lease_events "
+                "WHERE lease_id=? ORDER BY sequence",
+                (lease_id,),
+            ).fetchall()
+        ]
+        updated_at = str(
+            connection.execute(
+                "SELECT updated_at FROM activation_leases WHERE lease_id=?",
+                (lease_id,),
+            ).fetchone()[0]
+        )
+    assert created_at[-2:] == [previous_created_at, previous_created_at]
+    assert updated_at == previous_created_at
 
 
 @pytest.mark.parametrize(
@@ -1238,7 +1396,12 @@ def _decision(
     )["decision"]["decision_id"]
 
 
-def _isolated_subprocess_env(root: Path) -> dict[str, str]:
+def _isolated_subprocess_env(
+    root: Path,
+    *,
+    source_checkout: Path | None = None,
+) -> dict[str, str]:
+    source_root = source_checkout or Path(__file__).resolve().parents[1]
     return {
         **os.environ,
         "CANARY_ROOT": str(root),
@@ -1248,7 +1411,7 @@ def _isolated_subprocess_env(root: Path) -> dict[str, str]:
         "XDG_CACHE_HOME": str(root / "xdg-cache"),
         "PYTHONPATH": os.pathsep.join(
             (
-                str(Path(__file__).resolve().parents[1]),
+                str(source_root),
                 str(Path(__file__).resolve().parent),
                 str(Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"),
             )
@@ -1365,7 +1528,7 @@ def _closed_lease_event_chain() -> tuple[list[dict[str, object]], dict[str, obje
             "reason_code": reason,
             "previous_event_digest": previous,
             "event_digest_algorithm": "sha256(canonical_json(event_without_event_digest))",
-            "created_at": "2026-07-12T00:00:00Z",
+            "created_at": f"2026-07-12T00:00:0{sequence}Z",
         }
         event["event_digest"] = canonical_sha256(event)
         previous = str(event["event_digest"])
@@ -1377,5 +1540,11 @@ def _closed_lease_event_chain() -> tuple[list[dict[str, object]], dict[str, obje
         "final_status": "closed",
         "final_state_version": 4,
     }
-    snapshot = {"status": "closed", "state_version": 4, "usage": {"lease_events": 5}}
+    snapshot = {
+        "created_at": "2026-07-12T00:00:01Z",
+        "updated_at": "2026-07-12T00:00:05Z",
+        "status": "closed",
+        "state_version": 4,
+        "usage": {"lease_events": 5},
+    }
     return events, snapshot, receipt
