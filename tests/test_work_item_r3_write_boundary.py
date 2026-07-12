@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import pickle
 import sqlite3
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Iterator
 
 import pytest
 
@@ -55,6 +58,17 @@ def _mark_authoritative_canary(project: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+@contextmanager
+def _offline_control_table_mutation(
+    ledger: SQLiteWorkItemLedger,
+) -> Iterator[sqlite3.Connection]:
+    # Used only to synthesize persisted states that a production control-plane
+    # operation would not otherwise create.
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        yield connection
 
 
 def test_canary_marker_prevents_authoritative_composition_downgrade(tmp_path: Path) -> None:
@@ -128,6 +142,121 @@ def test_canary_marked_repository_raw_domain_write_is_default_deny(tmp_path: Pat
 
     assert exc_info.value.code == "ACTIVATION_REPOSITORY_WRITE_DENIED"
     assert not hasattr(ledger, "_activation_domain_write_capability")
+
+
+def test_direct_connect_is_read_only_and_rejects_unsealed_write_request(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+
+    connection = ledger._connect()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("DELETE FROM work_items")
+    finally:
+        connection.close()
+
+    with pytest.raises(WorkItemGovernanceError) as exc_info:
+        ledger._connect(readonly=False)
+    assert exc_info.value.code == "LEDGER_WRITABLE_CONNECTION_DENIED"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "DELETE FROM activation_leases",
+        "DELETE FROM activation_lease_events",
+    ),
+)
+def test_default_managed_transaction_cannot_mutate_activation_control_tables(
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    ledger.get_or_create_signing_key()
+    _mark_authoritative_canary(tmp_path)
+
+    with pytest.raises(WorkItemGovernanceError) as exc_info:
+        with ledger.write_transaction() as connection:
+            connection.execute(statement)
+
+    assert exc_info.value.code == "ACTIVATION_REPOSITORY_WRITE_DENIED"
+
+
+def test_activation_controllers_do_not_expose_generic_raw_control_scope(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    _mark_authoritative_canary(tmp_path)
+
+    control_plane = ActivationLeaseControlPlane(ledger, canary_root=tmp_path)
+    guard = AuthoritativeCanaryGuard(ledger)
+
+    assert not hasattr(control_plane, "_write_transaction")
+    assert not hasattr(guard, "_control_write_scope")
+
+
+def test_control_write_session_is_exact_noncopyable_and_nonserializable(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    ledger.get_or_create_signing_key()
+    _mark_authoritative_canary(tmp_path)
+    controller = ActivationLeaseControlPlane(ledger, canary_root=tmp_path)
+
+    with ledger.write_transaction() as connection:
+        session = ledger.authorize_activation_control_write(
+            connection,
+            controller=controller,
+            controller_binding=controller._ActivationLeaseControlPlane__repository_control_binding,
+        )
+        with pytest.raises(WorkItemGovernanceError) as forged:
+            ledger.finalize_activation_control_write(
+                connection,
+                session=SimpleNamespace(
+                    ledger=ledger,
+                    connection=connection,
+                    controller=controller,
+                ),
+            )
+        assert forged.value.code == "ACTIVATION_CONTROL_CAPABILITY_INVALID"
+        for operation in (
+            lambda: copy(session),
+            lambda: pickle.dumps(session),
+        ):
+            with pytest.raises(TypeError):
+                operation()
+        connection.execute("DELETE FROM activation_lease_events")
+        ledger.finalize_activation_control_write(connection, session=session)
+        assert ledger.activation_control_write_finalized(
+            connection,
+            session=session,
+        )
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            connection.execute("DELETE FROM activation_lease_events")
+
+
+def test_unfinalized_control_write_session_rolls_back(tmp_path: Path) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    ledger.get_or_create_signing_key()
+    _mark_authoritative_canary(tmp_path)
+    controller = ActivationLeaseControlPlane(ledger, canary_root=tmp_path)
+
+    with pytest.raises(WorkItemGovernanceError) as exc_info:
+        with ledger.write_transaction() as connection:
+            ledger.authorize_activation_control_write(
+                connection,
+                controller=controller,
+                controller_binding=controller._ActivationLeaseControlPlane__repository_control_binding,
+            )
+            connection.execute("DELETE FROM activation_lease_events")
+
+    assert exc_info.value.code == "ACTIVATION_CONTROL_WRITE_NOT_FINALIZED"
 
 
 def test_fake_repository_session_cannot_unlock_domain_writes(tmp_path: Path) -> None:
@@ -324,7 +453,7 @@ def test_every_live_lease_status_blocks_backup_and_export(
     principal = all_permissions_principal()
     fixture, _raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
-    with service.ledger.write_transaction() as connection:
+    with _offline_control_table_mutation(service.ledger) as connection:
         connection.execute("UPDATE activation_leases SET status=?", (lease_status,))
 
     for operation in (
@@ -375,7 +504,7 @@ def test_other_terminal_lease_statuses_allow_control_plane_maintenance(
     principal = all_permissions_principal()
     fixture, _raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
-    with service.ledger.write_transaction() as connection:
+    with _offline_control_table_mutation(service.ledger) as connection:
         connection.execute("UPDATE activation_leases SET status=?", (terminal_status,))
     maintenance = WorkItemApplicationService(
         tmp_path,
@@ -432,6 +561,119 @@ class WorkItemApplicationService:
         "rule": "application_write_transaction_unclassified",
         "path": "runner/work_item_governance/service.py",
         "import": "future_hidden_write",
+    } in result["violations"]
+
+
+@pytest.mark.parametrize(
+    "boundary_spoof",
+    (
+        """
+        if False:
+            self._assert_internal_activation_write_denied('future_hidden_write')
+""",
+        """
+        other._assert_internal_activation_write_denied('future_hidden_write')
+""",
+        """
+        def nested_spoof():
+            self._assert_internal_activation_write_denied('future_hidden_write')
+""",
+        """
+        nested_spoof = lambda: self._assert_internal_activation_write_denied('future_hidden_write')
+""",
+        """
+        pass
+""",
+    ),
+    ids=(
+        "dead-branch",
+        "wrong-receiver",
+        "nested-function",
+        "nested-lambda",
+        "boundary-after-write",
+    ),
+)
+def test_architecture_rejects_non_executable_or_misordered_write_boundary_spoofs(
+    tmp_path: Path,
+    boundary_spoof: str,
+) -> None:
+    core = tmp_path / "runner" / "work_item_governance"
+    core.mkdir(parents=True)
+    trailing_boundary = (
+        "        self._assert_internal_activation_write_denied('future_hidden_write')\n"
+        if boundary_spoof.strip() == "pass"
+        else ""
+    )
+    (core / "service.py").write_text(
+        "class WorkItemApplicationService:\n"
+        "    def future_hidden_write(self, other):\n"
+        f"{boundary_spoof}"
+        "        with self._write_transaction() as connection:\n"
+        "            connection.execute('DELETE FROM work_items')\n"
+        f"{trailing_boundary}",
+        encoding="utf-8",
+    )
+
+    result = check_work_item_architecture(tmp_path)
+
+    assert {
+        "rule": "application_write_transaction_unclassified",
+        "path": "runner/work_item_governance/service.py",
+        "import": "future_hidden_write",
+    } in result["violations"]
+
+
+def test_architecture_rejects_controlled_boundary_after_domain_write(
+    tmp_path: Path,
+) -> None:
+    core = tmp_path / "runner" / "work_item_governance"
+    core.mkdir(parents=True)
+    (core / "service.py").write_text(
+        """
+class WorkItemApplicationService:
+    def add_task_version(self):
+        with self._write_transaction() as connection:
+            connection.execute('INSERT INTO task_versions VALUES (1)')
+            self._activation_begin(connection)
+""",
+        encoding="utf-8",
+    )
+
+    result = check_work_item_architecture(tmp_path)
+
+    assert {
+        "rule": "application_write_transaction_unclassified",
+        "path": "runner/work_item_governance/service.py",
+        "import": "add_task_version",
+    } in result["violations"]
+
+
+def test_architecture_requires_real_control_plane_transaction_helper(
+    tmp_path: Path,
+) -> None:
+    core = tmp_path / "runner" / "work_item_governance"
+    core.mkdir(parents=True)
+    (core / "activation.py").write_text(
+        """
+class ActivationLeaseControlPlane:
+    def issue_prepared_lease(self, other):
+        def control_transaction():
+            with self.ledger.write_transaction() as connection:
+                other.authorize_activation_control_write(connection)
+                other.finalize_activation_control_write(connection)
+                yield connection
+        with control_transaction() as connection:
+            connection.execute('INSERT INTO activation_leases VALUES (1)')
+""",
+        encoding="utf-8",
+    )
+
+    result = check_work_item_architecture(tmp_path)
+
+    assert {
+        "rule": "activation_control_write_boundary_missing",
+        "path": "runner/work_item_governance/activation.py",
+        "import": "issue_prepared_lease",
     } in result["violations"]
 
 

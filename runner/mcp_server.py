@@ -96,11 +96,12 @@ from runner.workflow_records import WorkflowRecordStore
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.request_context import (
     AuthenticatedTokenRequestProof,
-    AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
-    token_request_proof_signature,
+    _AuthenticatedTokenListenerBoundary,
+    _bind_authenticated_token_listener,
 )
 from runner.work_item_governance.activation import (
     ActivationLeaseControlPlane,
+    process_tcp_listener_inventory,
     validate_authoritative_bearer_token,
     validate_runtime_policy_contracts,
 )
@@ -4689,8 +4690,7 @@ class MCPPlanningBridgeServer:
             f"colameta_token_listener_{id(self)}_{id(object())}",
             default=None,
         )
-        listener_instance_nonce = secrets.token_hex(32)
-        active_request_nonces: set[str] = set()
+        listener_proof_boundary: _AuthenticatedTokenListenerBoundary | None = None
         resolved_token_file_sha256 = auth_token_file_sha256 or hashlib.sha256(
             f"non-authoritative-token-file:{auth_token or ''}".encode("utf-8")
         ).hexdigest()
@@ -4707,38 +4707,18 @@ class MCPPlanningBridgeServer:
             proof = candidate
             if (
                 proof.lease_id != resolved_proof_lease_id
-                or proof.listener_instance_nonce != listener_instance_nonce
-                or proof.request_nonce not in active_request_nonces
                 or proof.token_file_sha256 != resolved_token_file_sha256
                 or proof.token_evidence_digest != resolved_token_evidence_digest
+                or listener_proof_boundary is None
+                or not listener_proof_boundary.is_active(proof)
             ):
                 return False
             return proof.verify_signature(auth_token or "")
 
         def _mint_listener_token_proof() -> AuthenticatedTokenRequestProof:
-            request_nonce = secrets.token_hex(32)
-            unsigned = {
-                "schema_version": AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
-                "mode": "token",
-                "lease_id": resolved_proof_lease_id,
-                "listener_instance_nonce": listener_instance_nonce,
-                "request_nonce": request_nonce,
-                "token_file_sha256": resolved_token_file_sha256,
-                "token_evidence_digest": resolved_token_evidence_digest,
-            }
-            return AuthenticatedTokenRequestProof(
-                mode="token",
-                lease_id=resolved_proof_lease_id,
-                listener_instance_nonce=listener_instance_nonce,
-                request_nonce=request_nonce,
-                token_file_sha256=resolved_token_file_sha256,
-                token_evidence_digest=resolved_token_evidence_digest,
-                signature=token_request_proof_signature(
-                    auth_token=auth_token or "",
-                    unsigned_record=unsigned,
-                ),
-                _active_validator=_validate_listener_token_proof,
-            )
+            if listener_proof_boundary is None:
+                raise PlanningBridgeError("Token listener proof boundary is unavailable.")
+            return listener_proof_boundary.issue()
 
         def _activate_listener_token_proof(candidate: object) -> None:
             if type(candidate) is not AuthenticatedTokenRequestProof:
@@ -4746,16 +4726,16 @@ class MCPPlanningBridgeServer:
             proof = candidate
             if (
                 proof.lease_id == resolved_proof_lease_id
-                and proof.listener_instance_nonce == listener_instance_nonce
                 and proof.token_file_sha256 == resolved_token_file_sha256
                 and proof.token_evidence_digest == resolved_token_evidence_digest
                 and proof.verify_signature(auth_token or "")
+                and listener_proof_boundary is not None
             ):
-                active_request_nonces.add(proof.request_nonce)
+                listener_proof_boundary.activate(proof)
 
         def _retire_listener_token_proof(candidate: object) -> None:
-            if type(candidate) is AuthenticatedTokenRequestProof:
-                active_request_nonces.discard(candidate.request_nonce)
+            if listener_proof_boundary is not None:
+                listener_proof_boundary.retire(candidate)
 
         rate_limiter = _MCPRateLimiter(
             global_per_minute=MCP_GLOBAL_RATE_LIMIT_PER_MINUTE,
@@ -5465,6 +5445,7 @@ class MCPPlanningBridgeServer:
                     reason="listener_bind_failed_after_claim",
                 )
             raise
+        self._httpd = httpd
         if authoritative_canary:
             if activation_control_plane is None or activation_lease_id is None:
                 httpd.server_close()
@@ -5476,7 +5457,7 @@ class MCPPlanningBridgeServer:
                     lease_id=activation_lease_id,
                     bind_address=host,
                     port=port,
-                    process_listener_count=1,
+                    observed_listeners=process_tcp_listener_inventory(),
                 )
                 active = True
             except Exception:
@@ -5491,17 +5472,26 @@ class MCPPlanningBridgeServer:
                         pass
                 raise
         installed_token_validator = False
-        if resolved_auth_mode == "token":
-            self._token_transport_proof_validator = _validate_listener_token_proof
-            installed_token_validator = True
-        self._httpd = httpd
         try:
+            if resolved_auth_mode == "token":
+                listener_proof_boundary = _bind_authenticated_token_listener(
+                    owner=self,
+                    httpd=httpd,
+                    auth_token=auth_token or "",
+                    lease_id=resolved_proof_lease_id,
+                    token_file_sha256=resolved_token_file_sha256,
+                    token_evidence_digest=resolved_token_evidence_digest,
+                )
+                self._token_transport_proof_validator = _validate_listener_token_proof
+                installed_token_validator = True
             httpd.serve_forever()
         except KeyboardInterrupt:
             self._log("MCP HTTP server interrupted")
         finally:
             httpd.shutdown()
             httpd.server_close()
+            if listener_proof_boundary is not None:
+                listener_proof_boundary.close()
             if (
                 installed_token_validator
                 and self._token_transport_proof_validator

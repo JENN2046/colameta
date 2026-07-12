@@ -27,6 +27,11 @@ class WorkItemCommandGateway:
         authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
         request_context: AuthoritativeCanaryRequestContext | None = None,
     ) -> None:
+        if authoritative_canary and request_context is not None:
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_CONTEXT_REUSE",
+                "Authoritative Canary request contexts must be minted inside one Gateway execution.",
+            )
         self.project_root = str(Path(project_root).expanduser().resolve())
         self.principal_context = principal_context
         self.authoritative_canary = authoritative_canary
@@ -41,20 +46,6 @@ class WorkItemCommandGateway:
         )
 
     def execute(self, name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        if (
-            self.authoritative_canary
-            and name != "get_work_item_governance_status"
-            and self.service.request_context is None
-        ):
-            if self.service.activation_guard is None:
-                raise WorkItemGovernanceError(
-                    "ACTIVATION_LEASE_REQUIRED",
-                    "Authoritative Canary commands require an Activation Lease guard.",
-                )
-            self.service.request_context = self.service.activation_guard.mint_request_context(
-                proof=self.authenticated_request_proof,
-                principal_context=self.principal_context,
-            )
         value = dict(params or {})
         handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "preview_work_item_create": self._preview_create,
@@ -97,12 +88,37 @@ class WorkItemCommandGateway:
         }
         handler = handlers.get(name)
         if handler is None:
+            if self.authoritative_canary:
+                self.authenticated_request_proof = None
             raise WorkItemGovernanceError(
                 "WORK_ITEM_COMMAND_UNSUPPORTED",
                 "Work Item application command is unsupported.",
                 details={"command": name, "supported": sorted(handlers)},
             )
-        return handler(value)
+        guard = self.service.activation_guard
+        try:
+            if self.authoritative_canary and name != "get_work_item_governance_status":
+                if guard is None:
+                    raise WorkItemGovernanceError(
+                        "ACTIVATION_LEASE_REQUIRED",
+                        "Authoritative Canary commands require an Activation Lease guard.",
+                    )
+                if self.service.request_context is not None:
+                    raise WorkItemGovernanceError(
+                        "AUTHENTICATED_REQUEST_CONTEXT_REUSE",
+                        "A cached Authoritative Canary request context cannot be reused.",
+                    )
+                self.service.request_context = guard.mint_request_context(
+                    proof=self.authenticated_request_proof,
+                    principal_context=self.principal_context,
+                )
+            return handler(value)
+        finally:
+            self.authenticated_request_proof = None
+            request_context = self.service.request_context
+            self.service.request_context = None
+            if guard is not None:
+                guard.retire_request_context(request_context)
 
     def execute_safe(self, name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         try:

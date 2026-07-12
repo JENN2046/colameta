@@ -4,10 +4,13 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from runner.runner_global_config import RunnerGlobalConfigStore
 from runner.work_item_governance.activation import (
@@ -41,6 +44,8 @@ def _active_test_token_proof(
     token_file_sha256: str,
     token_evidence_digest: str,
 ) -> AuthenticatedTokenRequestProof:
+    """Build a correctly signed but transport-inactive proof for unit isolation."""
+
     unsigned = {
         "schema_version": AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
         "mode": "token",
@@ -61,8 +66,23 @@ def _active_test_token_proof(
             auth_token=auth_token,
             unsigned_record=unsigned,
         ),
-        _active_validator=lambda _proof: True,
     )
+
+
+@contextmanager
+def simulated_active_transport_proof(proof: AuthenticatedTokenRequestProof):
+    """Limit transport simulation to tests of downstream Guard behavior.
+
+    Production has no general proof registry or minting hook; real transport
+    authentication is covered by the loopback HTTP integration tests.
+    """
+
+    with patch(
+        "runner.work_item_governance.request_context."
+        "_authenticated_token_request_proof_is_active",
+        side_effect=lambda candidate: candidate is proof,
+    ):
+        yield proof
 
 
 def all_permissions_principal() -> PrincipalContext:
@@ -614,7 +634,23 @@ def install_active_lease(
         "token_file_path_digest": canonical_path_digest(auth_file),
     }
     claim_ns = time.monotonic_ns()
-    with seed.ledger.write_transaction() as connection:
+    settings_path = project / ".colameta" / "settings.json"
+    settings_path.write_text(
+        canonical_json(
+            {
+                "work_item_governance": {
+                    "shadow_ledger_enabled": True,
+                    "gate_mode": "authoritative",
+                    "authoritative_canary": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Seed an on-disk fixture outside every production Application/Repository
+    # write path. Tests below then exercise the guarded runtime boundary.
+    with sqlite3.connect(seed.ledger.path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
         connection.executemany(
             "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
             (
@@ -710,15 +746,17 @@ def install_active_lease(
     )
     guard = service.activation_guard
     assert guard is not None
-    service.request_context = guard.mint_request_context(
-        proof=_active_test_token_proof(
-            auth_token=auth_token,
-            lease_id=lease_id,
-            token_file_sha256=token_file_evidence["token_sha256"],
-            token_evidence_digest=token_evidence_digest,
-        ),
-        principal_context=principal,
+    proof = _active_test_token_proof(
+        auth_token=auth_token,
+        lease_id=lease_id,
+        token_file_sha256=token_file_evidence["token_sha256"],
+        token_evidence_digest=token_evidence_digest,
     )
+    with simulated_active_transport_proof(proof):
+        service.request_context = guard.mint_request_context(
+            proof=proof,
+            principal_context=principal,
+        )
     return service
 
 

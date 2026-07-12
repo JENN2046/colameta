@@ -19,6 +19,7 @@ from runner.work_item_governance.activation import (
     business_fact_counts,
     canonical_path_digest,
     process_identity_inputs,
+    process_tcp_listener_inventory,
     read_authoritative_token_file,
     validate_runtime_policy_contracts,
     validate_synthetic_fixture_semantics,
@@ -347,6 +348,13 @@ def bootstrap_fresh_canary_preflight(
             "Preflight process executable digest does not match the runtime executable.",
         )
     relative = _relative_paths(paths)
+    preclaim_listeners = process_tcp_listener_inventory()
+    if preclaim_listeners:
+        raise WorkItemGovernanceError(
+            "PRECLAIM_LISTENER_PRESENT",
+            "Authoritative Canary Preflight requires a listener-free process.",
+            details={"listeners": preclaim_listeners},
+        )
     runtime_isolation = {
         "canary_root_path_digest": canonical_path_digest(root),
         "canary_root_resolved_path": root.as_posix(),
@@ -369,7 +377,7 @@ def bootstrap_fresh_canary_preflight(
         "registry_project_count": 1,
         "global_registry_selected": False,
         "global_registry_open": False,
-        "preclaim_listener_count": 0,
+        "preclaim_listener_count": len(preclaim_listeners),
         "intended_bind_address": "127.0.0.1",
         "intended_port": port,
         "public_endpoint_created": False,

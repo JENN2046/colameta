@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -13,15 +14,24 @@ import pytest
 
 import runner.work_item_governance.request_context as request_context_module
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.work_item_commands import WorkItemCommandGateway
 from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.principal import trusted_principal_context
 from runner.work_item_governance.request_context import (
     AuthenticatedTokenRequestProof,
+    token_request_proof_signature,
 )
 from runner.work_item_principal_adapter import (
     current_authenticated_token_request_proof,
     work_item_authenticated_request_scope,
 )
-from work_item_r2_helpers import all_permissions_principal, install_active_lease, make_fixture
+from work_item_r2_helpers import (
+    _active_test_token_proof,
+    all_permissions_principal,
+    install_active_lease,
+    make_fixture,
+    simulated_active_transport_proof,
+)
 
 
 def _free_loopback_port() -> int:
@@ -47,7 +57,6 @@ def _forged_proof() -> AuthenticatedTokenRequestProof:
         token_file_sha256="3" * 64,
         token_evidence_digest="4" * 64,
         signature="5" * 64,
-        _active_validator=lambda _proof: True,
     )
 
 
@@ -60,6 +69,10 @@ def test_plain_token_dict_and_forged_objects_cannot_mint_request_proof() -> None
         request_context_module,
         "_issue_authenticated_token_request_proof",
     )
+    assert not hasattr(
+        request_context_module,
+        "_AuthenticatedTokenRequestProofRegistry",
+    )
     with work_item_authenticated_request_scope({"mode": "token"}) as plain_dict_proof:
         assert plain_dict_proof is None
         assert current_authenticated_token_request_proof() is None
@@ -69,9 +82,42 @@ def test_plain_token_dict_and_forged_objects_cannot_mint_request_proof() -> None
         assert forged_proof is None
 
     forged_proof = _forged_proof()
+    object.__setattr__(forged_proof, "_issuer_seal", object())
+    object.__setattr__(forged_proof, "_active_validator", lambda _proof: True)
     assert forged_proof.trusted is False
-    assert forged_proof.active is True
+    assert forged_proof.active is False
     assert forged_proof.verify_signature("attacker-selected-token") is False
+    with pytest.raises(TypeError):
+        AuthenticatedTokenRequestProof(  # type: ignore[call-arg]
+            mode="token",
+            lease_id="lease_fake",
+            listener_instance_nonce="1" * 64,
+            request_nonce="2" * 64,
+            token_file_sha256="3" * 64,
+            token_evidence_digest="4" * 64,
+            signature="5" * 64,
+            _active_validator=lambda _proof: True,
+        )
+
+
+def test_lease_rejects_principal_with_different_authentication_method(
+    tmp_path: Path,
+) -> None:
+    principal = all_permissions_principal()
+    fixture, raw = make_fixture(tmp_path, principal)
+    service = install_active_lease(tmp_path, fixture, principal)
+    service.principal_context = trusted_principal_context(
+        principal_id=principal.principal_id,
+        principal_kind=principal.principal_kind,
+        authenticated_by="oauth",
+        granted_permissions=principal.granted_permissions,
+        session_ref=principal.session_ref,
+    )
+
+    with pytest.raises(WorkItemGovernanceError) as exc_info:
+        service.preview_work_item_create(raw["create"])
+
+    assert exc_info.value.code == "ACTIVATION_PRINCIPAL_MISMATCH"
 
 
 def test_agent_and_direct_python_token_dict_do_not_receive_transport_proof(tmp_path) -> None:
@@ -105,7 +151,7 @@ def test_agent_and_direct_python_token_dict_do_not_receive_transport_proof(tmp_p
     assert forged_result["error_code"] == "UNAUTHORIZED"
 
 
-def test_guard_rejects_forged_hmac_and_copied_request_context(tmp_path: Path) -> None:
+def test_guard_rejects_token_holder_forgery_and_copied_request_context(tmp_path: Path) -> None:
     principal = all_permissions_principal()
     fixture, raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
@@ -119,6 +165,17 @@ def test_guard_rejects_forged_hmac_and_copied_request_context(tmp_path: Path) ->
                 "SELECT key,value FROM ledger_meta WHERE key LIKE 'authoritative_canary_token_%'"
             ).fetchall()
         }
+    auth_file = Path(os.environ["XDG_CONFIG_HOME"]) / "colameta" / "auth.json"
+    auth_token = str(json.loads(auth_file.read_text(encoding="utf-8"))["auth_token"])
+    unsigned = {
+        "schema_version": "authenticated_token_request_proof.v2",
+        "mode": "token",
+        "lease_id": lease_id,
+        "listener_instance_nonce": "1" * 64,
+        "request_nonce": "2" * 64,
+        "token_file_sha256": bindings["authoritative_canary_token_file_sha256"],
+        "token_evidence_digest": bindings["authoritative_canary_token_evidence_digest"],
+    }
     forged = AuthenticatedTokenRequestProof(
         mode="token",
         lease_id=lease_id,
@@ -126,12 +183,16 @@ def test_guard_rejects_forged_hmac_and_copied_request_context(tmp_path: Path) ->
         request_nonce="2" * 64,
         token_file_sha256=bindings["authoritative_canary_token_file_sha256"],
         token_evidence_digest=bindings["authoritative_canary_token_evidence_digest"],
-        signature="5" * 64,
-        _active_validator=lambda _proof: True,
+        signature=token_request_proof_signature(
+            auth_token=auth_token,
+            unsigned_record=unsigned,
+        ),
     )
+    assert forged.verify_signature(auth_token) is True
+    assert forged.active is False
     with pytest.raises(WorkItemGovernanceError) as forged_error:
         guard.mint_request_context(proof=forged, principal_context=principal)
-    assert forged_error.value.code == "AUTHENTICATED_REQUEST_PROOF_INVALID"
+    assert forged_error.value.code == "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED"
 
     copied_context = replace(service.request_context)
     service.request_context = copied_context
@@ -140,6 +201,77 @@ def test_guard_rejects_forged_hmac_and_copied_request_context(tmp_path: Path) ->
     assert copied_error.value.code == "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED"
     with service.ledger.read_connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
+
+
+def test_guard_request_context_is_one_request_and_explicitly_retired(tmp_path: Path) -> None:
+    principal = all_permissions_principal()
+    fixture, _raw = make_fixture(tmp_path, principal)
+    service = install_active_lease(tmp_path, fixture, principal)
+    guard = service.activation_guard
+    request_context = service.request_context
+    assert guard is not None
+    assert request_context is not None
+    assert request_context.active is True
+    assert request_context.trusted is True
+
+    assert guard.retire_request_context(request_context) is True
+    assert guard.retire_request_context(request_context) is False
+    assert request_context.active is False
+    assert request_context.trusted is False
+    with pytest.raises(WorkItemGovernanceError) as retired_error:
+        service.preview_work_item_create(_raw["create"])
+    assert retired_error.value.code == "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED"
+
+
+def test_gateway_retires_context_and_never_reuses_consumed_proof(tmp_path: Path) -> None:
+    principal = all_permissions_principal()
+    fixture, raw = make_fixture(tmp_path, principal)
+    seed = install_active_lease(tmp_path, fixture, principal)
+    with seed.ledger.read_connection() as connection:
+        row = connection.execute("SELECT lease_id FROM activation_leases").fetchone()
+        bindings = {
+            str(item["key"]): str(item["value"])
+            for item in connection.execute(
+                "SELECT key,value FROM ledger_meta WHERE key LIKE 'authoritative_canary_token_%'"
+            ).fetchall()
+        }
+    auth_file = Path(os.environ["XDG_CONFIG_HOME"]) / "colameta" / "auth.json"
+    auth_token = str(json.loads(auth_file.read_text(encoding="utf-8"))["auth_token"])
+    proof = _active_test_token_proof(
+        auth_token=auth_token,
+        lease_id=str(row["lease_id"]),
+        token_file_sha256=bindings["authoritative_canary_token_file_sha256"],
+        token_evidence_digest=bindings["authoritative_canary_token_evidence_digest"],
+    )
+    gateway = WorkItemCommandGateway(
+        tmp_path,
+        authoritative_transitions=True,
+        principal_context=principal,
+        authoritative_canary=True,
+        authenticated_request_proof=proof,
+    )
+    guard = gateway.service.activation_guard
+    assert guard is not None
+    captured_contexts = []
+    original_mint = guard.mint_request_context
+
+    def capture_context(**kwargs):
+        context = original_mint(**kwargs)
+        captured_contexts.append(context)
+        return context
+
+    guard.mint_request_context = capture_context  # type: ignore[method-assign]
+    with simulated_active_transport_proof(proof):
+        preview = gateway.execute("preview_work_item_create", {"command": raw["create"]})
+    assert "preview" in preview
+    assert len(captured_contexts) == 1
+    assert captured_contexts[0].active is False
+    assert gateway.service.request_context is None
+    assert gateway.authenticated_request_proof is None
+
+    with pytest.raises(WorkItemGovernanceError) as replay_error:
+        gateway.execute("preview_work_item_create", {"command": raw["create"]})
+    assert replay_error.value.code == "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED"
 
 
 def test_real_http_bearer_verification_mints_trusted_transport_proof(tmp_path) -> None:

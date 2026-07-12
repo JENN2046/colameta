@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -159,6 +160,9 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 for boundary_call in (
                     "authorize_activation_domain_write",
                     "finalize_activation_domain_write",
+                    "authorize_activation_control_write",
+                    "finalize_activation_control_write",
+                    "_bind_activation_controller",
                 ):
                     if _calls_name(path, boundary_call):
                         violations.append(
@@ -168,6 +172,17 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                                 "import": boundary_call,
                             }
                         )
+            if relative != "runner/work_item_governance/repository.py" and _calls_name(
+                path,
+                "_connect",
+            ):
+                violations.append(
+                    {
+                        "rule": "activation_repository_raw_connection_bypass",
+                        "path": relative,
+                        "import": "_connect",
+                    }
+                )
             if (
                 path.is_relative_to(core_root)
                 or path in side_context_path_set
@@ -185,9 +200,18 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 )
     service_path = core_root / "service.py"
     if service_path.is_file():
-        service_calls = _method_calls(service_path)
-        for method, calls in service_calls.items():
-            if method != "_write_transaction" and "write_transaction" in calls:
+        service_methods = _class_method_analyses(
+            service_path,
+            class_name="WorkItemApplicationService",
+        )
+        for method, analysis in service_methods.items():
+            raw_transactions = [
+                call
+                for call in analysis.calls
+                if call.path[-1:] == ("write_transaction",)
+                and call.path != ("self", "_write_transaction")
+            ]
+            if method != "_write_transaction" and raw_transactions:
                 violations.append(
                     {
                         "rule": "application_write_bypasses_composition_guard",
@@ -195,17 +219,34 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                         "import": method,
                     }
                 )
-            if method == "_write_transaction" or "_write_transaction" not in calls:
+            transactions = analysis.transactions
+            if method == "_write_transaction" or not transactions:
                 continue
             if method in LEASE_CONTROLLED_WRITE_METHODS or method == "_apply_create":
-                required_boundary = "_activation_begin"
+                boundary_valid = _every_transaction_begins_with_exact_call(
+                    transactions,
+                    analysis.calls,
+                    ("self", "_activation_begin"),
+                )
             elif method in LEASE_DENIED_WRITE_METHODS:
-                required_boundary = "_deny_activation_command"
+                boundary_valid = _exact_call_precedes_every_transaction(
+                    transactions,
+                    analysis.calls,
+                    ("self", "_deny_activation_command"),
+                )
             elif method == "_deny_activation_command":
-                required_boundary = "deny_command"
+                boundary_valid = _every_transaction_begins_with_exact_call(
+                    transactions,
+                    analysis.calls,
+                    ("self", "activation_guard", "deny_command"),
+                )
             else:
-                required_boundary = "_assert_internal_activation_write_denied"
-            if required_boundary not in calls:
+                boundary_valid = _exact_call_precedes_every_transaction(
+                    transactions,
+                    analysis.calls,
+                    ("self", "_assert_internal_activation_write_denied"),
+                )
+            if not boundary_valid:
                 violations.append(
                     {
                         "rule": "application_write_transaction_unclassified",
@@ -214,8 +255,13 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                     }
                 )
         for method in LEASE_CONTROLLED_WRITE_METHODS:
-            required_call = "_apply_create" if method == "apply_work_item_create" else "_activation_begin"
-            if required_call not in service_calls.get(method, set()):
+            analysis = service_methods.get(method)
+            required_call = (
+                ("self", "_apply_create")
+                if method == "apply_work_item_create"
+                else ("self", "_activation_begin")
+            )
+            if analysis is None or not analysis.has_exact_call(required_call):
                 violations.append(
                     {
                         "rule": "activation_lease_write_path_missing",
@@ -223,7 +269,12 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                         "import": method,
                     }
                 )
-        if "_activation_begin" not in service_calls.get("_apply_create", set()):
+        apply_create = service_methods.get("_apply_create")
+        if apply_create is None or not _every_transaction_begins_with_exact_call(
+            apply_create.transactions,
+            apply_create.calls,
+            ("self", "_activation_begin"),
+        ):
             violations.append(
                 {
                     "rule": "activation_lease_create_transaction_missing",
@@ -231,8 +282,30 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                     "import": "_apply_create",
                 }
             )
+        if apply_create is None or not _exact_call_precedes_every_transaction(
+            apply_create.transactions,
+            apply_create.calls,
+            ("self", "_assert_internal_activation_write_denied"),
+        ):
+            violations.append(
+                {
+                    "rule": "activation_legacy_create_boundary_missing",
+                    "path": str(service_path.relative_to(root)),
+                    "import": "_apply_create",
+                }
+            )
+        for normalizer in ("_normalize_create_command", "_normalize_legacy_import_command"):
+            if apply_create is None or not apply_create.has_exact_call(("self", normalizer)):
+                violations.append(
+                    {
+                        "rule": "activation_create_operation_validation_missing",
+                        "path": str(service_path.relative_to(root)),
+                        "import": normalizer,
+                    }
+                )
         for method in LEASE_DENIED_WRITE_METHODS:
-            if "_deny_activation_command" not in service_calls.get(method, set()):
+            analysis = service_methods.get(method)
+            if analysis is None or not analysis.has_exact_call(("self", "_deny_activation_command")):
                 violations.append(
                     {
                         "rule": "activation_denied_write_path_missing",
@@ -242,8 +315,14 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 )
     activation_path = core_root / "activation.py"
     if activation_path.is_file():
-        activation_calls = _method_calls(activation_path)
-        if "authorize_activation_domain_write" not in activation_calls.get("begin_write", set()):
+        guard_methods = _class_method_analyses(
+            activation_path,
+            class_name="AuthoritativeCanaryGuard",
+        )
+        begin_write = guard_methods.get("begin_write")
+        if begin_write is None or not begin_write.has_exact_call(
+            ("self", "ledger", "authorize_activation_domain_write")
+        ):
             violations.append(
                 {
                     "rule": "activation_repository_unlock_missing",
@@ -252,10 +331,49 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                 }
             )
         for method in ("_authorize_replay", "_commit_new"):
-            if "finalize_activation_domain_write" not in activation_calls.get(method, set()):
+            analysis = guard_methods.get(method)
+            if analysis is None or not analysis.has_exact_call(
+                ("self", "ledger", "finalize_activation_domain_write")
+            ):
                 violations.append(
                     {
                         "rule": "activation_repository_relock_missing",
+                        "path": str(activation_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+        for method in ("begin_write", "deny_command"):
+            analysis = guard_methods.get(method)
+            if analysis is None or not _ordered_exact_calls(
+                analysis,
+                ("self", "ledger", "authorize_activation_control_write"),
+                ("self", "ledger", "finalize_activation_control_write"),
+            ):
+                violations.append(
+                    {
+                        "rule": "activation_control_write_boundary_missing",
+                        "path": str(activation_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+        control_plane_methods = _class_method_nodes(
+            activation_path,
+            class_name="ActivationLeaseControlPlane",
+        )
+        for method in (
+            "issue_prepared_lease",
+            "claim_prepared_lease",
+            "attest_listener",
+            "freeze",
+            "close",
+            "revoke",
+        ):
+            if not _control_plane_method_has_guarded_transaction(
+                control_plane_methods.get(method)
+            ):
+                violations.append(
+                    {
+                        "rule": "activation_control_write_boundary_missing",
                         "path": str(activation_path.relative_to(root)),
                         "import": method,
                     }
@@ -322,24 +440,330 @@ def _direct_write_boundary_import(path: Path) -> str | None:
     return None
 
 
-def _method_calls(path: Path) -> dict[str, set[str]]:
+@dataclass(frozen=True)
+class _CallSite:
+    path: tuple[str, ...]
+    lineno: int
+    col_offset: int
+    transaction_stack: tuple[int, ...]
+    context_manager: bool
+
+    @property
+    def position(self) -> tuple[int, int]:
+        return self.lineno, self.col_offset
+
+
+@dataclass(frozen=True)
+class _TransactionSite:
+    identity: int
+    lineno: int
+    col_offset: int
+
+    @property
+    def position(self) -> tuple[int, int]:
+        return self.lineno, self.col_offset
+
+
+@dataclass(frozen=True)
+class _MethodAnalysis:
+    calls: tuple[_CallSite, ...]
+    transactions: tuple[_TransactionSite, ...]
+
+    def exact_calls(self, path: tuple[str, ...]) -> tuple[_CallSite, ...]:
+        return tuple(call for call in self.calls if call.path == path)
+
+    def has_exact_call(self, path: tuple[str, ...]) -> bool:
+        return bool(self.exact_calls(path))
+
+
+class _ExecutableCallScanner(ast.NodeVisitor):
+    """Collect live call sites without accepting nested/dead-code spoofs.
+
+    This is deliberately a small control-flow-aware scanner rather than an
+    ``ast.walk`` query.  A nested function or lambda is not executed by the
+    containing Application Service method, and a statically false branch
+    cannot provide its write boundary.  Each ``self._write_transaction()``
+    context receives an identity so a boundary in another transaction cannot
+    satisfy the one being classified.
+    """
+
+    def __init__(
+        self,
+        *,
+        transaction_path: tuple[str, ...] = ("self", "_write_transaction"),
+    ) -> None:
+        self.calls: list[_CallSite] = []
+        self.transactions: list[_TransactionSite] = []
+        self._transaction_path = transaction_path
+        self._transaction_stack: list[int] = []
+        self._context_manager = False
+        self._next_transaction_identity = 1
+
+    def scan(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _MethodAnalysis:
+        self._visit_statements(node.body)
+        return _MethodAnalysis(tuple(self.calls), tuple(self.transactions))
+
+    def _visit_statements(self, statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            self.visit(statement)
+            if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                break
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        path = _call_path(node.func)
+        if path is not None:
+            self.calls.append(
+                _CallSite(
+                    path=path,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    transaction_stack=tuple(self._transaction_stack),
+                    context_manager=self._context_manager,
+                )
+            )
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:  # noqa: N802
+        self.visit(node.test)
+        truth = _static_truth(node.test)
+        if truth is True:
+            self._visit_statements(node.body)
+        elif truth is False:
+            self._visit_statements(node.orelse)
+        else:
+            self._visit_statements(node.body)
+            self._visit_statements(node.orelse)
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:  # noqa: N802
+        self.visit(node.test)
+        truth = _static_truth(node.test)
+        if truth is True:
+            self.visit(node.body)
+        elif truth is False:
+            self.visit(node.orelse)
+        else:
+            self.visit(node.body)
+            self.visit(node.orelse)
+
+    def visit_While(self, node: ast.While) -> None:  # noqa: N802
+        self.visit(node.test)
+        truth = _static_truth(node.test)
+        if truth is not False:
+            self._visit_statements(node.body)
+        self._visit_statements(node.orelse)
+
+    def visit_For(self, node: ast.For) -> None:  # noqa: N802
+        self.visit(node.iter)
+        self._visit_statements(node.body)
+        self._visit_statements(node.orelse)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+        self.visit(node.iter)
+        self._visit_statements(node.body)
+        self._visit_statements(node.orelse)
+
+    def visit_Try(self, node: ast.Try) -> None:  # noqa: N802
+        self._visit_statements(node.body)
+        for handler in node.handlers:
+            if handler.type is not None:
+                self.visit(handler.type)
+            self._visit_statements(handler.body)
+        self._visit_statements(node.orelse)
+        self._visit_statements(node.finalbody)
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:  # noqa: N802
+        self.visit_Try(node)
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+        self._visit_with(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        transaction_identity: int | None = None
+        for item in node.items:
+            previous = self._context_manager
+            self._context_manager = True
+            try:
+                self.visit(item.context_expr)
+            finally:
+                self._context_manager = previous
+            if _is_exact_call(item.context_expr, self._transaction_path):
+                if transaction_identity is None:
+                    transaction_identity = self._next_transaction_identity
+                    self._next_transaction_identity += 1
+                    self.transactions.append(
+                        _TransactionSite(
+                            identity=transaction_identity,
+                            lineno=item.context_expr.lineno,
+                            col_offset=item.context_expr.col_offset,
+                        )
+                    )
+        if transaction_identity is not None:
+            self._transaction_stack.append(transaction_identity)
+        try:
+            self._visit_statements(node.body)
+        finally:
+            if transaction_identity is not None:
+                self._transaction_stack.pop()
+
+
+def _static_truth(node: ast.AST) -> bool | None:
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            operand = _static_truth(node.operand)
+            return None if operand is None else not operand
+        return None
+    return bool(value)
+
+
+def _call_path(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        prefix = _call_path(node.value)
+        if prefix is not None:
+            return (*prefix, node.attr)
+    return None
+
+
+def _is_exact_call(node: ast.AST, path: tuple[str, ...]) -> bool:
+    return isinstance(node, ast.Call) and _call_path(node.func) == path
+
+
+def _class_method_nodes(
+    path: Path,
+    *,
+    class_name: str,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError):
         return {}
-    result: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        calls: set[str] = set()
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call):
-                if isinstance(child.func, ast.Attribute):
-                    calls.add(child.func.attr)
-                elif isinstance(child.func, ast.Name):
-                    calls.add(child.func.id)
-        result[node.name] = calls
-    return result
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                child.name: child
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    return {}
+
+
+def _class_method_analyses(path: Path, *, class_name: str) -> dict[str, _MethodAnalysis]:
+    return {
+        name: _ExecutableCallScanner().scan(node)
+        for name, node in _class_method_nodes(path, class_name=class_name).items()
+    }
+
+
+def _every_transaction_begins_with_exact_call(
+    transactions: tuple[_TransactionSite, ...],
+    calls: tuple[_CallSite, ...],
+    path: tuple[str, ...],
+) -> bool:
+    if not transactions:
+        return False
+    for transaction in transactions:
+        transaction_calls = sorted(
+            (
+                call
+                for call in calls
+                if transaction.identity in call.transaction_stack
+            ),
+            key=lambda call: call.position,
+        )
+        if not transaction_calls or transaction_calls[0].path != path:
+            return False
+    return True
+
+
+def _exact_call_precedes_every_transaction(
+    transactions: tuple[_TransactionSite, ...],
+    calls: tuple[_CallSite, ...],
+    path: tuple[str, ...],
+) -> bool:
+    return bool(transactions) and all(
+        any(
+            call.path == path
+            and not call.transaction_stack
+            and call.position < transaction.position
+            for call in calls
+        )
+        for transaction in transactions
+    )
+
+
+def _ordered_exact_calls(
+    analysis: _MethodAnalysis,
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+) -> bool:
+    return any(
+        earlier.position < later.position
+        for earlier in analysis.exact_calls(first)
+        for later in analysis.exact_calls(second)
+    )
+
+
+def _control_plane_method_has_guarded_transaction(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> bool:
+    if method is None:
+        return False
+    helper = next(
+        (
+            statement
+            for statement in method.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.name == "control_transaction"
+        ),
+        None,
+    )
+    if helper is None:
+        return False
+    outer = _ExecutableCallScanner().scan(method)
+    if not any(
+        call.path == ("control_transaction",) and call.context_manager
+        for call in outer.calls
+    ):
+        return False
+    guarded = _ExecutableCallScanner(
+        transaction_path=("self", "ledger", "write_transaction"),
+    ).scan(helper)
+    authorize_path = ("self", "ledger", "authorize_activation_control_write")
+    finalize_path = ("self", "ledger", "finalize_activation_control_write")
+    if not _every_transaction_begins_with_exact_call(
+        guarded.transactions,
+        guarded.calls,
+        authorize_path,
+    ):
+        return False
+    return all(
+        any(
+            transaction.identity in authorize.transaction_stack
+            and transaction.identity in finalize.transaction_stack
+            and authorize.position < finalize.position
+            for authorize in guarded.exact_calls(authorize_path)
+            for finalize in guarded.exact_calls(finalize_path)
+        )
+        for transaction in guarded.transactions
+    )
 
 
 def _calls_name(path: Path, name: str) -> bool:

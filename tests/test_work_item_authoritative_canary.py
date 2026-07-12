@@ -45,7 +45,9 @@ from runner.work_item_governance.preview import utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 from runner.work_item_governance.repository import MIGRATIONS
 from runner.work_item_governance.service import WorkItemApplicationService
+from runner.work_item_governance.settings import load_work_item_governance_settings
 from runtime_artifact_helpers import prepare_exact_runtime_artifacts
+from scripts.work_item_r3_closeout import assemble_runtime_evidence
 from work_item_r2_helpers import (
     all_permissions_principal,
     install_active_lease,
@@ -314,7 +316,7 @@ def test_transactional_lease_executes_revision_lifecycle_and_exact_replay(tmp_pa
         assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 20
 
 
-def test_concurrent_first_create_binds_only_one_work_item(tmp_path: Path) -> None:
+def test_concurrent_exact_create_replay_is_idempotent(tmp_path: Path) -> None:
     principal = all_permissions_principal()
     fixture, raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
@@ -333,6 +335,88 @@ def test_concurrent_first_create_binds_only_one_work_item(tmp_path: Path) -> Non
         assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 4
 
 
+def test_concurrent_first_create_binds_only_one_work_item(tmp_path: Path) -> None:
+    principal = all_permissions_principal()
+    fixture, raw = make_fixture(tmp_path, principal)
+    service = install_active_lease(tmp_path, fixture, principal)
+    first_command = service._normalize_create_command(raw["create"], imported=False)
+    second_input = json.loads(json.dumps(raw["create"]))
+    second_input["origin"]["ref"] = (
+        "synthetic://WIG-P3-AUTH-CANARY-A1-R2/concurrent-second"
+    )
+    second_input["origin"]["snapshot_digest"] = "9" * 64
+    second_input["task"]["objective_ref"] = (
+        "synthetic://WIG-P3-AUTH-CANARY-A1-R2/objective/concurrent-second"
+    )
+    second_input["idempotency_key"] = "r2:create:concurrent-second"
+    second_command = service._normalize_create_command(second_input, imported=False)
+    first_preview = service.previews.issue(
+        "work_item_create",
+        first_command,
+        generated_ids={"work_item_id": new_stable_id("work_item")},
+    )
+    second_preview = service.previews.issue(
+        "work_item_create",
+        second_command,
+        generated_ids={"work_item_id": new_stable_id("work_item")},
+    )
+    assert first_preview["generated_ids"] != second_preview["generated_ids"]
+
+    competing_fixture = json.loads(json.dumps(fixture))
+    second_slot = json.loads(json.dumps(competing_fixture["command_slots"][0]))
+    second_slot.update(
+        {
+            "sequence": 2,
+            "normalized_command": second_command,
+            "normalized_command_digest": canonical_sha256(second_command),
+            "idempotency_binding_digest": canonical_sha256(
+                {
+                    "command_name": "apply_work_item_create",
+                    "source_event_key": second_command["idempotency_key"],
+                }
+            ),
+        }
+    )
+    competing_fixture["command_slots"].insert(1, second_slot)
+    for sequence, slot in enumerate(competing_fixture["command_slots"], 1):
+        slot["sequence"] = sequence
+    with sqlite3.connect(service.ledger.path) as connection:
+        connection.execute(
+            "UPDATE activation_leases SET fixture_json=?",
+            (canonical_json(competing_fixture),),
+        )
+
+    first_holds_transaction = threading.Event()
+    release_first = threading.Event()
+    original_begin = service._activation_begin
+
+    def ordered_begin(*args, **kwargs):
+        session = original_begin(*args, **kwargs)
+        if kwargs.get("source_event_key") == first_command["idempotency_key"]:
+            first_holds_transaction.set()
+            assert release_first.wait(timeout=5)
+        return session
+
+    service._activation_begin = ordered_begin  # type: ignore[method-assign]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.apply_work_item_create, first_preview)
+        assert first_holds_transaction.wait(timeout=5)
+        second = pool.submit(service.apply_work_item_create, second_preview)
+        time.sleep(0.1)
+        assert not second.done()
+        release_first.set()
+        first_result = first.result()
+        with pytest.raises(WorkItemGovernanceError) as second_error:
+            second.result()
+
+    assert first_result["created"] is True
+    assert second_error.value.code == "ACTIVATION_WORK_ITEM_ALREADY_BOUND"
+    with service.ledger.read_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 1
+        assert connection.execute("SELECT status FROM activation_leases").fetchone()[0] == "write_frozen"
+        assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 5
+
+
 def test_denied_command_freezes_lease_without_domain_fact(tmp_path: Path) -> None:
     principal = all_permissions_principal()
     fixture, _raw = make_fixture(tmp_path, principal)
@@ -345,11 +429,13 @@ def test_denied_command_freezes_lease_without_domain_fact(tmp_path: Path) -> Non
         assert row["status"] == "write_frozen"
         assert connection.execute("SELECT COUNT(*) FROM blocker_events").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 4
-    with pytest.raises(sqlite3.IntegrityError):
-        with service.ledger.write_transaction() as connection:
+    # Exercise the database-level append-only trigger with an offline raw
+    # connection.  The Repository API is tested separately and rejects this
+    # write before SQLite reaches the trigger.
+    with sqlite3.connect(service.ledger.path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
             connection.execute("UPDATE activation_lease_events SET reason_code='tampered'")
-    with pytest.raises(sqlite3.IntegrityError):
-        with service.ledger.write_transaction() as connection:
+        with pytest.raises(sqlite3.IntegrityError):
             connection.execute("DELETE FROM activation_lease_events")
 
 
@@ -411,7 +497,9 @@ def test_expired_lease_is_persistently_terminal_on_write(tmp_path: Path) -> None
     fixture, raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
     preview = service.preview_work_item_create(raw["create"])["preview"]
-    with service.ledger.write_transaction() as connection:
+    # Simulate an already-expired persisted Lease without exercising a
+    # production Application or Repository write path.
+    with sqlite3.connect(service.ledger.path) as connection:
         connection.execute(
             """
             UPDATE activation_leases
@@ -432,7 +520,7 @@ def test_monotonic_deadline_expires_without_watchdog(tmp_path: Path) -> None:
     fixture, raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
     preview = service.preview_work_item_create(raw["create"])["preview"]
-    with service.ledger.write_transaction() as connection:
+    with sqlite3.connect(service.ledger.path) as connection:
         connection.execute(
             "UPDATE activation_leases SET monotonic_deadline_ns=monotonic_claim_ns+1"
         )
@@ -446,9 +534,9 @@ def test_monotonic_deadline_expires_without_watchdog(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "assignment",
-        (
-            "monotonic_deadline_ns=NULL",
-            "monotonic_claim_ns=0",
+    (
+        "monotonic_deadline_ns=NULL",
+        "monotonic_claim_ns=0",
         "monotonic_deadline_ns=monotonic_claim_ns",
         "monotonic_deadline_ns=monotonic_claim_ns+1800000000001",
     ),
@@ -461,7 +549,7 @@ def test_invalid_monotonic_deadline_freezes_authoritative_writes(
     fixture, raw = make_fixture(tmp_path, principal)
     service = install_active_lease(tmp_path, fixture, principal)
     preview = service.preview_work_item_create(raw["create"])["preview"]
-    with service.ledger.write_transaction() as connection:
+    with sqlite3.connect(service.ledger.path) as connection:
         connection.execute(f"UPDATE activation_leases SET {assignment}")
     with pytest.raises(WorkItemGovernanceError) as exc_info:
         service.apply_work_item_create(preview)
@@ -539,6 +627,7 @@ from runner.work_item_governance.request_context import (
     AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,
     token_request_proof_signature,
 )
+from unittest.mock import patch
 from runner.runner_global_config import RunnerGlobalConfigStore
 import json, os
 principal=trusted_principal_context(principal_id="r2-canary-operator",principal_kind="human",authenticated_by="local_session",granted_permissions={"work_item.ready","work_item.start_delivery","work_item.submit","work_item.accept","work_item.cancel","work_item.return_for_revision","work_item.approve"},session_ref="r2-session")
@@ -549,12 +638,13 @@ with ledger.read_connection() as connection:
 auth=RunnerGlobalConfigStore(config_dir=str(Path(os.environ["XDG_CONFIG_HOME"])/"colameta")).load_auth(include_secret=True)
 token=str(auth["auth"]["auth_token"]); lease_id=str(row["lease_id"])
 unsigned={"schema_version":AUTHENTICATED_REQUEST_PROOF_SCHEMA_VERSION,"mode":"token","lease_id":lease_id,"listener_instance_nonce":"6"*64,"request_nonce":"7"*64,"token_file_sha256":bindings["authoritative_canary_token_file_sha256"],"token_evidence_digest":bindings["authoritative_canary_token_evidence_digest"]}
-proof=AuthenticatedTokenRequestProof(mode="token",lease_id=lease_id,listener_instance_nonce="6"*64,request_nonce="7"*64,token_file_sha256=unsigned["token_file_sha256"],token_evidence_digest=unsigned["token_evidence_digest"],signature=token_request_proof_signature(auth_token=token,unsigned_record=unsigned),_active_validator=lambda _proof: True)
-try:
- AuthoritativeCanaryGuard(ledger).mint_request_context(proof=proof,principal_context=principal)
-except WorkItemGovernanceError as exc:
- print(exc.code)
- raise SystemExit(0 if exc.code == "ACTIVATION_PROCESS_RESTARTED" else 2)
+proof=AuthenticatedTokenRequestProof(mode="token",lease_id=lease_id,listener_instance_nonce="6"*64,request_nonce="7"*64,token_file_sha256=unsigned["token_file_sha256"],token_evidence_digest=unsigned["token_evidence_digest"],signature=token_request_proof_signature(auth_token=token,unsigned_record=unsigned))
+with patch("runner.work_item_governance.request_context._authenticated_token_request_proof_is_active",side_effect=lambda candidate:candidate is proof):
+ try:
+  AuthoritativeCanaryGuard(ledger).mint_request_context(proof=proof,principal_context=principal)
+ except WorkItemGovernanceError as exc:
+  print(exc.code)
+  raise SystemExit(0 if exc.code == "ACTIVATION_PROCESS_RESTARTED" else 2)
 raise SystemExit(3)
 '''
     completed = subprocess.run(
@@ -914,6 +1004,7 @@ print(json.dumps({"result":receipt["result"],"schema":receipt["fresh_ledger"]["s
         "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "XDG_STATE_HOME": str(root / "xdg-state"),
         "XDG_CACHE_HOME": str(root / "xdg-cache"),
+        "PYTHONDONTWRITEBYTECODE": "1",
         "CANARY_SOURCE_CHECKOUT": str(source_checkout),
         "CANARY_WHEEL_ARTIFACT": str(wheel_artifact),
         "CANARY_SOURCE_BINDING": json.dumps(source_binding, sort_keys=True),
@@ -957,7 +1048,7 @@ def test_failed_single_use_envelope_claim_is_never_reusable(tmp_path: Path) -> N
 import base64, json, os, sys
 from datetime import timedelta
 from pathlib import Path
-from runner.work_item_governance.activation import ActivationLeaseControlPlane
+from runner.work_item_governance.activation import ActivationLeaseControlPlane, business_fact_counts
 from runner.work_item_governance.bootstrap import FreshCanaryPaths, bootstrap_fresh_canary_preflight, build_activation_envelope, provision_private_bearer_token, revoke_private_bearer_token
 from runner.work_item_governance.canonical import canonical_json
 from runner.work_item_governance.errors import WorkItemGovernanceError
@@ -1056,7 +1147,7 @@ import json, os, sys
 from datetime import timedelta
 from pathlib import Path
 from runner.work_item_canary_runtime import serve_prepared_authoritative_canary
-from runner.work_item_governance.activation import ActivationLeaseControlPlane
+from runner.work_item_governance.activation import ActivationLeaseControlPlane, business_fact_counts
 from runner.work_item_governance.bootstrap import FreshCanaryPaths, bootstrap_fresh_canary_preflight, build_activation_envelope, provision_private_bearer_token
 from runner.work_item_governance.canonical import canonical_json
 from runner.work_item_governance.ids import new_stable_id
@@ -1082,6 +1173,7 @@ receipt=bootstrap_fresh_canary_preflight(paths=paths,authorization_id="WIG-P3-CA
 (root/"evidence/preflight-receipt.json").write_text(canonical_json(receipt),encoding="utf-8")
 fixture,_raw=make_fixture(project,principal)
 (root/"evidence/synthetic-fixture.json").write_text(canonical_json(fixture),encoding="utf-8")
+(root/"evidence/synthetic-commands.json").write_text(canonical_json(_raw),encoding="utf-8")
 now=utc_now()
 envelope=build_activation_envelope(preflight_receipt=receipt,synthetic_fixture=fixture,instance_id="r2-conformance",project_name="r2-canary",issued_at=isoformat_utc(now),not_before=isoformat_utc(now),expires_at=isoformat_utc(now+timedelta(seconds=1790)))
 ledger=SQLiteWorkItemLedger(project); control=ActivationLeaseControlPlane(ledger,canary_root=root)
@@ -1093,6 +1185,14 @@ os.environ["COLAMETA_WORK_ITEM_PERMISSIONS"]=" ".join(sorted(principal.granted_p
 serve_prepared_authoritative_canary(canary_root=root,project_root=project,lease_id=lease_id,activation_envelope_path=paths.activation_envelope,claimed_activation_envelope_path=paths.claimed_activation_envelope,port=port)
 control.close(lease_id=lease_id,reason="ephemeral_conformance_complete")
 evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"evidence/lease")
+(root/"evidence/claimed-activation-envelope.json").write_bytes(paths.claimed_activation_envelope.read_bytes())
+with ledger.read_connection() as connection:
+ closeout_counts=business_fact_counts(connection)
+ attempt_event_count=int(connection.execute("SELECT COUNT(*) FROM attempt_events").fetchone()[0])
+ external_association_count=int(connection.execute("SELECT COUNT(*) FROM external_associations").fetchone()[0])
+ final_row=connection.execute("SELECT lease_id,status,state_version,usage_json FROM activation_leases WHERE lease_id=?",(lease_id,)).fetchone()
+ledger_closeout={"schema_version":"work_item_r3_ephemeral_ledger_closeout.v1","ledger_schema_version":ledger.schema_version(),"database_generation":ledger.database_generation(),"business_fact_counts":closeout_counts,"attempt_event_count":attempt_event_count,"external_association_count":external_association_count,"integrity_check":ledger.integrity_check()["integrity_check"][0],"foreign_key_violations":ledger.integrity_check()["foreign_key_violations"],"activation_lease":{"lease_id":str(final_row["lease_id"]),"status":str(final_row["status"]),"state_version":int(final_row["state_version"]),"usage":json.loads(str(final_row["usage_json"]))},"ledger_bytes_in_sanitized_bundle":False}
+(root/"evidence/ephemeral-ledger-closeout.json").write_text(canonical_json(ledger_closeout),encoding="utf-8")
 (root/"evidence/closed.ok").write_text(str(evidence["lease_event_chain_verified"]).lower(),encoding="utf-8")
 '''
     env = _isolated_subprocess_env(root, source_checkout=source_checkout)
@@ -1129,12 +1229,20 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
         else:
             pytest.fail("conformance process did not become ready")
         token = json.loads(auth_file.read_text(encoding="utf-8"))["auth_token"]
-        assert _process_tcp_listeners(process.pid) == [("127.0.0.1", port)]
-        assert _http_jsonrpc_status(port, None, "tools/list") == 401
-        assert _http_jsonrpc_status(port, "wrong-token", "tools/list") == 401
-        status, listed = _http_jsonrpc(port, token, "tools/list")
-        assert status == 200
-        assert tuple(item["name"] for item in listed["result"]["tools"]) == AUTHORITATIVE_CANARY_TOOLS
+        listener_inventory = _process_tcp_listeners(process.pid)
+        assert listener_inventory == [("127.0.0.1", port)]
+        no_token_http_status = _http_jsonrpc_status(port, None, "tools/list")
+        wrong_token_http_status = _http_jsonrpc_status(
+            port,
+            "wrong-token",
+            "tools/list",
+        )
+        assert no_token_http_status == 401
+        assert wrong_token_http_status == 401
+        correct_token_http_status, listed = _http_jsonrpc(port, token, "tools/list")
+        assert correct_token_http_status == 200
+        tool_names = tuple(item["name"] for item in listed["result"]["tools"])
+        assert tool_names == AUTHORITATIVE_CANARY_TOOLS
         _, status_call = _http_jsonrpc(
             port,
             token,
@@ -1144,6 +1252,261 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
         assert status_call["result"]["isError"] is False, status_call
         assert status_call["result"]["structuredContent"]["data"]["authoritative_canary"] is True
         assert status_call["result"]["structuredContent"]["data"]["gate_mode"] == "authoritative"
+
+        synthetic = json.loads(
+            (root / "evidence" / "synthetic-commands.json").read_text(encoding="utf-8")
+        )
+
+        def work_item_call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+            response_status, response = _http_jsonrpc(
+                port,
+                token,
+                "tools/call",
+                {"name": name, "arguments": arguments},
+            )
+            assert response_status == 200
+            assert response["result"]["isError"] is False, response
+            return response["result"]["structuredContent"]["data"]
+
+        def gate(
+            *,
+            work_item_id: str,
+            task_version: int,
+            target_state: str,
+            expected_state_version: int,
+            key: str,
+            decision_ids: list[str] | None = None,
+            artifact_ids: list[str] | None = None,
+        ) -> dict[str, object]:
+            preview_result = work_item_call(
+                "preview_work_item_transition",
+                {
+                    "command": {
+                        "work_item_id": work_item_id,
+                        "task_version": task_version,
+                        "target_state": target_state,
+                        "expected_state_version": expected_state_version,
+                        "decision_ids": decision_ids or [],
+                        "evidence_artifact_ids": artifact_ids or [],
+                        "idempotency_key": key,
+                    }
+                },
+            )
+            return work_item_call(
+                "apply_work_item_transition",
+                {"preview": preview_result["preview"]},
+            )
+
+        def decision(
+            *,
+            work_item_id: str,
+            task_version: int,
+            action: str,
+            evidence_ids: list[str],
+            reason: str,
+            key: str,
+        ) -> str:
+            result = work_item_call(
+                "record_review_decision",
+                {
+                    "command": {
+                        "work_item_id": work_item_id,
+                        "task_version": task_version,
+                        "action": action,
+                        "evidence_artifact_ids": evidence_ids,
+                        "reason": reason,
+                        "supersedes_decision_id": None,
+                        "source_event_key": key,
+                    }
+                },
+            )
+            return str(result["decision"]["decision_id"])
+
+        create_preview = work_item_call(
+            "preview_work_item_create",
+            {"command": synthetic["create"]},
+        )["preview"]
+        created = work_item_call(
+            "apply_work_item_create",
+            {"preview": create_preview},
+        )
+        work_item_id = str(created["work_item"]["work_item_id"])
+        replay = work_item_call(
+            "apply_work_item_create",
+            {"preview": create_preview},
+        )
+        assert replay["idempotent_replay"] is True
+        gate(
+            work_item_id=work_item_id,
+            task_version=1,
+            target_state="ready",
+            expected_state_version=0,
+            key="r2:gate:1",
+        )
+        gate(
+            work_item_id=work_item_id,
+            task_version=1,
+            target_state="in_delivery",
+            expected_state_version=1,
+            key="r2:gate:2",
+        )
+        attempt_one = str(
+            work_item_call(
+                "create_execution_attempt",
+                {
+                    "command": {
+                        "work_item_id": work_item_id,
+                        "task_version": 1,
+                        "status": "claimed",
+                        "objective_ref": (
+                            "synthetic://WIG-P3-AUTH-CANARY-A1-R2/objective/v1"
+                        ),
+                        "metadata": {},
+                        "external_refs": [],
+                        "source_event_key": "r2:attempt:1",
+                    }
+                },
+            )["attempt"]["attempt_id"]
+        )
+        work_item_call(
+            "complete_execution_attempt",
+            {
+                "command": {
+                    "attempt_id": attempt_one,
+                    "status": "completed",
+                    "source_event_key": "r2:complete:1",
+                    "metadata": {},
+                    "artifacts": [],
+                }
+            },
+        )
+        artifact_one_command = dict(synthetic["artifact_one"])
+        artifact_one_command.pop("artifact_id", None)
+        artifact_one_command.update(
+            {"work_item_id": work_item_id, "attempt_id": attempt_one}
+        )
+        artifact_one = str(
+            work_item_call(
+                "register_artifact_reference",
+                {"command": artifact_one_command},
+            )["artifact"]["artifact_id"]
+        )
+        decision_one = decision(
+            work_item_id=work_item_id,
+            task_version=1,
+            action="submit",
+            evidence_ids=[artifact_one],
+            reason="submit v1",
+            key="r2:decision:1",
+        )
+        gate(
+            work_item_id=work_item_id,
+            task_version=1,
+            target_state="submitted",
+            expected_state_version=2,
+            key="r2:gate:3",
+            decision_ids=[decision_one],
+            artifact_ids=[artifact_one],
+        )
+        decision_two = decision(
+            work_item_id=work_item_id,
+            task_version=1,
+            action="request_changes",
+            evidence_ids=[],
+            reason="revise",
+            key="r2:decision:2",
+        )
+        returned = gate(
+            work_item_id=work_item_id,
+            task_version=1,
+            target_state="in_delivery",
+            expected_state_version=3,
+            key="r2:gate:4",
+            decision_ids=[decision_two],
+        )
+        assert returned["gate_event"]["transition_result"] == "returned_for_revision"
+        work_item_call(
+            "add_task_version",
+            {
+                "command": {
+                    "work_item_id": work_item_id,
+                    "task_version": 2,
+                    "task": synthetic["task_two"],
+                    "source_event_key": "r2:task:2",
+                }
+            },
+        )
+        attempt_two = str(
+            work_item_call(
+                "create_execution_attempt",
+                {
+                    "command": {
+                        "work_item_id": work_item_id,
+                        "task_version": 2,
+                        "status": "claimed",
+                        "objective_ref": (
+                            "synthetic://WIG-P3-AUTH-CANARY-A1-R2/objective/v2"
+                        ),
+                        "metadata": {},
+                        "external_refs": [],
+                        "source_event_key": "r2:attempt:2",
+                    }
+                },
+            )["attempt"]["attempt_id"]
+        )
+        artifact_two_command = dict(synthetic["artifact_two"])
+        artifact_two_command.pop("artifact_id", None)
+        artifact_two_command.update(
+            {"work_item_id": work_item_id, "attempt_id": attempt_two}
+        )
+        completed = work_item_call(
+            "complete_execution_attempt",
+            {
+                "command": {
+                    "attempt_id": attempt_two,
+                    "status": "completed",
+                    "source_event_key": "r2:complete:2",
+                    "metadata": {},
+                    "artifacts": [artifact_two_command],
+                }
+            },
+        )
+        artifact_two = str(completed["artifacts"][0]["artifact_id"])
+        decision_three = decision(
+            work_item_id=work_item_id,
+            task_version=2,
+            action="submit",
+            evidence_ids=[artifact_two],
+            reason="submit v2",
+            key="r2:decision:3",
+        )
+        gate(
+            work_item_id=work_item_id,
+            task_version=2,
+            target_state="submitted",
+            expected_state_version=5,
+            key="r2:gate:5",
+            decision_ids=[decision_three],
+            artifact_ids=[artifact_two],
+        )
+        decision_four = decision(
+            work_item_id=work_item_id,
+            task_version=2,
+            action="accept",
+            evidence_ids=[artifact_two],
+            reason="accept v2",
+            key="r2:decision:4",
+        )
+        accepted = gate(
+            work_item_id=work_item_id,
+            task_version=2,
+            target_state="accepted",
+            expected_state_version=6,
+            key="r2:gate:6",
+            decision_ids=[decision_four],
+            artifact_ids=[artifact_two],
+        )
+        assert accepted["work_item"]["state"] == "accepted"
         _, hidden = _http_jsonrpc(
             port,
             token,
@@ -1152,6 +1515,17 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
         )
         assert hidden["result"]["isError"] is True
         assert "denied by the active server exposure profile" in hidden["result"]["content"][0]["text"]
+        _, agent_dispatch = _http_jsonrpc(
+            port,
+            token,
+            "tools/call",
+            {"name": "manage_stage_parallel_executor_runs", "arguments": {}},
+        )
+        assert agent_dispatch["result"]["isError"] is True
+        assert (
+            "denied by the active server exposure profile"
+            in agent_dispatch["result"]["content"][0]["text"]
+        )
         _, direct = _http_jsonrpc(port, token, "get_work_item", {})
         assert direct["error"]["data"]["error_code"] == "direct_tool_method_disabled"
         request = urllib.request.Request(
@@ -1162,12 +1536,15 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request, timeout=2)
-        assert exc_info.value.code == 404
+        actions_http_status = exc_info.value.code
+        assert actions_http_status == 404
         with sqlite3.connect(
             root / "project" / ".colameta" / "ledger" / "work-items.sqlite3"
         ) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
-            assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 3
+            assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM task_versions").fetchone()[0] == 2
+            assert connection.execute("SELECT COUNT(*) FROM acceptance_manifests").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM activation_lease_events").fetchone()[0] == 20
         _, guard_failure = _http_jsonrpc(
             port,
             token,
@@ -1207,6 +1584,24 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
     with socket.socket() as replacement_probe:
         replacement_probe.bind(("127.0.0.1", 0))
         replacement_port = int(replacement_probe.getsockname()[1])
+    settings_path = project / ".colameta" / "settings.json"
+    shadow_settings = settings_path.with_suffix(".shadow.tmp")
+    shadow_settings.write_text(
+        canonical_json(
+            {
+                "work_item_governance": {
+                    "shadow_ledger_enabled": True,
+                    "gate_mode": "shadow",
+                    "authoritative_canary": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.replace(shadow_settings, settings_path)
+    shadow_configuration = load_work_item_governance_settings(project)
+    assert shadow_configuration.gate_mode == "shadow"
+    assert shadow_configuration.authoritative_canary is False
     replacement_token = "r3-replacement-token"
     replacement_server = MCPPlanningBridgeServer(str(project))
     replacement_thread = threading.Thread(
@@ -1226,8 +1621,18 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
             if not replacement_thread.is_alive() or time.monotonic() >= replacement_deadline:
                 raise AssertionError("replacement Token verifier failed to start")
             time.sleep(0.01)
-        assert _http_jsonrpc_status(replacement_port, token, "tools/list") == 401
-        assert _http_jsonrpc_status(replacement_port, replacement_token, "tools/list") == 200
+        revoked_token_http_status = _http_jsonrpc_status(
+            replacement_port,
+            token,
+            "tools/list",
+        )
+        replacement_token_http_status = _http_jsonrpc_status(
+            replacement_port,
+            replacement_token,
+            "tools/list",
+        )
+        assert revoked_token_http_status == 401
+        assert replacement_token_http_status == 200
         (root / "evidence" / "revoked-token-rejected.ok").write_text(
             "true",
             encoding="utf-8",
@@ -1237,7 +1642,109 @@ evidence=control.export_closeout_evidence(lease_id=lease_id,destination=root/"ev
         replacement_thread.join(timeout=5)
         assert not replacement_thread.is_alive()
     with sqlite3.connect(root / "project" / ".colameta" / "ledger" / "work-items.sqlite3") as connection:
-        assert connection.execute("SELECT status FROM activation_leases").fetchone()[0] == "closed"
+        final_lease_status = connection.execute(
+            "SELECT status FROM activation_leases"
+        ).fetchone()[0]
+        assert final_lease_status == "closed"
+    observations = {
+        "schema_version": "work_item_r3_runtime_observations.v1",
+        "pass": True,
+        "bind_address": "127.0.0.1",
+        "port": port,
+        "process_pid": process.pid,
+        "listener": {
+            "inventory": [list(item) for item in listener_inventory],
+            "process_listener_count": len(listener_inventory),
+            "public_endpoint_created": False,
+            "relay_enabled": False,
+            "tunnel_enabled": False,
+            "proxy_enabled": False,
+        },
+        "authentication": {
+            "no_token_http_status": no_token_http_status,
+            "wrong_token_http_status": wrong_token_http_status,
+            "correct_token_http_status": correct_token_http_status,
+            "revoked_token_http_status": revoked_token_http_status,
+            "replacement_token_http_status": replacement_token_http_status,
+            "token_file_present_after": auth_file.exists(),
+        },
+        "tool_names": list(tool_names),
+        "restricted_surface": {
+            "definition_dispatch_exact_match": tool_names
+            == AUTHORITATIVE_CANARY_TOOLS,
+            "hidden_jsonrpc_call_rejected": hidden["result"]["isError"] is True,
+            "direct_alias_rejected": direct["error"]["data"]["error_code"]
+            == "direct_tool_method_disabled",
+            "actions_disabled": actions_http_status == 404,
+            "agent_dispatch_enforced": agent_dispatch["result"]["isError"] is True,
+        },
+        "lifecycle": {
+            "accepted_state_observed": accepted["work_item"]["state"] == "accepted",
+            "guard_failure_observed": guard_failure["result"]["isError"] is True,
+            "lease_final_status": final_lease_status,
+            "shadow_recovery_verified": shadow_configuration.gate_mode == "shadow"
+            and shadow_configuration.authoritative_canary is False,
+        },
+        "safety": {
+            "existing_canary_restarted": False,
+            "a1_snapshot_refreshed": False,
+            "authoritative_activation_performed": False,
+            "isolated_conformance_harness_used": True,
+            "deployed_canary_activation_performed": False,
+            "existing_service_modified": False,
+            "stable_runtime_modified": False,
+            "real_work_item_used": False,
+            "push_performed": False,
+            "stable_promotion_performed": False,
+        },
+        "existing_d1_canary_modified": False,
+        "existing_service_modified": False,
+        "authoritative_activation_outside_ephemeral_test": False,
+        "secret_material_included": False,
+    }
+    (root / "evidence" / "runtime-observations.json").write_text(
+        canonical_json(observations),
+        encoding="utf-8",
+    )
+    assembled = tmp_path / "assembled-review"
+    command_path = assembled / "evidence/commands/runtime-isolation-smoke-command.json"
+    command_path.parent.mkdir(parents=True)
+    command_path.write_text(
+        canonical_json(
+            {
+                "schema_version": "work_item_closeout_command_evidence.v2",
+                "name": "runtime_isolation_smoke",
+                "passed": True,
+                "exit_code": 0,
+                "source_before": {
+                    "candidate_clean": True,
+                    "commit": source_binding["implementation_commit"],
+                    "tree": source_binding["implementation_tree"],
+                },
+                "source_after": {
+                    "candidate_clean": True,
+                    "commit": source_binding["implementation_commit"],
+                    "tree": source_binding["implementation_tree"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        assemble_runtime_evidence(
+            runtime_root=root,
+            bundle_root=assembled,
+            runtime_command_evidence=command_path,
+        )
+        == 0
+    )
+    assembled_runtime = _load_strict_json(
+        assembled / "evidence/runtime-isolation-evidence.json"
+    )
+    assert assembled_runtime["source"] == source_binding
+    assert assembled_runtime["observations_sha256"] == canonical_sha256(observations)
+    assert not (assembled / "evidence/pre-activation.sqlite3").exists()
+    assert not (assembled / "project/.colameta/ledger/work-items.sqlite3").exists()
 
 
 def test_exported_lease_event_chain_is_independently_recomputed() -> None:
@@ -1546,5 +2053,15 @@ def _closed_lease_event_chain() -> tuple[list[dict[str, object]], dict[str, obje
         "status": "closed",
         "state_version": 4,
         "usage": {"lease_events": 5},
+        "runtime_binding": {
+            "claimed_process_identity": identity,
+            "listener_attestation_digest": listener,
+            "authenticated_request_context_binding_digest": request_context,
+        },
+        "principal_binding": {
+            "principal_id": "test-principal",
+            "principal_kind": "human",
+            "session_ref": "test-session",
+        },
     }
     return events, snapshot, receipt

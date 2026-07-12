@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
+import stat
 import subprocess
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 import runner.work_item_governance.closeout as closeout
+from runner.work_item_governance.canonical import canonical_sha256, sha256_file
 
 
 def test_closeout_loads_critical_runtime_modules_before_source_attestation() -> None:
@@ -27,6 +32,208 @@ def _git_binding(project_root: Path) -> tuple[str, str]:
         text=True,
     ).stdout.splitlines()
     return output[0], output[1]
+
+
+def _command_provenance(
+    project_root: Path,
+    argv: list[str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    commit, tree = _git_binding(project_root)
+    protected = [
+        "AGENTS - 副本.amd",
+        "AGENTS - 副本.md:Zone.Identifier",
+        "AGENTS.md",
+        "AGENTS.md:Zone.Identifier",
+    ]
+    state = {
+        "repository_root": project_root.as_posix(),
+        "requested_checkout_root": project_root.as_posix(),
+        "commit": commit,
+        "tree": tree,
+        "candidate_clean": True,
+        "tracked_changes": [],
+        "staged_changes": [],
+        "untracked_changes": [],
+        "allowed_protected_asset_changes": protected,
+        "assume_unchanged_paths": [],
+        "skip_worktree_paths": [],
+        "ignored_execution_overlays": [],
+        "untracked_execution_overlays": [],
+        "object_mismatches": [],
+        "git_object_manifest_digest": "a" * 64,
+        "git_object_format": "sha1",
+        "git_executable": {
+            "resolved_path": "/usr/bin/git",
+            "sha256": "b" * 64,
+            "owner_uid": 0,
+            "mode": "0755",
+            "root_owned": True,
+            "group_or_other_writable": False,
+        },
+        "inspection_errors": [],
+    }
+    executable = Path(argv[0]).resolve()
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    launcher = Path(argv[0]).absolute()
+    launcher_target = os.readlink(launcher) if launcher.is_symlink() else None
+    toolchain = {
+        "environment_root_sha256": "c" * 64,
+        "fixed_files": [
+            {
+                "path": "bin/python",
+                "sha256": digest,
+                "symlink_target": launcher_target,
+            }
+        ],
+        "wrappers": [],
+    }
+    bootstrap_launcher = project_root / "scripts" / "work_item_r3_trusted_launcher.py"
+    system_python = Path("/usr/bin/python3.12")
+    python_resolved = system_python.resolve()
+    python_metadata = python_resolved.stat()
+    preimport_git = closeout._trusted_git_for_checkout(project_root)
+    preimport_source_state = closeout._inspect_git_checkout(
+        project_root,
+        git=preimport_git,
+        pathspecs=(),
+        excluded_paths=frozenset(
+            {
+                "AGENTS.md",
+                "AGENTS - 副本.amd",
+                "AGENTS - 副本.md:Zone.Identifier",
+                "AGENTS.md:Zone.Identifier",
+            }
+        ),
+    )
+    try:
+        launcher_blob_oid = preimport_git.run(
+            project_root,
+            "rev-parse",
+            "HEAD:scripts/work_item_r3_trusted_launcher.py",
+        ).strip()
+    except Exception:
+        launcher_blob_oid = "0" * 40
+    attestation: dict[str, object] = {
+        "schema_version": "work_item_r3_preimport_attestation.v1",
+        "accepted": True,
+        "project_root": project_root.as_posix(),
+        "launcher_execution_source": "trusted_git_blob_stdin",
+        "launcher_relative_path": "scripts/work_item_r3_trusted_launcher.py",
+        "launcher_blob_oid": launcher_blob_oid,
+        "launcher_sha256": sha256_file(bootstrap_launcher),
+        "python_executable": {
+            "requested_path": system_python.as_posix(),
+            "resolved_path": python_resolved.as_posix(),
+            "proc_self_exe": python_resolved.as_posix(),
+            "sha256": sha256_file(python_resolved),
+            "owner_uid": 0,
+            "mode": f"{stat.S_IMODE(python_metadata.st_mode):04o}",
+            "root_owned": True,
+            "group_or_other_writable": False,
+        },
+        "python_flags": {
+            "isolated": True,
+            "no_site": True,
+            "dont_write_bytecode": True,
+            "safe_path": True,
+        },
+        "startup_authority_environment": [],
+        "source": {
+            "commit": commit,
+            "tree": tree,
+            "git_object_format": preimport_source_state["object_format"],
+            "tracked_path_count": preimport_source_state["tracked_path_count"],
+            "tracked_manifest_sha256": preimport_source_state["manifest_digest"],
+            "git_executable_sha256": sha256_file(Path("/usr/bin/git")),
+            "launcher_blob_oid": launcher_blob_oid,
+            "launcher_blob_sha256": sha256_file(bootstrap_launcher),
+        },
+        "environment": {
+            "entry_count": closeout._PREIMPORT_ENVIRONMENT_ENTRY_COUNT,
+            "environment_tree_sha256": closeout._PREIMPORT_ENVIRONMENT_TREE_SHA256,
+        },
+    }
+    attestation["attestation_sha256"] = canonical_sha256(attestation)
+    payload = {
+        "schema_version": "work_item_closeout_command_evidence.v2",
+        "process_exit_code": 0,
+        "monotonic_duration_ns": 1_000_000_000,
+        "wall_clock_rollback_clamped": False,
+        "source_before": state,
+        "source_after": state,
+        "source_binding_match": True,
+        "executable": {
+            "requested": argv[0],
+            "launcher_path": launcher.as_posix(),
+            "launcher_sha256": digest,
+            "launcher_sha256_after": digest,
+            "launcher_symlink_target": launcher_target,
+            "launcher_symlink_target_after": launcher_target,
+            "resolved_path": executable.as_posix(),
+            "resolved_sha256": digest,
+            "resolved_sha256_after": digest,
+            "unchanged": True,
+        },
+        "toolchain": {
+            "before": toolchain,
+            "after": toolchain,
+            "error_before": None,
+            "error_after": None,
+            "unchanged": True,
+        },
+        "environment_policy": {
+            "removed_keys": {
+                key: False
+                for key in (
+                    "PYTEST_ADDOPTS",
+                    "PYTEST_PLUGINS",
+                    "PYTHONPATH",
+                    "PYTHONSTARTUP",
+                    "PYTHONINSPECT",
+                    "COVERAGE_PROCESS_START",
+                )
+            },
+            "forced_values": {
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                "PYTHONHASHSEED": "0",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            "authority_removed_keys": [],
+            "authority_prefixes": [
+                "BANDIT_",
+                "COVERAGE_",
+                "COV_CORE_",
+                "DISTUTILS_",
+                "DYLD_",
+                "GIT_",
+                "LD_",
+                "PIP_",
+                "PYTEST_",
+                "PYTHON",
+                "RUFF_",
+                "SETUPTOOLS_",
+            ],
+            "executable_path": (
+                f"{(project_root / '.venv' / 'bin').resolve().as_posix()}:/bin:/usr/bin"
+            ),
+            "pip_config_file": "/dev/null",
+            "git_authority_environment_scrubbed": True,
+            "loader_authority_environment_scrubbed": True,
+            "trusted_launcher_child": False,
+            "trusted_launcher_removed_keys": [],
+        },
+        "preimport_attestation": attestation,
+    }
+    receipt = {
+        "source_binding": {
+            "implementation_commit": commit,
+            "implementation_tree": tree,
+        },
+        "protected_user_assets": {
+            "assets": [{"path": path} for path in protected]
+        },
+    }
+    return payload, receipt
 
 
 def _receipt(project_root: Path, wheel_sha256: str) -> dict[str, object]:
@@ -275,14 +482,17 @@ def test_closeout_rejects_non_wheel_artifact_even_when_hashes_agree(tmp_path: Pa
 
 
 def test_closeout_rejects_true_command_masquerading_as_full_pytest(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    argv = [str(Path("/usr/bin/true").resolve())]
+    provenance, receipt = _command_provenance(project_root, argv)
     evidence = tmp_path / "full-pytest.json"
     evidence.write_text(
         json.dumps(
-            {
-                "schema_version": "work_item_closeout_command_evidence.v1",
+                {
+                    **provenance,
                 "name": "full_pytest",
-                "argv": ["true"],
-                "cwd": tmp_path.as_posix(),
+                    "argv": argv,
+                    "cwd": project_root.as_posix(),
                 "started_at": "2026-07-12T00:00:00Z",
                 "ended_at": "2026-07-12T00:00:01Z",
                 "exit_code": 0,
@@ -295,7 +505,7 @@ def test_closeout_rejects_true_command_masquerading_as_full_pytest(tmp_path: Pat
     )
     receipt_item = {
         "name": "full_pytest",
-        "command": "true",
+        "command": argv[0],
         "started_at": "2026-07-12T00:00:00Z",
         "ended_at": "2026-07-12T00:00:01Z",
         "exit_code": 0,
@@ -306,32 +516,53 @@ def test_closeout_rejects_true_command_masquerading_as_full_pytest(tmp_path: Pat
     closeout._verify_command_evidence(
         receipt_item,
         evidence,
-        project_root=tmp_path,
+        receipt=receipt,
+        project_root=project_root,
+        expected_git_binding=provenance["source_before"]["git_executable"],
+        expected_git_state={"manifest_digest": "a" * 64, "object_format": "sha1"},
+        expected_toolchain={"environment_root_sha256": "c" * 64},
         violations=violations,
     )
 
-    assert violations == ["command_contract:full_pytest"]
+    assert "command_contract:full_pytest" in violations
 
 
 def test_closeout_accepts_bound_pytest_completed_process_record(tmp_path: Path) -> None:
-    argv = ["python3", "-m", "pytest", "-q"]
+    project_root = Path(__file__).resolve().parents[1]
+    exact = closeout._inspect_git_checkout(
+        project_root,
+        git=closeout._trusted_git_for_checkout(project_root),
+        pathspecs=(),
+        excluded_paths=frozenset(
+            {
+                "AGENTS.md",
+                "AGENTS - 副本.amd",
+                "AGENTS - 副本.md:Zone.Identifier",
+                "AGENTS.md:Zone.Identifier",
+            }
+        ),
+    )
+    if exact["object_mismatches"]:
+        pytest.skip("positive exact-attestation assertion requires the committed candidate")
+    argv = [str(project_root / ".venv/bin/python"), "-m", "pytest", "-q"]
+    provenance, receipt = _command_provenance(project_root, argv)
     evidence = tmp_path / "full-pytest.json"
     payload = {
-        "schema_version": "work_item_closeout_command_evidence.v1",
+        **provenance,
         "name": "full_pytest",
         "argv": argv,
-        "cwd": tmp_path.as_posix(),
+        "cwd": project_root.as_posix(),
         "started_at": "2026-07-12T00:00:00Z",
         "ended_at": "2026-07-12T00:00:01Z",
         "exit_code": 0,
         "passed": True,
-        "stdout": "1132 passed in 88.37s",
+        "stdout": "1280 passed in 180.00s",
         "stderr": "",
     }
     evidence.write_text(json.dumps(payload), encoding="utf-8")
     receipt_item = {
         "name": "full_pytest",
-        "command": "python3 -m pytest -q",
+        "command": " ".join(argv),
         "started_at": payload["started_at"],
         "ended_at": payload["ended_at"],
         "exit_code": 0,
@@ -342,7 +573,11 @@ def test_closeout_accepts_bound_pytest_completed_process_record(tmp_path: Path) 
     closeout._verify_command_evidence(
         receipt_item,
         evidence,
-        project_root=tmp_path,
+        receipt=receipt,
+        project_root=project_root,
+        expected_git_binding=provenance["source_before"]["git_executable"],
+        expected_git_state={"manifest_digest": "a" * 64, "object_format": "sha1"},
+        expected_toolchain=provenance["toolchain"]["before"],
         violations=violations,
     )
 
@@ -350,16 +585,75 @@ def test_closeout_accepts_bound_pytest_completed_process_record(tmp_path: Path) 
 
 
 def test_closeout_requires_real_commands_for_special_evidence_slots() -> None:
+    bundle = "docs/WIG-P3-CANARY-A1-R2-IMPLEMENTATION-R3-review/evidence"
     assert closeout._command_matches_slot(
         "wheel_source_inventory",
         [
-            "python3",
-            "-m",
-            "scripts.work_item_r3_closeout",
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "-B",
+            "-",
+            ".",
             "wheel-inventory",
             "--checkout",
             ".",
+            "--wheel",
+            f"{bundle}/candidate/colameta-0.1.2-py3-none-any.whl",
+            "--output",
+            f"{bundle}/wheel-source-inventory.json",
         ],
+    )
+
+
+def test_ruff_evidence_rejects_no_files_warning() -> None:
+    assert not closeout._command_output_matches_slot(
+        "ruff",
+        stdout="All checks passed!\n",
+        stderr="warning: No Python files found under the given path(s)\n",
+    )
+
+
+def test_lease_event_principal_digest_uses_principal_context_projection() -> None:
+    snapshot = {
+        "caller_auth_mode": "token",
+        "permissions": ["work_item.accept"],
+        "principal_authenticated_by": "local_session",
+        "principal_id": "operator",
+        "principal_kind": "human",
+        "session_ref": "session",
+    }
+    expected = canonical_sha256(
+        {
+            "principal_id": "operator",
+            "principal_kind": "human",
+            "authenticated_by": "local_session",
+            "granted_permissions": ["work_item.accept"],
+            "session_ref": "session",
+        }
+    )
+    assert closeout._event_principal_binding_digest(snapshot) == expected
+    assert expected != canonical_sha256(snapshot)
+
+
+def test_every_lease_semantic_claim_is_bound_to_an_exact_pytest_target() -> None:
+    bundle = "docs/WIG-P3-CANARY-A1-R2-IMPLEMENTATION-R3-review/evidence"
+    focused = closeout._EXPECTED_PYTEST_ARGUMENTS["focused_negative_tests"]
+    runtime = [
+        "-q",
+        closeout._RUNTIME_CONFORMANCE_TEST,
+        "--basetemp=docs/WIG-P3-CANARY-A1-R2-IMPLEMENTATION-R3-review/"
+        "evidence/runtime/pytest-runtime-exact",
+    ]
+    for bindings in closeout._LEASE_CHECK_EVIDENCE_BINDINGS.values():
+        for slot, target in bindings:
+            assert target in (focused if slot == "focused_negative_tests" else runtime)
+
+    first = closeout._REQUIRED_FOCUSED_LEASE_TESTS[0]
+    reduced = [item for item in focused if item != first]
+    assert not closeout._command_matches_slot(
+        "focused_negative_tests",
+        [sys.executable, "-m", "pytest", *reduced],
     )
     assert closeout._command_matches_slot(
         "runtime_isolation_smoke",
@@ -372,10 +666,355 @@ def test_closeout_requires_real_commands_for_special_evidence_slots() -> None:
                 "tests/test_work_item_authoritative_canary.py::"
                 "test_loopback_conformance_requires_token_and_exposes_exact_surface"
             ),
+            f"--basetemp={bundle}/runtime/pytest-runtime-exact",
         ],
     )
     assert not closeout._command_matches_slot("wheel_source_inventory", ["true"])
     assert not closeout._command_matches_slot("runtime_isolation_smoke", ["pytest", "-q"])
+
+
+def test_runtime_command_rejects_basetemp_path_escape() -> None:
+    assert not closeout._command_matches_slot(
+        "runtime_isolation_smoke",
+        [
+            str(Path(sys.executable).resolve()),
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_work_item_authoritative_canary.py::"
+            "test_loopback_conformance_requires_token_and_exposes_exact_surface",
+            "--basetemp=docs/WIG-P3-CANARY-A1-R2-IMPLEMENTATION-R3-review/"
+            "evidence/runtime/pytest-runtime-exact/../../outside",
+        ],
+    )
+
+
+def test_sanitized_bundle_decodes_json_and_scans_wheel_members(tmp_path: Path) -> None:
+    escaped = tmp_path / "escaped.json"
+    escaped.write_text(
+        r'{"\u0061uth_token":"\u006d\u0076\u0072\u005f'
+        + (r"\u0041" * 43)
+        + r'"}',
+        encoding="utf-8",
+    )
+    wheel = tmp_path / "candidate.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("package/data.txt", "mvr_" + ("A" * 43))
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(tmp_path, violations)
+
+    assert any("decoded_token_secret" in item for item in violations)
+    assert any("candidate.whl!package/data.txt" in item for item in violations)
+
+
+def test_sanitized_candidate_wheel_allows_source_auth_token_literals(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "candidate.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "package/module.py",
+            'EXAMPLE = {"auth_token": "documented-field-not-a-secret"}\n',
+        )
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(tmp_path, violations)
+
+    assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    [
+        ("renamed-sqlite.txt", b"SQLite format 3\x00" + (b"x" * 100)),
+        ("renamed-wal.txt", bytes.fromhex("377f0682") + (b"x" * 100)),
+        ("renamed-journal.txt", b"\xd9\xd5\x05\xf9 \xa1c\xd7" + (b"x" * 100)),
+        ("renamed-zip.txt", b"PK\x03\x04" + (b"x" * 100)),
+        ("prefixed-zip.md", b"review text\nPK\x03\x04" + (b"x" * 100)),
+        ("renamed-gzip.txt", b"\x1f\x8b" + (b"x" * 100)),
+        ("renamed-bzip.txt", b"BZh" + (b"x" * 100)),
+        ("renamed-xz.txt", b"\xfd7zXZ\x00" + (b"x" * 100)),
+        ("renamed-7z.txt", b"7z\xbc\xaf'\x1c" + (b"x" * 100)),
+        ("renamed-rar.txt", b"Rar!\x1a\x07" + (b"x" * 100)),
+        ("renamed-ar.txt", b"!<arch>\n" + (b"x" * 100)),
+        ("renamed-tar.txt", (b"x" * 257) + b"ustar\x00" + (b"x" * 100)),
+    ],
+)
+def test_sanitized_bundle_rejects_renamed_database_and_archives(
+    tmp_path: Path,
+    name: str,
+    payload: bytes,
+) -> None:
+    (tmp_path / name).write_bytes(payload)
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(tmp_path, violations)
+
+    assert any(item.startswith("sanitized_bundle_forbidden_content:") for item in violations)
+
+
+def test_sanitized_bundle_caps_non_wheel_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(closeout, "_MAX_SANITIZED_NON_ARCHIVE_BYTES", 3)
+    (tmp_path / "oversized.txt").write_bytes(b"four")
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(tmp_path, violations)
+
+    assert violations == ["sanitized_bundle_non_archive_too_large:oversized.txt"]
+
+
+def test_sanitized_bundle_rejects_prefixed_valid_zip_with_compressed_secret(
+    tmp_path: Path,
+) -> None:
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("auth.json", '{"auth_token":"mvr_' + ("a" * 43) + '"}')
+    (tmp_path / "REVIEW.md").write_bytes(b"review preface\n" + archive_bytes.getvalue())
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(tmp_path, violations)
+
+    assert any("sanitized_bundle_forbidden_content:REVIEW.md:archive" in item for item in violations)
+
+
+def test_exact_sanitized_bundle_rejects_unmanifested_special_entry(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "safe.json").write_text('{"safe":true}', encoding="utf-8")
+    os.mkfifo(tmp_path / "private-ledger-stream")
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(
+        tmp_path,
+        violations,
+        allowed_relative_paths=("safe.json",),
+        exact_paths=True,
+    )
+
+    assert "sanitized_bundle_special_entry:private-ledger-stream" in violations
+    assert "sanitized_bundle_path_set" in violations
+
+
+def test_sanitized_bundle_can_scan_explicit_assembly_subset(tmp_path: Path) -> None:
+    (tmp_path / "retained.json").write_text('{"safe":true}', encoding="utf-8")
+    private = tmp_path / "private-runtime"
+    private.mkdir()
+    (private / "ledger.data").write_bytes(b"SQLite format 3\x00" + (b"x" * 100))
+
+    violations: list[str] = []
+    closeout._verify_sanitized_evidence_bundle(
+        tmp_path,
+        violations,
+        allowed_relative_paths=("retained.json",),
+    )
+
+    assert violations == []
+
+
+def test_bundle_manifest_rejects_unknown_file_even_when_manifest_attests_it(
+    tmp_path: Path,
+) -> None:
+    for relative in closeout._FINAL_REVIEW_BUNDLE_FILES:
+        if relative == "BUNDLE_MANIFEST.json":
+            continue
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"retained")
+
+    def write_manifest() -> None:
+        files = []
+        for path in sorted(item for item in tmp_path.rglob("*") if item.is_file()):
+            if path.name == "BUNDLE_MANIFEST.json":
+                continue
+            files.append(
+                {
+                    "path": path.relative_to(tmp_path).as_posix(),
+                    "size_bytes": path.stat().st_size,
+                    "sha256": closeout.sha256_file(path),
+                }
+            )
+        (tmp_path / "BUNDLE_MANIFEST.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "work_item_r3_closeout_bundle_manifest.v1",
+                    "files": files,
+                    "file_count": len(files),
+                    "file_list_root_sha256": closeout.canonical_sha256(files),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_manifest()
+    violations: list[str] = []
+    closeout._verify_bundle_manifest(tmp_path, violations)
+    assert violations == []
+
+    (tmp_path / "unreviewed.txt").write_text("retained", encoding="utf-8")
+    write_manifest()
+    violations = []
+    closeout._verify_bundle_manifest(tmp_path, violations)
+    assert "bundle_manifest_path_set" in violations
+
+
+def _runtime_observation_projection_fixture(
+    root: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    evidence = root / "evidence"
+    marker = evidence / "runtime/revoked-token-rejected.ok"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"true")
+    process_identity = "a" * 64
+    observations: dict[str, object] = {
+        "schema_version": "work_item_r3_runtime_observations.v1",
+        "pass": True,
+        "bind_address": "127.0.0.1",
+        "port": 48713,
+        "process_pid": 43123,
+        "listener": {
+            "inventory": [["127.0.0.1", 48713]],
+            "process_listener_count": 1,
+            **closeout._EXPECTED_RUNTIME_LISTENER_FLAGS,
+        },
+        "authentication": dict(closeout._EXPECTED_RUNTIME_AUTHENTICATION),
+        "tool_names": list(closeout.AUTHORITATIVE_CANARY_TOOLS),
+        "restricted_surface": dict(closeout._EXPECTED_RUNTIME_RESTRICTED_SURFACE),
+        "lifecycle": dict(closeout._EXPECTED_RUNTIME_LIFECYCLE),
+        "safety": dict(closeout._EXPECTED_RUNTIME_SAFETY),
+        "existing_d1_canary_modified": False,
+        "existing_service_modified": False,
+        "authoritative_activation_outside_ephemeral_test": False,
+        "secret_material_included": False,
+    }
+    observations_path = evidence / "runtime-observations.json"
+    observations_path.write_text(json.dumps(observations), encoding="utf-8")
+    runtime = {
+        "observations_ref": "evidence/runtime-observations.json",
+        "observations_sha256": closeout.sha256_file(observations_path),
+        "bind_address": observations["bind_address"],
+        "port": observations["port"],
+        "tool_names": observations["tool_names"],
+        "listener": observations["listener"],
+        "restricted_surface": observations["restricted_surface"],
+        "safety": observations["safety"],
+        "existing_d1_canary_modified": False,
+        "existing_service_modified": False,
+        "authoritative_activation_outside_ephemeral_test": False,
+        "authentication": {
+            key: closeout._EXPECTED_RUNTIME_AUTHENTICATION[key]
+            for key in (
+                "no_token_http_status",
+                "wrong_token_http_status",
+                "correct_token_http_status",
+                "revoked_token_http_status",
+                "token_file_present_after",
+            )
+        },
+    }
+    preflight = {
+        "runtime_isolation": {"intended_port": 48713},
+        "process_identity_inputs": {
+            "pid": 43123,
+            "expected_process_identity": process_identity,
+        },
+    }
+    snapshot = {
+        "runtime_binding": {"claimed_process_identity": process_identity},
+    }
+    return observations, runtime, preflight, snapshot
+
+
+def _verify_runtime_projection_fixture(
+    root: Path,
+    runtime: dict[str, object],
+    preflight: dict[str, object],
+    snapshot: dict[str, object],
+) -> list[str]:
+    violations: list[str] = []
+    closeout._verify_runtime_observations_projection(
+        runtime,
+        root,
+        preflight=preflight,
+        snapshot=snapshot,
+        violations=violations,
+    )
+    return violations
+
+
+def test_runtime_observations_require_exact_shape_auth_listener_and_process(
+    tmp_path: Path,
+) -> None:
+    observations, runtime, preflight, snapshot = _runtime_observation_projection_fixture(
+        tmp_path
+    )
+    assert _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot) == []
+
+    observations["unexpected"] = False
+    observations_path = tmp_path / "evidence/runtime-observations.json"
+    observations_path.write_text(json.dumps(observations), encoding="utf-8")
+    runtime["observations_sha256"] = closeout.sha256_file(observations_path)
+    violations = _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot)
+    assert "runtime_observations_binding" in violations
+
+    observations.pop("unexpected")
+    authentication = observations["authentication"]
+    assert isinstance(authentication, dict)
+    authentication["replacement_token_http_status"] = 401
+    observations_path.write_text(json.dumps(observations), encoding="utf-8")
+    runtime["observations_sha256"] = closeout.sha256_file(observations_path)
+    violations = _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot)
+    assert "runtime_observations_binding" in violations
+
+    authentication["replacement_token_http_status"] = 200
+    observations["process_pid"] = 43124
+    observations_path.write_text(json.dumps(observations), encoding="utf-8")
+    runtime["observations_sha256"] = closeout.sha256_file(observations_path)
+    violations = _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot)
+    assert "runtime_observations_process_listener_binding" in violations
+
+    observations["process_pid"] = 43123
+    listener = observations["listener"]
+    assert isinstance(listener, dict)
+    listener["inventory"] = [["0.0.0.0", 48713]]
+    runtime["listener"] = listener
+    observations_path.write_text(json.dumps(observations), encoding="utf-8")
+    runtime["observations_sha256"] = closeout.sha256_file(observations_path)
+    violations = _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot)
+    assert "runtime_observations_process_listener_binding" in violations
+
+
+def test_runtime_observations_require_exact_revoked_token_marker(tmp_path: Path) -> None:
+    _observations, runtime, preflight, snapshot = _runtime_observation_projection_fixture(
+        tmp_path
+    )
+    (tmp_path / "evidence/runtime/revoked-token-rejected.ok").write_bytes(b"true\n")
+
+    violations = _verify_runtime_projection_fixture(tmp_path, runtime, preflight, snapshot)
+
+    assert "runtime_revoked_token_marker_content" in violations
+
+
+def test_closeout_rejects_reduced_verification_commands_and_ignored_audits() -> None:
+    assert not closeout._command_matches_slot(
+        "full_pytest",
+        ["python3", "-m", "pytest", "-q", "tests/test_work_item_r3_closeout.py"],
+    )
+    assert not closeout._command_matches_slot(
+        "concurrency_tests",
+        ["python3", "-m", "pytest", "-q", "tests/test_work_item_r3_closeout.py"],
+    )
+    assert not closeout._command_matches_slot(
+        "pip_audit",
+        ["python3", "-m", "pip_audit", "--ignore-vuln", "CVE-2099-0001"],
+    )
+    assert not closeout._command_matches_slot(
+        "ruff",
+        ["python3", "-m", "ruff", "check", "runner/work_item_governance/closeout.py"],
+    )
 
 
 def test_closeout_binds_token_generation_digest_to_retained_preflight(
@@ -461,5 +1100,19 @@ def test_bandit_evidence_retains_baseline_findings_but_blocks_high_severity() ->
     assert not closeout._command_output_matches_slot(
         "bandit_changed_scope",
         stdout=json.dumps(payload),
+        stderr="",
+    )
+    duplicate_metrics = (
+        '{"errors":[],"metrics":{"_totals":{"SEVERITY.HIGH":1}},'
+        '"metrics":{"_totals":{"SEVERITY.HIGH":0}},"results":[]}'
+    )
+    assert not closeout._command_output_matches_slot(
+        "bandit_changed_scope",
+        stdout=duplicate_metrics,
+        stderr="",
+    )
+    assert not closeout._command_output_matches_slot(
+        "review_bundle_accessibility",
+        stdout='{"pass":false,"pass":true}',
         stderr="",
     )

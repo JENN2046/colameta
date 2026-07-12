@@ -19,6 +19,66 @@ from runner.work_item_governance.errors import CommitWorkItemRejection, WorkItem
 from runner.work_item_governance.settings import load_work_item_governance_settings
 
 
+class _ActivationControlWriteSession:
+    """Exact, process-local authority for one Lease-control transaction.
+
+    The session deliberately has no serializable or copyable representation.
+    Repository authorization additionally requires object identity in a
+    per-ledger issuance registry, so reconstructing an object with matching
+    attributes never grants control-table write authority.
+    """
+
+    __slots__ = ("ledger", "connection", "controller", "_seal")
+
+    def __init__(
+        self,
+        *,
+        ledger: "SQLiteWorkItemLedger",
+        connection: sqlite3.Connection,
+        controller: Any,
+        seal: bytes,
+    ) -> None:
+        self.ledger = ledger
+        self.connection = connection
+        self.controller = controller
+        self._seal = seal
+
+    def __copy__(self) -> "_ActivationControlWriteSession":
+        raise TypeError("Activation control-write sessions cannot be copied.")
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_ActivationControlWriteSession":
+        raise TypeError("Activation control-write sessions cannot be copied.")
+
+    def __reduce__(self) -> Any:
+        raise TypeError("Activation control-write sessions cannot be serialized.")
+
+    def __reduce_ex__(self, _protocol: int) -> Any:
+        raise TypeError("Activation control-write sessions cannot be serialized.")
+
+
+class _ActivationControllerBinding:
+    """Non-serializable binding for one exact activation controller instance."""
+
+    __slots__ = ("ledger", "controller", "_seal")
+
+    def __init__(self, *, ledger: "SQLiteWorkItemLedger", controller: Any, seal: bytes) -> None:
+        self.ledger = ledger
+        self.controller = controller
+        self._seal = seal
+
+    def __copy__(self) -> "_ActivationControllerBinding":
+        raise TypeError("Activation controller bindings cannot be copied.")
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_ActivationControllerBinding":
+        raise TypeError("Activation controller bindings cannot be copied.")
+
+    def __reduce__(self) -> Any:
+        raise TypeError("Activation controller bindings cannot be serialized.")
+
+    def __reduce_ex__(self, _protocol: int) -> Any:
+        raise TypeError("Activation controller bindings cannot be serialized.")
+
+
 def _migration_v1() -> tuple[str, ...]:
     return (
         """
@@ -448,6 +508,13 @@ class SQLiteWorkItemLedger:
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self._migrations = dict(migrations or MIGRATIONS)
         self._activation_transaction_states: dict[int, dict[str, Any]] = {}
+        self.__write_connection_authority = object()
+        self.__control_write_session_seal = secrets.token_bytes(32)
+        self.__controller_binding_seal = secrets.token_bytes(32)
+        self.__issued_control_write_sessions: dict[
+            int, _ActivationControlWriteSession
+        ] = {}
+        self.__issued_controller_bindings: dict[int, _ActivationControllerBinding] = {}
 
     def _ensure_storage_path(self) -> None:
         if not self.project_root.is_dir():
@@ -519,7 +586,18 @@ class SQLiteWorkItemLedger:
             finally:
                 os.close(descriptor)
 
-    def _connect(self, path: Path | None = None, *, readonly: bool = False) -> sqlite3.Connection:
+    def _connect(
+        self,
+        path: Path | None = None,
+        *,
+        readonly: bool = True,
+        _write_authority: object | None = None,
+    ) -> sqlite3.Connection:
+        if not readonly and _write_authority is not self.__write_connection_authority:
+            raise WorkItemGovernanceError(
+                "LEDGER_WRITABLE_CONNECTION_DENIED",
+                "Writable Ledger connections are available only inside repository-owned transactions.",
+            )
         target = path or self.path
         if readonly:
             connection = sqlite3.connect(
@@ -548,7 +626,10 @@ class SQLiteWorkItemLedger:
 
     def _initialize_unlocked(self) -> None:
         self._ensure_storage_path()
-        connection = self._connect()
+        connection = self._connect(
+            readonly=False,
+            _write_authority=self.__write_connection_authority,
+        )
         try:
             current = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if current > CURRENT_LEDGER_SCHEMA_VERSION:
@@ -607,7 +688,10 @@ class SQLiteWorkItemLedger:
     ) -> Iterator[sqlite3.Connection]:
         with self._maintenance_lock(exclusive=False):
             self._initialize_unlocked()
-            connection = self._connect()
+            connection = self._connect(
+                readonly=False,
+                _write_authority=self.__write_connection_authority,
+            )
             connection.execute("BEGIN IMMEDIATE")
             lease = connection.execute(
                 "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
@@ -619,27 +703,39 @@ class SQLiteWorkItemLedger:
             restricted = activation_managed
             transaction_state: dict[str, Any] | None = None
             if restricted:
-                allowed_write_tables = {"activation_leases", "activation_lease_events"}
                 # Fresh Preflight provisions public binding metadata before its
                 # first Lease is prepared.  Once a Lease exists, ledger_meta is
                 # immutable through the default repository transaction.
+                allowed_default_tables: set[str] = set()
                 if lease is None:
-                    allowed_write_tables.add("ledger_meta")
+                    allowed_default_tables.add("ledger_meta")
                 transaction_state = {
                     "connection": connection,
                     "domain_write_authorized": False,
-                    "allowed_control_tables": frozenset(allowed_write_tables),
+                    "allowed_default_tables": frozenset(allowed_default_tables),
+                    "control_write_authorized": False,
+                    "authorized_control_tables": frozenset(),
                     "authorized_session": None,
                     "finalized_session": None,
+                    "authorized_control_session": None,
+                    "finalized_control_session": None,
                 }
                 self._activation_transaction_states[id(connection)] = transaction_state
-                connection.set_authorizer(
-                    self._activation_repository_authorizer(transaction_state)
-                )
+                authorizer = self._activation_repository_authorizer(transaction_state)
+                transaction_state["authorizer"] = authorizer
+                connection.set_authorizer(authorizer)
             try:
                 yield connection
+                if transaction_state is not None:
+                    self._assert_managed_transaction_finalized(transaction_state)
                 connection.commit()
             except CommitWorkItemRejection as exc:
+                if transaction_state is not None:
+                    try:
+                        self._assert_managed_transaction_finalized(transaction_state)
+                    except Exception:
+                        connection.rollback()
+                        raise
                 connection.commit()
                 raise exc.error from exc
             except sqlite3.DatabaseError as exc:
@@ -654,6 +750,14 @@ class SQLiteWorkItemLedger:
                 connection.rollback()
                 raise
             finally:
+                if transaction_state is not None:
+                    control_session = transaction_state.get("authorized_control_session")
+                    if (
+                        control_session is not None
+                        and self.__issued_control_write_sessions.get(id(control_session))
+                        is control_session
+                    ):
+                        self.__issued_control_write_sessions.pop(id(control_session), None)
                 self._activation_transaction_states.pop(id(connection), None)
                 connection.close()
                 if self.path.exists():
@@ -703,9 +807,14 @@ class SQLiteWorkItemLedger:
             if action in data_write_actions:
                 if transaction_state["domain_write_authorized"]:
                     return sqlite3.SQLITE_OK
+                if (
+                    transaction_state["control_write_authorized"]
+                    and argument_one in transaction_state["authorized_control_tables"]
+                ):
+                    return sqlite3.SQLITE_OK
                 return (
                     sqlite3.SQLITE_OK
-                    if argument_one in transaction_state["allowed_control_tables"]
+                    if argument_one in transaction_state["allowed_default_tables"]
                     else sqlite3.SQLITE_DENY
                 )
             if action in structural_write_actions:
@@ -713,6 +822,218 @@ class SQLiteWorkItemLedger:
             return sqlite3.SQLITE_OK
 
         return authorize
+
+    @staticmethod
+    def _refresh_managed_authorizer(
+        connection: sqlite3.Connection,
+        transaction_state: dict[str, Any],
+    ) -> None:
+        """Invalidate SQLite's prepared-statement authorization cache.
+
+        SQLite invokes an authorizer while compiling a statement, not on every
+        execution of a cached statement.  Every capability transition therefore
+        reinstalls the callback so a statement compiled while unlocked cannot
+        be replayed after relock.
+        """
+
+        connection.set_authorizer(None)
+        connection.set_authorizer(transaction_state["authorizer"])
+
+    @staticmethod
+    def _assert_managed_transaction_finalized(transaction_state: dict[str, Any]) -> None:
+        domain_session = transaction_state.get("authorized_session")
+        if (
+            transaction_state.get("domain_write_authorized") is True
+            or (
+                domain_session is not None
+                and transaction_state.get("finalized_session") is not domain_session
+            )
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_REPOSITORY_WRITE_NOT_FINALIZED",
+                "Repository domain-write authority must be finalized before commit.",
+            )
+        control_session = transaction_state.get("authorized_control_session")
+        if (
+            transaction_state.get("control_write_authorized") is True
+            or (
+                control_session is not None
+                and transaction_state.get("finalized_control_session")
+                is not control_session
+            )
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_CONTROL_WRITE_NOT_FINALIZED",
+                "Repository control-write authority must be finalized before commit.",
+            )
+
+    def _bind_activation_controller(self, controller: Any) -> _ActivationControllerBinding:
+        """Bind one exact controller; the capability is retained by that controller only."""
+
+        from runner.work_item_governance.activation import (
+            ActivationLeaseControlPlane,
+            AuthoritativeCanaryGuard,
+        )
+
+        if (
+            type(controller) not in {ActivationLeaseControlPlane, AuthoritativeCanaryGuard}
+            or getattr(controller, "ledger", None) is not self
+            or id(controller) in self.__issued_controller_bindings
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_CONTROLLER_BINDING_INVALID",
+                "Activation controller binding requires one unbound exact controller instance.",
+            )
+        binding = _ActivationControllerBinding(
+            ledger=self,
+            controller=controller,
+            seal=self.__controller_binding_seal,
+        )
+        self.__issued_controller_bindings[id(controller)] = binding
+        return binding
+
+    def _is_issued_controller_binding(
+        self,
+        controller: Any,
+        binding: Any,
+    ) -> bool:
+        return bool(
+            type(binding) is _ActivationControllerBinding
+            and binding.ledger is self
+            and binding.controller is controller
+            and isinstance(binding._seal, bytes)
+            and secrets.compare_digest(binding._seal, self.__controller_binding_seal)
+            and self.__issued_controller_bindings.get(id(controller)) is binding
+        )
+
+    def authorize_activation_control_write(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        controller: Any,
+        controller_binding: Any,
+    ) -> _ActivationControlWriteSession:
+        """Mint authority for one exact Lease-control transaction.
+
+        Only the two activation-domain controllers may request this authority.
+        The returned session is bound to the exact Repository, connection, and
+        controller object and must be finalized before the transaction commits.
+        """
+
+        # Local import avoids the repository/activation module import cycle.
+        from runner.work_item_governance.activation import (
+            ActivationLeaseControlPlane,
+            AuthoritativeCanaryGuard,
+        )
+
+        state = self._activation_transaction_states.get(id(connection))
+        trusted_controller = type(controller) in {
+            ActivationLeaseControlPlane,
+            AuthoritativeCanaryGuard,
+        }
+        if (
+            state is None
+            or state.get("connection") is not connection
+            or not trusted_controller
+            or getattr(controller, "ledger", None) is not self
+            or not self._is_issued_controller_binding(controller, controller_binding)
+            or state.get("domain_write_authorized") is True
+            or (
+                state.get("authorized_session") is not None
+                and state.get("finalized_session") is not state.get("authorized_session")
+            )
+            or state.get("control_write_authorized") is True
+            or (
+                state.get("authorized_control_session") is not None
+                and state.get("finalized_control_session")
+                is not state.get("authorized_control_session")
+            )
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_CONTROL_CAPABILITY_INVALID",
+                "Lease-control writes require the exact activation controller and managed transaction.",
+            )
+        previous_control_session = state.get("authorized_control_session")
+        if (
+            previous_control_session is not None
+            and state.get("finalized_control_session") is previous_control_session
+        ):
+            self.__issued_control_write_sessions.pop(
+                id(previous_control_session),
+                None,
+            )
+        session = _ActivationControlWriteSession(
+            ledger=self,
+            connection=connection,
+            controller=controller,
+            seal=self.__control_write_session_seal,
+        )
+        self.__issued_control_write_sessions[id(session)] = session
+        state["control_write_authorized"] = True
+        state["authorized_control_tables"] = frozenset(
+            {"activation_leases", "activation_lease_events"}
+        )
+        state["authorized_control_session"] = session
+        self._refresh_managed_authorizer(connection, state)
+        return session
+
+    def _is_issued_control_write_session(
+        self,
+        session: _ActivationControlWriteSession,
+    ) -> bool:
+        return bool(
+            type(session) is _ActivationControlWriteSession
+            and session.ledger is self
+            and isinstance(session._seal, bytes)
+            and secrets.compare_digest(
+                session._seal,
+                self.__control_write_session_seal,
+            )
+            and self.__issued_control_write_sessions.get(id(session)) is session
+        )
+
+    def finalize_activation_control_write(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session: Any,
+    ) -> None:
+        """Relock control tables after an exact controller-owned operation."""
+
+        state = self._activation_transaction_states.get(id(connection))
+        if (
+            state is None
+            or state.get("connection") is not connection
+            or state.get("control_write_authorized") is not True
+            or state.get("authorized_control_session") is not session
+            or not self._is_issued_control_write_session(session)
+            or session.connection is not connection
+            or getattr(session.controller, "ledger", None) is not self
+        ):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_CONTROL_CAPABILITY_INVALID",
+                "Lease-control relock requires the exact issued transaction session.",
+            )
+        state["control_write_authorized"] = False
+        state["authorized_control_tables"] = frozenset()
+        state["finalized_control_session"] = session
+        self._refresh_managed_authorizer(connection, state)
+
+    def activation_control_write_finalized(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session: Any,
+    ) -> bool:
+        state = self._activation_transaction_states.get(id(connection))
+        return bool(
+            state is not None
+            and state.get("connection") is connection
+            and state.get("authorized_control_session") is session
+            and state.get("finalized_control_session") is session
+            and state.get("control_write_authorized") is False
+            and self._is_issued_control_write_session(session)
+        )
 
     def authorize_activation_domain_write(
         self,
@@ -756,6 +1077,7 @@ class SQLiteWorkItemLedger:
             )
         state["domain_write_authorized"] = True
         state["authorized_session"] = session
+        self._refresh_managed_authorizer(connection, state)
 
     def finalize_activation_domain_write(
         self,
@@ -784,6 +1106,7 @@ class SQLiteWorkItemLedger:
             )
         state["domain_write_authorized"] = False
         state["finalized_session"] = session
+        self._refresh_managed_authorizer(connection, state)
 
     def activation_domain_write_finalized(
         self,

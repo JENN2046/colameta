@@ -83,6 +83,7 @@ print(json.dumps(attestation.source_binding, sort_keys=True))
         cwd=checkout,
         env={
             **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": str(checkout),
             "SOURCE_CHECKOUT": str(checkout),
             "WHEEL_ARTIFACT": str(wheel),
@@ -105,5 +106,6 @@ def _run_artifact_command(cwd: Path, *command: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     return completed.stdout

@@ -505,6 +505,25 @@ class WorkItemApplicationService:
         *,
         creation_operation: str,
     ) -> dict[str, Any]:
+        # ``_apply_create`` is shared by the ordinary create and explicit
+        # legacy-import public commands.  It must not let a direct Python
+        # caller relabel an imported command as the lease-controlled
+        # ``apply_work_item_create`` operation.  Resolve and validate the
+        # operation before opening a write transaction so a rejected legacy
+        # path cannot create domain facts or consume Activation Lease quota.
+        if creation_operation == "create":
+            activation_command_name = "apply_work_item_create"
+            command = self._normalize_create_command(command, imported=False)
+        elif creation_operation == "legacy_import":
+            activation_command_name = "apply_legacy_work_item_import"
+            self._assert_internal_activation_write_denied(activation_command_name)
+            command = self._normalize_legacy_import_command(command)
+        else:
+            raise WorkItemGovernanceError(
+                "CREATE_OPERATION_UNSUPPORTED",
+                "Work Item creation operation is unsupported.",
+                details={"creation_operation": creation_operation},
+            )
         work_item_id = require_stable_id(preview.get("generated_ids", {}).get("work_item_id"), "work_item")
         preview_id = require_stable_id(preview.get("preview_id"), "preview")
         origin = command["origin"]
@@ -517,7 +536,7 @@ class WorkItemApplicationService:
             with self._write_transaction() as connection:
                 activation = self._activation_begin(
                     connection,
-                    command_name="apply_work_item_create",
+                    command_name=activation_command_name,
                     normalized_command=command,
                     source_event_key=idempotency_key or preview_id,
                 )

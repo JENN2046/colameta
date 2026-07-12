@@ -7,14 +7,16 @@ import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import stat
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.errors import CommitWorkItemRejection, WorkItemGovernanceError
@@ -383,6 +385,47 @@ def process_identity_inputs(runtime_instance_nonce: str, *, pid: int | None = No
         ),
         "expected_process_identity": canonical_sha256(payload),
     }
+
+
+def process_tcp_listener_inventory(*, pid: int | None = None) -> list[tuple[str, int]]:
+    """Measure TCP listeners owned by one Linux process from procfs."""
+
+    process_id = os.getpid() if pid is None else int(pid)
+    proc_root = Path("/proc") / str(process_id)
+    try:
+        socket_inodes: set[str] = set()
+        for descriptor in (proc_root / "fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                socket_inodes.add(target[8:-1])
+        listeners: list[tuple[str, int]] = []
+        for filename, family in (("tcp", socket.AF_INET), ("tcp6", socket.AF_INET6)):
+            lines = (proc_root / "net" / filename).read_text(encoding="utf-8").splitlines()[1:]
+            for line in lines:
+                fields = line.split()
+                if len(fields) < 10 or fields[3] != "0A" or fields[9] not in socket_inodes:
+                    continue
+                address_hex, port_hex = fields[1].split(":", 1)
+                packed = bytes.fromhex(address_hex)
+                if family == socket.AF_INET:
+                    address = socket.inet_ntop(family, packed[::-1])
+                else:
+                    packed = b"".join(
+                        packed[index : index + 4][::-1]
+                        for index in range(0, len(packed), 4)
+                    )
+                    address = socket.inet_ntop(family, packed)
+                listeners.append((address, int(port_hex, 16)))
+    except (OSError, ValueError, IndexError) as exc:
+        raise WorkItemGovernanceError(
+            "PROCESS_LISTENER_INVENTORY_UNAVAILABLE",
+            "The Linux process listener inventory could not be measured.",
+            details={"pid": process_id, "reason": str(exc)},
+        ) from exc
+    return sorted(set(listeners))
 
 
 def listener_attestation_digest(
@@ -938,8 +981,11 @@ class AuthoritativeCanaryGuard:
         self.monotonic_ns = monotonic_ns
         self.process_identity_provider = process_identity_provider
         self.__write_session_seal = secrets.token_bytes(32)
+        self.__request_context_seal = object()
         self.__issued_write_sessions: dict[int, ActivationWriteSession] = {}
         self.__issued_request_contexts: dict[int, AuthoritativeCanaryRequestContext] = {}
+        self.__consumed_request_proofs: dict[int, AuthenticatedTokenRequestProof] = {}
+        self.__repository_control_binding = self.ledger._bind_activation_controller(self)
 
     def _is_issued_write_session(self, session: ActivationWriteSession) -> bool:
         return (
@@ -958,7 +1004,23 @@ class AuthoritativeCanaryGuard:
         self,
         request_context: AuthoritativeCanaryRequestContext,
     ) -> bool:
-        return self.__issued_request_contexts.get(id(request_context)) is request_context
+        return (
+            request_context._trust_seal is self.__request_context_seal
+            and self.__issued_request_contexts.get(id(request_context)) is request_context
+        )
+
+    def retire_request_context(
+        self,
+        request_context: AuthoritativeCanaryRequestContext | None,
+    ) -> bool:
+        """Permanently retire one exact Guard-issued request capability."""
+
+        if type(request_context) is not AuthoritativeCanaryRequestContext:
+            return False
+        if self.__issued_request_contexts.get(id(request_context)) is not request_context:
+            return False
+        self.__issued_request_contexts.pop(id(request_context), None)
+        return True
 
     def mint_request_context(
         self,
@@ -974,6 +1036,11 @@ class AuthoritativeCanaryGuard:
             raise WorkItemGovernanceError(
                 "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
                 "The Authoritative Canary requires a verified Bearer Token request.",
+            )
+        if self.__consumed_request_proofs.get(id(proof)) is proof:
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_PROOF_REPLAYED",
+                "The Bearer Token request proof was already consumed by this Application Guard.",
             )
         principal = self._trusted_principal(principal_context)
         with self.ledger.read_connection() as connection:
@@ -1049,8 +1116,11 @@ class AuthoritativeCanaryGuard:
             principal_id=principal.principal_id,
             session_ref=str(principal.session_ref),
             binding_digest=expected,
+            trust_seal=self.__request_context_seal,
+            active_validator=self._is_issued_request_context,
         )
         self.__issued_request_contexts[id(request_context)] = request_context
+        self.__consumed_request_proofs[id(proof)] = proof
         return request_context
 
     def authorized_work_item_id(self) -> str | None:
@@ -1147,6 +1217,61 @@ class AuthoritativeCanaryGuard:
         principal_context: PrincipalContext | None,
         request_context: AuthoritativeCanaryRequestContext | None,
     ) -> ActivationWriteSession:
+        control_session = self.ledger.authorize_activation_control_write(
+            connection,
+            controller=self,
+            controller_binding=self.__repository_control_binding,
+        )
+        try:
+            row, principal = self._prepare_begin_write(
+                connection,
+                command_name=command_name,
+                normalized_command=normalized_command,
+                source_event_key=source_event_key,
+                principal_context=principal_context,
+                request_context=request_context,
+            )
+        finally:
+            if not self.ledger.activation_control_write_finalized(
+                connection,
+                session=control_session,
+            ):
+                self.ledger.finalize_activation_control_write(
+                    connection,
+                    session=control_session,
+                )
+        connection.execute("SAVEPOINT activation_domain_write")
+        session = ActivationWriteSession(
+            guard=self,
+            connection=connection,
+            row=row,
+            command_name=command_name,
+            normalized_command=normalized_command,
+            source_event_key_digest=canonical_sha256(
+                {"command_name": command_name, "source_event_key": source_event_key}
+            ),
+            principal_binding_digest=canonical_sha256(principal.to_record()),
+            baseline_fact_counts=_activation_domain_fact_counts(connection),
+            _trust_seal=self.__write_session_seal,
+        )
+        self.__issued_write_sessions[id(session)] = session
+        try:
+            self.ledger.authorize_activation_domain_write(connection, session=session)
+        except Exception:
+            self._discard_write_session(session)
+            raise
+        return session
+
+    def _prepare_begin_write(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        command_name: str,
+        normalized_command: dict[str, Any],
+        source_event_key: str,
+        principal_context: PrincipalContext | None,
+        request_context: AuthoritativeCanaryRequestContext | None,
+    ) -> tuple[sqlite3.Row, PrincipalContext]:
         row = self._active_row(connection)
         try:
             principal = self._validate_request(row, principal_context, request_context)
@@ -1205,27 +1330,7 @@ class AuthoritativeCanaryGuard:
                 command_name=command_name,
             )
             raise AssertionError("unreachable")
-        connection.execute("SAVEPOINT activation_domain_write")
-        session = ActivationWriteSession(
-            guard=self,
-            connection=connection,
-            row=row,
-            command_name=command_name,
-            normalized_command=normalized_command,
-            source_event_key_digest=canonical_sha256(
-                {"command_name": command_name, "source_event_key": source_event_key}
-            ),
-            principal_binding_digest=canonical_sha256(principal.to_record()),
-            baseline_fact_counts=_activation_domain_fact_counts(connection),
-            _trust_seal=self.__write_session_seal,
-        )
-        self.__issued_write_sessions[id(session)] = session
-        try:
-            self.ledger.authorize_activation_domain_write(connection, session=session)
-        except Exception:
-            self._discard_write_session(session)
-            raise
-        return session
+        return row, principal
 
     def deny_command(
         self,
@@ -1235,32 +1340,50 @@ class AuthoritativeCanaryGuard:
         principal_context: PrincipalContext | None,
         request_context: AuthoritativeCanaryRequestContext | None,
     ) -> None:
-        row = self._active_row(connection)
-        try:
-            self._validate_request(row, principal_context, request_context)
-        except WorkItemGovernanceError as exc:
-            if exc.code == "ACTIVATION_LEASE_EXPIRED":
-                self._expire_and_raise(connection, row, command_name=command_name)
-                raise AssertionError("unreachable")
-            if exc.code == "ACTIVATION_MONOTONIC_DEADLINE_INVALID" or exc.code in HARD_REQUEST_BINDING_ERRORS:
-                self._freeze_and_raise(
-                    connection,
-                    row,
-                    code=exc.code,
-                    message=str(exc),
-                    reason_code="request_binding_integrity",
-                    command_name=command_name,
-                )
-                raise AssertionError("unreachable")
-            raise
-        self._freeze_and_raise(
+        control_session = self.ledger.authorize_activation_control_write(
             connection,
-            row,
-            code="ACTIVATION_COMMAND_DENIED",
-            message="This Work Item command is denied by the Authoritative Canary matrix.",
-            reason_code="denied_command",
-            command_name=command_name,
+            controller=self,
+            controller_binding=self.__repository_control_binding,
         )
+        try:
+            row = self._active_row(connection)
+            try:
+                self._validate_request(row, principal_context, request_context)
+            except WorkItemGovernanceError as exc:
+                if exc.code == "ACTIVATION_LEASE_EXPIRED":
+                    self._expire_and_raise(connection, row, command_name=command_name)
+                    raise AssertionError("unreachable")
+                if (
+                    exc.code == "ACTIVATION_MONOTONIC_DEADLINE_INVALID"
+                    or exc.code in HARD_REQUEST_BINDING_ERRORS
+                ):
+                    self._freeze_and_raise(
+                        connection,
+                        row,
+                        code=exc.code,
+                        message=str(exc),
+                        reason_code="request_binding_integrity",
+                        command_name=command_name,
+                    )
+                    raise AssertionError("unreachable")
+                raise
+            self._freeze_and_raise(
+                connection,
+                row,
+                code="ACTIVATION_COMMAND_DENIED",
+                message="This Work Item command is denied by the Authoritative Canary matrix.",
+                reason_code="denied_command",
+                command_name=command_name,
+            )
+        finally:
+            if not self.ledger.activation_control_write_finalized(
+                connection,
+                session=control_session,
+            ):
+                self.ledger.finalize_activation_control_write(
+                    connection,
+                    session=control_session,
+                )
 
     def _authorize_new(
         self,
@@ -1756,6 +1879,7 @@ class AuthoritativeCanaryGuard:
         if (
             principal.principal_id != binding.get("principal_id")
             or principal.principal_kind != binding.get("principal_kind")
+            or principal.authenticated_by != binding.get("principal_authenticated_by")
             or principal.session_ref != binding.get("session_ref")
             or sorted(principal.granted_permissions) != list(binding.get("permissions", []))
         ):
@@ -1995,46 +2119,98 @@ class AuthoritativeCanaryGuard:
         reason_code: str,
         command_name: str | None,
     ) -> None:
-        if row["status"] == "active":
-            next_version = int(row["state_version"]) + 1
-            usage = _json(row, "usage_json")
-            if int(usage["lease_events"]) < DEFAULT_QUOTAS["maximum_lease_events"]:
-                usage["lease_events"] = int(usage["lease_events"]) + 1
-                now = _causal_lease_timestamp(
+        control_session = self._relock_domain_write_for_rejection(connection)
+        try:
+            if row["status"] == "active":
+                next_version = int(row["state_version"]) + 1
+                usage = _json(row, "usage_json")
+                if int(usage["lease_events"]) < DEFAULT_QUOTAS["maximum_lease_events"]:
+                    usage["lease_events"] = int(usage["lease_events"]) + 1
+                    now = _causal_lease_timestamp(
+                        connection,
+                        lease_id=str(row["lease_id"]),
+                        candidate=isoformat_utc(self.now()),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE activation_leases
+                        SET status='write_frozen',state_version=?,usage_json=?,updated_at=?
+                        WHERE lease_id=? AND state_version=? AND status='active'
+                        """,
+                        (
+                            next_version,
+                            canonical_json(usage),
+                            now,
+                            row["lease_id"],
+                            row["state_version"],
+                        ),
+                    )
+                    frozen = connection.execute(
+                        "SELECT * FROM activation_leases WHERE lease_id=?",
+                        (row["lease_id"],),
+                    ).fetchone()
+                    _append_lease_event(
+                        connection,
+                        row=frozen,
+                        event_type="lease_write_frozen",
+                        status_before="active",
+                        status_after="write_frozen",
+                        state_version_before=int(row["state_version"]),
+                        state_version_after=next_version,
+                        created_at=now,
+                        command_name=(
+                            command_name if command_name in ALLOWED_WRITE_COMMANDS else None
+                        ),
+                        reason_code=(
+                            f"{reason_code}:{command_name}"
+                            if command_name is not None
+                            and command_name not in ALLOWED_WRITE_COMMANDS
+                            else reason_code
+                        ),
+                    )
+        finally:
+            if (
+                control_session is not None
+                and not self.ledger.activation_control_write_finalized(
                     connection,
-                    lease_id=str(row["lease_id"]),
-                    candidate=isoformat_utc(self.now()),
+                    session=control_session,
                 )
-                connection.execute(
-                    """
-                    UPDATE activation_leases
-                    SET status='write_frozen',state_version=?,usage_json=?,updated_at=?
-                    WHERE lease_id=? AND state_version=? AND status='active'
-                    """,
-                    (next_version, canonical_json(usage), now, row["lease_id"], row["state_version"]),
-                )
-                frozen = connection.execute(
-                    "SELECT * FROM activation_leases WHERE lease_id=?",
-                    (row["lease_id"],),
-                ).fetchone()
-                _append_lease_event(
+            ):
+                self.ledger.finalize_activation_control_write(
                     connection,
-                    row=frozen,
-                    event_type="lease_write_frozen",
-                    status_before="active",
-                    status_after="write_frozen",
-                    state_version_before=int(row["state_version"]),
-                    state_version_after=next_version,
-                    created_at=now,
-                    command_name=(command_name if command_name in ALLOWED_WRITE_COMMANDS else None),
-                    reason_code=(
-                        f"{reason_code}:{command_name}"
-                        if command_name is not None and command_name not in ALLOWED_WRITE_COMMANDS
-                        else reason_code
-                    ),
+                    session=control_session,
                 )
         raise CommitWorkItemRejection(
             WorkItemGovernanceError(code, message, details={"reason_code": reason_code})
+        )
+
+    def _relock_domain_write_for_rejection(
+        self,
+        connection: sqlite3.Connection,
+    ) -> Any | None:
+        session = next(
+            (
+                candidate
+                for candidate in self.__issued_write_sessions.values()
+                if candidate.connection is connection and not candidate.finalized
+            ),
+            None,
+        )
+        if session is None:
+            return None
+        try:
+            connection.execute("ROLLBACK TO SAVEPOINT activation_domain_write")
+            connection.execute("RELEASE SAVEPOINT activation_domain_write")
+        except sqlite3.OperationalError as exc:
+            if "no such savepoint" not in str(exc).lower():
+                raise
+        self.ledger.finalize_activation_domain_write(connection, session=session)
+        session._finalized = True
+        self._discard_write_session(session)
+        return self.ledger.authorize_activation_control_write(
+            connection,
+            controller=self,
+            controller_binding=self.__repository_control_binding,
         )
 
     def _expire_and_raise(
@@ -2101,6 +2277,7 @@ class ActivationLeaseControlPlane:
         self.now = now
         self.monotonic_ns = monotonic_ns
         self.process_identity_provider = process_identity_provider
+        self.__repository_control_binding = self.ledger._bind_activation_controller(self)
 
     def issue_prepared_lease(
         self,
@@ -2110,6 +2287,26 @@ class ActivationLeaseControlPlane:
         preflight_receipt: dict[str, Any],
         envelope_path: str | os.PathLike[str],
     ) -> dict[str, Any]:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
         validate_governance_record("work_item_activation_envelope.v1", activation_envelope)
         validate_synthetic_fixture_semantics(synthetic_fixture)
         validate_governance_record("work_item_authoritative_canary_preflight_receipt.v1", preflight_receipt)
@@ -2144,7 +2341,7 @@ class ActivationLeaseControlPlane:
             raise WorkItemGovernanceError("ACTIVATION_ENVELOPE_PATH_MISMATCH", "Activation Envelope path mismatch.")
         self._atomic_write_envelope(envelope_file, activation_envelope)
         try:
-            with self.ledger.write_transaction() as connection:
+            with control_transaction() as connection:
                 self._assert_fresh_baseline(connection, preflight_receipt)
                 lease = self._lease_from_contracts(
                     activation_envelope=activation_envelope,
@@ -2180,6 +2377,26 @@ class ActivationLeaseControlPlane:
         envelope_path: str | os.PathLike[str],
         claimed_envelope_path: str | os.PathLike[str],
     ) -> dict[str, Any]:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
         source = Path(envelope_path).expanduser().resolve()
         claimed = Path(claimed_envelope_path).expanduser().resolve()
         if not source.is_file() or claimed.exists():
@@ -2212,7 +2429,7 @@ class ActivationLeaseControlPlane:
                     "PROCESS_IDENTITY_MISMATCH",
                     "Waiting process identity does not match Preflight.",
                 )
-            with self.ledger.write_transaction() as connection:
+            with control_transaction() as connection:
                 row = connection.execute(
                     "SELECT * FROM activation_leases WHERE lease_id=?",
                     (lease_id,),
@@ -2289,12 +2506,36 @@ class ActivationLeaseControlPlane:
         lease_id: str,
         bind_address: str,
         port: int,
-        process_listener_count: int,
+        observed_listeners: list[tuple[str, int]],
     ) -> dict[str, Any]:
-        if bind_address != "127.0.0.1" or process_listener_count != 1:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
+        normalized_listeners = sorted(
+            (str(address), int(listener_port))
+            for address, listener_port in observed_listeners
+        )
+        if bind_address != "127.0.0.1" or normalized_listeners != [(bind_address, port)]:
             self.revoke(lease_id=lease_id, reason="listener_attestation_mismatch")
             raise WorkItemGovernanceError("LISTENER_ATTESTATION_FAILED", "Listener attestation failed closed.")
-        with self.ledger.write_transaction() as connection:
+        with control_transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM activation_leases WHERE lease_id=?",
                 (lease_id,),
@@ -2315,7 +2556,7 @@ class ActivationLeaseControlPlane:
                 claimed_process_identity=str(row["claimed_process_identity"]),
                 bind_address=bind_address,
                 port=port,
-                process_listener_count=process_listener_count,
+                process_listener_count=len(normalized_listeners),
             )
             context_digest = request_context_binding_digest(
                 lease_id=str(row["lease_id"]),
@@ -2368,7 +2609,27 @@ class ActivationLeaseControlPlane:
         return {"lease": lease, "listener_attested": True}
 
     def freeze(self, *, lease_id: str, reason: str = "control_plane_closeout") -> dict[str, Any]:
-        with self.ledger.write_transaction() as connection:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
+        with control_transaction() as connection:
             row = connection.execute("SELECT * FROM activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
             if row is None:
                 raise WorkItemGovernanceError("ACTIVATION_LEASE_NOT_FOUND", "Activation Lease does not exist.")
@@ -2403,7 +2664,27 @@ class ActivationLeaseControlPlane:
         return {"lease": _lease_record(frozen), "idempotent": False}
 
     def close(self, *, lease_id: str, reason: str = "closeout_complete") -> dict[str, Any]:
-        with self.ledger.write_transaction() as connection:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
+        with control_transaction() as connection:
             row = connection.execute("SELECT * FROM activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
             if row is None:
                 raise WorkItemGovernanceError("ACTIVATION_LEASE_NOT_FOUND", "Activation Lease does not exist.")
@@ -2438,7 +2719,27 @@ class ActivationLeaseControlPlane:
         return {"lease": _lease_record(closed), "idempotent": False}
 
     def revoke(self, *, lease_id: str, reason: str) -> dict[str, Any]:
-        with self.ledger.write_transaction() as connection:
+        @contextmanager
+        def control_transaction() -> Iterator[sqlite3.Connection]:
+            with self.ledger.write_transaction() as connection:
+                session = self.ledger.authorize_activation_control_write(
+                    connection,
+                    controller=self,
+                    controller_binding=self.__repository_control_binding,
+                )
+                try:
+                    yield connection
+                finally:
+                    if not self.ledger.activation_control_write_finalized(
+                        connection,
+                        session=session,
+                    ):
+                        self.ledger.finalize_activation_control_write(
+                            connection,
+                            session=session,
+                        )
+
+        with control_transaction() as connection:
             row = connection.execute("SELECT * FROM activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
             if row is None:
                 raise WorkItemGovernanceError("ACTIVATION_LEASE_NOT_FOUND", "Activation Lease does not exist.")
