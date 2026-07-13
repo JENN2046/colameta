@@ -49,6 +49,26 @@ PILOT_FROZEN_CONTRACT_DIGESTS = {
     "authentication_conformance_receipt_schema_sha256": "9f002bd70f4ad571a687c4801d9845bc9531fc53b81f3678b2cf4f3a3c3c4857",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
+PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
+    "remediated_spec_manifest_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"],
+    "scope_schema_sha256": "bba0e6a3771d74687c3b6e042b7e51af1198fe6dd218206b1fad2b65d9b45423",
+    "storage_schema_contract_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+    "activation_lease_schema_sha256": "359b82d7eba0e9c3018cc6c17573aa54dca312d4fe4fcd0af9ec20fce8f77c9c",
+    "lease_event_schema_sha256": "c871099663b640acd7a0b4f3ae9e0ed21c1ff30e8fd180f255bb05062fa63380",
+    "fact_reconciliation_contract_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+    "semantic_rules_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+    "semantic_validation_receipt_schema_sha256": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
+    "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
+    "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
+    "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
+    "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+    "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
+    "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
+    "write_path_inventory_sha256": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
+    "preflight_schema_sha256": "c23c7b8a3c2cedfed2a633806b49879ff564bf807a69115e556f9cd9e67e55b9",
+    "closeout_schema_sha256": "4801f2e2503f1ec47de1a813c184b0884f3a2b6f59af85c0a451bd15a789c2c6",
+    "negative_test_matrix_sha256": "a9e9b69429e848d362e5447c14686eb965714d41f1121222770c09c5a883daa9",
+}
 PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-semantic-rules.v4.json": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
     "pilot-storage-schema-v6.v2.json": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
@@ -61,6 +81,12 @@ PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-expiry-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
     "pilot-semantic-validation-receipt.v3.schema.json": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
     "pilot-write-path-inventory.v3.json": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
+    "pilot-scope-envelope.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["scope_schema_sha256"],
+    "pilot-activation-lease.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["activation_lease_schema_sha256"],
+    "pilot-activation-lease-event.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["lease_event_schema_sha256"],
+    "pilot-preflight.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["preflight_schema_sha256"],
+    "pilot-closeout.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["closeout_schema_sha256"],
+    "pilot-negative-test-matrix.v4.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["negative_test_matrix_sha256"],
 }
 
 
@@ -379,11 +405,20 @@ def validate_pilot_authorization(
     scope_principal = scope_envelope["principal_binding"]
     digest = canonical_sha256(scope_envelope)
     errors: list[str] = []
+    for field, expected in PILOT_AUTHORIZATION_FROZEN_BINDINGS.items():
+        if bindings[field] != expected:
+            errors.append(f"bindings:{field}")
     if bindings["scope_envelope_sha256"] != digest or bindings["authorized_scope_digest"] != digest:
         errors.append("scope_envelope_digest")
+    if bindings["project_snapshot_digest"] != scope_target["project_snapshot_digest"]:
+        errors.append("bindings:project_snapshot_digest")
     for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
         if source[field] != scope_source[field]:
             errors.append(f"source:{field}")
+    if scope_source["storage_schema_contract_digest"] != bindings["storage_schema_contract_sha256"]:
+        errors.append("source:storage_schema_contract_digest")
+    if scope_source["fact_reconciliation_contract_digest"] != bindings["fact_reconciliation_contract_sha256"]:
+        errors.append("source:fact_reconciliation_contract_digest")
     if target["project_id"] != scope_target["project_id"]:
         errors.append("target:project_id")
     if target["project_root_path_digest"] != scope_target["project_root_path_digest"]:
@@ -421,6 +456,83 @@ def validate_pilot_authorization(
             details={"failed_rules": sorted(set(errors))},
         )
     return authorization
+
+
+def validate_pilot_authority_chain(
+    authorization: dict[str, Any],
+    *,
+    scope_envelope: dict[str, Any],
+    execution_authorization_receipt: dict[str, Any],
+    preflight_receipt: dict[str, Any],
+) -> None:
+    """Exhaustively cross-bind every authority input before capability minting."""
+
+    validate_pilot_scope_envelope(
+        scope_envelope,
+        execution_authorization_receipt=execution_authorization_receipt,
+    )
+    validate_pilot_preflight(preflight_receipt)
+    validate_pilot_authorization(authorization, scope_envelope=scope_envelope)
+    bindings = authorization["bindings"]
+    preflight_bindings = preflight_receipt["bindings"]
+    source = authorization["source"]
+    scope_source = scope_envelope["source_binding"]
+    scope_target = scope_envelope["target_project"]
+    isolation = scope_envelope["pilot_isolation"]
+    errors: list[str] = []
+    expected = {
+        "authorization_digest": canonical_sha256(authorization),
+        "scope_envelope_digest": canonical_sha256(scope_envelope),
+        "candidate_manifest_sha256": bindings["candidate_manifest_sha256"],
+        "file_list_root_sha256": bindings["file_list_root_sha256"],
+        "storage_schema_contract_digest": bindings["storage_schema_contract_sha256"],
+        "fact_reconciliation_contract_digest": bindings["fact_reconciliation_contract_sha256"],
+        "semantic_rules_digest": bindings["semantic_rules_sha256"],
+        "project_snapshot_digest": bindings["project_snapshot_digest"],
+        "execution_attempt_slot_schema_sha256": bindings["execution_attempt_slot_schema_sha256"],
+        "execution_authorization_receipt_schema_sha256": bindings["execution_authorization_receipt_schema_sha256"],
+        "execution_authorization_receipt_digest": canonical_sha256(execution_authorization_receipt),
+        "authentication_conformance_receipt_schema_sha256": bindings["authentication_conformance_receipt_schema_sha256"],
+        "expiry_conformance_receipt_schema_sha256": bindings["expiry_conformance_receipt_schema_sha256"],
+    }
+    if set(preflight_bindings) != set(expected):
+        errors.append("preflight:binding_keyset")
+    for field, value in expected.items():
+        if preflight_bindings.get(field) != value:
+            errors.append(f"preflight:{field}")
+    if bindings["execution_authorization_receipt_digest"] != expected["execution_authorization_receipt_digest"]:
+        errors.append("bindings:execution_authorization_receipt_digest")
+    context = preflight_receipt["execution_context"]
+    for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
+        if context[field] != source[field] or context[field] != scope_source[field]:
+            errors.append(f"execution_context:{field}")
+    project = preflight_receipt["project"]
+    for field in ("project_id", "project_root"):
+        if project[field] != scope_target[field]:
+            errors.append(f"project:{field}")
+    if project["snapshot_digest"] != scope_target["project_snapshot_digest"]:
+        errors.append("project:snapshot_digest")
+    if preflight_receipt["isolation"]["pilot_root"] != isolation["pilot_root"]:
+        errors.append("isolation:pilot_root")
+    if preflight_receipt["ledger"]["path_digest"] != isolation["ledger_path_digest"]:
+        errors.append("ledger:path_digest")
+    target = authorization["target"]
+    if preflight_receipt["runtime"]["bind_address"] != target["bind_address"]:
+        errors.append("runtime:bind_address")
+    if preflight_receipt["runtime"]["port"] != target["port"]:
+        errors.append("runtime:port")
+    if preflight_receipt["surface"]["exposure_profile"] != target["exposure_profile"]:
+        errors.append("surface:exposure_profile")
+    if preflight_receipt["surface"]["scope_mode"] != target["scope_mode"]:
+        errors.append("surface:scope_mode")
+    if preflight_receipt["authentication"]["caller_auth_mode"] != authorization["principal"]["caller_auth_mode"]:
+        errors.append("authentication:caller_auth_mode")
+    if errors:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORITY_BINDING_MISMATCH",
+            "Pilot Authorization, Scope, Execution, Preflight, and frozen contracts do not form one authority chain.",
+            details={"failed_bindings": sorted(set(errors))},
+        )
 
 
 def validate_pilot_preflight(receipt: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
@@ -559,11 +671,73 @@ def _validate_pilot_lease_authority_semantics(
             "PILOT_PROJECT_SNAPSHOT_MISMATCH",
             "Pilot Lease source binding differs from the authorized Scope.",
         )
+    authorization = capability.authorization
+    if lease["authorization_id"] != authorization["gate_id"]:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORITY_BINDING_MISMATCH",
+            "Pilot Lease authorization ID differs from the consumed decision.",
+        )
     scope_principal = scope["principal_binding"]
     if lease["principal_binding"] != scope_principal:
         raise WorkItemGovernanceError(
             "PILOT_COMBINED_ROLE_NOT_AUTHORIZED",
             "Pilot Lease Principal differs from the explicitly authorized role binding.",
+        )
+    expected_scope_binding = {
+        "project_id": scope["target_project"]["project_id"],
+        "project_snapshot_digest": scope["target_project"]["project_snapshot_digest"],
+        "proposed_work_item_id": scope["work_item_scope"]["proposed_work_item_id"],
+        "authorized_work_item_id": scope["work_item_scope"]["authorized_work_item_id"],
+        "origin_digest": canonical_sha256(scope["work_item_scope"]["origin"]),
+        "authorized_create_command_digest": scope["work_item_scope"]["authorized_create_command_digest"],
+        "objective_digest": scope["work_item_scope"]["objective_digest"],
+        "task_version_payload_digests": scope["work_item_scope"]["task_version_payload_digests"],
+        "execution_attempt_slot_schema_sha256": scope["execution_scope"]["attempt_slot_schema_sha256"],
+        "execution_authorization_receipt_schema_sha256": scope["execution_scope"]["authorization_receipt_schema_sha256"],
+        "execution_authorization_receipt_digest": scope["execution_scope"]["authorization_receipt_digest"],
+        "artifact_policy_digest": canonical_sha256(scope["artifact_policy"]),
+        "protected_path_manifest_digest": scope["target_project"]["protected_path_manifest_digest"],
+        "allowed_write_path_manifest_digest": scope["target_project"]["allowed_write_path_manifest_digest"],
+    }
+    if lease["scope_binding"] != expected_scope_binding:
+        failed = sorted(
+            field
+            for field in set(lease["scope_binding"]) | set(expected_scope_binding)
+            if lease["scope_binding"].get(field) != expected_scope_binding.get(field)
+        )
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORITY_BINDING_MISMATCH",
+            f"Pilot Lease scope binding differs from the exact authorized Work Item and project scope: {failed}.",
+            details={"failed_bindings": [f"scope_binding:{field}" for field in failed]},
+        )
+    preflight_isolation = preflight["isolation"]
+    expected_runtime = {
+        "bind_address": authorization["target"]["bind_address"],
+        "port": authorization["target"]["port"],
+        "exposure_profile": authorization["target"]["exposure_profile"],
+        "scope_mode": authorization["target"]["scope_mode"],
+        "pilot_root_path_digest": canonical_path_digest(preflight_isolation["pilot_root"]),
+        "project_root_path_digest": canonical_path_digest(preflight["project"]["project_root"]),
+        "ledger_path_digest": preflight["ledger"]["path_digest"],
+        "token_file_path_digest": canonical_path_digest(preflight_isolation["token_file_path"]),
+        "database_generation": preflight["ledger"]["database_generation"],
+        "preflight_receipt_digest": canonical_sha256(preflight),
+        "preflight_observed_at": preflight["observed_at"],
+        "preflight_valid_until": preflight["valid_until"],
+        "backup_receipt_digest": preflight["backup"]["receipt_digest"],
+        "backup_sha256": preflight["backup"]["sha256"],
+    }
+    for field, expected_value in expected_runtime.items():
+        if lease["runtime_binding"][field] != expected_value:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORITY_BINDING_MISMATCH",
+                "Pilot Lease runtime binding differs from the exact measured Preflight.",
+                details={"failed_binding": f"runtime_binding:{field}"},
+            )
+    if lease["window"] != scope["window"] or lease["quotas"] != scope["quotas"]:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORITY_BINDING_MISMATCH",
+            "Pilot Lease window or quotas differ from the exact authorized Scope.",
         )
     if lease["usage"]["execution_slots"] != initial_execution_slot_usage(capability.execution_receipt):
         raise WorkItemGovernanceError(
@@ -585,16 +759,19 @@ class PilotActivationControlPlane:
         self.last_semantic_validation_receipt: dict[str, Any] | None = None
 
     def prepare_lease(self, lease: dict[str, Any], *, authority: Any) -> dict[str, Any]:
-        from runner.work_item_governance.pilot_authorization import require_consumed_pilot_authorization
+        from runner.work_item_governance.pilot_authorization import consume_pilot_authorization_capability
 
-        capability = require_consumed_pilot_authorization(authority)
+        # Burn the process capability before any validation or database work.
+        # A failed or concurrent prepare therefore requires renewed external
+        # authorization and cannot replay the already-tombstoned decision.
+        capability = consume_pilot_authorization_capability(authority)
         validate_governance_record("pilot_activation_lease.v4", lease)
-        validate_pilot_scope_envelope(
-            capability.scope_envelope,
+        validate_pilot_authority_chain(
+            capability.authorization,
+            scope_envelope=capability.scope_envelope,
             execution_authorization_receipt=capability.execution_receipt,
+            preflight_receipt=capability.preflight,
         )
-        validate_pilot_preflight(capability.preflight)
-        validate_pilot_authorization(capability.authorization, scope_envelope=capability.scope_envelope)
         binding_errors: list[str] = []
         expected_bindings = {
             "authorization_digest": canonical_sha256(capability.authorization),

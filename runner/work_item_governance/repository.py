@@ -749,10 +749,11 @@ class SQLiteWorkItemLedger:
                     "Ledger schema is newer than this ColaMeta build.",
                     details={"current": current, "supported": CURRENT_LEDGER_SCHEMA_VERSION},
                 )
-            if current == 5 and self.target_schema_version == 6:
+            if current < 6 and self.target_schema_version >= 6:
                 raise WorkItemGovernanceError(
                     "PILOT_EXPLICIT_MIGRATION_REQUIRED",
-                    "Schema v5 to v6 requires the explicit atomic Pilot migration wrapper.",
+                    "Any schema transition into v6 requires the explicit atomic Pilot migration wrapper.",
+                    details={"current": current, "target": self.target_schema_version},
                 )
             while current < self.target_schema_version:
                 target = current + 1
