@@ -20,14 +20,14 @@ from runner.work_item_governance.pilot import (
 )
 
 
-_CAPABILITY_LOCK = threading.RLock()
-_CAPABILITY_REGISTRY: dict[int, dict[str, Any]] = {}
 _CAPABILITY_FIELDS = (
     "_tombstone_json",
     "_authorization_json",
     "_scope_envelope_json",
     "_execution_receipt_json",
     "_preflight_json",
+    "_authentication_conformance_json",
+    "_preflight_semantic_json",
     "_semantic_receipt_json",
 )
 
@@ -41,7 +41,10 @@ class ConsumedPilotAuthorization:
         "_scope_envelope_json",
         "_execution_receipt_json",
         "_preflight_json",
+        "_authentication_conformance_json",
+        "_preflight_semantic_json",
         "_semantic_receipt_json",
+        "_reader",
     )
 
     def __new__(cls, *args: Any, **kwargs: Any) -> ConsumedPilotAuthorization:
@@ -52,9 +55,7 @@ class ConsumedPilotAuthorization:
         raise TypeError("Consumed Pilot authority is immutable.")
 
     def _copy(self, field: str) -> dict[str, Any]:
-        with _CAPABILITY_LOCK:
-            record = _verified_capability_record(self)
-            value = record["snapshots"][_CAPABILITY_FIELDS.index(field)]
+        value = self._reader(self, field)
         record = json.loads(value)
         if not isinstance(record, dict):
             raise TypeError("Consumed Pilot authority contains an invalid internal snapshot.")
@@ -81,6 +82,14 @@ class ConsumedPilotAuthorization:
         return self._copy("_preflight_json")
 
     @property
+    def authentication_conformance(self) -> dict[str, Any]:
+        return self._copy("_authentication_conformance_json")
+
+    @property
+    def preflight_semantic_receipt(self) -> dict[str, Any]:
+        return self._copy("_preflight_semantic_json")
+
+    @property
     def semantic_receipt(self) -> dict[str, Any]:
         return self._copy("_semantic_receipt_json")
 
@@ -95,77 +104,6 @@ class ConsumedPilotAuthorization:
 
     def __reduce_ex__(self, _protocol: int) -> Any:
         raise TypeError("Consumed Pilot authority cannot be serialized.")
-
-
-def _mint_consumed_pilot_authorization(
-    *,
-    tombstone: dict[str, Any],
-    authorization: dict[str, Any],
-    scope_envelope: dict[str, Any],
-    execution_receipt: dict[str, Any],
-    preflight: dict[str, Any],
-    semantic_receipt: dict[str, Any],
-) -> ConsumedPilotAuthorization:
-    capability = object.__new__(ConsumedPilotAuthorization)
-    snapshots = (
-        canonical_json(tombstone),
-        canonical_json(authorization),
-        canonical_json(scope_envelope),
-        canonical_json(execution_receipt),
-        canonical_json(preflight),
-        canonical_json(semantic_receipt),
-    )
-    for field, snapshot in zip(_CAPABILITY_FIELDS, snapshots, strict=True):
-        object.__setattr__(capability, field, snapshot)
-    with _CAPABILITY_LOCK:
-        _CAPABILITY_REGISTRY[id(capability)] = {
-            "capability": capability,
-            "snapshots": snapshots,
-            "state": "active",
-        }
-    return capability
-
-
-def _verified_capability_record(value: Any) -> dict[str, Any]:
-    if type(value) is not ConsumedPilotAuthorization:
-        raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-            "Pilot Lease preparation requires the exact consumed one-shot authority capability.",
-        )
-    record = _CAPABILITY_REGISTRY.get(id(value))
-    try:
-        actual = tuple(getattr(value, field) for field in _CAPABILITY_FIELDS)
-    except (AttributeError, TypeError) as exc:
-        raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-            "Pilot authority capability is incomplete or mutated.",
-        ) from exc
-    if record is None or record["capability"] is not value or actual != record["snapshots"]:
-        raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-            "Pilot authority capability was not issued by this process or its snapshots were mutated.",
-        )
-    return record
-
-
-def require_consumed_pilot_authorization(value: Any) -> ConsumedPilotAuthorization:
-    with _CAPABILITY_LOCK:
-        record = _verified_capability_record(value)
-        if record["state"] != "active":
-            raise WorkItemGovernanceError(
-                "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED",
-                "Pilot authority capability has already been consumed by a Lease preparation attempt.",
-            )
-        return value
-
-
-def consume_pilot_authorization_capability(value: Any) -> ConsumedPilotAuthorization:
-    """Atomically burn one issued capability before the first Lease prepare attempt."""
-
-    with _CAPABILITY_LOCK:
-        capability = require_consumed_pilot_authorization(value)
-        _CAPABILITY_REGISTRY[id(capability)]["state"] = "consumed"
-        return capability
 
 
 class PilotAuthorizationDecisionConsumer:
@@ -216,8 +154,10 @@ class PilotAuthorizationDecisionConsumer:
         scope_envelope: dict[str, Any],
         execution_authorization_receipt: dict[str, Any],
         preflight_receipt: dict[str, Any],
+        authentication_conformance_receipt: dict[str, Any],
+        preflight_semantic_validation_receipt: dict[str, Any],
         expected_authorization_digest: str,
-    ) -> ConsumedPilotAuthorization:
+    ) -> dict[str, Any]:
         self.tombstone_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(self.tombstone_path.parent, 0o700)
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -239,6 +179,8 @@ class PilotAuthorizationDecisionConsumer:
                 scope_envelope=scope_envelope,
                 execution_authorization_receipt=execution_authorization_receipt,
                 preflight_receipt=preflight_receipt,
+                authentication_conformance_receipt=authentication_conformance_receipt,
+                semantic_validation_receipt=preflight_semantic_validation_receipt,
             )
             digest = canonical_sha256(decision)
             if digest != expected_authorization_digest:
@@ -266,6 +208,8 @@ class PilotAuthorizationDecisionConsumer:
                 "scope_envelope_digest": canonical_sha256(scope_envelope),
                 "execution_authorization_receipt_digest": canonical_sha256(execution_authorization_receipt),
                 "preflight_receipt_digest": canonical_sha256(preflight_receipt),
+                "authentication_conformance_receipt_digest": canonical_sha256(authentication_conformance_receipt),
+                "preflight_semantic_validation_receipt_digest": canonical_sha256(preflight_semantic_validation_receipt),
                 "semantic_validation_receipt_digest": canonical_sha256(semantic_receipt),
                 "decision": "CONSUMED",
                 "retry_allowed": False,
@@ -286,16 +230,112 @@ class PilotAuthorizationDecisionConsumer:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            return _mint_consumed_pilot_authorization(
-                tombstone=tombstone,
-                authorization=decision,
-                scope_envelope=scope_envelope,
-                execution_receipt=execution_authorization_receipt,
-                preflight=preflight_receipt,
-                semantic_receipt=semantic_receipt,
-            )
+            return {
+                "tombstone": tombstone,
+                "authorization": decision,
+                "scope_envelope": scope_envelope,
+                "execution_receipt": execution_authorization_receipt,
+                "preflight": preflight_receipt,
+                "authentication_conformance": authentication_conformance_receipt,
+                "preflight_semantic": preflight_semantic_validation_receipt,
+                "semantic_receipt": semantic_receipt,
+            }
         finally:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
+
+
+def _install_consumer_owned_capability_boundary(
+    consumer_class: type[PilotAuthorizationDecisionConsumer],
+) -> tuple[
+    type[PilotAuthorizationDecisionConsumer],
+    Any,
+    Any,
+]:
+    """Keep issuance and registry state reachable only through verified consume()."""
+
+    lock = threading.RLock()
+    registry: dict[int, dict[str, Any]] = {}
+    verified_consume = consumer_class.consume
+
+    def verified_record(value: Any) -> dict[str, Any]:
+        if type(value) is not ConsumedPilotAuthorization:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+                "Pilot Lease preparation requires the exact consumed one-shot authority capability.",
+            )
+        record = registry.get(id(value))
+        try:
+            actual = tuple(getattr(value, field) for field in _CAPABILITY_FIELDS)
+        except (AttributeError, TypeError) as exc:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+                "Pilot authority capability is incomplete or mutated.",
+            ) from exc
+        if record is None or record["capability"] is not value or actual != record["snapshots"]:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+                "Pilot authority capability was not issued by a verified Decision consumption or was mutated.",
+            )
+        return record
+
+    def read_snapshot(value: Any, field: str) -> str:
+        with lock:
+            record = verified_record(value)
+            return record["snapshots"][_CAPABILITY_FIELDS.index(field)]
+
+    def consume_and_issue(self: Any, **kwargs: Any) -> ConsumedPilotAuthorization:
+        payload = verified_consume(self, **kwargs)
+        snapshots = tuple(
+            canonical_json(payload[field])
+            for field in (
+                "tombstone",
+                "authorization",
+                "scope_envelope",
+                "execution_receipt",
+                "preflight",
+                "authentication_conformance",
+                "preflight_semantic",
+                "semantic_receipt",
+            )
+        )
+        capability = object.__new__(ConsumedPilotAuthorization)
+        for field, snapshot in zip(_CAPABILITY_FIELDS, snapshots, strict=True):
+            object.__setattr__(capability, field, snapshot)
+        object.__setattr__(capability, "_reader", read_snapshot)
+        with lock:
+            registry[id(capability)] = {
+                "capability": capability,
+                "snapshots": snapshots,
+                "state": "active",
+            }
+        return capability
+
+    def require(value: Any) -> ConsumedPilotAuthorization:
+        with lock:
+            record = verified_record(value)
+            if record["state"] != "active":
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED",
+                    "Pilot authority capability has already been consumed by a Lease preparation attempt.",
+                )
+            return value
+
+    def consume_once(value: Any) -> ConsumedPilotAuthorization:
+        with lock:
+            capability = require(value)
+            registry[id(capability)]["state"] = "consumed"
+            return capability
+
+    consumer_class.consume = consume_and_issue  # type: ignore[method-assign]
+    return consumer_class, require, consume_once
+
+
+(
+    PilotAuthorizationDecisionConsumer,
+    require_consumed_pilot_authorization,
+    consume_pilot_authorization_capability,
+) = _install_consumer_owned_capability_boundary(PilotAuthorizationDecisionConsumer)
+del _install_consumer_owned_capability_boundary

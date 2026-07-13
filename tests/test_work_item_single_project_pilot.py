@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from runner.mcp_server import MCPPlanningBridgeServer
-from runner.work_item_governance.canonical import canonical_sha256
+from runner.work_item_governance.canonical import canonical_sha256, sha256_file
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.pilot import (
@@ -185,6 +185,8 @@ def _consumed_authority(
         scope_envelope=scope,
         execution_authorization_receipt=execution,
         preflight_receipt=preflight,
+        authentication_conformance_receipt={},
+        preflight_semantic_validation_receipt={},
         expected_authorization_digest=canonical_sha256(authorization),
     )
 
@@ -826,7 +828,12 @@ def test_every_frozen_negative_scenario_has_executable_semantic_or_boundary_mapp
         assert any(str(rule["id"]).startswith(category_prefix) for rule in rules)
 
 
-def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path: Path) -> None:
+def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runner.work_item_governance.pilot_bootstrap as bootstrap_module
+
     root = tmp_path / "pilot"
     project = tmp_path / "project"
     paths = PilotBootstrapPaths(
@@ -841,21 +848,14 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
         token_file=root / "xdg-config/colameta/auth.json",
         backup_path=root / "evidence/pre-activation.sqlite3",
     )
-    receipt = bootstrap_fresh_pilot_ledger(
-        paths=paths,
-        port=48791,
-    )
-    assert receipt["database_generation"] == receipt["backup"]["database_generation"] == 1
-    assert receipt["backup"]["schema_version"] == 6
-    assert receipt["backup"]["mode"] == "0600"
-    assert not any(receipt["zero_fact_baseline"].values())
-    assert receipt["runtime"]["gate_mode"] == "shadow"
-    assert receipt["runtime"]["authoritative"] is False
+    project.mkdir()
     subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(project), "config", "user.email", "pilot@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(project), "config", "user.name", "Pilot Test"], check=True)
-    (project / "fixture.txt").write_text("pilot\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(project), "add", "fixture.txt"], check=True)
+    (project / ".gitignore").write_text(".colameta/\n", encoding="utf-8")
+    fixture = project / "fixture.txt"
+    fixture.write_text("pilot\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", ".gitignore", "fixture.txt"], check=True)
     subprocess.run(["git", "-C", str(project), "commit", "-qm", "pilot fixture"], check=True)
     head = subprocess.run(
         ["git", "-C", str(project), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -866,20 +866,130 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
     index = subprocess.run(
         ["git", "-C", str(project), "ls-files", "--stage", "-z"], check=True, capture_output=True, text=True
     ).stdout.rstrip("\n")
+    wheel = root / "artifacts/colameta-test.whl"
+    wheel.parent.mkdir(parents=True, mode=0o700)
+    wheel.write_bytes(b"reviewed wheel fixture")
+
+    class FakeAttestation:
+        source_binding = {
+            "core_baseline_commit": "53d8939af22b019b2df2b555b85869ac39c5bba2",
+            "implementation_commit": head,
+            "implementation_tree": tree,
+            "wheel_sha256": sha256_file(wheel),
+        }
+        checkout_root = project.resolve()
+        wheel_artifact = wheel.resolve()
+        evidence_digest = canonical_sha256({"fixture": "source-evidence"})
+        file_manifest_digest = canonical_sha256({"fixture": "installed-inventory"})
+
+        @staticmethod
+        def require_trusted() -> None:
+            return None
+
+    attestation = FakeAttestation()
+    monkeypatch.setattr(bootstrap_module, "verify_runtime_source_artifacts", lambda **_kwargs: attestation)
+    receipt = bootstrap_fresh_pilot_ledger(
+        paths=paths,
+        port=48791,
+        source_checkout=project,
+        wheel_artifact=wheel,
+    )
+    assert receipt["database_generation"] == receipt["backup"]["database_generation"] == 1
+    assert receipt["backup"]["schema_version"] == 6
+    assert receipt["backup"]["mode"] == "0600"
+    assert not any(receipt["zero_fact_baseline"].values())
+    assert receipt["runtime"]["gate_mode"] == "shadow"
+    assert receipt["runtime"]["authoritative"] is False
+    paths.registry_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.registry_path.write_text(
+        json.dumps({"schema_version": 1, "projects": [{"project_id": "pilot-project", "project_root": str(project)}]}),
+        encoding="utf-8",
+    )
+    paths.registry_path.chmod(0o600)
+    protected_manifest = {"paths": [{"path": "fixture.txt", "sha256": sha256_file(fixture)}]}
+    read_manifest = {"paths": ["fixture.txt"]}
+    write_manifest = {"paths": ["output"]}
+    manifest_digests = {
+        "protected": canonical_sha256(protected_manifest),
+        "allowed_read": canonical_sha256(read_manifest),
+        "allowed_write": canonical_sha256(write_manifest),
+    }
     source_binding = {
         "implementation_commit": head,
         "implementation_tree": tree,
-        "wheel_sha256": SHA,
-        "installed_inventory_sha256": SHA,
+        "wheel_sha256": attestation.source_binding["wheel_sha256"],
+        "installed_inventory_sha256": attestation.file_manifest_digest,
     }
+    execution_context = {
+        **source_binding,
+        "python_executable": str(Path(sys.executable).resolve()),
+        "cwd": str(project.resolve()),
+    }
+    execution_context["runtime_binding_digest"] = canonical_sha256(execution_context)
+    snapshot_record = {
+        "project_id": "pilot-project",
+        "project_root_path_digest": canonical_path_digest(project),
+        "head_commit": head,
+        "head_tree": tree,
+        "tracked_changes_digest": canonical_sha256(""),
+        "untracked_changes_digest": canonical_sha256(""),
+        "index_digest": canonical_sha256(index),
+        "protected_assets_digest": manifest_digests["protected"],
+        "protected_path_manifest_digest": manifest_digests["protected"],
+        "allowed_read_path_manifest_digest": manifest_digests["allowed_read"],
+        "allowed_write_path_manifest_digest": manifest_digests["allowed_write"],
+    }
+    measured_project = {
+        "project_id": "pilot-project",
+        "project_root": str(project),
+        "registry_project_count": 1,
+        "snapshot_digest": canonical_sha256(snapshot_record),
+        "head_commit": head,
+        "head_tree": tree,
+        "index_digest": canonical_sha256(index),
+        "protected_path_manifest_digest": manifest_digests["protected"],
+        "allowed_read_path_manifest_digest": manifest_digests["allowed_read"],
+        "allowed_write_path_manifest_digest": manifest_digests["allowed_write"],
+        "ledger_git_ignored": True,
+        "ledger_not_tracked": True,
+        "ledger_not_staged": True,
+        "root_override_disabled": True,
+    }
+    ledger_state = {
+        "path_digest": receipt["ledger_path_digest"],
+        "schema_version": 6,
+        "database_generation": receipt["database_generation"],
+        "zero_fact_baseline": receipt["zero_fact_baseline"],
+        "integrity_check": "ok",
+        "foreign_key_violations": [],
+        "token_evidence_digest": receipt["token_evidence_digest"],
+        "source_artifact_evidence_digest": attestation.evidence_digest,
+    }
+    authorization_digest = canonical_sha256({})
+    bindings = {
+        "authorization_digest": authorization_digest,
+        "scope_envelope_digest": SHA,
+        "candidate_manifest_sha256": SHA,
+        "file_list_root_sha256": SHA,
+        "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+        "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+        "semantic_rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+        "project_snapshot_digest": measured_project["snapshot_digest"],
+        "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
+        "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
+        "execution_authorization_receipt_digest": SHA,
+        "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
+        "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+    }
+    principal_binding = {"principal_id": "pilot-reviewer", "session_ref": "pilot-session", "permissions": ["pilot"]}
     authentication_receipt = {
         "schema_version": "wig_p3_pilot_authentication_conformance_receipt.v1",
         "tested_at": isoformat_utc(utc_now()),
         "source_binding": source_binding,
         "runtime_binding": {
-            "runtime_binding_digest": SHA,
-            "scope_envelope_digest": SHA,
-            "ledger_state_digest": SHA,
+            "runtime_binding_digest": execution_context["runtime_binding_digest"],
+            "scope_envelope_digest": bindings["scope_envelope_digest"],
+            "ledger_state_digest": canonical_sha256(ledger_state),
             "token_file_path_digest": canonical_path_digest(paths.token_file),
         },
         "authentication": {
@@ -907,17 +1017,16 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
             "scope_envelope_digest": SHA,
             "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
             "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
-            "authorization_digest": SHA,
-            "project_snapshot_digest": SHA,
-            "runtime_binding_digest": SHA,
-            "ledger_state_digest": SHA,
+            "authorization_digest": authorization_digest,
+            "project_snapshot_digest": measured_project["snapshot_digest"],
+            "runtime_binding_digest": execution_context["runtime_binding_digest"],
+            "ledger_state_digest": canonical_sha256(ledger_state),
         },
     )
     decision_path = root / "authority/decision.json"
     decision_path.parent.mkdir(mode=0o700)
     decision_path.write_text("{}", encoding="utf-8")
     decision_path.chmod(0o600)
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.chdir(project)
     for name, path in {
         "HOME": paths.home,
@@ -931,50 +1040,40 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
         bootstrap_receipt=receipt,
         paths=paths,
         gate_id="WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
-        bindings={
-            "authorization_digest": SHA,
-            "scope_envelope_digest": SHA,
-            "candidate_manifest_sha256": SHA,
-            "file_list_root_sha256": SHA,
-            "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
-            "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
-            "semantic_rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
-            "project_snapshot_digest": SHA,
-            "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
-            "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
-            "execution_authorization_receipt_digest": SHA,
-            "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
-            "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
-        },
-        execution_context={
-            **source_binding,
-            "python_executable": str(Path(sys.executable).resolve()),
-            "cwd": str(project.resolve()),
-            "runtime_binding_digest": SHA,
-        },
-        project={
-            "project_id": "pilot-project",
-            "project_root": str(project),
-            "registry_project_count": 1,
-            "snapshot_digest": SHA,
-            "head_commit": head,
-            "head_tree": tree,
-            "index_digest": canonical_sha256(index),
-            "protected_path_manifest_digest": SHA,
-            "allowed_read_path_manifest_digest": SHA,
-            "allowed_write_path_manifest_digest": SHA,
-            "ledger_git_ignored": True,
-            "ledger_not_tracked": True,
-            "ledger_not_staged": True,
-            "root_override_disabled": True,
-        },
+        bindings=bindings,
+        execution_context=execution_context,
+        project=measured_project,
         authentication_conformance_receipt=authentication_receipt,
         semantic_validation_receipt=semantic,
         decision_path=decision_path,
+        source_checkout=project,
+        wheel_artifact=wheel,
+        principal_binding=principal_binding,
+        project_path_manifests={
+            "protected": protected_manifest,
+            "allowed_read": read_manifest,
+            "allowed_write": write_manifest,
+        },
     )
     preflight = build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert preflight["result"] == "PASS"
     assert preflight["ledger"]["path"] == receipt["ledger_path"]
+    assert preflight["authentication"]["principal_binding_digest"] == canonical_sha256(principal_binding)
+    forged_context = {**execution_context, "runtime_binding_digest": SHA}
+    with pytest.raises(WorkItemGovernanceError) as runtime_error:
+        build_fresh_pilot_preflight_receipt(**{**preflight_kwargs, "execution_context": forged_context})
+    assert runtime_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    forged_project = {**measured_project, "snapshot_digest": SHA}
+    with pytest.raises(WorkItemGovernanceError) as project_error:
+        build_fresh_pilot_preflight_receipt(**{**preflight_kwargs, "project": forged_project})
+    assert project_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_token = json.loads(paths.token_file.read_text(encoding="utf-8"))["auth_token"]
+    leaked_evidence = root / "evidence/leaked-token.txt"
+    leaked_evidence.write_text(leaked_token, encoding="utf-8")
+    with pytest.raises(WorkItemGovernanceError) as token_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert token_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_evidence.unlink()
     protected_files = [
         Path(receipt["ledger_path"]),
         paths.backup_path,
@@ -988,11 +1087,13 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert measured_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     assert before == {str(path): path.read_bytes() for path in protected_files}
-    monkeypatch.undo()
+    monkeypatch.setenv("HOME", str(paths.home))
     with pytest.raises(WorkItemGovernanceError) as error:
         bootstrap_fresh_pilot_ledger(
             paths=paths,
             port=48791,
+            source_checkout=project,
+            wheel_artifact=wheel,
         )
     assert error.value.code == "PILOT_LEDGER_NOT_FRESH"
 
@@ -1012,7 +1113,12 @@ def test_bootstrap_rejects_project_nested_in_private_pilot_root(tmp_path: Path) 
         backup_path=root / "evidence/backup.sqlite3",
     )
     with pytest.raises(WorkItemGovernanceError) as error:
-        bootstrap_fresh_pilot_ledger(paths=paths, port=48792)
+        bootstrap_fresh_pilot_ledger(
+            paths=paths,
+            port=48792,
+            source_checkout=tmp_path,
+            wheel_artifact=tmp_path / "unused.whl",
+        )
     assert error.value.code == "PILOT_ROOT_COLLISION"
     assert not root.exists()
 
@@ -1022,6 +1128,9 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import runner.work_item_governance.pilot_authorization as module
+
+    assert not hasattr(module, "_mint_consumed_pilot_authorization")
+    assert not hasattr(module, "_CAPABILITY_REGISTRY")
 
     decision = {
         "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
@@ -1045,6 +1154,8 @@ def test_one_shot_authorization_is_atomically_tombstoned(
         scope_envelope=scope,
         execution_authorization_receipt={},
         preflight_receipt={"execution_context": {}, "ledger": {}},
+        authentication_conformance_receipt={},
+        preflight_semantic_validation_receipt={},
         expected_authorization_digest=canonical_sha256(decision),
     )
     assert tombstone.tombstone["decision"] == "CONSUMED"
@@ -1070,6 +1181,8 @@ def test_one_shot_authorization_is_atomically_tombstoned(
             scope_envelope=scope,
             execution_authorization_receipt={},
             preflight_receipt={"execution_context": {}, "ledger": {}},
+            authentication_conformance_receipt={},
+            preflight_semantic_validation_receipt={},
             expected_authorization_digest=canonical_sha256(decision),
         )
     assert error.value.code == "PILOT_AUTHORIZATION_ALREADY_CONSUMED"

@@ -464,6 +464,8 @@ def validate_pilot_authority_chain(
     scope_envelope: dict[str, Any],
     execution_authorization_receipt: dict[str, Any],
     preflight_receipt: dict[str, Any],
+    authentication_conformance_receipt: dict[str, Any],
+    semantic_validation_receipt: dict[str, Any],
 ) -> None:
     """Exhaustively cross-bind every authority input before capability minting."""
 
@@ -472,6 +474,14 @@ def validate_pilot_authority_chain(
         execution_authorization_receipt=execution_authorization_receipt,
     )
     validate_pilot_preflight(preflight_receipt)
+    validate_governance_record(
+        "pilot_authentication_conformance_receipt.v1",
+        authentication_conformance_receipt,
+    )
+    validate_governance_record(
+        "pilot_semantic_validation_receipt.v3",
+        semantic_validation_receipt,
+    )
     validate_pilot_authorization(authorization, scope_envelope=scope_envelope)
     bindings = authorization["bindings"]
     preflight_bindings = preflight_receipt["bindings"]
@@ -527,6 +537,19 @@ def validate_pilot_authority_chain(
         errors.append("surface:scope_mode")
     if preflight_receipt["authentication"]["caller_auth_mode"] != authorization["principal"]["caller_auth_mode"]:
         errors.append("authentication:caller_auth_mode")
+    principal_digest = canonical_sha256(scope_envelope["principal_binding"])
+    if preflight_receipt["authentication"]["principal_binding_digest"] != principal_digest:
+        errors.append("authentication:principal_binding_digest")
+    if preflight_receipt["authentication"]["authentication_conformance_receipt_digest"] != canonical_sha256(
+        authentication_conformance_receipt
+    ):
+        errors.append("authentication:conformance_receipt_digest")
+    if preflight_receipt["semantic_validation"]["receipt_digest"] != canonical_sha256(semantic_validation_receipt):
+        errors.append("semantic_validation:receipt_digest")
+    runtime_context = dict(context)
+    reported_runtime_digest = runtime_context.pop("runtime_binding_digest")
+    if reported_runtime_digest != canonical_sha256(runtime_context):
+        errors.append("execution_context:runtime_binding_digest")
     if errors:
         raise WorkItemGovernanceError(
             "PILOT_AUTHORITY_BINDING_MISMATCH",
@@ -771,6 +794,8 @@ class PilotActivationControlPlane:
             scope_envelope=capability.scope_envelope,
             execution_authorization_receipt=capability.execution_receipt,
             preflight_receipt=capability.preflight,
+            authentication_conformance_receipt=capability.authentication_conformance,
+            semantic_validation_receipt=capability.preflight_semantic_receipt,
         )
         binding_errors: list[str] = []
         expected_bindings = {
@@ -786,6 +811,14 @@ class PilotActivationControlPlane:
             binding_errors.append("execution_authorization_tombstone")
         if capability.tombstone["preflight_receipt_digest"] != preflight_digest:
             binding_errors.append("preflight_tombstone")
+        if capability.tombstone["authentication_conformance_receipt_digest"] != canonical_sha256(
+            capability.authentication_conformance
+        ):
+            binding_errors.append("authentication_conformance_tombstone")
+        if capability.tombstone["preflight_semantic_validation_receipt_digest"] != canonical_sha256(
+            capability.preflight_semantic_receipt
+        ):
+            binding_errors.append("preflight_semantic_tombstone")
         if lease["scope_binding"]["execution_authorization_receipt_digest"] != execution_digest:
             binding_errors.append("execution_authorization_receipt_digest")
         if lease["runtime_binding"]["preflight_receipt_digest"] != preflight_digest:

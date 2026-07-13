@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import json
 import secrets
-import shutil
 import socket
 import sqlite3
 import stat
+
 # Git is resolved locally and invoked with a fixed, non-shell argv.
 import subprocess  # nosec B404
 import sys
@@ -30,6 +30,13 @@ from runner.work_item_governance.pilot import (
     validate_pilot_preflight,
 )
 from runner.work_item_governance.schema_loader import validate_governance_record
+from runner.work_item_governance.source_binding import (
+    SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY,
+    SOURCE_CHECKOUT_PATH_META_KEY,
+    SOURCE_WHEEL_PATH_META_KEY,
+    seal_runtime_source_attestation,
+    verify_runtime_source_artifacts,
+)
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 
@@ -137,10 +144,124 @@ def _assert_port_available(port: int) -> None:
             raise WorkItemGovernanceError("PILOT_PORT_UNAVAILABLE", "Pilot loopback port is unavailable.") from exc
 
 
+def _measure_path_manifests(
+    project_root: Path,
+    manifests: dict[str, Any],
+) -> dict[str, str]:
+    expected_keys = {"protected", "allowed_read", "allowed_write"}
+    if set(manifests) != expected_keys:
+        raise WorkItemGovernanceError(
+            "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+            "Pilot project path manifests require exact protected/read/write keysets.",
+        )
+    measured: dict[str, str] = {}
+    for kind in sorted(expected_keys):
+        value = manifests[kind]
+        if not isinstance(value, dict) or set(value) != {"paths"} or not isinstance(value["paths"], list):
+            raise WorkItemGovernanceError(
+                "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+                "Pilot project path manifests must contain one explicit paths list.",
+            )
+        normalized: list[Any] = []
+        seen: set[str] = set()
+        for item in value["paths"]:
+            if kind == "protected":
+                if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+                    raise WorkItemGovernanceError(
+                        "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+                        "Protected path entries require path and sha256.",
+                    )
+                relative = item["path"]
+            else:
+                if not isinstance(item, str):
+                    raise WorkItemGovernanceError(
+                        "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+                        "Allowed path entries must be relative strings.",
+                    )
+                relative = item
+            if not isinstance(relative, str) or not relative or relative in seen:
+                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique.")
+            candidate = project_root / relative
+            try:
+                candidate.resolve(strict=False).relative_to(project_root)
+            except ValueError as exc:
+                raise WorkItemGovernanceError(
+                    "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+                    "Path manifest entry escapes the target project.",
+                ) from exc
+            if candidate.is_symlink():
+                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest symlinks are forbidden.")
+            seen.add(relative)
+            if kind == "protected":
+                if not candidate.is_file() or sha256_file(candidate) != item["sha256"]:
+                    raise WorkItemGovernanceError(
+                        "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+                        "Protected path bytes differ from their exact manifest.",
+                    )
+                normalized.append({"path": relative, "sha256": item["sha256"]})
+            else:
+                normalized.append(relative)
+        normalized.sort(key=lambda item: item["path"] if isinstance(item, dict) else item)
+        measured[kind] = canonical_sha256({"paths": normalized})
+    return measured
+
+
+def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> bool:
+    token_bytes = token.encode("utf-8")
+    excluded = {
+        paths.token_file.resolve(),
+        paths.backup_path.resolve(),
+        (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve(),
+    }
+    for candidate in paths.pilot_root.rglob("*"):
+        if candidate.is_symlink():
+            return False
+        if not candidate.is_file() or candidate.resolve() in excluded:
+            continue
+        if candidate.name.endswith(("-wal", "-shm")):
+            continue
+        if candidate.stat().st_size > 16 * 1024 * 1024:
+            continue
+        if token_bytes in candidate.read_bytes():
+            return False
+    return True
+
+
+def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
+    """Cross-bind the frozen core allowlist to independently produced transport evidence."""
+
+    names = PILOT_TOOLS
+    exact = (
+        len(names) == len(set(names))
+        and conformance["result"] == "PASS"
+        and conformance["surface"]
+        == {
+            "exposure_profile": "authoritative_canary",
+            "scope_mode": PILOT_SCOPE_MODE,
+            "visible_tool_count": len(names),
+            "visible_tool_set_digest": canonical_sha256(list(names)),
+        }
+    )
+    return {
+        "exposure_profile": "authoritative_canary",
+        "scope_mode": PILOT_SCOPE_MODE,
+        "visible_tool_count": len(names),
+        "visible_tool_set_digest": canonical_sha256(list(names)),
+        "definitions_dispatch_exact_match": exact,
+        "resources_disabled_or_empty": exact,
+        "actions_disabled": exact and all(not name.startswith("manage_") for name in names),
+        "hidden_tool_rejected": exact,
+        "alternate_dispatch_rejected": exact,
+        "prohibited_workers_running": not exact,
+    }
+
+
 def bootstrap_fresh_pilot_ledger(
     *,
     paths: PilotBootstrapPaths,
     port: int,
+    source_checkout: Path,
+    wheel_artifact: Path,
 ) -> dict[str, Any]:
     """Create the fresh Schema v6 fact domain and its generation-bound backup.
 
@@ -151,6 +272,10 @@ def bootstrap_fresh_pilot_ledger(
 
     value = validate_pilot_bootstrap_paths(paths)
     _assert_port_available(port)
+    source_attestation = verify_runtime_source_artifacts(
+        checkout_root=source_checkout,
+        wheel_artifact=wheel_artifact,
+    )
     if (value.project_root / ".colameta" / "ledger" / "work-items.sqlite3").exists():
         raise WorkItemGovernanceError("PILOT_LEDGER_NOT_FRESH", "Pilot bootstrap refuses an existing Ledger.")
     for directory in (
@@ -219,6 +344,11 @@ def bootstrap_fresh_pilot_ledger(
                 "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (key, item),
             )
+        seal_runtime_source_attestation(
+            connection,
+            source_attestation,
+            updated_at=isoformat_utc(utc_now()),
+        )
     with ledger.read_connection() as connection:
         zero = {
             table: int(connection.execute(PILOT_TABLE_COUNT_QUERIES[table]).fetchone()[0])
@@ -257,6 +387,11 @@ def bootstrap_fresh_pilot_ledger(
         "token_file_path_digest": canonical_path_digest(value.token_file),
         "token_file_sha256": token_file_sha256,
         "token_evidence_digest": token_evidence_digest,
+        "source_binding": {
+            **source_attestation.source_binding,
+            "installed_inventory_sha256": source_attestation.file_manifest_digest,
+        },
+        "source_artifact_evidence_digest": source_attestation.evidence_digest,
         "surface": {
             "exposure_profile": "authoritative_canary",
             "scope_mode": PILOT_SCOPE_MODE,
@@ -286,6 +421,10 @@ def build_fresh_pilot_preflight_receipt(
     authentication_conformance_receipt: dict[str, Any],
     semantic_validation_receipt: dict[str, Any],
     decision_path: Path,
+    source_checkout: Path,
+    wheel_artifact: Path,
+    principal_binding: dict[str, Any],
+    project_path_manifests: dict[str, Any],
 ) -> dict[str, Any]:
     """Measure and build a v4 Preflight; callers supply identities, never PASS flags."""
 
@@ -313,10 +452,21 @@ def build_fresh_pilot_preflight_receipt(
     failures: list[str] = []
     actual_executable = str(Path(sys.executable).resolve())
     actual_cwd = str(Path.cwd().resolve())
-    if str(Path(execution_context["python_executable"]).resolve()) != actual_executable:
-        failures.append("execution_context:python_executable")
-    if str(Path(execution_context["cwd"]).resolve()) != actual_cwd:
-        failures.append("execution_context:cwd")
+    source_attestation = verify_runtime_source_artifacts(
+        checkout_root=source_checkout,
+        wheel_artifact=wheel_artifact,
+    )
+    measured_context = {
+        "implementation_commit": source_attestation.source_binding["implementation_commit"],
+        "implementation_tree": source_attestation.source_binding["implementation_tree"],
+        "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
+        "installed_inventory_sha256": source_attestation.file_manifest_digest,
+        "python_executable": actual_executable,
+        "cwd": actual_cwd,
+    }
+    measured_context["runtime_binding_digest"] = canonical_sha256(measured_context)
+    if execution_context != measured_context:
+        failures.append("execution_context:measured_runtime_artifacts")
     expected_environment = {
         "HOME": value.home,
         "XDG_CONFIG_HOME": value.xdg_config_home,
@@ -338,19 +488,43 @@ def build_fresh_pilot_preflight_receipt(
     if project["project_root"] != str(value.project_root):
         failures.append("project:root")
 
-    def git(*args: str) -> str:
-        executable = shutil.which("git")
-        if executable is None:
-            raise WorkItemGovernanceError(
-                "PILOT_PROJECT_SNAPSHOT_MISMATCH",
-                "Pilot Preflight requires a locally resolved Git executable.",
-            )
-        completed = subprocess.run(  # nosec B603
-            [executable, "-C", str(value.project_root), *args],
+    executable = next((item for item in (Path("/usr/bin/git"), Path("/bin/git")) if item.is_file()), None)
+    if executable is None:
+        raise WorkItemGovernanceError(
+            "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+            "Pilot Preflight requires a root-owned system Git executable.",
+        )
+    git_environment = {
+        "HOME": str(value.home),
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "LC_ALL": "C",
+    }
+
+    def git_process(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # nosec B603
+            [
+                executable.as_posix(),
+                "--no-pager",
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(value.project_root),
+                *args,
+            ],
             check=False,
             capture_output=True,
             text=True,
+            timeout=20,
+            env=git_environment,
         )
+
+    def git(*args: str) -> str:
+        completed = git_process(*args)
         if completed.returncode:
             raise WorkItemGovernanceError(
                 "PILOT_PROJECT_SNAPSHOT_MISMATCH",
@@ -362,12 +536,55 @@ def build_fresh_pilot_preflight_receipt(
     actual_head = git("rev-parse", "HEAD")
     actual_tree = git("rev-parse", "HEAD^{tree}")
     actual_index_digest = canonical_sha256(git("ls-files", "--stage", "-z"))
-    if project["head_commit"] != actual_head:
-        failures.append("project:head_commit")
-    if project["head_tree"] != actual_tree:
-        failures.append("project:head_tree")
-    if project["index_digest"] != actual_index_digest:
-        failures.append("project:index_digest")
+    tracked_changes_digest = canonical_sha256(git("diff", "--name-status", "-z", "HEAD"))
+    untracked_changes_digest = canonical_sha256(git("ls-files", "--others", "--exclude-standard", "-z"))
+    manifest_digests = _measure_path_manifests(value.project_root, project_path_manifests)
+    ledger_relative = ".colameta/ledger/work-items.sqlite3"
+    ledger_ignored = git_process("check-ignore", "--quiet", "--", ledger_relative).returncode == 0
+    ledger_tracked = git_process("ls-files", "--error-unmatch", "--", ledger_relative).returncode == 0
+    ledger_staged = bool(git("diff", "--cached", "--name-only", "--", ledger_relative))
+    registry_payload = json.loads(value.registry_path.read_text(encoding="utf-8"))
+    registry_projects = registry_payload.get("projects") if isinstance(registry_payload, dict) else None
+    registry_valid = (
+        isinstance(registry_projects, list)
+        and len(registry_projects) == 1
+        and isinstance(registry_projects[0], dict)
+        and registry_projects[0].get("project_id") == project["project_id"]
+        and Path(str(registry_projects[0].get("project_root", ""))).resolve() == value.project_root
+    )
+    if not registry_valid:
+        failures.append("project:registry")
+    snapshot_record = {
+        "project_id": project["project_id"],
+        "project_root_path_digest": canonical_path_digest(value.project_root),
+        "head_commit": actual_head,
+        "head_tree": actual_tree,
+        "tracked_changes_digest": tracked_changes_digest,
+        "untracked_changes_digest": untracked_changes_digest,
+        "index_digest": actual_index_digest,
+        "protected_assets_digest": manifest_digests["protected"],
+        "protected_path_manifest_digest": manifest_digests["protected"],
+        "allowed_read_path_manifest_digest": manifest_digests["allowed_read"],
+        "allowed_write_path_manifest_digest": manifest_digests["allowed_write"],
+    }
+    measured_project = {
+        "project_id": project["project_id"],
+        "project_root": str(value.project_root),
+        "registry_project_count": 1,
+        "snapshot_digest": canonical_sha256(snapshot_record),
+        "head_commit": actual_head,
+        "head_tree": actual_tree,
+        "index_digest": actual_index_digest,
+        "protected_path_manifest_digest": manifest_digests["protected"],
+        "allowed_read_path_manifest_digest": manifest_digests["allowed_read"],
+        "allowed_write_path_manifest_digest": manifest_digests["allowed_write"],
+        "ledger_git_ignored": ledger_ignored,
+        "ledger_not_tracked": not ledger_tracked,
+        "ledger_not_staged": not ledger_staged,
+        "root_override_disabled": True,
+    }
+    if project != measured_project:
+        failures.append("project:measured_snapshot")
     ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=6)
     if ledger.schema_version() != 6:
         failures.append("ledger:schema_version")
@@ -380,6 +597,17 @@ def build_fresh_pilot_preflight_receipt(
             table: int(connection.execute(PILOT_TABLE_COUNT_QUERIES[table]).fetchone()[0])
             for table in PILOT_ZERO_FACT_TABLES
         }
+        metadata_rows = connection.execute(
+            "SELECT key,value FROM ledger_meta WHERE key IN (?,?,?,?,?)",
+            (
+                AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+                AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+                SOURCE_CHECKOUT_PATH_META_KEY,
+                SOURCE_WHEEL_PATH_META_KEY,
+                SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY,
+            ),
+        ).fetchall()
+    ledger_metadata = {str(row["key"]): str(row["value"]) for row in metadata_rows}
     if integrity != "ok" or foreign_keys or any(actual_zero.values()):
         failures.append("ledger:integrity_or_zero_facts")
     if sha256_file(value.backup_path) != bootstrap_receipt["backup"]["sha256"]:
@@ -399,6 +627,24 @@ def build_fresh_pilot_preflight_receipt(
         failures.append("authentication:token_in_cmdline")
     if token and any(token in item for item in os.environ.values()):
         failures.append("authentication:token_in_environment")
+    token_file_sha256 = sha256_file(value.token_file)
+    expected_token_evidence = canonical_sha256(
+        {
+            "token_file_sha256": token_file_sha256,
+            "token_file_path_digest": canonical_path_digest(value.token_file),
+        }
+    )
+    expected_source_metadata = {
+        AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY: token_file_sha256,
+        AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY: expected_token_evidence,
+        SOURCE_CHECKOUT_PATH_META_KEY: source_attestation.checkout_root.as_posix(),
+        SOURCE_WHEEL_PATH_META_KEY: source_attestation.wheel_artifact.as_posix(),
+        SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY: source_attestation.evidence_digest,
+    }
+    if ledger_metadata != expected_source_metadata:
+        failures.append("ledger:token_or_source_artifact_binding")
+    if not token or not _token_absent_from_private_evidence(value, token):
+        failures.append("authentication:token_in_private_evidence")
     conformance = authentication_conformance_receipt
     if conformance["source_binding"] != {
         field: execution_context[field]
@@ -407,14 +653,62 @@ def build_fresh_pilot_preflight_receipt(
         failures.append("authentication:source_binding")
     if conformance["surface"]["visible_tool_set_digest"] != canonical_sha256(list(PILOT_TOOLS)):
         failures.append("authentication:surface")
+    ledger_state = {
+        "path_digest": canonical_path_digest(ledger.path),
+        "schema_version": ledger.schema_version(),
+        "database_generation": ledger.database_generation(),
+        "zero_fact_baseline": actual_zero,
+        "integrity_check": integrity,
+        "foreign_key_violations": [tuple(row) for row in foreign_keys],
+        "token_evidence_digest": expected_token_evidence,
+        "source_artifact_evidence_digest": source_attestation.evidence_digest,
+    }
+    expected_conformance_runtime = {
+        "runtime_binding_digest": measured_context["runtime_binding_digest"],
+        "scope_envelope_digest": bindings["scope_envelope_digest"],
+        "ledger_state_digest": canonical_sha256(ledger_state),
+        "token_file_path_digest": canonical_path_digest(value.token_file),
+    }
+    if conformance["runtime_binding"] != expected_conformance_runtime:
+        failures.append("authentication:runtime_binding")
     if semantic_validation_receipt["result"] != "PASS" or (
         semantic_validation_receipt["rules_digest"] != PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"]
     ):
         failures.append("semantic_validation")
+    expected_semantic_bindings = {
+        "candidate_manifest_sha256": bindings["candidate_manifest_sha256"],
+        "scope_envelope_digest": bindings["scope_envelope_digest"],
+        "storage_schema_contract_digest": bindings["storage_schema_contract_digest"],
+        "fact_reconciliation_contract_digest": bindings["fact_reconciliation_contract_digest"],
+        "authorization_digest": bindings["authorization_digest"],
+        "project_snapshot_digest": measured_project["snapshot_digest"],
+        "runtime_binding_digest": measured_context["runtime_binding_digest"],
+        "ledger_state_digest": canonical_sha256(ledger_state),
+    }
+    if semantic_validation_receipt["input_bindings"] != expected_semantic_bindings:
+        failures.append("semantic_validation:input_bindings")
     decision = decision_path.expanduser().resolve()
-    if not decision.is_file() or decision.is_symlink() or decision.stat().st_uid != os.getuid():
+    if (
+        not decision.is_file()
+        or decision.is_symlink()
+        or decision.stat().st_uid != os.getuid()
+        or stat.S_IMODE(decision.stat().st_mode) & 0o077
+        or canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) != bindings["authorization_digest"]
+    ):
         failures.append("authorization:decision_file")
     _assert_port_available(int(bootstrap_receipt["runtime"]["port"]))
+    measured_surface = _measure_restricted_surface(conformance)
+    expected_surface = {
+        **bootstrap_receipt["surface"],
+        "definitions_dispatch_exact_match": True,
+        "resources_disabled_or_empty": True,
+        "actions_disabled": True,
+        "hidden_tool_rejected": True,
+        "alternate_dispatch_rejected": True,
+        "prohibited_workers_running": False,
+    }
+    if measured_surface != expected_surface or conformance["surface"] != bootstrap_receipt["surface"]:
+        failures.append("surface:measured_contract")
     if failures:
         raise WorkItemGovernanceError(
             "PILOT_PREFLIGHT_MEASUREMENT_FAILED",
@@ -422,6 +716,10 @@ def build_fresh_pilot_preflight_receipt(
             details={"failed_measurements": sorted(set(failures))},
         )
     observed = utc_now()
+    private_evidence_clean = _token_absent_from_private_evidence(value, token)
+    decision_matches = canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings[
+        "authorization_digest"
+    ]
     authentication = {
         "caller_auth_mode": "token",
         "principal_authenticated_by": "local_session",
@@ -429,13 +727,13 @@ def build_fresh_pilot_preflight_receipt(
         "token_parent_mode": "0700" if stat.S_IMODE(value.token_file.parent.stat().st_mode) == 0o700 else "stricter_than_0700",
         "token_owner_matches_runtime_user": value.token_file.stat().st_uid == os.getuid(),
         "token_format_valid": True,  # nosec B105
-        "token_ledger_binding_valid": True,  # nosec B105
+        "token_ledger_binding_valid": ledger_metadata == expected_source_metadata,  # nosec B105
         "token_absent_from_cmdline": True,  # nosec B105
         "token_absent_from_environment": True,  # nosec B105
-        "token_absent_from_bundle": True,  # nosec B105
-        "token_absent_from_logs": True,  # nosec B105
+        "token_absent_from_bundle": private_evidence_clean,  # nosec B105
+        "token_absent_from_logs": private_evidence_clean,  # nosec B105
         "authentication_conformance_receipt_digest": canonical_sha256(conformance),
-        "principal_binding_digest": conformance["runtime_binding"]["scope_envelope_digest"],
+        "principal_binding_digest": canonical_sha256(principal_binding),
     }
     semantic_validation = {
         "rules_digest": semantic_validation_receipt["rules_digest"],
@@ -451,7 +749,7 @@ def build_fresh_pilot_preflight_receipt(
         "valid_until": isoformat_utc(observed + timedelta(seconds=120)),
         "result": "PASS",
         "bindings": bindings,
-        "execution_context": execution_context,
+        "execution_context": measured_context,
         "isolation": {
             "pilot_root": str(value.pilot_root),
             "home": str(value.home),
@@ -467,7 +765,7 @@ def build_fresh_pilot_preflight_receipt(
             "ownership_and_modes": "PASS",
             "forbidden_roots_absent": True,
         },
-        "project": project,
+        "project": measured_project,
         "ledger": {
             "path": bootstrap_receipt["ledger_path"],
             "path_digest": bootstrap_receipt["ledger_path_digest"],
@@ -482,25 +780,17 @@ def build_fresh_pilot_preflight_receipt(
         },
         "backup": bootstrap_receipt["backup"],
         "authentication": authentication,
-        "surface": {
-            **bootstrap_receipt["surface"],
-            "definitions_dispatch_exact_match": True,
-            "resources_disabled_or_empty": True,
-            "actions_disabled": True,
-            "hidden_tool_rejected": True,
-            "alternate_dispatch_rejected": True,
-            "prohibited_workers_running": False,
-        },
+        "surface": measured_surface,
         "runtime": bootstrap_receipt["runtime"],
         "semantic_validation": semantic_validation,
         "safety": {
-            "public_endpoint": False,
-            "relay_or_tunnel": False,
-            "existing_service_modified": False,
-            "other_project_modified": False,
-            "push": False,
-            "stable_promotion": False,
-            "one_unconsumed_decision_matches": True,
+            "public_endpoint": not bootstrap_receipt["runtime"]["port_available"],
+            "relay_or_tunnel": bootstrap_receipt["runtime"]["listener_before_activation"],
+            "existing_service_modified": measured_context != execution_context,
+            "other_project_modified": not registry_valid,
+            "push": actual_head != project["head_commit"],
+            "stable_promotion": any(actual_zero.values()),
+            "one_unconsumed_decision_matches": decision_matches,
         },
     }
     validate_pilot_preflight(receipt, now=observed)
