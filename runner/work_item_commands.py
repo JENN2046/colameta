@@ -24,10 +24,12 @@ class WorkItemCommandGateway:
         authoritative_transitions: bool | None = None,
         principal_context: PrincipalContext | None = None,
         authoritative_canary: bool = False,
+        bounded_single_project_pilot: bool = False,
         authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
         request_context: AuthoritativeCanaryRequestContext | None = None,
     ) -> None:
-        if authoritative_canary and request_context is not None:
+        activation_composition = authoritative_canary or bounded_single_project_pilot
+        if activation_composition and request_context is not None:
             raise WorkItemGovernanceError(
                 "AUTHENTICATED_REQUEST_CONTEXT_REUSE",
                 "Authoritative Canary request contexts must be minted inside one Gateway execution.",
@@ -35,12 +37,14 @@ class WorkItemCommandGateway:
         self.project_root = str(Path(project_root).expanduser().resolve())
         self.principal_context = principal_context
         self.authoritative_canary = authoritative_canary
+        self.bounded_single_project_pilot = bounded_single_project_pilot
         self.authenticated_request_proof = authenticated_request_proof
         self.service = service_factory(
             self.project_root,
-            enabled=True if authoritative_canary else enabled,
+            enabled=True if activation_composition else enabled,
             authoritative_transitions=authoritative_transitions,
             authoritative_canary=authoritative_canary,
+            bounded_single_project_pilot=bounded_single_project_pilot,
             principal_context=principal_context,
             request_context=request_context,
         )
@@ -88,7 +92,7 @@ class WorkItemCommandGateway:
         }
         handler = handlers.get(name)
         if handler is None:
-            if self.authoritative_canary:
+            if self.authoritative_canary or self.bounded_single_project_pilot:
                 self.authenticated_request_proof = None
             raise WorkItemGovernanceError(
                 "WORK_ITEM_COMMAND_UNSUPPORTED",
@@ -97,7 +101,7 @@ class WorkItemCommandGateway:
             )
         guard = self.service.activation_guard
         try:
-            if self.authoritative_canary and name != "get_work_item_governance_status":
+            if (self.authoritative_canary or self.bounded_single_project_pilot) and name != "get_work_item_governance_status":
                 if guard is None:
                     raise WorkItemGovernanceError(
                         "ACTIVATION_LEASE_REQUIRED",
@@ -199,6 +203,7 @@ def execute_work_item_command(
     authoritative_transitions: bool | None = None,
     principal_context: PrincipalContext | None = None,
     authoritative_canary: bool = False,
+    bounded_single_project_pilot: bool = False,
     authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
     request_context: AuthoritativeCanaryRequestContext | None = None,
 ) -> dict[str, Any]:
@@ -208,6 +213,7 @@ def execute_work_item_command(
         authoritative_transitions=authoritative_transitions,
         principal_context=principal_context,
         authoritative_canary=authoritative_canary,
+        bounded_single_project_pilot=bounded_single_project_pilot,
         authenticated_request_proof=authenticated_request_proof,
         request_context=request_context,
     ).execute(name, params)

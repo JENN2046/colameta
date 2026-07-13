@@ -4,7 +4,7 @@ import re
 from typing import Final
 
 
-CURRENT_LEDGER_SCHEMA_VERSION: Final = 5
+CURRENT_LEDGER_SCHEMA_VERSION: Final = 6
 LEDGER_RELATIVE_PATH: Final = ".colameta/ledger/work-items.sqlite3"
 LEDGER_DATA_CLASSIFICATION: Final = "project_local_durable"
 

@@ -105,6 +105,11 @@ from runner.work_item_governance.activation import (
     validate_authoritative_bearer_token,
     validate_runtime_policy_contracts,
 )
+from runner.work_item_governance.pilot import (
+    PILOT_SCOPE_MODE,
+    PILOT_TOOLS,
+    PilotActivationControlPlane,
+)
 from runner.work_item_mcp_adapter import (
     AUTHORITATIVE_CANARY_MCP_TOOLS,
     WORK_ITEM_APPLY_TOOLS,
@@ -1173,11 +1178,17 @@ class MCPPlanningBridgeServer:
         *,
         service_mode: bool = False,
         exposure_profile: str | None = None,
+        work_item_scope_mode: str | None = None,
     ):
         self.project_root = os.path.abspath(os.path.expanduser(project_path))
         self.service_mode = service_mode
         self.project_registry = ProjectRegistry()
         self.mcp_exposure_profile = self._get_exposure_profile(exposure_profile)
+        self.work_item_scope_mode = work_item_scope_mode
+        if work_item_scope_mode not in {None, PILOT_SCOPE_MODE}:
+            raise PlanningBridgeError(f"Unsupported Work Item scope mode: {work_item_scope_mode}")
+        if work_item_scope_mode == PILOT_SCOPE_MODE and self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+            raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
         self._token_transport_proof_validator = None
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
@@ -4495,14 +4506,20 @@ class MCPPlanningBridgeServer:
         ]
         self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
         if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
-            validate_runtime_policy_contracts()
+            if self.work_item_scope_mode != PILOT_SCOPE_MODE:
+                validate_runtime_policy_contracts()
+            expected_tools = (
+                PILOT_TOOLS
+                if self.work_item_scope_mode == PILOT_SCOPE_MODE
+                else AUTHORITATIVE_CANARY_MCP_TOOLS
+            )
             actual = tuple(tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs))
-            if actual != AUTHORITATIVE_CANARY_MCP_TOOLS:
+            if actual != expected_tools:
                 raise PlanningBridgeError(
                     "authoritative_canary tool definition set differs from the frozen exact allowlist."
                 )
             missing_dispatch_handlers = tuple(
-                name for name in AUTHORITATIVE_CANARY_MCP_TOOLS if not callable(self.tools.get(name))
+                name for name in expected_tools if not callable(self.tools.get(name))
             )
             if missing_dispatch_handlers:
                 raise PlanningBridgeError(
@@ -4518,6 +4535,7 @@ class MCPPlanningBridgeServer:
                 authoritative_canary=(
                     self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
                 ),
+                bounded_single_project_pilot=(self.work_item_scope_mode == PILOT_SCOPE_MODE),
             )
         ]
 
@@ -4525,6 +4543,7 @@ class MCPPlanningBridgeServer:
         authoritative_canary = (
             self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
         )
+        bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
         if authoritative_canary and params.get("project_name") is not None:
             raise MCPToolInputError(
                 "ACTIVATION_PROJECT_ROUTING_DENIED",
@@ -4540,6 +4559,7 @@ class MCPPlanningBridgeServer:
                 clean,
                 principal_context=current_work_item_principal(),
                 authoritative_canary=authoritative_canary,
+                bounded_single_project_pilot=bounded_pilot,
                 authenticated_request_proof=current_authenticated_token_request_proof(),
             )
         except WorkItemGovernanceError as exc:
@@ -4602,7 +4622,7 @@ class MCPPlanningBridgeServer:
         oauth_algorithms: str | list[str] | tuple[str, ...] | None = None,
         oauth_token_leeway_seconds: int = 60,
         debug_actions: bool = False,
-        activation_control_plane: ActivationLeaseControlPlane | None = None,
+        activation_control_plane: ActivationLeaseControlPlane | PilotActivationControlPlane | None = None,
         activation_lease_id: str | None = None,
         activation_envelope_path: str | None = None,
         claimed_activation_envelope_path: str | None = None,

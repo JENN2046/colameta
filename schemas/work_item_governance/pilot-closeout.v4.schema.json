@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-bounded-single-project-pilot-closeout.v4.schema.json",
+  "title": "Bounded Single-Project Pilot Closeout Receipt v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "gate_id", "closed_at", "result", "stage_reached", "gap_inventory", "bindings", "decision", "scope", "work_item", "lease", "authentication", "runtime", "project", "ledger", "safety", "evidence"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_bounded_single_project_pilot_closeout.v4"},
+    "gate_id": {"type": "string", "minLength": 1, "maxLength": 192},
+    "closed_at": {"$ref": "#/$defs/date_time"},
+    "result": {"enum": ["PASS", "PASS_WITH_GAPS", "BLOCKED"]},
+    "stage_reached": {"enum": ["pre_import", "bootstrap_prepared", "decision_consumed", "lease_issued", "work_item_created", "lifecycle_completed"]},
+    "gap_inventory": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["code", "category", "description", "evidence_digest", "authority_or_safety_boundary_affected"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Z0-9_]{1,128}$"},
+          "category": {"enum": ["independent_evidence_accessibility", "non_authoritative_observability", "documentation"]},
+          "description": {"type": "string", "minLength": 1, "maxLength": 2048},
+          "evidence_digest": {"$ref": "#/$defs/sha256"},
+          "authority_or_safety_boundary_affected": {"const": false}
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_manifest_sha256", "file_list_root_sha256", "scope_envelope_digest", "storage_schema_contract_digest", "fact_reconciliation_contract_digest", "semantic_rules_digest", "project_snapshot_before_digest", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "execution_authorization_receipt_digest", "authentication_conformance_receipt_schema_sha256", "expiry_conformance_receipt_schema_sha256", "expiry_fail_closed_conformance_receipt_sha256"],
+      "properties": {
+        "candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "file_list_root_sha256": {"$ref": "#/$defs/sha256"},
+        "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "storage_schema_contract_digest": {"$ref": "#/$defs/sha256"},
+        "fact_reconciliation_contract_digest": {"$ref": "#/$defs/sha256"},
+        "semantic_rules_digest": {"$ref": "#/$defs/sha256"},
+        "project_snapshot_before_digest": {"$ref": "#/$defs/sha256"},
+        "execution_attempt_slot_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_authorization_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_authorization_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "authentication_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "expiry_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "expiry_fail_closed_conformance_receipt_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["consumed", "authorization_digest", "permanent_tombstone_retained", "retry_possible"],
+      "properties": {
+        "consumed": {"type": "boolean"},
+        "authorization_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "permanent_tombstone_retained": {"type": "boolean"},
+        "retry_possible": {"type": "boolean"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "project_count", "new_work_items", "real_work_item_intended", "scope_escape_fact_observed", "scope_violation_test_rejected"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "project_count": {"const": 1},
+        "new_work_items": {"type": "integer", "minimum": 0, "maximum": 1},
+        "real_work_item_intended": {"const": true},
+        "scope_escape_fact_observed": {"const": false},
+        "scope_violation_test_rejected": {"type": "boolean"}
+      }
+    },
+    "work_item": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/work_item_closeout"}]},
+    "lease": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/lease_closeout"}]},
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_created", "token_revoked", "token_removed", "old_token_rejected", "secret_in_bundle", "no_token_status", "wrong_token_status", "correct_token_status_during_window"],
+      "properties": {
+        "token_created": {"type": "boolean"},
+        "token_revoked": {"type": "boolean"},
+        "token_removed": {"type": "boolean"},
+        "old_token_rejected": {"oneOf": [{"type": "null"}, {"const": true}]},
+        "secret_in_bundle": {"const": false},
+        "no_token_status": {"oneOf": [{"type": "null"}, {"const": 401}]},
+        "wrong_token_status": {"oneOf": [{"type": "null"}, {"const": 401}]},
+        "correct_token_status_during_window": {"oneOf": [{"type": "null"}, {"const": 200}]}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listener_started", "listener_running", "bind_address", "tool_count", "gate_mode", "authoritative", "prohibited_worker_started"],
+      "properties": {
+        "listener_started": {"type": "boolean"},
+        "listener_running": {"const": false},
+        "bind_address": {"oneOf": [{"type": "null"}, {"const": "127.0.0.1"}]},
+        "tool_count": {"oneOf": [{"type": "null"}, {"const": 14}]},
+        "gate_mode": {"const": "shadow"},
+        "authoritative": {"const": false},
+        "prohibited_worker_started": {"const": false}
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_after_digest", "allowed_change_manifest_digest", "protected_paths_unchanged", "out_of_scope_change_observed", "ledger_git_ignored", "ledger_not_tracked", "ledger_not_staged"],
+      "properties": {
+        "snapshot_after_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_change_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "protected_paths_unchanged": {"const": true},
+        "out_of_scope_change_observed": {"const": false},
+        "ledger_git_ignored": {"const": true},
+        "ledger_not_tracked": {"const": true},
+        "ledger_not_staged": {"const": true}
+      }
+    },
+    "ledger": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/ledger_closeout"}]},
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_endpoint", "relay_or_tunnel", "other_project_modified", "existing_service_modified", "push", "stable_promotion", "delivery_or_outbox_dispatched", "append_only_evidence_preserved"],
+      "properties": {
+        "public_endpoint": {"const": false},
+        "relay_or_tunnel": {"const": false},
+        "other_project_modified": {"const": false},
+        "existing_service_modified": {"const": false},
+        "push": {"const": false},
+        "stable_promotion": {"const": false},
+        "delivery_or_outbox_dispatched": {"const": false},
+        "append_only_evidence_preserved": {"const": true}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_sha256", "file_list_root_sha256", "preflight_receipt_sha256", "semantic_validation_receipt_sha256", "fact_reconciliation_receipt_sha256", "lifecycle_receipt_sha256", "lease_receipt_sha256", "authentication_receipt_sha256", "expiry_conformance_receipt_sha256", "project_diff_receipt_sha256", "closeout_review_required"],
+      "properties": {
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "file_list_root_sha256": {"$ref": "#/$defs/sha256"},
+        "preflight_receipt_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "semantic_validation_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "fact_reconciliation_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "lifecycle_receipt_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "lease_receipt_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "authentication_receipt_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "expiry_conformance_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "project_diff_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "closeout_review_required": {"const": true}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"stage_reached": {"const": "pre_import"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": false}, "authorization_digest": {"type": "null"}, "permanent_tombstone_retained": {"const": false}, "retry_possible": {"const": true}}}, "scope": {"properties": {"new_work_items": {"const": 0}}}, "work_item": {"type": "null"}, "lease": {"type": "null"}, "ledger": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "bootstrap_prepared"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": false}, "authorization_digest": {"type": "null"}, "permanent_tombstone_retained": {"const": false}, "retry_possible": {"const": true}}}, "scope": {"properties": {"new_work_items": {"const": 0}}}, "work_item": {"type": "null"}, "lease": {"type": "null"}, "ledger": {"$ref": "#/$defs/ledger_closeout"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "decision_consumed"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": true}, "authorization_digest": {"$ref": "#/$defs/sha256"}, "permanent_tombstone_retained": {"const": true}, "retry_possible": {"const": false}}}, "scope": {"properties": {"new_work_items": {"const": 0}}}, "work_item": {"type": "null"}, "lease": {"type": "null"}, "ledger": {"$ref": "#/$defs/ledger_closeout"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "lease_issued"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": true}, "authorization_digest": {"$ref": "#/$defs/sha256"}, "permanent_tombstone_retained": {"const": true}, "retry_possible": {"const": false}}}, "scope": {"properties": {"new_work_items": {"const": 0}}}, "work_item": {"type": "null"}, "lease": {"allOf": [{"$ref": "#/$defs/lease_closeout"}, {"properties": {"authorized_work_item_id": {"type": "null"}}}]}, "ledger": {"$ref": "#/$defs/ledger_closeout"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "work_item_created"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": true}, "permanent_tombstone_retained": {"const": true}, "retry_possible": {"const": false}}}, "scope": {"properties": {"new_work_items": {"const": 1}}}, "work_item": {"allOf": [{"$ref": "#/$defs/work_item_closeout"}, {"properties": {"final_state": {"enum": ["proposed", "ready", "in_delivery", "submitted"]}, "acceptance_manifest": {"type": "null"}, "counts": {"properties": {"acceptance_manifests": {"const": 0}}}}}]}, "lease": {"allOf": [{"$ref": "#/$defs/lease_closeout"}, {"properties": {"authorized_work_item_id": {"$ref": "#/$defs/work_item_id"}}}]}, "ledger": {"$ref": "#/$defs/ledger_closeout"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "lifecycle_completed"}}, "required": ["stage_reached"]},
+      "then": {"properties": {"decision": {"properties": {"consumed": {"const": true}, "permanent_tombstone_retained": {"const": true}, "retry_possible": {"const": false}}}, "scope": {"properties": {"new_work_items": {"const": 1}}}, "work_item": {"allOf": [{"$ref": "#/$defs/work_item_closeout"}, {"properties": {"final_state": {"enum": ["accepted", "cancelled"]}}}]}, "lease": {"allOf": [{"$ref": "#/$defs/lease_closeout"}, {"properties": {"authorized_work_item_id": {"$ref": "#/$defs/work_item_id"}}}]}, "ledger": {"$ref": "#/$defs/ledger_closeout"}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "lifecycle_completed"}, "work_item": {"properties": {"final_state": {"const": "accepted"}}, "required": ["final_state"]}}, "required": ["stage_reached", "work_item"]},
+      "then": {"properties": {"work_item": {"properties": {"acceptance_manifest": {"$ref": "#/$defs/acceptance_manifest"}, "counts": {"properties": {"acceptance_manifests": {"const": 1}}}}}}}
+    },
+    {
+      "if": {"properties": {"stage_reached": {"const": "lifecycle_completed"}, "work_item": {"properties": {"final_state": {"const": "cancelled"}}, "required": ["final_state"]}}, "required": ["stage_reached", "work_item"]},
+      "then": {"properties": {"work_item": {"properties": {"acceptance_manifest": {"type": "null"}, "counts": {"properties": {"acceptance_manifests": {"const": 0}}}}}}}
+    },
+    {
+      "if": {"properties": {"result": {"enum": ["PASS", "PASS_WITH_GAPS"]}}, "required": ["result"]},
+      "then": {"properties": {"stage_reached": {"const": "lifecycle_completed"}, "scope": {"properties": {"scope_violation_test_rejected": {"const": true}}}, "work_item": {"allOf": [{"$ref": "#/$defs/work_item_closeout"}, {"properties": {"final_state": {"const": "accepted"}, "acceptance_manifest": {"$ref": "#/$defs/acceptance_manifest"}}}]}, "authentication": {"properties": {"token_created": {"const": true}, "token_revoked": {"const": true}, "token_removed": {"const": true}, "old_token_rejected": {"const": true}, "no_token_status": {"const": 401}, "wrong_token_status": {"const": 401}, "correct_token_status_during_window": {"const": 200}}}, "runtime": {"properties": {"listener_started": {"const": true}, "bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 14}}}, "evidence": {"properties": {"preflight_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lifecycle_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lease_receipt_sha256": {"$ref": "#/$defs/sha256"}, "authentication_receipt_sha256": {"$ref": "#/$defs/sha256"}}}}}
+    },
+    {
+      "if": {"properties": {"result": {"const": "PASS"}}, "required": ["result"]},
+      "then": {"properties": {"gap_inventory": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"result": {"const": "PASS_WITH_GAPS"}}, "required": ["result"]},
+      "then": {"properties": {"gap_inventory": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"authentication": {"properties": {"token_created": {"const": false}}, "required": ["token_created"]}}, "required": ["authentication"]},
+      "then": {"properties": {"authentication": {"properties": {"token_revoked": {"const": false}, "token_removed": {"const": false}, "old_token_rejected": {"type": "null"}, "no_token_status": {"type": "null"}, "wrong_token_status": {"type": "null"}, "correct_token_status_during_window": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"authentication": {"properties": {"token_created": {"const": true}}, "required": ["token_created"]}}, "required": ["authentication"]},
+      "then": {"properties": {"authentication": {"properties": {"token_revoked": {"const": true}, "token_removed": {"const": true}, "old_token_rejected": {"const": true}}}}}
+    },
+    {
+      "if": {"properties": {"runtime": {"properties": {"listener_started": {"const": true}}, "required": ["listener_started"]}}, "required": ["runtime"]},
+      "then": {"properties": {"runtime": {"properties": {"bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 14}}}}}
+    },
+    {
+      "if": {"properties": {"decision": {"properties": {"consumed": {"const": true}}, "required": ["consumed"]}}, "required": ["decision"]},
+      "then": {"properties": {"decision": {"properties": {"authorization_digest": {"$ref": "#/$defs/sha256"}, "permanent_tombstone_retained": {"const": true}, "retry_possible": {"const": false}}}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64},
+    "work_item_id": {"type": "string", "pattern": "^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "acceptance_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_event_id", "task_version", "accepted_state_version", "artifact_manifest_digest", "decision_ids_digest", "principal_digest", "recomputed"],
+      "properties": {
+        "gate_event_id": {"type": "string", "pattern": "^gate_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "task_version": {"type": "integer", "minimum": 1, "maximum": 3},
+        "accepted_state_version": {"type": "integer", "minimum": 1},
+        "artifact_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "decision_ids_digest": {"$ref": "#/$defs/sha256"},
+        "principal_digest": {"$ref": "#/$defs/sha256"},
+        "recomputed": {"const": true}
+      }
+    },
+    "work_item_closeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work_item_id", "final_state", "state_version", "current_task_version", "counts", "timeline_digest", "acceptance_manifest"],
+      "properties": {
+        "work_item_id": {"$ref": "#/$defs/work_item_id"},
+        "final_state": {"enum": ["proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"]},
+        "state_version": {"type": "integer", "minimum": 1},
+        "current_task_version": {"type": "integer", "minimum": 1, "maximum": 3},
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+      "required": ["task_versions", "runtime_attempts", "attempt_events", "artifacts", "decisions", "applied_gate_events", "rejected_gate_events", "gate_events_total", "audit_events", "outbox_events", "acceptance_manifests"],
+          "properties": {
+            "task_versions": {"type": "integer", "minimum": 1, "maximum": 3},
+            "runtime_attempts": {"type": "integer", "minimum": 0, "maximum": 4},
+            "attempt_events": {"type": "integer", "minimum": 0, "maximum": 8},
+            "artifacts": {"type": "integer", "minimum": 0, "maximum": 12},
+            "decisions": {"type": "integer", "minimum": 0, "maximum": 8},
+            "applied_gate_events": {"type": "integer", "minimum": 0, "maximum": 10},
+            "rejected_gate_events": {"type": "integer", "minimum": 0, "maximum": 10},
+            "gate_events_total": {"type": "integer", "minimum": 0, "maximum": 20},
+            "audit_events": {"type": "integer", "minimum": 0, "maximum": 20},
+            "outbox_events": {"type": "integer", "minimum": 0, "maximum": 20},
+            "acceptance_manifests": {"type": "integer", "minimum": 0, "maximum": 1}
+          }
+        },
+        "timeline_digest": {"$ref": "#/$defs/sha256"},
+        "acceptance_manifest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/acceptance_manifest"}]}
+      }
+    },
+    "lease_closeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "final_status", "authorized_work_item_id", "usage_reconciled", "event_count", "event_chain_digest", "live_expiry_observed"],
+      "properties": {
+        "lease_id": {"type": "string", "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "final_status": {"enum": ["closed", "revoked", "expired"]},
+        "authorized_work_item_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/work_item_id"}]},
+        "usage_reconciled": {"const": true},
+        "event_count": {"type": "integer", "minimum": 1, "maximum": 64},
+        "event_chain_digest": {"$ref": "#/$defs/sha256"},
+        "live_expiry_observed": {"type": "boolean"}
+      }
+    },
+    "ledger_closeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "database_generation", "storage_migration_receipt_digest", "legacy_table_digests_unchanged", "integrity_check", "foreign_key_violations", "backup_sha256", "backup_generation", "append_only_evidence_preserved"],
+      "properties": {
+        "schema_version": {"const": 6},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "storage_migration_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "legacy_table_digests_unchanged": {"const": true},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0},
+        "backup_sha256": {"$ref": "#/$defs/sha256"},
+        "backup_generation": {"type": "integer", "minimum": 1},
+        "append_only_evidence_preserved": {"const": true}
+      }
+    }
+  }
+}

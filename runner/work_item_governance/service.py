@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.activation import AuthoritativeCanaryGuard, ActivationWriteSession
+from runner.work_item_governance.pilot import PilotActivationGuard
 from runner.work_item_governance.contracts import (
     ARTIFACT_KINDS,
     DECISION_ACTIONS,
@@ -79,6 +80,7 @@ class WorkItemApplicationService:
         ledger: SQLiteWorkItemLedger | None = None,
         now: Callable[[], datetime] = utc_now,
         authoritative_canary: bool = False,
+        bounded_single_project_pilot: bool = False,
         principal_context: PrincipalContext | None = None,
         request_context: AuthoritativeCanaryRequestContext | None = None,
     ) -> None:
@@ -91,24 +93,41 @@ class WorkItemApplicationService:
             self.gate_mode = "authoritative" if authoritative_transitions else "shadow"
         self.authoritative_transitions = self.gate_mode == "authoritative"
         self.authoritative_canary = bool(authoritative_canary)
+        self.bounded_single_project_pilot = bool(bounded_single_project_pilot)
+        if self.authoritative_canary and self.bounded_single_project_pilot:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_COMPOSITION_CONFLICT",
+                "Legacy Canary and bounded Pilot compositions are mutually exclusive.",
+            )
         self.canary_project_marked = settings.authoritative_canary
-        if self.authoritative_canary and not self.authoritative_transitions:
+        if (self.authoritative_canary or self.bounded_single_project_pilot) and not self.authoritative_transitions:
             raise WorkItemGovernanceError(
                 "AUTHORITATIVE_CANARY_MODE_INVALID",
                 "The Authoritative Canary composition requires authoritative Gate evaluation.",
             )
-        self.ledger = ledger or SQLiteWorkItemLedger(self.project_root)
-        if self.authoritative_canary:
-            self.ledger.assert_exact_schema_without_migration()
+        self.ledger = ledger or SQLiteWorkItemLedger(
+            self.project_root,
+            target_schema_version=6 if self.bounded_single_project_pilot else 5,
+        )
+        if self.authoritative_canary or self.bounded_single_project_pilot:
+            self.ledger.assert_exact_schema_without_migration(
+                expected_version=6 if self.bounded_single_project_pilot else 5
+            )
         self.now = now
         self.principal_context = principal_context
         self.request_context = request_context
-        self.activation_guard = AuthoritativeCanaryGuard(self.ledger, now=now) if self.authoritative_canary else None
+        self.activation_guard = (
+            PilotActivationGuard(self.ledger, now=now)
+            if self.bounded_single_project_pilot
+            else (AuthoritativeCanaryGuard(self.ledger, now=now) if self.authoritative_canary else None)
+        )
         self._activation_authorized_transactions: dict[int, ActivationWriteSession] = {}
         self.previews = PreviewCodec(
             self.ledger,
             now=now,
-            allow_signing_key_creation=not (self.authoritative_canary or self.canary_project_marked),
+            allow_signing_key_creation=not (
+                self.authoritative_canary or self.bounded_single_project_pilot or self.canary_project_marked
+            ),
         )
 
     def status(self) -> dict[str, Any]:
@@ -121,9 +140,10 @@ class WorkItemApplicationService:
             "automatic_creation": False,
             "automatic_history_backfill": False,
             "authoritative_canary": self.authoritative_canary,
+            "bounded_single_project_pilot": self.bounded_single_project_pilot,
             "effective_authoritative_writes": (
                 "lease_controlled"
-                if self.authoritative_canary
+                if self.authoritative_canary or self.bounded_single_project_pilot
                 else (
                     "denied_composition"
                     if self.canary_project_marked
@@ -205,9 +225,7 @@ class WorkItemApplicationService:
                         "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
                         "A project marked for Authoritative Canary execution cannot be mutated by an unguarded application composition.",
                     )
-                lease = connection.execute(
-                    "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
-                ).fetchone()
+                lease = self._latest_activation_lease(connection)
                 if lease is not None:
                     raise WorkItemGovernanceError(
                         "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
@@ -245,13 +263,7 @@ class WorkItemApplicationService:
                 f"Ledger {operation} is denied while the Authoritative Canary composition is active.",
             )
         with self.ledger.read_connection() as connection:
-            lease = connection.execute(
-                """
-                SELECT lease_id,status FROM activation_leases
-                WHERE status IN ('prepared','claimed','active','write_frozen')
-                ORDER BY created_at DESC LIMIT 1
-                """
-            ).fetchone()
+            lease = self._latest_activation_lease(connection, live_only=True)
         if lease is not None:
             raise WorkItemGovernanceError(
                 "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
@@ -277,9 +289,7 @@ class WorkItemApplicationService:
                 details={"operation": operation},
             )
         with self.ledger.read_connection() as connection:
-            lease = connection.execute(
-                "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
+            lease = self._latest_activation_lease(connection)
         if lease is not None:
             raise WorkItemGovernanceError(
                 "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",
@@ -290,6 +300,23 @@ class WorkItemApplicationService:
                     "lease_status": str(lease["status"]),
                 },
             )
+
+    @staticmethod
+    def _latest_activation_lease(
+        connection: sqlite3.Connection,
+        *,
+        live_only: bool = False,
+    ) -> sqlite3.Row | None:
+        legacy_query = "SELECT lease_id,status FROM activation_leases"
+        pilot_query = "SELECT lease_id,status FROM pilot_activation_leases"
+        if live_only:
+            live_filter = " WHERE status IN ('prepared','claimed','active','write_frozen')"
+            legacy_query += live_filter
+            pilot_query += live_filter
+        queries = [legacy_query]
+        if int(connection.execute("PRAGMA user_version").fetchone()[0]) >= 6:
+            queries.append(pilot_query)
+        return connection.execute(" UNION ALL ".join(queries) + " LIMIT 1").fetchone()
 
     @staticmethod
     def _activation_domain_delta(**overrides: int) -> dict[str, int]:
@@ -829,6 +856,15 @@ class WorkItemApplicationService:
             reasons.append("TASK_VERSION_STALE")
         if self.activation_guard is not None and not self.activation_guard.dispatch_authority_active():
             reasons.append("ACTIVATION_LEASE_INACTIVE")
+        if isinstance(self.activation_guard, PilotActivationGuard) and not reasons:
+            try:
+                self.activation_guard.assert_attempt_dispatch_authority(
+                    normalized_attempt_id,
+                    normalized_work_item_id,
+                    normalized_task_version,
+                )
+            except WorkItemGovernanceError as exc:
+                reasons.append(exc.code)
         return {
             "schema_version": "execution_attempt_dispatch_authority.v1",
             "attempt_id": normalized_attempt_id,

@@ -1916,6 +1916,7 @@ def _isolated_subprocess_env(
         "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "XDG_STATE_HOME": str(root / "xdg-state"),
         "XDG_CACHE_HOME": str(root / "xdg-cache"),
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join(
             (
                 str(source_root),

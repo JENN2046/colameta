@@ -156,7 +156,13 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
         for path in sorted(source_root.rglob("*.py")):
             checked_write_boundary_files += 1
             relative = path.relative_to(root).as_posix()
-            if relative != "runner/work_item_governance/activation.py":
+            # These are the only two domain modules allowed to hold the sealed
+            # repository capabilities.  The Pilot implementation is a separate
+            # bounded authority model, not a transport-side escape hatch.
+            if relative not in {
+                "runner/work_item_governance/activation.py",
+                "runner/work_item_governance/pilot.py",
+            }:
                 for boundary_call in (
                     "authorize_activation_domain_write",
                     "finalize_activation_domain_write",
@@ -375,6 +381,73 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                     {
                         "rule": "activation_control_write_boundary_missing",
                         "path": str(activation_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+    pilot_path = core_root / "pilot.py"
+    if pilot_path.is_file():
+        pilot_guard_methods = _class_method_analyses(
+            pilot_path,
+            class_name="PilotActivationGuard",
+        )
+        begin_write = pilot_guard_methods.get("begin_write")
+        if begin_write is None or not begin_write.has_exact_call(
+            ("self", "ledger", "authorize_activation_domain_write")
+        ):
+            violations.append(
+                {
+                    "rule": "pilot_repository_unlock_missing",
+                    "path": str(pilot_path.relative_to(root)),
+                    "import": "begin_write",
+                }
+            )
+        for method in ("_authorize_replay", "_commit_new_checked"):
+            analysis = pilot_guard_methods.get(method)
+            if analysis is None or not analysis.has_exact_call(
+                ("self", "ledger", "finalize_activation_domain_write")
+            ):
+                violations.append(
+                    {
+                        "rule": "pilot_repository_relock_missing",
+                        "path": str(pilot_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+        for method in ("begin_write", "deny_command"):
+            analysis = pilot_guard_methods.get(method)
+            if analysis is None or not _ordered_exact_calls(
+                analysis,
+                ("self", "ledger", "authorize_activation_control_write"),
+                ("self", "ledger", "finalize_activation_control_write"),
+            ):
+                violations.append(
+                    {
+                        "rule": "pilot_control_write_boundary_missing",
+                        "path": str(pilot_path.relative_to(root)),
+                        "import": method,
+                    }
+                )
+        pilot_control_methods = _class_method_analyses(
+            pilot_path,
+            class_name="PilotActivationControlPlane",
+        )
+        for method in (
+            "prepare_lease",
+            "transition_runtime",
+            "revoke",
+            "freeze",
+            "_terminal_transition",
+        ):
+            analysis = pilot_control_methods.get(method)
+            if analysis is None or not _ordered_exact_calls(
+                analysis,
+                ("self", "ledger", "authorize_activation_control_write"),
+                ("self", "ledger", "finalize_activation_control_write"),
+            ):
+                violations.append(
+                    {
+                        "rule": "pilot_control_write_boundary_missing",
+                        "path": str(pilot_path.relative_to(root)),
                         "import": method,
                     }
                 )

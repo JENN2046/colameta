@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-pilot-execution-attempt-slot.v1.schema.json",
+  "title": "Bounded Pilot External Execution Attempt Slot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slot_id", "ordinal", "task_version", "task_version_payload_digest", "objective_digest", "attempt_binding_mode", "attempt_id", "retry_of_slot_id", "maximum_attempt_runtime_seconds"],
+  "properties": {
+    "slot_id": {"type": "string", "pattern": "^exec_slot_[A-Za-z0-9._-]{8,192}$"},
+    "ordinal": {"type": "integer", "minimum": 1, "maximum": 4},
+    "task_version": {"type": "integer", "minimum": 1, "maximum": 3},
+    "task_version_payload_digest": {"$ref": "#/$defs/sha256"},
+    "objective_digest": {"$ref": "#/$defs/sha256"},
+    "attempt_binding_mode": {"const": "bind_after_atomic_create"},
+    "attempt_id": {"type": "null"},
+    "retry_of_slot_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^exec_slot_[A-Za-z0-9._-]{8,192}$"}]},
+    "maximum_attempt_runtime_seconds": {"type": "integer", "minimum": 1, "maximum": 14400}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"ordinal": {"const": 1}}, "required": ["ordinal"]},
+      "then": {"properties": {"retry_of_slot_id": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-bounded-single-project-pilot-activation-lease-event.v4.schema.json",
+  "title": "Bounded Single-Project Pilot Activation Lease Event v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lease_event_id", "lease_id", "sequence", "authorization_digest", "event_type", "previous_event_digest", "event_digest", "state_version_before", "state_version_after", "status_before", "status_after", "authorized_work_item_id", "process_identity_digest", "listener_attestation_digest", "command_name", "source_event_key", "request_context_digest", "principal_digest", "fact_delta", "rejection_code", "created_at"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"},
+    "lease_event_id": {"type": "string", "pattern": "^lease_event_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "lease_id": {"type": "string", "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 64},
+    "authorization_digest": {"$ref": "#/$defs/sha256"},
+    "event_type": {"enum": ["lease_issued", "process_claimed", "listener_attested", "command_committed", "domain_rejected", "lease_write_frozen", "lease_closed", "lease_revoked", "lease_expired"]},
+    "previous_event_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "event_digest": {"$ref": "#/$defs/sha256"},
+    "state_version_before": {"type": "integer", "minimum": 0},
+    "state_version_after": {"type": "integer", "minimum": 1},
+    "status_before": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/status"}]},
+    "status_after": {"$ref": "#/$defs/status"},
+    "authorized_work_item_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/work_item_id"}]},
+    "process_identity_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "listener_attestation_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "command_name": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 128}]},
+    "source_event_key": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 1024}]},
+    "request_context_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "principal_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "fact_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_work_items", "task_versions", "runtime_attempts", "attempt_events", "artifacts", "decisions", "applied_gate_events", "rejected_gate_events", "gate_events_total", "audit_events", "outbox_events", "acceptance_manifests"],
+      "properties": {
+        "new_work_items": {"type": "integer", "minimum": 0, "maximum": 1},
+        "task_versions": {"type": "integer", "minimum": 0, "maximum": 3},
+        "runtime_attempts": {"type": "integer", "minimum": 0, "maximum": 4},
+        "attempt_events": {"type": "integer", "minimum": 0, "maximum": 8},
+        "artifacts": {"type": "integer", "minimum": 0, "maximum": 12},
+        "decisions": {"type": "integer", "minimum": 0, "maximum": 8},
+        "applied_gate_events": {"type": "integer", "minimum": 0, "maximum": 10},
+        "rejected_gate_events": {"type": "integer", "minimum": 0, "maximum": 10},
+        "gate_events_total": {"type": "integer", "minimum": 0, "maximum": 20},
+        "audit_events": {"type": "integer", "minimum": 0, "maximum": 20},
+        "outbox_events": {"type": "integer", "minimum": 0, "maximum": 20},
+        "acceptance_manifests": {"type": "integer", "minimum": 0, "maximum": 1}
+      }
+    },
+    "rejection_code": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[A-Z0-9_]{1,128}$"}]},
+    "created_at": {"type": "string", "format": "date-time", "maxLength": 64}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event_type": {"const": "lease_issued"}}, "required": ["event_type"]},
+      "then": {"properties": {"sequence": {"const": 1}, "previous_event_digest": {"type": "null"}, "state_version_before": {"const": 0}, "state_version_after": {"const": 1}, "status_before": {"type": "null"}, "status_after": {"const": "prepared"}, "process_identity_digest": {"type": "null"}, "listener_attestation_digest": {"type": "null"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "process_claimed"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"const": "prepared"}, "status_after": {"const": "claimed"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"type": "null"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "listener_attested"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"const": "claimed"}, "status_after": {"const": "active"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "command_committed"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"const": "active"}, "status_after": {"const": "active"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}, "command_name": {"type": "string"}, "source_event_key": {"type": "string"}, "request_context_digest": {"$ref": "#/$defs/sha256"}, "principal_digest": {"$ref": "#/$defs/sha256"}, "rejection_code": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "domain_rejected"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"const": "active"}, "status_after": {"const": "active"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}, "command_name": {"type": "string"}, "source_event_key": {"type": "string"}, "request_context_digest": {"$ref": "#/$defs/sha256"}, "principal_digest": {"$ref": "#/$defs/sha256"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"type": "string"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "lease_write_frozen"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"const": "active"}, "status_after": {"const": "write_frozen"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}, "command_name": {"type": "string"}, "source_event_key": {"type": "string"}, "request_context_digest": {"$ref": "#/$defs/sha256"}, "principal_digest": {"$ref": "#/$defs/sha256"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"const": "PILOT_AUTHORITY_WRITE_FROZEN"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "lease_closed"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"enum": ["active", "write_frozen"]}, "status_after": {"const": "closed"}, "process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "lease_revoked"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"enum": ["prepared", "claimed", "active", "write_frozen"]}, "status_after": {"const": "revoked"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"const": "PILOT_LEASE_REVOKED"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "lease_expired"}}, "required": ["event_type"]},
+      "then": {"properties": {"status_before": {"enum": ["prepared", "claimed", "active", "write_frozen"]}, "status_after": {"const": "expired"}, "command_name": {"type": "null"}, "source_event_key": {"type": "null"}, "request_context_digest": {"type": "null"}, "principal_digest": {"type": "null"}, "fact_delta": {"$ref": "#/$defs/zero_fact_delta"}, "rejection_code": {"const": "PILOT_LEASE_EXPIRED"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"enum": ["lease_revoked", "lease_expired"]}, "status_before": {"const": "prepared"}}, "required": ["event_type", "status_before"]},
+      "then": {"properties": {"process_identity_digest": {"type": "null"}, "listener_attestation_digest": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"enum": ["lease_revoked", "lease_expired"]}, "status_before": {"const": "claimed"}}, "required": ["event_type", "status_before"]},
+      "then": {"properties": {"process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"enum": ["lease_revoked", "lease_expired"]}, "status_before": {"enum": ["active", "write_frozen"]}}, "required": ["event_type", "status_before"]},
+      "then": {"properties": {"process_identity_digest": {"$ref": "#/$defs/sha256"}, "listener_attestation_digest": {"$ref": "#/$defs/sha256"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "work_item_id": {"type": "string", "pattern": "^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "status": {"enum": ["prepared", "claimed", "active", "closed", "revoked", "expired", "write_frozen"]},
+    "zero_fact_delta": {
+      "type": "object", "additionalProperties": false,
+      "required": ["new_work_items", "task_versions", "runtime_attempts", "attempt_events", "artifacts", "decisions", "applied_gate_events", "rejected_gate_events", "gate_events_total", "audit_events", "outbox_events", "acceptance_manifests"],
+      "properties": {
+        "new_work_items": {"const": 0}, "task_versions": {"const": 0}, "runtime_attempts": {"const": 0}, "attempt_events": {"const": 0}, "artifacts": {"const": 0}, "decisions": {"const": 0}, "applied_gate_events": {"const": 0}, "rejected_gate_events": {"const": 0}, "gate_events_total": {"const": 0}, "audit_events": {"const": 0}, "outbox_events": {"const": 0}, "acceptance_manifests": {"const": 0}
+      }
+    }
+  }
+}

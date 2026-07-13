@@ -26,11 +26,23 @@ SCHEMA_FILES = {
     "work_item_activation_lease.v1": "activation-lease.v1.schema.json",
     "work_item_activation_lease_event.v1": "activation-lease-event.v1.schema.json",
     "wig_p3_canary_a1_r2_closeout_receipt.v1": "r2-closeout-receipt.v1.schema.json",
+    "pilot_execution_attempt_slot.v1": "execution-attempt-slot.v1.schema.json",
+    "pilot_execution_authorization_receipt.v2": "execution-authorization-receipt.v2.schema.json",
+    "pilot_activation_lease.v4": "pilot-activation-lease.v4.schema.json",
+    "pilot_activation_lease_event.v4": "pilot-activation-lease-event.v4.schema.json",
+    "pilot_authorization.v4": "pilot-authorization.v4.schema.json",
+    "pilot_closeout.v4": "pilot-closeout.v4.schema.json",
+    "pilot_preflight.v4": "pilot-preflight.v4.schema.json",
+    "pilot_scope_envelope.v4": "pilot-scope-envelope.v4.schema.json",
 }
 
 CONTRACT_FILES = {
     "authoritative_canary_tool_allowlist.v1": "authoritative-canary-tool-allowlist.v1.json",
     "work_item_write_command_matrix.v1": "work-item-write-command-matrix.v1.json",
+    "pilot_fact_reconciliation.v2": "pilot-fact-reconciliation.v2.json",
+    "pilot_semantic_rules.v4": "pilot-semantic-rules.v4.json",
+    "pilot_storage_schema_v6.v2": "pilot-storage-schema-v6.v2.json",
+    "pilot_negative_test_matrix.v4": "pilot-negative-test-matrix.v4.json",
 }
 
 _RFC3339_PATTERN = re.compile(

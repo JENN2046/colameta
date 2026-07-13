@@ -478,12 +478,119 @@ def _migration_v5() -> tuple[str, ...]:
     )
 
 
+def _migration_v6() -> tuple[str, ...]:
+    """Add the bounded single-project Pilot authority domain.
+
+    The accepted v5 Canary tables remain byte-semantically untouched.  Pilot
+    leases use separate tables because their four-hour window, 64-event chain,
+    typed execution-slot binding, and v4 event contract cannot be represented
+    truthfully by the v5 constraints.
+    """
+
+    return (
+        """
+        CREATE TABLE pilot_activation_leases (
+            lease_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (
+              schema_version='wig_p3_bounded_single_project_pilot_activation_lease.v4'
+            ),
+            authorization_id TEXT NOT NULL UNIQUE,
+            authorization_digest TEXT NOT NULL CHECK (length(authorization_digest)=64),
+            scope_envelope_digest TEXT NOT NULL CHECK (length(scope_envelope_digest)=64),
+            spec_manifest_digest TEXT NOT NULL CHECK (length(spec_manifest_digest)=64),
+            storage_schema_contract_digest TEXT NOT NULL CHECK (length(storage_schema_contract_digest)=64),
+            fact_reconciliation_contract_digest TEXT NOT NULL CHECK (length(fact_reconciliation_contract_digest)=64),
+            semantic_rules_digest TEXT NOT NULL CHECK (length(semantic_rules_digest)=64),
+            tool_allowlist_digest TEXT NOT NULL CHECK (length(tool_allowlist_digest)=64),
+            write_matrix_digest TEXT NOT NULL CHECK (length(write_matrix_digest)=64),
+            execution_attempt_slot_schema_sha256 TEXT NOT NULL CHECK (length(execution_attempt_slot_schema_sha256)=64),
+            execution_authorization_receipt_schema_sha256 TEXT NOT NULL CHECK (length(execution_authorization_receipt_schema_sha256)=64),
+            authentication_conformance_receipt_schema_sha256 TEXT NOT NULL CHECK (length(authentication_conformance_receipt_schema_sha256)=64),
+            expiry_conformance_receipt_schema_sha256 TEXT NOT NULL CHECK (length(expiry_conformance_receipt_schema_sha256)=64),
+            authorized_work_item_id TEXT,
+            source_binding_json TEXT NOT NULL CHECK (json_valid(source_binding_json)),
+            runtime_binding_json TEXT NOT NULL CHECK (json_valid(runtime_binding_json)),
+            principal_binding_json TEXT NOT NULL CHECK (json_valid(principal_binding_json)),
+            scope_binding_json TEXT NOT NULL CHECK (json_valid(scope_binding_json)),
+            issued_at TEXT NOT NULL,
+            not_before TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            maximum_runtime_seconds INTEGER NOT NULL CHECK (maximum_runtime_seconds=14400),
+            quotas_json TEXT NOT NULL CHECK (json_valid(quotas_json)),
+            usage_json TEXT NOT NULL CHECK (json_valid(usage_json)),
+            policy_json TEXT NOT NULL CHECK (json_valid(policy_json)),
+            maintenance_json TEXT NOT NULL CHECK (json_valid(maintenance_json)),
+            failure_behavior_json TEXT NOT NULL CHECK (json_valid(failure_behavior_json)),
+            status TEXT NOT NULL CHECK (
+              status IN ('prepared','claimed','active','write_frozen','expired','closed','revoked')
+            ),
+            state_version INTEGER NOT NULL CHECK (state_version>=1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (authorized_work_item_id)
+              REFERENCES work_items(work_item_id) ON DELETE RESTRICT
+        )
+        """,
+        """
+        CREATE TABLE pilot_activation_lease_events (
+            lease_event_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (
+              schema_version='wig_p3_bounded_single_project_pilot_activation_lease_event.v4'
+            ),
+            lease_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 64),
+            event_type TEXT NOT NULL CHECK (
+              event_type IN (
+                'lease_issued','process_claimed','listener_attested','command_committed',
+                'domain_rejected','lease_write_frozen','lease_expired','lease_closed','lease_revoked'
+              )
+            ),
+            status_before TEXT,
+            status_after TEXT NOT NULL,
+            state_version_before INTEGER NOT NULL CHECK (state_version_before>=0),
+            state_version_after INTEGER NOT NULL CHECK (state_version_after>=1),
+            authorization_digest TEXT NOT NULL CHECK (length(authorization_digest)=64),
+            authorized_work_item_id TEXT,
+            process_identity_digest TEXT,
+            listener_attestation_digest TEXT,
+            command_name TEXT,
+            source_event_key_digest TEXT,
+            request_context_digest TEXT,
+            principal_digest TEXT,
+            fact_delta_json TEXT NOT NULL CHECK (json_valid(fact_delta_json)),
+            rejection_code TEXT,
+            previous_event_digest TEXT,
+            event_digest TEXT NOT NULL CHECK (length(event_digest)=64),
+            event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+            created_at TEXT NOT NULL,
+            UNIQUE (lease_id,sequence),
+            UNIQUE (lease_id,source_event_key_digest),
+            FOREIGN KEY (lease_id)
+              REFERENCES pilot_activation_leases(lease_id) ON DELETE RESTRICT
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_pilot_activation_single_live_lease "
+        "ON pilot_activation_leases((1)) WHERE status IN ('claimed','active','write_frozen')",
+        "CREATE INDEX idx_pilot_activation_lease_status "
+        "ON pilot_activation_leases(status,updated_at)",
+        "CREATE INDEX idx_pilot_activation_events_lease "
+        "ON pilot_activation_lease_events(lease_id,sequence)",
+        "CREATE TRIGGER pilot_activation_lease_events_no_update "
+        "BEFORE UPDATE ON pilot_activation_lease_events "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+        "CREATE TRIGGER pilot_activation_lease_events_no_delete "
+        "BEFORE DELETE ON pilot_activation_lease_events "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    )
+
+
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: _migration_v1(),
     2: _migration_v2(),
     3: _migration_v3(),
     4: _migration_v4(),
     5: _migration_v5(),
+    6: _migration_v6(),
 }
 
 
@@ -501,12 +608,16 @@ class SQLiteWorkItemLedger:
         *,
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
         migrations: dict[int, Sequence[str]] | None = None,
+        target_schema_version: int = 5,
     ) -> None:
         self.project_root = Path(project_root).expanduser().resolve()
         self.path = self.project_root.joinpath(*LEDGER_RELATIVE_PATH.split("/"))
         self.maintenance_lock_path = self.path.parent / "work-items.restore.lock"
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self._migrations = dict(migrations or MIGRATIONS)
+        if target_schema_version not in {5, 6}:
+            raise ValueError("target_schema_version must be 5 or 6")
+        self.target_schema_version = target_schema_version
         self._activation_transaction_states: dict[int, dict[str, Any]] = {}
         self.__write_connection_authority = object()
         self.__control_write_session_seal = secrets.token_bytes(32)
@@ -638,7 +749,7 @@ class SQLiteWorkItemLedger:
                     "Ledger schema is newer than this ColaMeta build.",
                     details={"current": current, "supported": CURRENT_LEDGER_SCHEMA_VERSION},
                 )
-            while current < CURRENT_LEDGER_SCHEMA_VERSION:
+            while current < self.target_schema_version:
                 target = current + 1
                 statements = self._migrations.get(target)
                 if not statements:
@@ -654,6 +765,23 @@ class SQLiteWorkItemLedger:
                         connection.rollback()
                         current = locked_current
                         continue
+                    if target == 6:
+                        live_legacy = connection.execute(
+                            """
+                            SELECT lease_id,status FROM activation_leases
+                            WHERE status IN ('prepared','claimed','active','write_frozen')
+                            LIMIT 1
+                            """
+                        ).fetchone()
+                        if live_legacy is not None:
+                            raise WorkItemGovernanceError(
+                                "PILOT_MIGRATION_LEGACY_LEASE_NONTERMINAL",
+                                "Schema v6 migration requires all legacy Activation Leases to be terminal.",
+                                details={
+                                    "lease_id": str(live_legacy["lease_id"]),
+                                    "status": str(live_legacy["status"]),
+                                },
+                            )
                     for statement in statements:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version={target}")
@@ -693,13 +821,26 @@ class SQLiteWorkItemLedger:
                 _write_authority=self.__write_connection_authority,
             )
             connection.execute("BEGIN IMMEDIATE")
-            lease = connection.execute(
+            legacy_lease = connection.execute(
                 "SELECT lease_id,status FROM activation_leases ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
+            schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            pilot_lease = (
+                connection.execute(
+                    "SELECT lease_id,status FROM pilot_activation_leases ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                if schema_version >= 6
+                else None
+            )
             canary_marked = load_work_item_governance_settings(
                 self.project_root
             ).authoritative_canary
-            activation_managed = canary_marked or lease is not None
+            activation_managed = (
+                canary_marked
+                or schema_version >= 6
+                or legacy_lease is not None
+                or pilot_lease is not None
+            )
             restricted = activation_managed
             transaction_state: dict[str, Any] | None = None
             if restricted:
@@ -707,7 +848,7 @@ class SQLiteWorkItemLedger:
                 # first Lease is prepared.  Once a Lease exists, ledger_meta is
                 # immutable through the default repository transaction.
                 allowed_default_tables: set[str] = set()
-                if lease is None:
+                if legacy_lease is None and pilot_lease is None:
                     allowed_default_tables.add("ledger_meta")
                 transaction_state = {
                     "connection": connection,
@@ -874,9 +1015,18 @@ class SQLiteWorkItemLedger:
             ActivationLeaseControlPlane,
             AuthoritativeCanaryGuard,
         )
+        from runner.work_item_governance.pilot import (
+            PilotActivationControlPlane,
+            PilotActivationGuard,
+        )
 
         if (
-            type(controller) not in {ActivationLeaseControlPlane, AuthoritativeCanaryGuard}
+            type(controller) not in {
+                ActivationLeaseControlPlane,
+                AuthoritativeCanaryGuard,
+                PilotActivationControlPlane,
+                PilotActivationGuard,
+            }
             or getattr(controller, "ledger", None) is not self
             or id(controller) in self.__issued_controller_bindings
         ):
@@ -925,11 +1075,17 @@ class SQLiteWorkItemLedger:
             ActivationLeaseControlPlane,
             AuthoritativeCanaryGuard,
         )
+        from runner.work_item_governance.pilot import (
+            PilotActivationControlPlane,
+            PilotActivationGuard,
+        )
 
         state = self._activation_transaction_states.get(id(connection))
         trusted_controller = type(controller) in {
             ActivationLeaseControlPlane,
             AuthoritativeCanaryGuard,
+            PilotActivationControlPlane,
+            PilotActivationGuard,
         }
         if (
             state is None
@@ -970,8 +1126,14 @@ class SQLiteWorkItemLedger:
         )
         self.__issued_control_write_sessions[id(session)] = session
         state["control_write_authorized"] = True
+        pilot_controller = type(controller) in {
+            PilotActivationControlPlane,
+            PilotActivationGuard,
+        }
         state["authorized_control_tables"] = frozenset(
-            {"activation_leases", "activation_lease_events"}
+            {"pilot_activation_leases", "pilot_activation_lease_events"}
+            if pilot_controller
+            else {"activation_leases", "activation_lease_events"}
         )
         state["authorized_control_session"] = session
         self._refresh_managed_authorizer(connection, state)
@@ -1066,8 +1228,18 @@ class SQLiteWorkItemLedger:
                 "ACTIVATION_REPOSITORY_CAPABILITY_INVALID",
                 "Repository domain writes require the exact Guard-sealed transaction session.",
             )
+        table = (
+            "pilot_activation_leases"
+            if session.guard.__class__.__name__ == "PilotActivationGuard"
+            else "activation_leases"
+        )
+        query = (
+            "SELECT lease_id,status FROM pilot_activation_leases WHERE lease_id=?"
+            if table == "pilot_activation_leases"
+            else "SELECT lease_id,status FROM activation_leases WHERE lease_id=?"
+        )
         row = connection.execute(
-            "SELECT lease_id,status FROM activation_leases WHERE lease_id=?",
+            query,
             (session.row["lease_id"],),
         ).fetchone()
         if row is None or row["status"] != "active":
@@ -1137,7 +1309,124 @@ class SQLiteWorkItemLedger:
         with self.read_connection() as connection:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
-    def assert_exact_schema_without_migration(self) -> int:
+    @staticmethod
+    def _legacy_activation_history_digest(connection: sqlite3.Connection) -> dict[str, Any]:
+        tables: list[dict[str, str]] = []
+        table_queries = {
+            "activation_leases": {
+                "columns": "PRAGMA table_info(activation_leases)",
+                "rows": "SELECT * FROM activation_leases ORDER BY lease_id",
+            },
+            "activation_lease_events": {
+                "columns": "PRAGMA table_info(activation_lease_events)",
+                "rows": "SELECT * FROM activation_lease_events ORDER BY lease_event_id",
+            },
+        }
+        for table in ("activation_leases", "activation_lease_events"):
+            schema_row = connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if schema_row is None:
+                raise WorkItemGovernanceError(
+                    "PILOT_LEGACY_SCHEMA_MISSING",
+                    "Schema v6 migration requires both exact legacy activation tables.",
+                    details={"table": table},
+                )
+            table_info = connection.execute(table_queries[table]["columns"]).fetchall()
+            columns = [str(row[1]) for row in table_info]
+            primary_key = [
+                str(row[1])
+                for row in sorted(
+                    table_info,
+                    key=lambda row: int(row[5]) if int(row[5]) > 0 else 1_000_000,
+                )
+                if int(row[5]) > 0
+            ]
+            rows = [
+                {column: row[index] for index, column in enumerate(columns)}
+                for row in connection.execute(table_queries[table]["rows"]).fetchall()
+            ]
+            value = {
+                "name": table,
+                "sqlite_schema_sql": str(schema_row[0]),
+                "rows": rows,
+            }
+            tables.append({"name": table, "sha256": canonical_sha256(value)})
+        return {"tables": tables, "aggregate_sha256": canonical_sha256(tables)}
+
+    def migrate_to_v6(self) -> dict[str, Any]:
+        """Perform the frozen v5→v6 migration under one exclusive maintenance boundary."""
+
+        with self._maintenance_lock(exclusive=True, blocking=False):
+            self._ensure_storage_path()
+            if not self.path.exists():
+                raise WorkItemGovernanceError(
+                    "PILOT_MIGRATION_SOURCE_MISSING",
+                    "Pilot migration requires an existing Schema v5 Ledger.",
+                )
+            with self._connect(readonly=True) as connection:
+                before_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if before_version != 5:
+                    raise WorkItemGovernanceError(
+                        "PILOT_MIGRATION_SOURCE_VERSION_INVALID",
+                        "Pilot migration requires exact Schema v5 input.",
+                        details={"actual": before_version},
+                    )
+                before = self._legacy_activation_history_digest(connection)
+                integrity_before = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+                foreign_keys_before = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
+            if integrity_before != ["ok"] or foreign_keys_before:
+                raise WorkItemGovernanceError(
+                    "PILOT_MIGRATION_SOURCE_INTEGRITY_FAILED",
+                    "Pilot migration source failed integrity or foreign-key checks.",
+                )
+            prior_target = self.target_schema_version
+            self.target_schema_version = 6
+            try:
+                self._initialize_unlocked()
+            except Exception:
+                self.target_schema_version = prior_target
+                raise
+            with self._connect(readonly=True) as connection:
+                after_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                after = self._legacy_activation_history_digest(connection)
+                pilot_counts = {
+                    "pilot_activation_leases": int(
+                        connection.execute("SELECT COUNT(*) FROM pilot_activation_leases").fetchone()[0]
+                    ),
+                    "pilot_activation_lease_events": int(
+                        connection.execute("SELECT COUNT(*) FROM pilot_activation_lease_events").fetchone()[0]
+                    ),
+                }
+                integrity_after = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+                foreign_keys_after = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
+            if (
+                after_version != 6
+                or before["aggregate_sha256"] != after["aggregate_sha256"]
+                or any(pilot_counts.values())
+                or integrity_after != ["ok"]
+                or foreign_keys_after
+            ):
+                raise WorkItemGovernanceError(
+                    "PILOT_MIGRATION_POSTCONDITION_FAILED",
+                    "Schema v6 migration failed its frozen postconditions.",
+                )
+            return {
+                "schema_version": "wig_p3_pilot_storage_migration_receipt.v1",
+                "from_schema_version": before_version,
+                "to_schema_version": after_version,
+                "transaction_mode": "BEGIN_IMMEDIATE",
+                "maintenance_lock": "exclusive",
+                "legacy_before": before,
+                "legacy_after": after,
+                "legacy_table_digests_unchanged": True,
+                "pilot_fact_counts": pilot_counts,
+                "integrity_check": integrity_after,
+                "foreign_key_violations": foreign_keys_after,
+            }
+
+    def assert_exact_schema_without_migration(self, *, expected_version: int | None = None) -> int:
         """Verify a preflighted Ledger without running a startup migration."""
 
         with self._maintenance_lock(exclusive=False):
@@ -1148,11 +1437,12 @@ class SQLiteWorkItemLedger:
                 )
             with self._connect(readonly=True) as connection:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != CURRENT_LEDGER_SCHEMA_VERSION:
+        expected = self.target_schema_version if expected_version is None else expected_version
+        if version != expected:
             raise WorkItemGovernanceError(
                 "ACTIVATION_LEDGER_SCHEMA_MISMATCH",
                 "Authoritative Canary refuses startup migration or schema drift.",
-                details={"expected": CURRENT_LEDGER_SCHEMA_VERSION, "actual": version},
+                details={"expected": expected, "actual": version},
             )
         return version
 
@@ -1318,7 +1608,7 @@ class SQLiteWorkItemLedger:
             )
         source_path = Path(source).expanduser().resolve()
         source_check = self.integrity_check(source_path)
-        if not source_check["ok"] or source_check["schema_version"] != CURRENT_LEDGER_SCHEMA_VERSION:
+        if not source_check["ok"] or source_check["schema_version"] != self.target_schema_version:
             raise WorkItemGovernanceError(
                 "LEDGER_RESTORE_SOURCE_INVALID",
                 "Restore source failed integrity or exact schema verification.",
@@ -1463,13 +1753,20 @@ class SQLiteWorkItemLedger:
         *,
         operation: str,
     ) -> None:
-        lease = connection.execute(
-            """
+        pilot_schema_present = connection.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='pilot_activation_leases'"
+        ).fetchone() is not None
+        query = """
             SELECT lease_id,status FROM activation_leases
             WHERE status IN ('prepared','claimed','active','write_frozen')
-            ORDER BY created_at DESC LIMIT 1
+        """
+        if pilot_schema_present:
+            query += """
+                UNION ALL
+                SELECT lease_id,status FROM pilot_activation_leases
+                WHERE status IN ('prepared','claimed','active','write_frozen')
             """
-        ).fetchone()
+        lease = connection.execute(query + " LIMIT 1").fetchone()
         if lease is not None:
             raise WorkItemGovernanceError(
                 "ACTIVATION_COMPOSITION_DOWNGRADE_DENIED",

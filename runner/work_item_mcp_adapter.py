@@ -6,6 +6,7 @@ from typing import Any
 from runner.work_item_commands import WorkItemCommandGateway
 from runner.work_item_governance.activation import AUTHORITATIVE_CANARY_TOOLS
 from runner.work_item_governance.principal import PrincipalContext
+from runner.work_item_governance.pilot import PILOT_TOOLS
 from runner.work_item_governance.request_context import AuthenticatedTokenRequestProof
 
 
@@ -42,6 +43,7 @@ WORK_ITEM_APPLY_TOOLS = (
 )
 WORK_ITEM_MCP_TOOLS = WORK_ITEM_READ_TOOLS + WORK_ITEM_PREVIEW_TOOLS + WORK_ITEM_APPLY_TOOLS
 AUTHORITATIVE_CANARY_MCP_TOOLS = AUTHORITATIVE_CANARY_TOOLS
+BOUNDED_PILOT_MCP_TOOLS = PILOT_TOOLS
 
 
 def execute_work_item_mcp_command(
@@ -51,13 +53,17 @@ def execute_work_item_mcp_command(
     *,
     principal_context: PrincipalContext | None = None,
     authoritative_canary: bool = False,
+    bounded_single_project_pilot: bool = False,
     authenticated_request_proof: AuthenticatedTokenRequestProof | None = None,
 ) -> dict[str, Any]:
     return WorkItemCommandGateway(
         project_root,
         principal_context=principal_context,
-        authoritative_transitions=True if authoritative_canary else None,
+        authoritative_transitions=(
+            True if authoritative_canary or bounded_single_project_pilot else None
+        ),
         authoritative_canary=authoritative_canary,
+        bounded_single_project_pilot=bounded_single_project_pilot,
         authenticated_request_proof=authenticated_request_proof,
     ).execute(name, params)
 
@@ -66,8 +72,10 @@ def work_item_mcp_tool_specs(
     project_hint: str,
     *,
     authoritative_canary: bool = False,
+    bounded_single_project_pilot: bool = False,
 ) -> list[dict[str, Any]]:
-    project_property = {} if authoritative_canary else {
+    restricted = authoritative_canary or bounded_single_project_pilot
+    project_property = {} if restricted else {
         "project_name": {
             "type": "string",
             "description": "服务模式必填。按已登记 project_name 路由；不接受任意 project_root。",
@@ -133,7 +141,11 @@ def work_item_mcp_tool_specs(
     )
 
     specs: list[dict[str, Any]] = []
-    names = AUTHORITATIVE_CANARY_MCP_TOOLS if authoritative_canary else WORK_ITEM_MCP_TOOLS
+    names = (
+        BOUNDED_PILOT_MCP_TOOLS
+        if bounded_single_project_pilot
+        else (AUTHORITATIVE_CANARY_MCP_TOOLS if authoritative_canary else WORK_ITEM_MCP_TOOLS)
+    )
     for name in names:
         if name in read_schemas:
             input_schema = read_schemas[name]
