@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-pilot-expiry-conformance-receipt.v1.schema.json",
+  "title": "Pilot Lease Expiry Fail-Closed Conformance Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tested_at", "source_binding", "contract_binding", "cases", "result"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_pilot_expiry_conformance_receipt.v1"},
+    "tested_at": {"$ref": "#/$defs/date_time"},
+    "source_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation_commit", "implementation_tree", "wheel_sha256"],
+      "properties": {
+        "implementation_commit": {"$ref": "#/$defs/git_sha1"},
+        "implementation_tree": {"$ref": "#/$defs/git_sha1"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "contract_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["lease_schema_sha256", "semantic_rules_sha256", "scope_mode"],
+      "properties": {
+        "lease_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "semantic_rules_sha256": {"$ref": "#/$defs/sha256"},
+        "scope_mode": {"const": "bounded_single_project_pilot.v1"}
+      }
+    },
+    "cases": {
+      "type": "object", "additionalProperties": false,
+      "required": ["utc_expiry_without_watchdog_rejected", "monotonic_expiry_without_watchdog_rejected", "earlier_deadline_wins", "restart_does_not_renew"],
+      "properties": {
+        "utc_expiry_without_watchdog_rejected": {"const": true},
+        "monotonic_expiry_without_watchdog_rejected": {"const": true},
+        "earlier_deadline_wins": {"const": true},
+        "restart_does_not_renew": {"const": true}
+      }
+    },
+    "result": {"const": "PASS"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64}
+  }
+}

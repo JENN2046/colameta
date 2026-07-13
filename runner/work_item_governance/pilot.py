@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from importlib import resources
 from typing import Any, Callable
 
 from runner.work_item_governance.activation import (
@@ -29,12 +31,52 @@ from runner.work_item_governance.request_context import (
     AuthoritativeCanaryRequestContext,
     _mint_authoritative_request_context,
 )
-from runner.work_item_governance.schema_loader import validate_governance_record
+from runner.work_item_governance.schema_loader import load_governance_contract, validate_governance_record
 
 
 PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
+PILOT_FROZEN_CONTRACT_DIGESTS = {
+    "spec_manifest_digest": "036f21ec4c9afd08fc15a8927df866a47682b305952115385c43fbd8ed71c3ea",
+    "storage_schema_contract_digest": "72305af12e47eba743b84d40f786bd077315ee8e222e5e0241f723b38f5a19ef",
+    "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
+    "semantic_rules_digest": "5b1a1d8d70f14b72c36f843389bc324a990d4406345d4031450b92a422edf026",
+    "tool_allowlist_digest": "fae456a0ed7aa3cbfa925ffc9de367d6d8cc103793ef973e69a6a7fea66fd985",
+    "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
+    "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
+    "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
+    "authentication_conformance_receipt_schema_sha256": "9f002bd70f4ad571a687c4801d9845bc9531fc53b81f3678b2cf4f3a3c3c4857",
+    "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
+}
+PILOT_FROZEN_RESOURCE_DIGESTS = {
+    "pilot-semantic-rules.v4.json": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+    "pilot-storage-schema-v6.v2.json": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+    "pilot-fact-reconciliation.v2.json": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+    "pilot-tool-allowlist.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
+    "pilot-write-command-matrix.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
+    "execution-attempt-slot.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
+    "execution-authorization-receipt.v2.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
+    "pilot-authentication-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
+    "pilot-expiry-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+    "pilot-semantic-validation-receipt.v3.schema.json": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
+    "pilot-write-path-inventory.v3.json": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
+}
+
+
+def verify_pilot_frozen_contract_resources() -> None:
+    root = resources.files("schemas").joinpath("work_item_governance")
+    mismatches = []
+    for filename, expected in PILOT_FROZEN_RESOURCE_DIGESTS.items():
+        actual = hashlib.sha256(root.joinpath(filename).read_bytes()).hexdigest()
+        if actual != expected:
+            mismatches.append({"filename": filename, "expected": expected, "actual": actual})
+    if mismatches:
+        raise WorkItemGovernanceError(
+            "PILOT_FROZEN_CONTRACT_DIGEST_MISMATCH",
+            "Packaged Pilot machine contracts differ from the independently frozen bytes.",
+            details={"mismatches": mismatches},
+        )
 PILOT_ALLOWED_WRITES = frozenset(
     {
         "apply_work_item_create",
@@ -309,8 +351,13 @@ def validate_pilot_scope_envelope(
     ):
         errors.append("execution_maximum_attempt_runtime_seconds")
     if errors:
+        error_code = (
+            "PILOT_EXECUTION_AUTHORIZATION_INVALID"
+            if any(item.startswith("execution_") for item in errors)
+            else "PILOT_SCOPE_DIGEST_MISMATCH"
+        )
         raise WorkItemGovernanceError(
-            "PILOT_SCOPE_SEMANTIC_VALIDATION_FAILED",
+            error_code,
             "Pilot Scope Envelope cross-bindings are inconsistent.",
             details={"failed_rules": sorted(set(errors))},
         )
@@ -359,21 +406,33 @@ def validate_pilot_authorization(
     if authorization["window"] != scope_envelope["window"]:
         errors.append("window")
     if errors:
+        error_code = (
+            "PILOT_SCOPE_DIGEST_MISMATCH"
+            if "scope_envelope_digest" in errors
+            else (
+                "PILOT_COMBINED_ROLE_NOT_AUTHORIZED"
+                if any(item.startswith("principal:") for item in errors)
+                else "PILOT_PROJECT_SNAPSHOT_MISMATCH"
+            )
+        )
         raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_SEMANTIC_VALIDATION_FAILED",
+            error_code,
             "Pilot one-shot Authorization differs from its exact Scope Envelope.",
             details={"failed_rules": sorted(set(errors))},
         )
     return authorization
 
 
-def validate_pilot_preflight(receipt: dict[str, Any]) -> dict[str, Any]:
+def validate_pilot_preflight(receipt: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     validate_governance_record("pilot_preflight.v4", receipt)
     observed = parse_timestamp(receipt["observed_at"], "preflight.observed_at")
     valid_until = parse_timestamp(receipt["valid_until"], "preflight.valid_until")
     errors: list[str] = []
     if valid_until <= observed or (valid_until - observed).total_seconds() > 120:
         errors.append("preflight_window")
+    current = (now or utc_now()).astimezone(timezone.utc)
+    if current < observed or current > valid_until or (current - observed).total_seconds() > 120:
+        errors.append("preflight_freshness")
     if receipt["backup"]["database_generation"] != receipt["ledger"]["database_generation"]:
         errors.append("backup_generation")
     if receipt["backup"]["schema_version"] != receipt["ledger"]["schema_version"]:
@@ -395,24 +454,180 @@ def validate_pilot_preflight(receipt: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             errors.append(f"isolation:{field}")
     if errors:
+        if any(item.startswith("preflight_") for item in errors):
+            error_code = "PILOT_PREFLIGHT_STALE"
+        elif any(item.startswith("backup_") for item in errors):
+            error_code = "PILOT_BACKUP_GENERATION_MISMATCH"
+        elif "project_snapshot_digest" in errors:
+            error_code = "PILOT_PROJECT_SNAPSHOT_MISMATCH"
+        else:
+            error_code = "PILOT_PRIVATE_PATH_ESCAPE"
         raise WorkItemGovernanceError(
-            "PILOT_PREFLIGHT_SEMANTIC_VALIDATION_FAILED",
+            error_code,
             "Pilot Preflight semantic bindings are inconsistent.",
             details={"failed_rules": sorted(set(errors))},
         )
     return receipt
 
 
+def build_pilot_semantic_validation_receipt(
+    *,
+    stage: str,
+    input_bindings: dict[str, Any],
+    failed_rules: list[dict[str, str]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a schema-valid receipt for the exact frozen rules applicable to one stage."""
+
+    rules = load_governance_contract("pilot_semantic_rules.v4")
+    rules_bytes = resources.files("schemas").joinpath(
+        "work_item_governance", "pilot-semantic-rules.v4.json"
+    ).read_bytes()
+    if hashlib.sha256(rules_bytes).hexdigest() != PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"]:
+        raise WorkItemGovernanceError(
+            "PILOT_SEMANTIC_RECEIPT_INVALID",
+            "Packaged Pilot semantic rules differ from the frozen contract digest.",
+        )
+    if rules.get("schema_version") != "wig_p3_bounded_single_project_pilot_semantic_rules.v4":
+        raise WorkItemGovernanceError("PILOT_SEMANTIC_RECEIPT_INVALID", "Unknown Pilot semantic rule set.")
+    applicable = [rule["id"] for rule in rules["rules"] if stage in rule["stages"]]
+    failures = list(failed_rules or [])
+    failed_ids = [item["rule_id"] for item in failures]
+    if len(set(failed_ids)) != len(failed_ids) or not set(failed_ids).issubset(applicable):
+        raise WorkItemGovernanceError(
+            "PILOT_SEMANTIC_RECEIPT_INVALID",
+            "Semantic failures must be unique rules applicable to the evaluated stage.",
+        )
+    passed = [rule_id for rule_id in applicable if rule_id not in set(failed_ids)]
+    receipt = {
+        "schema_version": "wig_p3_bounded_single_project_pilot_semantic_validation_receipt.v3",
+        "gate_id": str(rules["gate_id"]),
+        "validated_at": isoformat_utc(now or utc_now()),
+        "stage": stage,
+        "rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+        "input_bindings": input_bindings,
+        "applicable_rule_ids": applicable,
+        "passed_rule_ids": passed,
+        "failed_rules": failures,
+        "result": "FAIL" if failures else "PASS",
+    }
+    validate_governance_record("pilot_semantic_validation_receipt.v3", receipt)
+    if receipt["result"] == "PASS" and set(passed) != set(applicable):
+        raise WorkItemGovernanceError(
+            "PILOT_SEMANTIC_RECEIPT_INVALID",
+            "A PASS receipt must pass every applicable semantic rule.",
+        )
+    return receipt
+
+
+def _validate_pilot_lease_authority_semantics(
+    lease: dict[str, Any],
+    *,
+    capability: Any,
+    ledger: SQLiteWorkItemLedger,
+    now: datetime,
+) -> None:
+    issued = parse_timestamp(lease["window"]["issued_at"], "lease.window.issued_at")
+    not_before = parse_timestamp(lease["window"]["not_before"], "lease.window.not_before")
+    expires = parse_timestamp(lease["window"]["expires_at"], "lease.window.expires_at")
+    if not (issued <= not_before < expires) or (expires - not_before).total_seconds() > 14400:
+        raise WorkItemGovernanceError("PILOT_WINDOW_INVALID", "Pilot Lease time window is invalid.")
+    if now.astimezone(timezone.utc) < not_before or now.astimezone(timezone.utc) >= expires:
+        raise WorkItemGovernanceError("PILOT_WINDOW_INVALID", "Pilot Lease is not currently authorized.")
+    preflight = capability.preflight
+    if (
+        int(preflight["ledger"]["schema_version"]) != 6
+        or int(preflight["ledger"]["database_generation"]) != ledger.database_generation()
+        or int(preflight["backup"]["database_generation"]) != ledger.database_generation()
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_BACKUP_GENERATION_MISMATCH",
+            "Pilot Lease, Ledger, and generation-bound Backup do not identify one fact domain.",
+        )
+    scope = capability.scope_envelope
+    expected_ledger = Path(scope["target_project"]["project_root"]).resolve() / ".colameta/ledger/work-items.sqlite3"
+    if ledger.path.resolve() != expected_ledger or canonical_path_digest(ledger.path) != scope["pilot_isolation"]["ledger_path_digest"]:
+        raise WorkItemGovernanceError(
+            "PILOT_LEDGER_PATH_MISMATCH",
+            "Pilot Ledger is not the exact target-project Ledger bound by Scope.",
+        )
+    if lease["source_binding"] != {
+        key: scope["source_binding"][key]
+        for key in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256")
+    }:
+        raise WorkItemGovernanceError(
+            "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+            "Pilot Lease source binding differs from the authorized Scope.",
+        )
+    scope_principal = scope["principal_binding"]
+    if lease["principal_binding"] != scope_principal:
+        raise WorkItemGovernanceError(
+            "PILOT_COMBINED_ROLE_NOT_AUTHORIZED",
+            "Pilot Lease Principal differs from the explicitly authorized role binding.",
+        )
+    if lease["usage"]["execution_slots"] != initial_execution_slot_usage(capability.execution_receipt):
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_AUTHORIZATION_INVALID",
+            "Pilot Lease execution slots differ from the exact execution authority.",
+        )
+
+
 class PilotActivationControlPlane:
     """The only controller allowed to create and transition Pilot v4 Leases."""
 
     def __init__(self, ledger: SQLiteWorkItemLedger, *, now: Callable[[], datetime] = utc_now) -> None:
+        verify_pilot_frozen_contract_resources()
         self.ledger = ledger
         self.now = now
         self.__repository_control_binding = ledger._bind_activation_controller(self)
+        self.__process_claim_capability = object()
+        self.__listener_attestation_capability = object()
+        self.last_semantic_validation_receipt: dict[str, Any] | None = None
 
-    def prepare_lease(self, lease: dict[str, Any]) -> dict[str, Any]:
+    def prepare_lease(self, lease: dict[str, Any], *, authority: Any) -> dict[str, Any]:
+        from runner.work_item_governance.pilot_authorization import require_consumed_pilot_authorization
+
+        capability = require_consumed_pilot_authorization(authority)
         validate_governance_record("pilot_activation_lease.v4", lease)
+        validate_pilot_scope_envelope(
+            capability.scope_envelope,
+            execution_authorization_receipt=capability.execution_receipt,
+        )
+        validate_pilot_preflight(capability.preflight)
+        validate_pilot_authorization(capability.authorization, scope_envelope=capability.scope_envelope)
+        binding_errors: list[str] = []
+        expected_bindings = {
+            "authorization_digest": canonical_sha256(capability.authorization),
+            "scope_envelope_digest": canonical_sha256(capability.scope_envelope),
+        }
+        for field, expected in expected_bindings.items():
+            if lease[field] != expected or capability.tombstone[field] != expected:
+                binding_errors.append(field)
+        execution_digest = canonical_sha256(capability.execution_receipt)
+        preflight_digest = canonical_sha256(capability.preflight)
+        if capability.tombstone["execution_authorization_receipt_digest"] != execution_digest:
+            binding_errors.append("execution_authorization_tombstone")
+        if capability.tombstone["preflight_receipt_digest"] != preflight_digest:
+            binding_errors.append("preflight_tombstone")
+        if lease["scope_binding"]["execution_authorization_receipt_digest"] != execution_digest:
+            binding_errors.append("execution_authorization_receipt_digest")
+        if lease["runtime_binding"]["preflight_receipt_digest"] != preflight_digest:
+            binding_errors.append("preflight_receipt_digest")
+        for field, expected in PILOT_FROZEN_CONTRACT_DIGESTS.items():
+            if lease[field] != expected:
+                binding_errors.append(field)
+        if binding_errors:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORITY_BINDING_MISMATCH",
+                "Pilot Lease does not match the consumed Authorization, Scope, Preflight, and frozen contracts.",
+                details={"failed_bindings": sorted(set(binding_errors))},
+            )
+        _validate_pilot_lease_authority_semantics(
+            lease,
+            capability=capability,
+            ledger=self.ledger,
+            now=self.now(),
+        )
         if lease["status"] != "prepared" or lease["state_version"] != 1:
             raise WorkItemGovernanceError("PILOT_LEASE_INITIAL_STATE_INVALID", "A new Pilot Lease must be prepared at state version 1.")
         if lease["scope_binding"]["authorized_work_item_id"] is not None:
@@ -436,6 +651,20 @@ class PilotActivationControlPlane:
                         "A bounded Pilot requires a fresh domain and Lease fact baseline.",
                         details={"nonzero_tables": nonzero},
                     )
+                self.last_semantic_validation_receipt = build_pilot_semantic_validation_receipt(
+                    stage="lease_prepare",
+                    input_bindings={
+                        "candidate_manifest_sha256": capability.authorization["bindings"]["candidate_manifest_sha256"],
+                        "scope_envelope_digest": canonical_sha256(capability.scope_envelope),
+                        "storage_schema_contract_digest": lease["storage_schema_contract_digest"],
+                        "fact_reconciliation_contract_digest": lease["fact_reconciliation_contract_digest"],
+                        "authorization_digest": canonical_sha256(capability.authorization),
+                        "project_snapshot_digest": capability.scope_envelope["target_project"]["project_snapshot_digest"],
+                        "runtime_binding_digest": canonical_sha256(lease["runtime_binding"]),
+                        "ledger_state_digest": canonical_sha256(nonzero),
+                    },
+                    now=self.now(),
+                )
                 scope = dict(lease["scope_binding"])
                 values = (
                     lease["lease_id"], lease["schema_version"], lease["authorization_id"], lease["authorization_digest"],
@@ -476,7 +705,7 @@ class PilotActivationControlPlane:
                 self.ledger.finalize_activation_control_write(connection, session=session)
         return lease
 
-    def transition_runtime(
+    def _transition_runtime(
         self,
         lease_id: str,
         *,
@@ -486,10 +715,21 @@ class PilotActivationControlPlane:
         request_context_binding: str | None = None,
         monotonic_claim_ns: int | None = None,
         monotonic_deadline_ns: int | None = None,
+        _capability: object | None = None,
     ) -> dict[str, Any]:
         transitions = {"process_claimed": ("prepared", "claimed"), "listener_attested": ("claimed", "active")}
         if event_type not in transitions:
             raise WorkItemGovernanceError("PILOT_RUNTIME_TRANSITION_INVALID", "Unsupported Pilot runtime transition.")
+        expected_capability = (
+            self.__process_claim_capability
+            if event_type == "process_claimed"
+            else self.__listener_attestation_capability
+        )
+        if _capability is not expected_capability:
+            raise WorkItemGovernanceError(
+                "PILOT_RUNTIME_TRANSITION_CAPABILITY_INVALID",
+                "Runtime transitions require the exact verified process-claim or listener-attestation capability.",
+            )
         before, after = transitions[event_type]
         with self.ledger.write_transaction() as connection:
             session = self.ledger.authorize_activation_control_write(
@@ -547,12 +787,13 @@ class PilotActivationControlPlane:
         runtime = _json(row, "runtime_binding_json")
         if identity["expected_process_identity"] != runtime["expected_process_identity"]:
             raise WorkItemGovernanceError("PILOT_PROCESS_IDENTITY_MISMATCH", "Runtime process differs from the exact Pilot binding.")
-        return self.transition_runtime(
+        return self._transition_runtime(
             lease_id,
             event_type="process_claimed",
             process_identity_digest=identity["expected_process_identity"],
             monotonic_claim_ns=monotonic_claim,
             monotonic_deadline_ns=monotonic_claim + int(row["maximum_runtime_seconds"]) * 1_000_000_000,
+            _capability=self.__process_claim_capability,
         )
 
     def attest_listener(
@@ -582,12 +823,13 @@ class PilotActivationControlPlane:
             principal_id=str(principal["principal_id"]),
             session_ref=str(principal["session_ref"]),
         )
-        return self.transition_runtime(
+        return self._transition_runtime(
             lease_id,
             event_type="listener_attested",
             process_identity_digest=str(runtime["claimed_process_identity"]),
             listener_attestation_digest=listener_digest,
             request_context_binding=context_digest,
+            _capability=self.__listener_attestation_capability,
         )
 
     def revoke(self, *, lease_id: str, reason: str) -> dict[str, Any]:
@@ -725,6 +967,7 @@ class PilotActivationGuard:
         now: Callable[[], datetime] = utc_now,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
+        verify_pilot_frozen_contract_resources()
         self.ledger = ledger
         self.now = now
         self.monotonic_ns = monotonic_ns

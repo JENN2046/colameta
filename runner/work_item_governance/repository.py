@@ -749,6 +749,11 @@ class SQLiteWorkItemLedger:
                     "Ledger schema is newer than this ColaMeta build.",
                     details={"current": current, "supported": CURRENT_LEDGER_SCHEMA_VERSION},
                 )
+            if current == 5 and self.target_schema_version == 6:
+                raise WorkItemGovernanceError(
+                    "PILOT_EXPLICIT_MIGRATION_REQUIRED",
+                    "Schema v5 to v6 requires the explicit atomic Pilot migration wrapper.",
+                )
             while current < self.target_schema_version:
                 target = current + 1
                 statements = self._migrations.get(target)
@@ -765,23 +770,6 @@ class SQLiteWorkItemLedger:
                         connection.rollback()
                         current = locked_current
                         continue
-                    if target == 6:
-                        live_legacy = connection.execute(
-                            """
-                            SELECT lease_id,status FROM activation_leases
-                            WHERE status IN ('prepared','claimed','active','write_frozen')
-                            LIMIT 1
-                            """
-                        ).fetchone()
-                        if live_legacy is not None:
-                            raise WorkItemGovernanceError(
-                                "PILOT_MIGRATION_LEGACY_LEASE_NONTERMINAL",
-                                "Schema v6 migration requires all legacy Activation Leases to be terminal.",
-                                details={
-                                    "lease_id": str(live_legacy["lease_id"]),
-                                    "status": str(live_legacy["status"]),
-                                },
-                            )
                     for statement in statements:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version={target}")
@@ -1365,7 +1353,12 @@ class SQLiteWorkItemLedger:
                     "PILOT_MIGRATION_SOURCE_MISSING",
                     "Pilot migration requires an existing Schema v5 Ledger.",
                 )
-            with self._connect(readonly=True) as connection:
+            connection = self._connect(
+                readonly=False,
+                _write_authority=self.__write_connection_authority,
+            )
+            try:
+                connection.execute("BEGIN IMMEDIATE")
                 before_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                 if before_version != 5:
                     raise WorkItemGovernanceError(
@@ -1373,22 +1366,37 @@ class SQLiteWorkItemLedger:
                         "Pilot migration requires exact Schema v5 input.",
                         details={"actual": before_version},
                     )
-                before = self._legacy_activation_history_digest(connection)
                 integrity_before = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
                 foreign_keys_before = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
-            if integrity_before != ["ok"] or foreign_keys_before:
-                raise WorkItemGovernanceError(
-                    "PILOT_MIGRATION_SOURCE_INTEGRITY_FAILED",
-                    "Pilot migration source failed integrity or foreign-key checks.",
+                if integrity_before != ["ok"] or foreign_keys_before:
+                    raise WorkItemGovernanceError(
+                        "PILOT_MIGRATION_SOURCE_INTEGRITY_FAILED",
+                        "Pilot migration source failed integrity or foreign-key checks.",
+                    )
+                live_legacy = connection.execute(
+                    """
+                    SELECT lease_id,status FROM activation_leases
+                    WHERE status IN ('prepared','claimed','active','write_frozen')
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if live_legacy is not None:
+                    raise WorkItemGovernanceError(
+                        "PILOT_MIGRATION_LEGACY_LEASE_NONTERMINAL",
+                        "Schema v6 migration requires all legacy Activation Leases to be terminal.",
+                        details={
+                            "lease_id": str(live_legacy["lease_id"]),
+                            "status": str(live_legacy["status"]),
+                        },
+                    )
+                before = self._legacy_activation_history_digest(connection)
+                for statement in self._migrations[6]:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version=6")
+                connection.execute(
+                    "UPDATE ledger_meta SET value='6', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE key='schema_version'"
                 )
-            prior_target = self.target_schema_version
-            self.target_schema_version = 6
-            try:
-                self._initialize_unlocked()
-            except Exception:
-                self.target_schema_version = prior_target
-                raise
-            with self._connect(readonly=True) as connection:
                 after_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                 after = self._legacy_activation_history_digest(connection)
                 pilot_counts = {
@@ -1401,18 +1409,18 @@ class SQLiteWorkItemLedger:
                 }
                 integrity_after = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
                 foreign_keys_after = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
-            if (
-                after_version != 6
-                or before["aggregate_sha256"] != after["aggregate_sha256"]
-                or any(pilot_counts.values())
-                or integrity_after != ["ok"]
-                or foreign_keys_after
-            ):
-                raise WorkItemGovernanceError(
-                    "PILOT_MIGRATION_POSTCONDITION_FAILED",
-                    "Schema v6 migration failed its frozen postconditions.",
-                )
-            return {
+                if (
+                    after_version != 6
+                    or before["aggregate_sha256"] != after["aggregate_sha256"]
+                    or any(pilot_counts.values())
+                    or integrity_after != ["ok"]
+                    or foreign_keys_after
+                ):
+                    raise WorkItemGovernanceError(
+                        "PILOT_MIGRATION_POSTCONDITION_FAILED",
+                        "Schema v6 migration failed its frozen postconditions.",
+                    )
+                receipt = {
                 "schema_version": "wig_p3_pilot_storage_migration_receipt.v1",
                 "from_schema_version": before_version,
                 "to_schema_version": after_version,
@@ -1424,7 +1432,21 @@ class SQLiteWorkItemLedger:
                 "pilot_fact_counts": pilot_counts,
                 "integrity_check": integrity_after,
                 "foreign_key_violations": foreign_keys_after,
-            }
+                }
+                connection.commit()
+            except Exception as exc:
+                connection.rollback()
+                if isinstance(exc, WorkItemGovernanceError):
+                    raise
+                raise WorkItemGovernanceError(
+                    "LEDGER_MIGRATION_FAILED",
+                    "Ledger migration failed and was rolled back.",
+                    details={"target_version": 6, "reason": str(exc)},
+                ) from exc
+            finally:
+                connection.close()
+            os.chmod(self.path, 0o600)
+            return receipt
 
     def assert_exact_schema_without_migration(self, *, expected_version: int | None = None) -> int:
         """Verify a preflighted Ledger without running a startup migration."""

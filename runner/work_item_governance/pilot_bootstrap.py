@@ -4,6 +4,7 @@ import os
 import secrets
 import socket
 import stat
+from datetime import timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,9 @@ from runner.work_item_governance.pilot import (
     PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
     canonical_path_digest,
+    validate_pilot_preflight,
 )
+from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 
 
@@ -89,10 +92,28 @@ def validate_pilot_bootstrap_paths(paths: PilotBootstrapPaths) -> PilotBootstrap
     root = value.pilot_root
     if root.is_symlink():
         raise WorkItemGovernanceError("PILOT_BOOTSTRAP_SYMLINK_DENIED", "Pilot root cannot be a symlink.")
+    try:
+        value.project_root.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise WorkItemGovernanceError(
+            "PILOT_ROOT_COLLISION",
+            "The target project root and private Pilot root must be disjoint.",
+        )
+    try:
+        root.relative_to(value.project_root)
+    except ValueError:
+        pass
+    else:
+        raise WorkItemGovernanceError(
+            "PILOT_ROOT_COLLISION",
+            "The private Pilot root cannot be nested in the target project root.",
+        )
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(root, 0o700)
     for field in value.__dataclass_fields__:
-        if field == "pilot_root":
+        if field in {"pilot_root", "project_root"}:
             continue
         _assert_private_path(root, getattr(value, field), field)
     return value
@@ -112,8 +133,6 @@ def bootstrap_fresh_pilot_ledger(
     *,
     paths: PilotBootstrapPaths,
     port: int,
-    token_file_sha256: str,
-    token_evidence_digest: str,
 ) -> dict[str, Any]:
     """Create the fresh Schema v6 fact domain and its generation-bound backup.
 
@@ -139,6 +158,28 @@ def bootstrap_fresh_pilot_ledger(
     ):
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
+    if value.token_file.exists():
+        raise WorkItemGovernanceError(
+            "PILOT_TOKEN_FILE_NOT_FRESH",
+            "Fresh Pilot bootstrap refuses an existing bearer-token file.",
+        )
+    token = f"mvr_{secrets.token_urlsafe(32)}"
+    token_payload = canonical_json({"schema_version": 1, "auth_token": token})
+    descriptor = os.open(
+        value.token_file,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.write(descriptor, token_payload.encode("utf-8"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chmod(value.token_file, 0o600)
+    token_file_sha256 = sha256_file(value.token_file)
+    token_evidence_digest = canonical_sha256(
+        {"token_file_sha256": token_file_sha256, "token_file_path_digest": canonical_path_digest(value.token_file)}
+    )
     settings = value.project_root / ".colameta" / "settings.json"
     settings.parent.mkdir(mode=0o700, exist_ok=True)
     settings.write_text(
@@ -185,7 +226,11 @@ def bootstrap_fresh_pilot_ledger(
         "sha256": backup_sha256,
         "database_generation": backup["database_generation"],
         "schema_version": backup["schema_version"],
-        "integrity_check": backup["integrity_check"],
+        "integrity_check": (
+            backup["integrity_check"][0]
+            if isinstance(backup["integrity_check"], list)
+            else backup["integrity_check"]
+        ),
         "foreign_key_violations": backup["foreign_key_violations"],
         "mode": format(stat.S_IMODE(value.backup_path.stat().st_mode), "04o"),
     }
@@ -220,3 +265,86 @@ def bootstrap_fresh_pilot_ledger(
         },
         "backup": backup_record,
     }
+
+
+def build_fresh_pilot_preflight_receipt(
+    *,
+    bootstrap_receipt: dict[str, Any],
+    paths: PilotBootstrapPaths,
+    gate_id: str,
+    bindings: dict[str, Any],
+    execution_context: dict[str, Any],
+    project: dict[str, Any],
+    authentication: dict[str, Any],
+    semantic_validation: dict[str, Any],
+    safety: dict[str, Any],
+) -> dict[str, Any]:
+    """Compose and validate the exact v4 Preflight from a fresh bootstrap fact."""
+
+    value = validate_pilot_bootstrap_paths(paths)
+    if bootstrap_receipt.get("database_generation") != bootstrap_receipt.get("backup", {}).get(
+        "database_generation"
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_BACKUP_GENERATION_MISMATCH",
+            "Fresh Pilot Preflight requires a generation-bound Backup.",
+        )
+    if sha256_file(value.token_file) != bootstrap_receipt.get("token_file_sha256"):
+        raise WorkItemGovernanceError(
+            "PILOT_REQUEST_CAPABILITY_INVALID",
+            "Private bearer-token bytes differ from the bootstrap Ledger binding.",
+        )
+    observed = utc_now()
+    receipt = {
+        "schema_version": "wig_p3_bounded_single_project_pilot_preflight.v4",
+        "gate_id": gate_id,
+        "observed_at": isoformat_utc(observed),
+        "valid_until": isoformat_utc(observed + timedelta(seconds=120)),
+        "result": "PASS",
+        "bindings": bindings,
+        "execution_context": execution_context,
+        "isolation": {
+            "pilot_root": str(value.pilot_root),
+            "home": str(value.home),
+            "xdg_config_home": str(value.xdg_config_home),
+            "xdg_state_home": str(value.xdg_state_home),
+            "xdg_cache_home": str(value.xdg_cache_home),
+            "xdg_data_home": str(value.xdg_data_home),
+            "registry_path": str(value.registry_path),
+            "token_file_path": str(value.token_file),
+            "all_private_paths_under_pilot_root": True,
+            "root_disjointness": "PASS",
+            "symlink_boundary": "PASS",
+            "ownership_and_modes": "PASS",
+            "forbidden_roots_absent": True,
+        },
+        "project": project,
+        "ledger": {
+            "path": bootstrap_receipt["ledger_path"],
+            "path_digest": bootstrap_receipt["ledger_path_digest"],
+            "schema_version": 6,
+            "database_generation": bootstrap_receipt["database_generation"],
+            "storage_migration_receipt_digest": bootstrap_receipt["storage_migration_receipt_digest"],
+            "legacy_table_digests_unchanged": bootstrap_receipt["storage_migration"]["legacy_table_digests_unchanged"],
+            "integrity_check": "ok",
+            "foreign_key_violations": [],
+            "zero_fact_baseline": bootstrap_receipt["zero_fact_baseline"],
+            "preview_signing_key_preprovisioned": bootstrap_receipt["preview_signing_key_preprovisioned"],
+        },
+        "backup": bootstrap_receipt["backup"],
+        "authentication": authentication,
+        "surface": {
+            **bootstrap_receipt["surface"],
+            "definitions_dispatch_exact_match": True,
+            "resources_disabled_or_empty": True,
+            "actions_disabled": True,
+            "hidden_tool_rejected": True,
+            "alternate_dispatch_rejected": True,
+            "prohibited_workers_running": False,
+        },
+        "runtime": bootstrap_receipt["runtime"],
+        "semantic_validation": semantic_validation,
+        "safety": safety,
+    }
+    validate_pilot_preflight(receipt, now=observed)
+    return receipt

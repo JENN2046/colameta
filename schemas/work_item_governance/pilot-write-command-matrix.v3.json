@@ -1,0 +1,28 @@
+{
+  "schema_version": "wig_p3_bounded_single_project_pilot_write_command_matrix.v3",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-S1-R3",
+  "source_contract": "runner/work_item_mcp_adapter.py:WORK_ITEM_APPLY_TOOLS",
+  "expected_source_command_count": 16,
+  "allowed_count": 7,
+  "denied_count": 9,
+  "default_policy": "deny",
+  "commands": [
+    {"name": "apply_work_item_create", "allowed": true, "scope": "first_and_only_scope_envelope_work_item", "quota_facts": ["new_work_items", "task_versions"], "requirements": ["exact preview", "exact origin objective and create digest", "atomic Lease authorized_work_item_id binding", "exact replay no fact quota or Event"]},
+    {"name": "apply_legacy_work_item_import", "allowed": false, "reason": "historical import outside Pilot"},
+    {"name": "add_task_version", "allowed": true, "scope": "bound_work_item_only", "quota_facts": ["task_versions"], "requirements": ["next ordered Scope Envelope payload digest", "current lifecycle permits version", "maximum includes initial version"]},
+    {"name": "create_execution_attempt", "allowed": true, "scope": "bound_work_item_current_task_version_only", "quota_facts": ["runtime_attempts", "attempt_events"], "requirements": ["exact external execution receipt Schema and authority revalidated in transaction", "generated Attempt atomically binds next authorized slot", "current project snapshot and objective", "nonterminal nonsubmitted Work Item"]},
+    {"name": "bind_historical_execution_attempt", "allowed": false, "reason": "historical binding outside real-time Pilot"},
+    {"name": "complete_execution_attempt", "allowed": true, "scope": "bound_authorized_runtime_attempt_only", "quota_facts": ["attempt_events", "artifacts"], "requirements": ["nested Artifacts count globally", "source-aligned kind and path/digest policy", "exact replay no fact quota or Event"]},
+    {"name": "register_artifact_reference", "allowed": true, "scope": "bound_work_item_and_task_version_only", "quota_facts": ["artifacts"], "requirements": ["kind in evidence_receipt,file,git_commit,git_diff,report,test_report,validation", "authorized project-root containment", "terminal state rejects new Artifact"]},
+    {"name": "record_review_decision", "allowed": true, "scope": "bound_work_item_current_task_version_only", "quota_facts": ["decisions"], "requirements": ["trusted policy-derived actor and authority", "exact evidence IDs", "combined role explicitly authorized when applicable"]},
+    {"name": "apply_work_item_transition", "allowed": true, "scope": "bound_work_item_current_task_version_only", "quota_facts": ["applied_gate_events", "rejected_gate_events", "gate_events_total", "audit_events", "outbox_events", "acceptance_manifests"], "requirements": ["exact preview and same request Principal", "state CAS", "Gate and every derived fact plus Lease usage in same transaction", "exact replay no fact quota or Event"]},
+    {"name": "apply_blocker", "allowed": false, "reason": "blocker mutation outside initial Pilot"},
+    {"name": "clear_blocker", "allowed": false, "reason": "blocker mutation outside initial Pilot"},
+    {"name": "create_delivery_receipt", "allowed": false, "reason": "Delivery outside Phase 3 Pilot"},
+    {"name": "retry_delivery", "allowed": false, "reason": "Delivery outside Phase 3 Pilot"},
+    {"name": "acknowledge_delivery", "allowed": false, "reason": "Delivery outside Phase 3 Pilot"},
+    {"name": "record_outbox_delivery_result", "allowed": false, "reason": "Outbox dispatch disabled"},
+    {"name": "recover_outbox_event", "allowed": false, "reason": "Outbox recovery requires separate maintenance gate"}
+  ],
+  "global_invariants": ["all allowed writes require exact active Pilot Lease and one-shot sealed Token request context", "all allowed writes match exact Scope Envelope and semantic rules", "all direct and derived facts satisfy the exact fact reconciliation contract before and after", "all denied and unknown commands fail before domain mutation", "idempotency and quota accounting share BEGIN IMMEDIATE", "restore migration delivery product stable connector and direct repository writes remain denied"]
+}

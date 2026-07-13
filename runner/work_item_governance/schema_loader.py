@@ -34,6 +34,9 @@ SCHEMA_FILES = {
     "pilot_closeout.v4": "pilot-closeout.v4.schema.json",
     "pilot_preflight.v4": "pilot-preflight.v4.schema.json",
     "pilot_scope_envelope.v4": "pilot-scope-envelope.v4.schema.json",
+    "pilot_semantic_validation_receipt.v3": "pilot-semantic-validation-receipt.v3.schema.json",
+    "pilot_authentication_conformance_receipt.v1": "pilot-authentication-conformance-receipt.v1.schema.json",
+    "pilot_expiry_conformance_receipt.v1": "pilot-expiry-conformance-receipt.v1.schema.json",
 }
 
 CONTRACT_FILES = {
@@ -43,6 +46,9 @@ CONTRACT_FILES = {
     "pilot_semantic_rules.v4": "pilot-semantic-rules.v4.json",
     "pilot_storage_schema_v6.v2": "pilot-storage-schema-v6.v2.json",
     "pilot_negative_test_matrix.v4": "pilot-negative-test-matrix.v4.json",
+    "pilot_tool_allowlist.v3": "pilot-tool-allowlist.v3.json",
+    "pilot_write_command_matrix.v3": "pilot-write-command-matrix.v3.json",
+    "pilot_write_path_inventory.v3": "pilot-write-path-inventory.v3.json",
 }
 
 _RFC3339_PATTERN = re.compile(

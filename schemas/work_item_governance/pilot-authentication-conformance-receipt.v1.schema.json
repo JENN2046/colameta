@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-pilot-authentication-conformance-receipt.v1.schema.json",
+  "title": "Pilot Authentication Conformance Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tested_at", "source_binding", "runtime_binding", "authentication", "surface", "result"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_pilot_authentication_conformance_receipt.v1"},
+    "tested_at": {"$ref": "#/$defs/date_time"},
+    "source_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"],
+      "properties": {
+        "implementation_commit": {"$ref": "#/$defs/git_sha1"},
+        "implementation_tree": {"$ref": "#/$defs/git_sha1"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"},
+        "installed_inventory_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runtime_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime_binding_digest", "scope_envelope_digest", "ledger_state_digest", "token_file_path_digest"],
+      "properties": {
+        "runtime_binding_digest": {"$ref": "#/$defs/sha256"},
+        "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_state_digest": {"$ref": "#/$defs/sha256"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authentication": {
+      "type": "object", "additionalProperties": false,
+      "required": ["auth_mode", "token_format_valid", "token_ledger_binding_valid", "no_token_status", "wrong_token_status", "correct_token_status", "request_capability_non_json", "request_capability_single_use"],
+      "properties": {
+        "auth_mode": {"const": "token"},
+        "token_format_valid": {"const": true},
+        "token_ledger_binding_valid": {"const": true},
+        "no_token_status": {"const": 401},
+        "wrong_token_status": {"const": 401},
+        "correct_token_status": {"const": 200},
+        "request_capability_non_json": {"const": true},
+        "request_capability_single_use": {"const": true}
+      }
+    },
+    "surface": {
+      "type": "object", "additionalProperties": false,
+      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest"],
+      "properties": {
+        "exposure_profile": {"const": "authoritative_canary"},
+        "scope_mode": {"const": "bounded_single_project_pilot.v1"},
+        "visible_tool_count": {"const": 14},
+        "visible_tool_set_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "result": {"const": "PASS"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64}
+  }
+}

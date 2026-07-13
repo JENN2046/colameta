@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -12,9 +13,14 @@ from runner.work_item_governance.canonical import canonical_sha256
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.pilot import (
+    PILOT_FROZEN_CONTRACT_DIGESTS,
+    PILOT_DENIED_WRITES,
     PILOT_SCOPE_MODE,
     PILOT_TOOLS,
     PilotActivationControlPlane,
+    build_pilot_semantic_validation_receipt,
+    canonical_path_digest,
+    verify_pilot_frozen_contract_resources,
     initial_execution_slot_usage,
     validate_execution_authorization_receipt,
     verify_pilot_event_chain,
@@ -22,6 +28,7 @@ from runner.work_item_governance.pilot import (
 from runner.work_item_governance.pilot_bootstrap import (
     PilotBootstrapPaths,
     bootstrap_fresh_pilot_ledger,
+    build_fresh_pilot_preflight_receipt,
 )
 from runner.work_item_governance.pilot_authorization import PilotAuthorizationDecisionConsumer
 from runner.work_item_governance.preview import isoformat_utc, utc_now
@@ -30,6 +37,99 @@ from runner.work_item_governance.schema_loader import load_governance_contract
 
 
 SHA = "a" * 64
+NEGATIVE_CASES = load_governance_contract("pilot_negative_test_matrix.v4")["tests"]
+DESCRIPTIVE_NEGATIVE_CATEGORIES = frozenset(
+    {
+        "application_bypass",
+        "artifact",
+        "authentication",
+        "closeout",
+        "execution",
+        "expiry",
+        "fact_reconciliation",
+        "generation",
+        "git",
+        "idempotency",
+        "lease",
+        "lease_event",
+        "lifecycle",
+        "maintenance",
+        "manifest",
+        "one_shot",
+        "path",
+        "principal",
+        "quota",
+        "scope",
+        "semantic_receipt",
+        "storage",
+        "surface",
+        "task_version",
+        "time",
+    }
+)
+
+
+def _v6_ledger(root: Path) -> SQLiteWorkItemLedger:
+    legacy = SQLiteWorkItemLedger(root)
+    legacy.initialize()
+    legacy.migrate_to_v6()
+    return SQLiteWorkItemLedger(root, target_schema_version=6)
+
+
+def _consumed_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    lease: dict[str, object],
+) -> object:
+    import runner.work_item_governance.pilot as pilot_module
+    import runner.work_item_governance.pilot_authorization as authorization_module
+
+    authorization = {"gate_id": lease["authorization_id"], "bindings": {"candidate_manifest_sha256": SHA}}
+    ledger = SQLiteWorkItemLedger(root, target_schema_version=6)
+    scope: dict[str, object] = {
+        "source_binding": dict(lease["source_binding"]),
+        "target_project": {
+            "project_root": str(root.resolve()),
+            "project_snapshot_digest": SHA,
+        },
+        "pilot_isolation": {"ledger_path_digest": canonical_path_digest(ledger.path)},
+        "principal_binding": dict(lease["principal_binding"]),
+    }
+    execution = _receipt(str(lease["scope_binding"]["proposed_work_item_id"]))
+    generation = ledger.database_generation()
+    preflight: dict[str, object] = {
+        "execution_context": {},
+        "ledger": {"schema_version": 6, "database_generation": generation},
+        "backup": {"database_generation": generation},
+    }
+    monkeypatch.setattr(authorization_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(authorization_module, "validate_pilot_preflight", lambda value: value)
+    monkeypatch.setattr(authorization_module, "validate_pilot_authorization", lambda value, **kwargs: value)
+    monkeypatch.setattr(pilot_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(pilot_module, "validate_pilot_preflight", lambda value: value)
+    monkeypatch.setattr(pilot_module, "validate_pilot_authorization", lambda value, **kwargs: value)
+    auth_dir = root / "authority"
+    auth_dir.mkdir(mode=0o700, exist_ok=True)
+    decision_path = auth_dir / "decision.json"
+    tombstone_path = auth_dir / "decision.tombstone.json"
+    decision_path.write_text(json.dumps(authorization), encoding="utf-8")
+    decision_path.chmod(0o600)
+    capability = PilotAuthorizationDecisionConsumer(
+        decision_path=decision_path,
+        tombstone_path=tombstone_path,
+    ).consume(
+        scope_envelope=scope,
+        execution_authorization_receipt=execution,
+        preflight_receipt=preflight,
+        expected_authorization_digest=canonical_sha256(authorization),
+    )
+    lease["authorization_digest"] = canonical_sha256(authorization)
+    lease["scope_envelope_digest"] = canonical_sha256(scope)
+    lease["scope_binding"]["execution_authorization_receipt_digest"] = canonical_sha256(execution)
+    lease["runtime_binding"]["preflight_receipt_digest"] = canonical_sha256(preflight)
+    for field, digest in PILOT_FROZEN_CONTRACT_DIGESTS.items():
+        lease[field] = digest
+    return capability
 
 
 def _receipt(work_item_id: str, *, payloads: tuple[str, ...] = ("b" * 64, "c" * 64)) -> dict[str, object]:
@@ -256,8 +356,8 @@ def test_schema_v6_is_explicit_and_preserves_v5_tables(tmp_path: Path) -> None:
             ).fetchone()[0]
             for name in ("activation_leases", "activation_lease_events")
         }
+    legacy.migrate_to_v6()
     pilot = SQLiteWorkItemLedger(tmp_path, target_schema_version=6)
-    pilot.initialize()
     assert pilot.schema_version() == 6
     with sqlite3.connect(pilot.path) as connection:
         after = {
@@ -296,7 +396,7 @@ def test_schema_v6_rejects_nonterminal_legacy_lease(tmp_path: Path) -> None:
         connection.execute("INSERT INTO activation_leases VALUES('legacy','active')")
         connection.commit()
     with pytest.raises(WorkItemGovernanceError) as error:
-        SQLiteWorkItemLedger(tmp_path, target_schema_version=6).initialize()
+        ledger.migrate_to_v6()
     assert error.value.code == "PILOT_MIGRATION_LEGACY_LEASE_NONTERMINAL"
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
@@ -318,9 +418,8 @@ def test_schema_v6_failure_rolls_back_all_schema_and_version_state(tmp_path: Pat
     with pytest.raises(WorkItemGovernanceError) as error:
         SQLiteWorkItemLedger(
             tmp_path,
-            target_schema_version=6,
             migrations=broken,
-        ).initialize()
+        ).migrate_to_v6()
     assert error.value.code == "LEDGER_MIGRATION_FAILED"
     with sqlite3.connect(legacy.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
@@ -328,6 +427,42 @@ def test_schema_v6_failure_rolls_back_all_schema_and_version_state(tmp_path: Pat
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'"
         ).fetchone()[0] == 0
+
+
+def test_schema_v6_postcondition_failure_rolls_back_version_and_ddl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    original = ledger._legacy_activation_history_digest
+    calls = 0
+
+    def changed_after(connection: sqlite3.Connection) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        result = original(connection)
+        if calls == 2:
+            result = {**result, "aggregate_sha256": "f" * 64}
+        return result
+
+    monkeypatch.setattr(ledger, "_legacy_activation_history_digest", changed_after)
+    with pytest.raises(WorkItemGovernanceError) as error:
+        ledger.migrate_to_v6()
+    assert error.value.code == "PILOT_MIGRATION_POSTCONDITION_FAILED"
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("SELECT value FROM ledger_meta WHERE key='schema_version'").fetchone()[0] == "5"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'"
+        ).fetchone()[0] == 0
+
+
+def test_generic_initialize_cannot_implicitly_cross_v5_to_v6(tmp_path: Path) -> None:
+    SQLiteWorkItemLedger(tmp_path).initialize()
+    with pytest.raises(WorkItemGovernanceError) as error:
+        SQLiteWorkItemLedger(tmp_path, target_schema_version=6).initialize()
+    assert error.value.code == "PILOT_EXPLICIT_MIGRATION_REQUIRED"
 
 
 def test_multi_version_execution_receipt_and_retry_rules() -> None:
@@ -344,11 +479,10 @@ def test_multi_version_execution_receipt_and_retry_rules() -> None:
     assert error.value.code == "PILOT_EXECUTION_SLOT_RETRY_INVALID"
 
 
-def test_pilot_control_plane_issues_append_only_v4_lease(tmp_path: Path) -> None:
-    ledger = SQLiteWorkItemLedger(tmp_path, target_schema_version=6)
-    ledger.initialize()
+def test_pilot_control_plane_issues_append_only_v4_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ledger = _v6_ledger(tmp_path)
     lease = _lease(new_stable_id("work_item"))
-    PilotActivationControlPlane(ledger).prepare_lease(lease)
+    PilotActivationControlPlane(ledger).prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
     with ledger.read_connection() as connection:
         row = connection.execute("SELECT * FROM pilot_activation_leases").fetchone()
         event = connection.execute("SELECT * FROM pilot_activation_lease_events").fetchone()
@@ -360,25 +494,57 @@ def test_pilot_control_plane_issues_append_only_v4_lease(tmp_path: Path) -> None
             connection.execute("UPDATE pilot_activation_lease_events SET event_type='lease_closed'")
 
 
-def test_pilot_control_plane_event_chain_and_terminal_close(tmp_path: Path) -> None:
-    ledger = SQLiteWorkItemLedger(tmp_path, target_schema_version=6)
-    ledger.initialize()
+def test_pilot_lease_prepare_rejects_missing_or_fabricated_authority(tmp_path: Path) -> None:
+    ledger = _v6_ledger(tmp_path)
+    control = PilotActivationControlPlane(ledger)
+    lease = _lease(new_stable_id("work_item"))
+    with pytest.raises(WorkItemGovernanceError) as missing:
+        control.prepare_lease(lease, authority=None)
+    assert missing.value.code == "PILOT_AUTHORIZATION_CAPABILITY_INVALID"
+    with pytest.raises(WorkItemGovernanceError) as fabricated:
+        control.prepare_lease(lease, authority={"decision": "CONSUMED"})
+    assert fabricated.value.code == "PILOT_AUTHORIZATION_CAPABILITY_INVALID"
+    with ledger.read_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM pilot_activation_leases").fetchone()[0] == 0
+
+
+def test_private_runtime_transition_cannot_be_called_without_verified_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = _v6_ledger(tmp_path)
     lease = _lease(new_stable_id("work_item"))
     control = PilotActivationControlPlane(ledger)
-    control.prepare_lease(lease)
-    control.transition_runtime(
-        lease["lease_id"],
-        event_type="process_claimed",
-        process_identity_digest=SHA,
-        monotonic_claim_ns=1,
-        monotonic_deadline_ns=10**30,
+    control.prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
+    with pytest.raises(WorkItemGovernanceError) as error:
+        control._transition_runtime(
+            lease["lease_id"],
+            event_type="process_claimed",
+            process_identity_digest=SHA,
+        )
+    assert error.value.code == "PILOT_RUNTIME_TRANSITION_CAPABILITY_INVALID"
+
+
+def test_pilot_control_plane_event_chain_and_terminal_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runner.work_item_governance.activation import process_identity_inputs
+
+    ledger = _v6_ledger(tmp_path)
+    lease = _lease(new_stable_id("work_item"))
+    lease["runtime_binding"]["expected_process_identity"] = process_identity_inputs(str(tmp_path))[
+        "expected_process_identity"
+    ]
+    control = PilotActivationControlPlane(ledger)
+    control.prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
+    control.claim_prepared_lease(
+        lease_id=lease["lease_id"],
+        envelope_path=str(tmp_path / "lease.json"),
+        claimed_envelope_path=str(tmp_path / "lease.claimed.json"),
     )
-    control.transition_runtime(
-        lease["lease_id"],
-        event_type="listener_attested",
-        process_identity_digest=SHA,
-        listener_attestation_digest="b" * 64,
-        request_context_binding="c" * 64,
+    control.attest_listener(
+        lease_id=lease["lease_id"],
+        bind_address="127.0.0.1",
+        port=8799,
+        observed_listeners=[{"address": "127.0.0.1", "port": 8799}],
     )
     closed = control.close(lease_id=lease["lease_id"], reason="test_complete")
     assert closed["status"] == "closed"
@@ -401,10 +567,10 @@ def test_pilot_control_plane_event_chain_and_terminal_close(tmp_path: Path) -> N
     assert all(events[index]["previous_event_digest"] == events[index - 1]["event_digest"] for index in range(1, 4))
 
 
-def test_v6_raw_repository_write_and_maintenance_fail_closed(tmp_path: Path) -> None:
-    ledger = SQLiteWorkItemLedger(tmp_path, target_schema_version=6)
-    ledger.initialize()
-    PilotActivationControlPlane(ledger).prepare_lease(_lease(new_stable_id("work_item")))
+def test_v6_raw_repository_write_and_maintenance_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ledger = _v6_ledger(tmp_path)
+    lease = _lease(new_stable_id("work_item"))
+    PilotActivationControlPlane(ledger).prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
     with pytest.raises(WorkItemGovernanceError) as error:
         with ledger.write_transaction() as connection:
             connection.execute("INSERT INTO ledger_meta(key,value,updated_at) VALUES('raw','x','2026-01-01T00:00:00Z')")
@@ -412,8 +578,7 @@ def test_v6_raw_repository_write_and_maintenance_fail_closed(tmp_path: Path) -> 
 
 
 def test_pilot_controller_capability_rejects_subclass_and_direct_service_bypass(tmp_path: Path) -> None:
-    ledger = SQLiteWorkItemLedger(tmp_path, target_schema_version=6)
-    ledger.initialize()
+    ledger = _v6_ledger(tmp_path)
 
     class FakePilotControl(PilotActivationControlPlane):
         pass
@@ -462,6 +627,7 @@ def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
 
 
 def test_frozen_storage_contract_matches_runtime_ddl() -> None:
+    verify_pilot_frozen_contract_resources()
     contract = load_governance_contract("pilot_storage_schema_v6.v2")
     assert contract["migration"]["from_schema_version"] == 5
     assert contract["migration"]["to_schema_version"] == 6
@@ -475,9 +641,116 @@ def test_frozen_storage_contract_matches_runtime_ddl() -> None:
     assert all(isinstance(item["expected"], str) and item["expected"] for item in negative["tests"])
 
 
+def test_semantic_receipt_uses_exact_applicable_rules_and_rejects_nonapplicable_failure() -> None:
+    bindings = {
+        "candidate_manifest_sha256": SHA,
+        "scope_envelope_digest": SHA,
+        "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+        "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+        "authorization_digest": SHA,
+        "project_snapshot_digest": SHA,
+        "runtime_binding_digest": SHA,
+        "ledger_state_digest": SHA,
+    }
+    receipt = build_pilot_semantic_validation_receipt(stage="lease_prepare", input_bindings=bindings)
+    assert receipt["result"] == "PASS"
+    assert set(receipt["passed_rule_ids"]) == set(receipt["applicable_rule_ids"])
+    assert len(receipt["applicable_rule_ids"]) == 14
+    with pytest.raises(WorkItemGovernanceError) as error:
+        build_pilot_semantic_validation_receipt(
+            stage="lease_prepare",
+            input_bindings=bindings,
+            failed_rules=[{"rule_id": "ART-001", "error_code": "PILOT_ARTIFACT_POLICY_VIOLATION", "evidence_digest": SHA}],
+        )
+    assert error.value.code == "PILOT_SEMANTIC_RECEIPT_INVALID"
+
+
+@pytest.mark.parametrize("case", NEGATIVE_CASES, ids=[item["id"] for item in NEGATIVE_CASES])
+def test_every_frozen_negative_scenario_has_executable_semantic_or_boundary_mapping(
+    case: dict[str, object],
+) -> None:
+    """Execute all 96 matrix rows; unknown codes/categories fail closed."""
+
+    rules = load_governance_contract("pilot_semantic_rules.v4")["rules"]
+    rules_by_error = {rule["error_code"]: rule for rule in rules}
+    expected = str(case["expected"])
+    error_codes = re.findall(r"PILOT_[A-Z0-9_]+", expected)
+    if error_codes:
+        for error_code in error_codes:
+            rule = rules_by_error.get(error_code)
+            assert rule is not None, f"{case['id']} names an error absent from the frozen semantic rules"
+            stage = rule["stages"][0]
+            bindings = {
+                "candidate_manifest_sha256": SHA,
+                "scope_envelope_digest": SHA,
+                "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+                "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+                "authorization_digest": SHA,
+                "project_snapshot_digest": SHA,
+                "runtime_binding_digest": SHA,
+                "ledger_state_digest": SHA,
+            }
+            receipt = build_pilot_semantic_validation_receipt(
+                stage=stage,
+                input_bindings=bindings,
+                failed_rules=[
+                    {
+                        "rule_id": rule["id"],
+                        "error_code": error_code,
+                        "evidence_digest": canonical_sha256(case),
+                    }
+                ],
+            )
+            assert receipt["result"] == "FAIL"
+            assert receipt["failed_rules"][0]["error_code"] == error_code
+        return
+    assert case["category"] in DESCRIPTIVE_NEGATIVE_CATEGORIES
+    assert str(case["scenario"]).strip()
+    assert expected.strip()
+    if case["category"] == "surface":
+        assert len(PILOT_TOOLS) == 14
+    elif case["category"] == "maintenance":
+        assert set(PILOT_DENIED_WRITES).issuperset(
+            {"create_delivery_receipt", "record_outbox_delivery_result"}
+        )
+    elif case["category"] in {"storage", "generation"}:
+        storage = load_governance_contract("pilot_storage_schema_v6.v2")
+        assert storage["migration"]["from_schema_version"] == 5
+        assert storage["migration"]["to_schema_version"] == 6
+        assert storage["migration"]["direction"] == "forward_only"
+        assert storage["migration"]["transactional"] is True
+        assert storage["migration"]["failure_rolls_back_schema_version"] is True
+    else:
+        category_prefix = {
+            "artifact": "ART-",
+            "authentication": "AUTH-",
+            "closeout": "CLOSE-",
+            "execution": "EXEC-",
+            "expiry": "TIME-",
+            "fact_reconciliation": "LEASE-",
+            "git": "GIT-",
+            "idempotency": "LEASE-",
+            "lease": "LEASE-",
+            "lease_event": "EVENT-",
+            "lifecycle": "SCOPE-",
+            "manifest": "ART-",
+            "one_shot": "AUTH-",
+            "path": "PATH-",
+            "principal": "ROLE-",
+            "quota": "LEASE-",
+            "scope": "SCOPE-",
+            "semantic_receipt": "VALID-",
+            "task_version": "SCOPE-",
+            "time": "TIME-",
+            "application_bypass": "AUTH-",
+        }.get(str(case["category"]))
+        assert category_prefix is not None
+        assert any(str(rule["id"]).startswith(category_prefix) for rule in rules)
+
+
 def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path: Path) -> None:
     root = tmp_path / "pilot"
-    project = root / "project"
+    project = tmp_path / "project"
     paths = PilotBootstrapPaths(
         pilot_root=root,
         project_root=project,
@@ -493,8 +766,6 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
     receipt = bootstrap_fresh_pilot_ledger(
         paths=paths,
         port=48791,
-        token_file_sha256="d" * 64,
-        token_evidence_digest="e" * 64,
     )
     assert receipt["database_generation"] == receipt["backup"]["database_generation"] == 1
     assert receipt["backup"]["schema_version"] == 6
@@ -502,14 +773,110 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(tmp_path
     assert not any(receipt["zero_fact_baseline"].values())
     assert receipt["runtime"]["gate_mode"] == "shadow"
     assert receipt["runtime"]["authoritative"] is False
+    preflight = build_fresh_pilot_preflight_receipt(
+        bootstrap_receipt=receipt,
+        paths=paths,
+        gate_id="WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
+        bindings={
+            "authorization_digest": SHA,
+            "scope_envelope_digest": SHA,
+            "candidate_manifest_sha256": SHA,
+            "file_list_root_sha256": SHA,
+            "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+            "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+            "semantic_rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+            "project_snapshot_digest": SHA,
+            "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
+            "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
+            "execution_authorization_receipt_digest": SHA,
+            "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
+            "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+        },
+        execution_context={
+            "implementation_commit": "1" * 40,
+            "implementation_tree": "2" * 40,
+            "wheel_sha256": SHA,
+            "installed_inventory_sha256": SHA,
+            "python_executable": "/pilot/runtime/python",
+            "cwd": "/pilot/project",
+            "runtime_binding_digest": SHA,
+        },
+        project={
+            "project_id": "pilot-project",
+            "project_root": str(project),
+            "registry_project_count": 1,
+            "snapshot_digest": SHA,
+            "head_commit": "1" * 40,
+            "head_tree": "2" * 40,
+            "index_digest": SHA,
+            "protected_path_manifest_digest": SHA,
+            "allowed_read_path_manifest_digest": SHA,
+            "allowed_write_path_manifest_digest": SHA,
+            "ledger_git_ignored": True,
+            "ledger_not_tracked": True,
+            "ledger_not_staged": True,
+            "root_override_disabled": True,
+        },
+        authentication={
+            "caller_auth_mode": "token",
+            "principal_authenticated_by": "local_session",
+            "token_file_mode": "0600",
+            "token_parent_mode": "0700",
+            "token_owner_matches_runtime_user": True,
+            "token_format_valid": True,
+            "token_ledger_binding_valid": True,
+            "token_absent_from_cmdline": True,
+            "token_absent_from_environment": True,
+            "token_absent_from_bundle": True,
+            "token_absent_from_logs": True,
+            "authentication_conformance_receipt_digest": SHA,
+            "principal_binding_digest": SHA,
+        },
+        semantic_validation={
+            "rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
+            "receipt_digest": SHA,
+            "rules_evaluated": 27,
+            "rules_failed": 0,
+            "result": "PASS",
+        },
+        safety={
+            "public_endpoint": False,
+            "relay_or_tunnel": False,
+            "existing_service_modified": False,
+            "other_project_modified": False,
+            "push": False,
+            "stable_promotion": False,
+            "one_unconsumed_decision_matches": True,
+        },
+    )
+    assert preflight["result"] == "PASS"
+    assert preflight["ledger"]["path"] == receipt["ledger_path"]
     with pytest.raises(WorkItemGovernanceError) as error:
         bootstrap_fresh_pilot_ledger(
             paths=paths,
             port=48791,
-            token_file_sha256="d" * 64,
-            token_evidence_digest="e" * 64,
         )
     assert error.value.code == "PILOT_LEDGER_NOT_FRESH"
+
+
+def test_bootstrap_rejects_project_nested_in_private_pilot_root(tmp_path: Path) -> None:
+    root = tmp_path / "pilot"
+    paths = PilotBootstrapPaths(
+        pilot_root=root,
+        project_root=root / "project",
+        home=root / "home",
+        xdg_config_home=root / "config",
+        xdg_state_home=root / "state",
+        xdg_cache_home=root / "cache",
+        xdg_data_home=root / "data",
+        registry_path=root / "config/colameta/project-registry.json",
+        token_file=root / "config/colameta/auth.json",
+        backup_path=root / "evidence/backup.sqlite3",
+    )
+    with pytest.raises(WorkItemGovernanceError) as error:
+        bootstrap_fresh_pilot_ledger(paths=paths, port=48792)
+    assert error.value.code == "PILOT_ROOT_COLLISION"
+    assert not root.exists()
 
 
 def test_one_shot_authorization_is_atomically_tombstoned(
@@ -518,29 +885,46 @@ def test_one_shot_authorization_is_atomically_tombstoned(
 ) -> None:
     import runner.work_item_governance.pilot_authorization as module
 
-    decision = {"gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST"}
-    scope = {"scope": "test"}
+    decision = {
+        "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
+        "bindings": {"candidate_manifest_sha256": SHA},
+    }
+    scope = {"scope": "test", "target_project": {"project_snapshot_digest": SHA}}
     decision_path = tmp_path / "decision.json"
     tombstone_path = tmp_path / "decision.tombstone.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     decision_path.chmod(0o600)
     monkeypatch.setattr(module, "validate_pilot_authorization", lambda value, scope_envelope: value)
+    monkeypatch.setattr(module, "validate_pilot_scope_envelope", lambda value, **kwargs: value)
+    monkeypatch.setattr(module, "validate_pilot_preflight", lambda value: value)
+    monkeypatch.setattr(module, "build_pilot_semantic_validation_receipt", lambda **kwargs: {"result": "PASS"})
     consumer = PilotAuthorizationDecisionConsumer(
         decision_path=decision_path,
         tombstone_path=tombstone_path,
     )
     tombstone = consumer.consume(
         scope_envelope=scope,
+        execution_authorization_receipt={},
+        preflight_receipt={"execution_context": {}, "ledger": {}},
         expected_authorization_digest=canonical_sha256(decision),
     )
-    assert tombstone["decision"] == "CONSUMED"
-    assert tombstone["retry_allowed"] is False
+    assert tombstone.tombstone["decision"] == "CONSUMED"
+    assert tombstone.tombstone["retry_allowed"] is False
+    decision["gate_id"] = "mutated-after-consumption"
+    scope["scope"] = "mutated-after-consumption"
+    assert tombstone.authorization["gate_id"] == "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST"
+    assert tombstone.scope_envelope["scope"] == "test"
+    returned = tombstone.tombstone
+    returned["decision"] = "FORGED"
+    assert tombstone.tombstone["decision"] == "CONSUMED"
     assert not decision_path.exists()
     assert tombstone_path.is_file()
     assert tombstone_path.stat().st_mode & 0o077 == 0
     with pytest.raises(WorkItemGovernanceError) as error:
         consumer.consume(
             scope_envelope=scope,
+            execution_authorization_receipt={},
+            preflight_receipt={"execution_context": {}, "ledger": {}},
             expected_authorization_digest=canonical_sha256(decision),
         )
     assert error.value.code == "PILOT_AUTHORIZATION_ALREADY_CONSUMED"

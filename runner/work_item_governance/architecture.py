@@ -433,7 +433,7 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
         )
         for method in (
             "prepare_lease",
-            "transition_runtime",
+            "_transition_runtime",
             "revoke",
             "freeze",
             "_terminal_transition",
@@ -451,6 +451,14 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                         "import": method,
                     }
                 )
+        if "transition_runtime" in pilot_control_methods:
+            violations.append(
+                {
+                    "rule": "pilot_runtime_transition_public_bypass",
+                    "path": str(pilot_path.relative_to(root)),
+                    "import": "transition_runtime",
+                }
+            )
     return {
         "ok": not violations,
         "schema_version": "work_item_architecture_check.v1",
