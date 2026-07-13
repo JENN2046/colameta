@@ -279,7 +279,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "database_generation", "storage_migration_receipt_digest", "legacy_table_digests_unchanged", "integrity_check", "foreign_key_violations", "backup_sha256", "backup_generation", "append_only_evidence_preserved"],
       "properties": {
-        "schema_version": {"const": 6},
+        "schema_version": {"const": 7},
         "database_generation": {"type": "integer", "minimum": 1},
         "storage_migration_receipt_digest": {"$ref": "#/$defs/sha256"},
         "legacy_table_digests_unchanged": {"const": true},

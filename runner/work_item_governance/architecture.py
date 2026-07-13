@@ -156,12 +156,14 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
         for path in sorted(source_root.rglob("*.py")):
             checked_write_boundary_files += 1
             relative = path.relative_to(root).as_posix()
-            # These are the only two domain modules allowed to hold the sealed
-            # repository capabilities.  The Pilot implementation is a separate
-            # bounded authority model, not a transport-side escape hatch.
+            # These are the only domain modules allowed to hold the sealed
+            # repository capabilities.  Pilot authorization owns the durable
+            # issuance/claim facts; it is part of the bounded authority model,
+            # not a transport-side escape hatch.
             if relative not in {
                 "runner/work_item_governance/activation.py",
                 "runner/work_item_governance/pilot.py",
+                "runner/work_item_governance/pilot_authorization.py",
             }:
                 for boundary_call in (
                     "authorize_activation_domain_write",
@@ -457,6 +459,47 @@ def check_work_item_architecture(project_root: str | Path) -> dict[str, Any]:
                     "rule": "pilot_runtime_transition_public_bypass",
                     "path": str(pilot_path.relative_to(root)),
                     "import": "transition_runtime",
+                }
+            )
+    pilot_authorization_path = core_root / "pilot_authorization.py"
+    if pilot_authorization_path.is_file():
+        consumer_methods = _class_method_analyses(
+            pilot_authorization_path,
+            class_name="PilotAuthorizationDecisionConsumer",
+        )
+        authorize = consumer_methods.get("_authorize_control_write")
+        finalize = consumer_methods.get("_finalize_control_write")
+        consume = consumer_methods.get("consume")
+        if authorize is None or not authorize.has_exact_call(
+            ("self", "ledger", "authorize_activation_control_write")
+        ):
+            violations.append(
+                {
+                    "rule": "pilot_authorization_repository_unlock_missing",
+                    "path": str(pilot_authorization_path.relative_to(root)),
+                    "import": "_authorize_control_write",
+                }
+            )
+        if finalize is None or not finalize.has_exact_call(
+            ("self", "ledger", "finalize_activation_control_write")
+        ):
+            violations.append(
+                {
+                    "rule": "pilot_authorization_repository_relock_missing",
+                    "path": str(pilot_authorization_path.relative_to(root)),
+                    "import": "_finalize_control_write",
+                }
+            )
+        if consume is None or not _ordered_exact_calls(
+            consume,
+            ("self", "_authorize_control_write"),
+            ("self", "_finalize_control_write"),
+        ):
+            violations.append(
+                {
+                    "rule": "pilot_authorization_issuance_transaction_missing",
+                    "path": str(pilot_authorization_path.relative_to(root)),
+                    "import": "consume",
                 }
             )
     return {

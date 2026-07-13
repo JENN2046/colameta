@@ -60,7 +60,7 @@
         "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "project_root_path_digest": {"$ref": "#/$defs/sha256"},
         "pilot_root_path_digest": {"$ref": "#/$defs/sha256"},
-        "ledger_schema_version": {"const": 6},
+        "ledger_schema_version": {"const": 7},
         "bind_address": {"const": "127.0.0.1"},
         "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
         "exposure_profile": {"const": "authoritative_canary"},

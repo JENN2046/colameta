@@ -52,6 +52,8 @@ PILOT_ZERO_FACT_TABLES = (
     "acceptance_manifests",
     "activation_leases",
     "activation_lease_events",
+    "pilot_authorization_facts",
+    "pilot_authorization_claims",
     "pilot_activation_leases",
     "pilot_activation_lease_events",
     "external_associations",
@@ -218,7 +220,9 @@ def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) 
             return False
         if not candidate.is_file() or candidate.resolve() in excluded:
             continue
-        if candidate.name.endswith(("-wal", "-shm")):
+        ledger = (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve()
+        exact_sidecars = {Path(f"{ledger}-wal"), Path(f"{ledger}-shm")}
+        if candidate.resolve() in exact_sidecars:
             continue
         if candidate.stat().st_size > 16 * 1024 * 1024:
             return False
@@ -324,8 +328,17 @@ def bootstrap_fresh_pilot_ledger(
     os.chmod(settings, 0o600)
     legacy = SQLiteWorkItemLedger(value.project_root, target_schema_version=5)
     legacy.initialize()
-    migration = legacy.migrate_to_v6()
-    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=6)
+    migration_v6 = legacy.migrate_to_v6()
+    migration_v7 = SQLiteWorkItemLedger(value.project_root, target_schema_version=6).migrate_to_v7()
+    migration = {
+        "schema_version": "wig_p3_pilot_storage_migration_chain.v1",
+        "from_schema_version": 5,
+        "to_schema_version": 7,
+        "transaction_mode": "TWO_EXPLICIT_BEGIN_IMMEDIATE_STEPS",
+        "legacy_table_digests_unchanged": migration_v6["legacy_table_digests_unchanged"],
+        "steps": [migration_v6, migration_v7],
+    }
+    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=7)
     with ledger.write_transaction() as connection:
         signing_key = secrets.token_hex(32)
         for key, item in (
@@ -582,8 +595,8 @@ def build_fresh_pilot_preflight_receipt(
     }
     if project != measured_project:
         failures.append("project:measured_snapshot")
-    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=6)
-    if ledger.schema_version() != 6:
+    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=7)
+    if ledger.schema_version() != 7:
         failures.append("ledger:schema_version")
     if ledger.database_generation() != bootstrap_receipt["database_generation"]:
         failures.append("ledger:database_generation")
@@ -778,7 +791,7 @@ def build_fresh_pilot_preflight_receipt(
         "ledger": {
             "path": bootstrap_receipt["ledger_path"],
             "path_digest": bootstrap_receipt["ledger_path_digest"],
-            "schema_version": 6,
+            "schema_version": 7,
             "database_generation": bootstrap_receipt["database_generation"],
             "storage_migration_receipt_digest": bootstrap_receipt["storage_migration_receipt_digest"],
             "legacy_table_digests_unchanged": bootstrap_receipt["storage_migration"]["legacy_table_digests_unchanged"],

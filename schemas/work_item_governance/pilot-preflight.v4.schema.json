@@ -94,7 +94,7 @@
       "properties": {
         "path": {"$ref": "#/$defs/absolute_path"},
         "path_digest": {"$ref": "#/$defs/sha256"},
-        "schema_version": {"const": 6},
+        "schema_version": {"const": 7},
         "database_generation": {"type": "integer", "minimum": 1},
         "storage_migration_receipt_digest": {"$ref": "#/$defs/sha256"},
         "legacy_table_digests_unchanged": {"const": true},
@@ -114,7 +114,7 @@
         "receipt_digest": {"$ref": "#/$defs/sha256"},
         "sha256": {"$ref": "#/$defs/sha256"},
         "database_generation": {"type": "integer", "minimum": 1},
-        "schema_version": {"const": 6},
+        "schema_version": {"const": 7},
         "integrity_check": {"const": "ok"},
         "foreign_key_violations": {"type": "array", "maxItems": 0},
         "mode": {"const": "0600"}
@@ -205,9 +205,9 @@
     "zero_facts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["work_items", "task_versions", "execution_attempts", "attempt_events", "artifact_refs", "decision_records", "gate_events", "acceptance_manifests", "activation_leases", "activation_lease_events", "pilot_activation_leases", "pilot_activation_lease_events", "external_associations", "delivery_receipts", "blocker_events", "audit_events", "outbox_events", "inbox_events"],
+      "required": ["work_items", "task_versions", "execution_attempts", "attempt_events", "artifact_refs", "decision_records", "gate_events", "acceptance_manifests", "activation_leases", "activation_lease_events", "pilot_authorization_facts", "pilot_authorization_claims", "pilot_activation_leases", "pilot_activation_lease_events", "external_associations", "delivery_receipts", "blocker_events", "audit_events", "outbox_events", "inbox_events"],
       "properties": {
-        "work_items": {"const": 0}, "task_versions": {"const": 0}, "execution_attempts": {"const": 0}, "attempt_events": {"const": 0}, "artifact_refs": {"const": 0}, "decision_records": {"const": 0}, "gate_events": {"const": 0}, "acceptance_manifests": {"const": 0}, "activation_leases": {"const": 0}, "activation_lease_events": {"const": 0}, "pilot_activation_leases": {"const": 0}, "pilot_activation_lease_events": {"const": 0}, "external_associations": {"const": 0}, "delivery_receipts": {"const": 0}, "blocker_events": {"const": 0}, "audit_events": {"const": 0}, "outbox_events": {"const": 0}, "inbox_events": {"const": 0}
+        "work_items": {"const": 0}, "task_versions": {"const": 0}, "execution_attempts": {"const": 0}, "attempt_events": {"const": 0}, "artifact_refs": {"const": 0}, "decision_records": {"const": 0}, "gate_events": {"const": 0}, "acceptance_manifests": {"const": 0}, "activation_leases": {"const": 0}, "activation_lease_events": {"const": 0}, "pilot_authorization_facts": {"const": 0}, "pilot_authorization_claims": {"const": 0}, "pilot_activation_leases": {"const": 0}, "pilot_activation_lease_events": {"const": 0}, "external_associations": {"const": 0}, "delivery_receipts": {"const": 0}, "blocker_events": {"const": 0}, "audit_events": {"const": 0}, "outbox_events": {"const": 0}, "inbox_events": {"const": 0}
       }
     }
   }

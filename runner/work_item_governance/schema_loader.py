@@ -45,6 +45,7 @@ CONTRACT_FILES = {
     "pilot_fact_reconciliation.v2": "pilot-fact-reconciliation.v2.json",
     "pilot_semantic_rules.v4": "pilot-semantic-rules.v4.json",
     "pilot_storage_schema_v6.v2": "pilot-storage-schema-v6.v2.json",
+    "pilot_storage_schema_v7.v1": "pilot-storage-schema-v7.v1.json",
     "pilot_negative_test_matrix.v4": "pilot-negative-test-matrix.v4.json",
     "pilot_tool_allowlist.v3": "pilot-tool-allowlist.v3.json",
     "pilot_write_command_matrix.v3": "pilot-write-command-matrix.v3.json",

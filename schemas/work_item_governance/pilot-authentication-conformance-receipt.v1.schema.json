@@ -30,7 +30,7 @@
     },
     "authentication": {
       "type": "object", "additionalProperties": false,
-      "required": ["auth_mode", "token_format_valid", "token_ledger_binding_valid", "no_token_status", "wrong_token_status", "correct_token_status", "request_capability_non_json", "request_capability_single_use"],
+      "required": ["auth_mode", "token_format_valid", "token_ledger_binding_valid", "no_token_status", "wrong_token_status", "correct_token_status", "no_token_response_digest", "wrong_token_response_digest", "correct_token_response_digest", "request_capability_non_json", "request_capability_single_use"],
       "properties": {
         "auth_mode": {"const": "token"},
         "token_format_valid": {"const": true},
@@ -38,13 +38,16 @@
         "no_token_status": {"const": 401},
         "wrong_token_status": {"const": 401},
         "correct_token_status": {"const": 200},
+        "no_token_response_digest": {"$ref": "#/$defs/sha256"},
+        "wrong_token_response_digest": {"$ref": "#/$defs/sha256"},
+        "correct_token_response_digest": {"$ref": "#/$defs/sha256"},
         "request_capability_non_json": {"const": true},
         "request_capability_single_use": {"const": true}
       }
     },
     "surface": {
       "type": "object", "additionalProperties": false,
-      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
+      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "actions_response_digest", "actions_error_code", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
       "properties": {
         "exposure_profile": {"const": "authoritative_canary"},
         "scope_mode": {"const": "bounded_single_project_pilot.v1"},
@@ -55,6 +58,8 @@
         "resource_read_error_code": {"const": "resources_disabled"},
         "hidden_tool_error_code": {"const": "TOOL_NOT_EXPOSED"},
         "alternate_dispatch_error_code": {"const": "legacy_method_alias_disabled"},
+        "actions_response_digest": {"$ref": "#/$defs/sha256"},
+        "actions_error_code": {"const": "ACTIONS_DISABLED"},
         "worker_inventory_digest": {"$ref": "#/$defs/sha256"},
         "definitions_dispatch_exact_match": {"const": true},
         "resources_disabled_or_empty": {"const": true},

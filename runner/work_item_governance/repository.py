@@ -584,6 +584,50 @@ def _migration_v6() -> tuple[str, ...]:
     )
 
 
+def _migration_v7() -> tuple[str, ...]:
+    """Add durable, append-only Pilot authorization issuance and claim facts."""
+
+    return (
+        """
+        CREATE TABLE pilot_authorization_facts (
+            authorization_digest TEXT PRIMARY KEY CHECK (length(authorization_digest)=64),
+            schema_version TEXT NOT NULL CHECK (
+              schema_version='wig_p3_pilot_persisted_authority.v2'
+            ),
+            tombstone_digest TEXT NOT NULL CHECK (length(tombstone_digest)=64),
+            tombstone_path_digest TEXT NOT NULL CHECK (length(tombstone_path_digest)=64),
+            payload_digest TEXT NOT NULL CHECK (length(payload_digest)=64),
+            issued_record_json TEXT NOT NULL CHECK (json_valid(issued_record_json)),
+            issued_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE pilot_authorization_claims (
+            authorization_digest TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (
+              schema_version='wig_p3_pilot_authorization_claim.v1'
+            ),
+            claim_digest TEXT NOT NULL UNIQUE CHECK (length(claim_digest)=64),
+            claimed_at TEXT NOT NULL,
+            FOREIGN KEY (authorization_digest)
+              REFERENCES pilot_authorization_facts(authorization_digest) ON DELETE RESTRICT
+        )
+        """,
+        "CREATE TRIGGER pilot_authorization_facts_no_update "
+        "BEFORE UPDATE ON pilot_authorization_facts "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+        "CREATE TRIGGER pilot_authorization_facts_no_delete "
+        "BEFORE DELETE ON pilot_authorization_facts "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+        "CREATE TRIGGER pilot_authorization_claims_no_update "
+        "BEFORE UPDATE ON pilot_authorization_claims "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+        "CREATE TRIGGER pilot_authorization_claims_no_delete "
+        "BEFORE DELETE ON pilot_authorization_claims "
+        "BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    )
+
+
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: _migration_v1(),
     2: _migration_v2(),
@@ -591,6 +635,7 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
     4: _migration_v4(),
     5: _migration_v5(),
     6: _migration_v6(),
+    7: _migration_v7(),
 }
 
 
@@ -615,8 +660,8 @@ class SQLiteWorkItemLedger:
         self.maintenance_lock_path = self.path.parent / "work-items.restore.lock"
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self._migrations = dict(migrations or MIGRATIONS)
-        if target_schema_version not in {5, 6}:
-            raise ValueError("target_schema_version must be 5 or 6")
+        if target_schema_version not in {5, 6, 7}:
+            raise ValueError("target_schema_version must be 5, 6 or 7")
         self.target_schema_version = target_schema_version
         self._activation_transaction_states: dict[int, dict[str, Any]] = {}
         self.__write_connection_authority = object()
@@ -753,6 +798,12 @@ class SQLiteWorkItemLedger:
                 raise WorkItemGovernanceError(
                     "PILOT_EXPLICIT_MIGRATION_REQUIRED",
                     "Any schema transition into v6 requires the explicit atomic Pilot migration wrapper.",
+                    details={"current": current, "target": self.target_schema_version},
+                )
+            if current == 6 and self.target_schema_version >= 7:
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORITY_EXPLICIT_MIGRATION_REQUIRED",
+                    "Schema v6 to v7 requires the explicit atomic authorization-fact migration wrapper.",
                     details={"current": current, "target": self.target_schema_version},
                 )
             while current < self.target_schema_version:
@@ -1008,6 +1059,7 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         )
+        from runner.work_item_governance.pilot_authorization import PilotAuthorizationDecisionConsumer
 
         if (
             type(controller) not in {
@@ -1015,6 +1067,7 @@ class SQLiteWorkItemLedger:
                 AuthoritativeCanaryGuard,
                 PilotActivationControlPlane,
                 PilotActivationGuard,
+                PilotAuthorizationDecisionConsumer,
             }
             or getattr(controller, "ledger", None) is not self
             or id(controller) in self.__issued_controller_bindings
@@ -1068,6 +1121,7 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         )
+        from runner.work_item_governance.pilot_authorization import PilotAuthorizationDecisionConsumer
 
         state = self._activation_transaction_states.get(id(connection))
         trusted_controller = type(controller) in {
@@ -1075,6 +1129,7 @@ class SQLiteWorkItemLedger:
             AuthoritativeCanaryGuard,
             PilotActivationControlPlane,
             PilotActivationGuard,
+            PilotAuthorizationDecisionConsumer,
         }
         if (
             state is None
@@ -1119,11 +1174,19 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         }
-        state["authorized_control_tables"] = frozenset(
-            {"pilot_activation_leases", "pilot_activation_lease_events"}
-            if pilot_controller
-            else {"activation_leases", "activation_lease_events"}
-        )
+        if type(controller) is PilotAuthorizationDecisionConsumer:
+            authorized_tables = {
+                "pilot_authorization_facts",
+                "pilot_authorization_claims",
+            }
+        elif pilot_controller:
+            authorized_tables = {
+                "pilot_activation_leases",
+                "pilot_activation_lease_events",
+            }
+        else:
+            authorized_tables = {"activation_leases", "activation_lease_events"}
+        state["authorized_control_tables"] = frozenset(authorized_tables)
         state["authorized_control_session"] = session
         self._refresh_managed_authorizer(connection, state)
         return session
@@ -1443,6 +1506,93 @@ class SQLiteWorkItemLedger:
                     "LEDGER_MIGRATION_FAILED",
                     "Ledger migration failed and was rolled back.",
                     details={"target_version": 6, "reason": str(exc)},
+                ) from exc
+            finally:
+                connection.close()
+            os.chmod(self.path, 0o600)
+            return receipt
+
+    def migrate_to_v7(self) -> dict[str, Any]:
+        """Atomically add append-only Pilot authorization facts to exact Schema v6."""
+
+        with self._maintenance_lock(exclusive=True, blocking=False):
+            self._ensure_storage_path()
+            if not self.path.exists():
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORITY_MIGRATION_SOURCE_MISSING",
+                    "Authorization-fact migration requires an existing Schema v6 Ledger.",
+                )
+            connection = self._connect(readonly=False, _write_authority=self.__write_connection_authority)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                before_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if before_version != 6:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORITY_MIGRATION_SOURCE_VERSION_INVALID",
+                        "Authorization-fact migration requires exact Schema v6 input.",
+                        details={"actual": before_version},
+                    )
+                live_pilot = connection.execute(
+                    "SELECT lease_id,status FROM pilot_activation_leases LIMIT 1"
+                ).fetchone()
+                if live_pilot is not None:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORITY_MIGRATION_REQUIRES_FRESH_LEDGER",
+                        "Schema v7 migration must precede every Pilot Lease.",
+                    )
+                integrity_before = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+                foreign_keys_before = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
+                if integrity_before != ["ok"] or foreign_keys_before:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORITY_MIGRATION_SOURCE_INTEGRITY_FAILED",
+                        "Schema v7 migration source failed integrity or foreign-key checks.",
+                    )
+                for statement in self._migrations[7]:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version=7")
+                connection.execute(
+                    "UPDATE ledger_meta SET value='7', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE key='schema_version'"
+                )
+                counts = {
+                    "pilot_authorization_facts": int(
+                        connection.execute("SELECT COUNT(*) FROM pilot_authorization_facts").fetchone()[0]
+                    ),
+                    "pilot_authorization_claims": int(
+                        connection.execute("SELECT COUNT(*) FROM pilot_authorization_claims").fetchone()[0]
+                    ),
+                }
+                integrity_after = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+                foreign_keys_after = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
+                if (
+                    int(connection.execute("PRAGMA user_version").fetchone()[0]) != 7
+                    or any(counts.values())
+                    or integrity_after != ["ok"]
+                    or foreign_keys_after
+                ):
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORITY_MIGRATION_POSTCONDITION_FAILED",
+                        "Schema v7 authorization-fact migration failed its postconditions.",
+                    )
+                receipt = {
+                    "schema_version": "wig_p3_pilot_authority_storage_migration_receipt.v1",
+                    "from_schema_version": before_version,
+                    "to_schema_version": 7,
+                    "transaction_mode": "BEGIN_IMMEDIATE",
+                    "maintenance_lock": "exclusive",
+                    "authorization_fact_counts": counts,
+                    "integrity_check": integrity_after,
+                    "foreign_key_violations": foreign_keys_after,
+                }
+                connection.commit()
+            except Exception as exc:
+                connection.rollback()
+                if isinstance(exc, WorkItemGovernanceError):
+                    raise
+                raise WorkItemGovernanceError(
+                    "LEDGER_MIGRATION_FAILED",
+                    "Schema v7 authorization-fact migration failed and was rolled back.",
+                    details={"target_version": 7, "reason": str(exc)},
                 ) from exc
             finally:
                 connection.close()

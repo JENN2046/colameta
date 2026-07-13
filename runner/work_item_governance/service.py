@@ -107,11 +107,11 @@ class WorkItemApplicationService:
             )
         self.ledger = ledger or SQLiteWorkItemLedger(
             self.project_root,
-            target_schema_version=6 if self.bounded_single_project_pilot else 5,
+            target_schema_version=7 if self.bounded_single_project_pilot else 5,
         )
         if self.authoritative_canary or self.bounded_single_project_pilot:
             self.ledger.assert_exact_schema_without_migration(
-                expected_version=6 if self.bounded_single_project_pilot else 5
+                expected_version=7 if self.bounded_single_project_pilot else 5
             )
         self.now = now
         self.principal_context = principal_context

@@ -38,15 +38,15 @@ PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "f9ea5a2257be5f55eb62c5195d26d6c87e52454862e82c4363462e74b10184aa",
-    "storage_schema_contract_digest": "72305af12e47eba743b84d40f786bd077315ee8e222e5e0241f723b38f5a19ef",
+    "spec_manifest_digest": "4f2d6c1370076f42e5001ea1617fb559ce061f200f54aa7f91b1b1d513b31a2b",
+    "storage_schema_contract_digest": "cc63137f77f4517677d0b387db1ea772da7a5cd1d405ce76ed5198dd9881767b",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "5b1a1d8d70f14b72c36f843389bc324a990d4406345d4031450b92a422edf026",
     "tool_allowlist_digest": "fae456a0ed7aa3cbfa925ffc9de367d6d8cc103793ef973e69a6a7fea66fd985",
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "48fe51964e32819afc7d686e3cd7f3583f23beaa693d72b862e3ed056a4b2f68",
+    "authentication_conformance_receipt_schema_sha256": "7d23b2a9cc9bc235efa4455771726b1fc357ffdc29ad08ea9f0062f60c43e5ee",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
@@ -65,13 +65,14 @@ PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
     "write_path_inventory_sha256": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
-    "preflight_schema_sha256": "5ee567a5a4293d6301f91191d101f8652415b25eaa0abb26e65892ed45a37a89",
-    "closeout_schema_sha256": "4801f2e2503f1ec47de1a813c184b0884f3a2b6f59af85c0a451bd15a789c2c6",
+    "preflight_schema_sha256": "b1ef40b640b0218441efaed3da6f2ea01f6a997d60eb78c13cbee288b8f7a7f1",
+    "closeout_schema_sha256": "6ac9888da62d60480419bf137e18679212ecf54fa90b0c6eaf5d89b97c992c4f",
     "negative_test_matrix_sha256": "a9e9b69429e848d362e5447c14686eb965714d41f1121222770c09c5a883daa9",
 }
 PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-semantic-rules.v4.json": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
-    "pilot-storage-schema-v6.v2.json": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
+    "pilot-storage-schema-v6.v2.json": "72305af12e47eba743b84d40f786bd077315ee8e222e5e0241f723b38f5a19ef",
+    "pilot-storage-schema-v7.v1.json": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
     "pilot-fact-reconciliation.v2.json": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
     "pilot-tool-allowlist.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "pilot-write-command-matrix.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
@@ -82,6 +83,7 @@ PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-semantic-validation-receipt.v3.schema.json": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
     "pilot-write-path-inventory.v3.json": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
     "pilot-scope-envelope.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["scope_schema_sha256"],
+    "pilot-authorization.v4.schema.json": "4df85cd005ae005d7fe5b84a999eded308571abd63cb31fd687bc984036e7225",
     "pilot-activation-lease.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["activation_lease_schema_sha256"],
     "pilot-activation-lease-event.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["lease_event_schema_sha256"],
     "pilot-preflight.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["preflight_schema_sha256"],
@@ -215,6 +217,8 @@ PILOT_TABLE_COUNT_QUERIES = {
     "acceptance_manifests": "SELECT COUNT(*) FROM acceptance_manifests",
     "activation_leases": "SELECT COUNT(*) FROM activation_leases",
     "activation_lease_events": "SELECT COUNT(*) FROM activation_lease_events",
+    "pilot_authorization_facts": "SELECT COUNT(*) FROM pilot_authorization_facts",
+    "pilot_authorization_claims": "SELECT COUNT(*) FROM pilot_authorization_claims",
     "pilot_activation_leases": "SELECT COUNT(*) FROM pilot_activation_leases",
     "pilot_activation_lease_events": "SELECT COUNT(*) FROM pilot_activation_lease_events",
     "external_associations": "SELECT COUNT(*) FROM external_associations",
@@ -674,7 +678,7 @@ def _validate_pilot_lease_authority_semantics(
         raise WorkItemGovernanceError("PILOT_WINDOW_INVALID", "Pilot Lease is not currently authorized.")
     preflight = capability.preflight
     if (
-        int(preflight["ledger"]["schema_version"]) != 6
+        int(preflight["ledger"]["schema_version"]) != 7
         or int(preflight["ledger"]["database_generation"]) != ledger.database_generation()
         or int(preflight["backup"]["database_generation"]) != ledger.database_generation()
     ):
