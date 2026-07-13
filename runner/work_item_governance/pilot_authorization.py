@@ -3,8 +3,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sqlite3
 import stat
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,8 @@ from runner.work_item_governance.pilot import (
     validate_pilot_preflight,
     validate_pilot_scope_envelope,
 )
+from runner.work_item_governance.preview import isoformat_utc, utc_now
+from runner.work_item_governance.repository import SQLiteWorkItemLedger
 
 
 _CAPABILITY_FIELDS = (
@@ -44,7 +46,9 @@ class ConsumedPilotAuthorization:
         "_authentication_conformance_json",
         "_preflight_semantic_json",
         "_semantic_receipt_json",
-        "_reader",
+        "_ledger",
+        "_claim_key",
+        "_issued_record_json",
     )
 
     def __new__(cls, *args: Any, **kwargs: Any) -> ConsumedPilotAuthorization:
@@ -55,7 +59,7 @@ class ConsumedPilotAuthorization:
         raise TypeError("Consumed Pilot authority is immutable.")
 
     def _copy(self, field: str) -> dict[str, Any]:
-        value = self._reader(self, field)
+        value = getattr(self, field)
         record = json.loads(value)
         if not isinstance(record, dict):
             raise TypeError("Consumed Pilot authority contains an invalid internal snapshot.")
@@ -114,9 +118,16 @@ class PilotAuthorizationDecisionConsumer:
     never make the same authorization reusable.
     """
 
-    def __init__(self, *, decision_path: Path, tombstone_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        decision_path: Path,
+        tombstone_path: Path,
+        ledger: SQLiteWorkItemLedger,
+    ) -> None:
         self.decision_path = decision_path.expanduser().resolve()
         self.tombstone_path = tombstone_path.expanduser().resolve()
+        self.ledger = ledger
         if self.decision_path == self.tombstone_path:
             raise WorkItemGovernanceError(
                 "PILOT_AUTHORIZATION_PATH_INVALID",
@@ -157,7 +168,7 @@ class PilotAuthorizationDecisionConsumer:
         authentication_conformance_receipt: dict[str, Any],
         preflight_semantic_validation_receipt: dict[str, Any],
         expected_authorization_digest: str,
-    ) -> dict[str, Any]:
+    ) -> ConsumedPilotAuthorization:
         self.tombstone_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(self.tombstone_path.parent, 0o700)
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -230,7 +241,7 @@ class PilotAuthorizationDecisionConsumer:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            return {
+            payload = {
                 "tombstone": tombstone,
                 "authorization": decision,
                 "scope_envelope": scope_envelope,
@@ -240,102 +251,141 @@ class PilotAuthorizationDecisionConsumer:
                 "preflight_semantic": preflight_semantic_validation_receipt,
                 "semantic_receipt": semantic_receipt,
             }
+            capability = object.__new__(ConsumedPilotAuthorization)
+            snapshots = tuple(
+                canonical_json(payload[field])
+                for field in (
+                    "tombstone",
+                    "authorization",
+                    "scope_envelope",
+                    "execution_receipt",
+                    "preflight",
+                    "authentication_conformance",
+                    "preflight_semantic",
+                    "semantic_receipt",
+                )
+            )
+            claim_key = f"pilot_authorization_capability:{digest}"
+            issued_record = {
+                "schema_version": "wig_p3_pilot_persisted_authority.v1",
+                "authorization_digest": digest,
+                "tombstone_digest": canonical_sha256(tombstone),
+                "payload_digest": canonical_sha256(list(snapshots)),
+                "state": "issued",
+                "issued_at": isoformat_utc(utc_now()),
+            }
+            issued_record_json = canonical_json(issued_record)
+            with self.ledger.write_transaction() as connection:
+                try:
+                    connection.execute(
+                        "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                        (claim_key, issued_record_json),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORIZATION_ALREADY_CONSUMED",
+                        "Pilot authorization already has persisted issuance or consumption state.",
+                    ) from exc
+            for field, snapshot in zip(_CAPABILITY_FIELDS, snapshots, strict=True):
+                object.__setattr__(capability, field, snapshot)
+            object.__setattr__(capability, "_ledger", self.ledger)
+            object.__setattr__(capability, "_claim_key", claim_key)
+            object.__setattr__(capability, "_issued_record_json", issued_record_json)
+            return capability
         finally:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
 
-
-def _install_consumer_owned_capability_boundary(
-    consumer_class: type[PilotAuthorizationDecisionConsumer],
-) -> tuple[
-    type[PilotAuthorizationDecisionConsumer],
-    Any,
-    Any,
-]:
-    """Keep issuance and registry state reachable only through verified consume()."""
-
-    lock = threading.RLock()
-    registry: dict[int, dict[str, Any]] = {}
-    verified_consume = consumer_class.consume
-
-    def verified_record(value: Any) -> dict[str, Any]:
-        if type(value) is not ConsumedPilotAuthorization:
-            raise WorkItemGovernanceError(
-                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-                "Pilot Lease preparation requires the exact consumed one-shot authority capability.",
-            )
-        record = registry.get(id(value))
-        try:
-            actual = tuple(getattr(value, field) for field in _CAPABILITY_FIELDS)
-        except (AttributeError, TypeError) as exc:
-            raise WorkItemGovernanceError(
-                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-                "Pilot authority capability is incomplete or mutated.",
-            ) from exc
-        if record is None or record["capability"] is not value or actual != record["snapshots"]:
-            raise WorkItemGovernanceError(
-                "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
-                "Pilot authority capability was not issued by a verified Decision consumption or was mutated.",
-            )
-        return record
-
-    def read_snapshot(value: Any, field: str) -> str:
-        with lock:
-            record = verified_record(value)
-            return record["snapshots"][_CAPABILITY_FIELDS.index(field)]
-
-    def consume_and_issue(self: Any, **kwargs: Any) -> ConsumedPilotAuthorization:
-        payload = verified_consume(self, **kwargs)
-        snapshots = tuple(
-            canonical_json(payload[field])
-            for field in (
-                "tombstone",
-                "authorization",
-                "scope_envelope",
-                "execution_receipt",
-                "preflight",
-                "authentication_conformance",
-                "preflight_semantic",
-                "semantic_receipt",
-            )
+def _verified_persisted_authority(value: Any) -> tuple[SQLiteWorkItemLedger, str, str]:
+    if type(value) is not ConsumedPilotAuthorization:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+            "Pilot Lease preparation requires one exact persisted one-shot authority.",
         )
-        capability = object.__new__(ConsumedPilotAuthorization)
-        for field, snapshot in zip(_CAPABILITY_FIELDS, snapshots, strict=True):
-            object.__setattr__(capability, field, snapshot)
-        object.__setattr__(capability, "_reader", read_snapshot)
-        with lock:
-            registry[id(capability)] = {
-                "capability": capability,
-                "snapshots": snapshots,
-                "state": "active",
-            }
-        return capability
+    try:
+        snapshots = tuple(getattr(value, field) for field in _CAPABILITY_FIELDS)
+        ledger = value._ledger
+        claim_key = value._claim_key
+        issued_record_json = value._issued_record_json
+        records = tuple(json.loads(snapshot) for snapshot in snapshots)
+        issued_record = json.loads(issued_record_json)
+    except (AttributeError, TypeError, json.JSONDecodeError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+            "Persisted Pilot authority is incomplete or malformed.",
+        ) from exc
+    if not isinstance(ledger, SQLiteWorkItemLedger) or not all(isinstance(record, dict) for record in records):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+            "Persisted Pilot authority has invalid runtime or snapshot types.",
+        )
+    tombstone, authorization, scope, execution, preflight, authentication, semantic, decision_semantic = records
+    authorization_digest = canonical_sha256(authorization)
+    expected_key = f"pilot_authorization_capability:{authorization_digest}"
+    expected_tombstone_bindings = {
+        "authorization_digest": authorization_digest,
+        "scope_envelope_digest": canonical_sha256(scope),
+        "execution_authorization_receipt_digest": canonical_sha256(execution),
+        "preflight_receipt_digest": canonical_sha256(preflight),
+        "authentication_conformance_receipt_digest": canonical_sha256(authentication),
+        "preflight_semantic_validation_receipt_digest": canonical_sha256(semantic),
+        "semantic_validation_receipt_digest": canonical_sha256(decision_semantic),
+    }
+    expected_issued = {
+        "schema_version": "wig_p3_pilot_persisted_authority.v1",
+        "authorization_digest": authorization_digest,
+        "tombstone_digest": canonical_sha256(tombstone),
+        "payload_digest": canonical_sha256(list(snapshots)),
+        "state": "issued",
+        "issued_at": issued_record.get("issued_at") if isinstance(issued_record, dict) else None,
+    }
+    if (
+        claim_key != expected_key
+        or not isinstance(issued_record, dict)
+        or issued_record != expected_issued
+        or any(tombstone.get(field) != expected for field, expected in expected_tombstone_bindings.items())
+        or tombstone.get("decision") != "CONSUMED"
+        or tombstone.get("retry_allowed") is not False
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
+            "Persisted Pilot authority differs from its Tombstone or exact payload bindings.",
+        )
+    with ledger.read_connection() as connection:
+        row = connection.execute("SELECT value FROM ledger_meta WHERE key=?", (claim_key,)).fetchone()
+    if row is None or str(row["value"]) != issued_record_json:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED",
+            "Persisted Pilot authority is absent, changed, or already consumed.",
+        )
+    return ledger, claim_key, issued_record_json
 
-    def require(value: Any) -> ConsumedPilotAuthorization:
-        with lock:
-            record = verified_record(value)
-            if record["state"] != "active":
-                raise WorkItemGovernanceError(
-                    "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED",
-                    "Pilot authority capability has already been consumed by a Lease preparation attempt.",
-                )
-            return value
 
-    def consume_once(value: Any) -> ConsumedPilotAuthorization:
-        with lock:
-            capability = require(value)
-            registry[id(capability)]["state"] = "consumed"
-            return capability
-
-    consumer_class.consume = consume_and_issue  # type: ignore[method-assign]
-    return consumer_class, require, consume_once
+def require_consumed_pilot_authorization(value: Any) -> ConsumedPilotAuthorization:
+    _verified_persisted_authority(value)
+    return value
 
 
-(
-    PilotAuthorizationDecisionConsumer,
-    require_consumed_pilot_authorization,
-    consume_pilot_authorization_capability,
-) = _install_consumer_owned_capability_boundary(PilotAuthorizationDecisionConsumer)
-del _install_consumer_owned_capability_boundary
+def consume_pilot_authorization_capability(value: Any) -> ConsumedPilotAuthorization:
+    """Atomically burn persisted one-shot authority before Lease validation."""
+
+    ledger, claim_key, issued_record_json = _verified_persisted_authority(value)
+    issued_record = json.loads(issued_record_json)
+    claimed_record = {
+        **issued_record,
+        "state": "claimed",
+        "claimed_at": isoformat_utc(utc_now()),
+    }
+    with ledger.write_transaction() as connection:
+        result = connection.execute(
+            "UPDATE ledger_meta SET value=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE key=? AND value=?",
+            (canonical_json(claimed_record), claim_key, issued_record_json),
+        )
+        if result.rowcount != 1:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED",
+                "Persisted Pilot authority has already been claimed by another Lease preparation attempt.",
+            )
+    return value

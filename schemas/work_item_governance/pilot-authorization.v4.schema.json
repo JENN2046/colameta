@@ -23,7 +23,7 @@
     "bindings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["remediated_spec_manifest_sha256", "candidate_manifest_sha256", "file_list_root_sha256", "scope_envelope_sha256", "authorized_scope_digest", "scope_schema_sha256", "storage_schema_contract_sha256", "activation_lease_schema_sha256", "lease_event_schema_sha256", "fact_reconciliation_contract_sha256", "semantic_rules_sha256", "semantic_validation_receipt_schema_sha256", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "authentication_conformance_receipt_schema_sha256", "expiry_conformance_receipt_schema_sha256", "tool_allowlist_sha256", "write_matrix_sha256", "write_path_inventory_sha256", "preflight_schema_sha256", "closeout_schema_sha256", "negative_test_matrix_sha256", "project_snapshot_digest", "execution_authorization_receipt_digest"],
+      "required": ["remediated_spec_manifest_sha256", "candidate_manifest_sha256", "file_list_root_sha256", "scope_envelope_sha256", "authorized_scope_digest", "scope_schema_sha256", "storage_schema_contract_sha256", "activation_lease_schema_sha256", "lease_event_schema_sha256", "fact_reconciliation_contract_sha256", "semantic_rules_sha256", "semantic_validation_receipt_schema_sha256", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "authentication_conformance_receipt_schema_sha256", "authentication_conformance_receipt_digest", "expiry_conformance_receipt_schema_sha256", "tool_allowlist_sha256", "write_matrix_sha256", "write_path_inventory_sha256", "preflight_schema_sha256", "closeout_schema_sha256", "negative_test_matrix_sha256", "project_snapshot_digest", "execution_authorization_receipt_digest"],
       "properties": {
         "remediated_spec_manifest_sha256": {"$ref": "#/$defs/sha256"},
         "candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
@@ -40,6 +40,7 @@
         "execution_attempt_slot_schema_sha256": {"$ref": "#/$defs/sha256"},
         "execution_authorization_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
         "authentication_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "authentication_conformance_receipt_digest": {"$ref": "#/$defs/sha256"},
         "expiry_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
         "tool_allowlist_sha256": {"$ref": "#/$defs/sha256"},
         "write_matrix_sha256": {"$ref": "#/$defs/sha256"},

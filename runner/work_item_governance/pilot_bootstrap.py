@@ -221,7 +221,7 @@ def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) 
         if candidate.name.endswith(("-wal", "-shm")):
             continue
         if candidate.stat().st_size > 16 * 1024 * 1024:
-            continue
+            return False
         if token_bytes in candidate.read_bytes():
             return False
     return True
@@ -231,28 +231,21 @@ def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
     """Cross-bind the frozen core allowlist to independently produced transport evidence."""
 
     names = PILOT_TOOLS
-    exact = (
-        len(names) == len(set(names))
-        and conformance["result"] == "PASS"
-        and conformance["surface"]
-        == {
-            "exposure_profile": "authoritative_canary",
-            "scope_mode": PILOT_SCOPE_MODE,
-            "visible_tool_count": len(names),
-            "visible_tool_set_digest": canonical_sha256(list(names)),
-        }
-    )
+    evidence = conformance["surface"]
+    exact = len(names) == len(set(names)) and conformance["result"] == "PASS" and evidence[
+        "visible_tool_set_digest"
+    ] == canonical_sha256(list(names))
     return {
         "exposure_profile": "authoritative_canary",
         "scope_mode": PILOT_SCOPE_MODE,
         "visible_tool_count": len(names),
         "visible_tool_set_digest": canonical_sha256(list(names)),
-        "definitions_dispatch_exact_match": exact,
-        "resources_disabled_or_empty": exact,
-        "actions_disabled": exact and all(not name.startswith("manage_") for name in names),
-        "hidden_tool_rejected": exact,
-        "alternate_dispatch_rejected": exact,
-        "prohibited_workers_running": not exact,
+        "definitions_dispatch_exact_match": exact and evidence["definitions_dispatch_exact_match"],
+        "resources_disabled_or_empty": exact and evidence["resources_disabled_or_empty"],
+        "actions_disabled": exact and evidence["actions_disabled"],
+        "hidden_tool_rejected": exact and evidence["hidden_tool_rejected"],
+        "alternate_dispatch_rejected": exact and evidence["alternate_dispatch_rejected"],
+        "prohibited_workers_running": (not exact) or evidence["prohibited_workers_running"],
     }
 
 
@@ -450,6 +443,10 @@ def build_fresh_pilot_preflight_receipt(
         semantic_validation_receipt,
     )
     failures: list[str] = []
+    if bindings.get("authentication_conformance_receipt_digest") != canonical_sha256(
+        authentication_conformance_receipt
+    ):
+        failures.append("authentication:authorization_receipt_digest")
     actual_executable = str(Path(sys.executable).resolve())
     actual_cwd = str(Path.cwd().resolve())
     source_attestation = verify_runtime_source_artifacts(
@@ -619,14 +616,22 @@ def build_fresh_pilot_preflight_receipt(
             failures.append("backup:foreign_keys")
     token_payload = json.loads(value.token_file.read_text(encoding="utf-8"))
     token = token_payload.get("auth_token") if isinstance(token_payload, dict) else None
-    if not isinstance(token, str) or not token.startswith("mvr_") or len(token) < 40:
+    token_format_valid = isinstance(token, str) and token.startswith("mvr_") and len(token) >= 40
+    if not token_format_valid:
         failures.append("authentication:token_format")
         token = ""  # nosec B105
     cmdline = Path("/proc/self/cmdline").read_bytes() if Path("/proc/self/cmdline").is_file() else b""
-    if token and token.encode() in cmdline:
+    token_absent_from_cmdline = bool(token) and token.encode() not in cmdline
+    token_absent_from_environment = bool(token) and all(token not in item for item in os.environ.values())
+    if not token_absent_from_cmdline:
         failures.append("authentication:token_in_cmdline")
-    if token and any(token in item for item in os.environ.values()):
+    if not token_absent_from_environment:
         failures.append("authentication:token_in_environment")
+    token_mode = stat.S_IMODE(value.token_file.stat().st_mode)
+    token_parent_mode = stat.S_IMODE(value.token_file.parent.stat().st_mode)
+    token_owner_matches = value.token_file.stat().st_uid == os.getuid()
+    if token_mode != 0o600 or token_parent_mode & 0o077 or not token_owner_matches:
+        failures.append("authentication:token_permissions")
     token_file_sha256 = sha256_file(value.token_file)
     expected_token_evidence = canonical_sha256(
         {
@@ -643,7 +648,8 @@ def build_fresh_pilot_preflight_receipt(
     }
     if ledger_metadata != expected_source_metadata:
         failures.append("ledger:token_or_source_artifact_binding")
-    if not token or not _token_absent_from_private_evidence(value, token):
+    private_evidence_clean = bool(token) and _token_absent_from_private_evidence(value, token)
+    if not private_evidence_clean:
         failures.append("authentication:token_in_private_evidence")
     conformance = authentication_conformance_receipt
     if conformance["source_binding"] != {
@@ -707,7 +713,11 @@ def build_fresh_pilot_preflight_receipt(
         "alternate_dispatch_rejected": True,
         "prohibited_workers_running": False,
     }
-    if measured_surface != expected_surface or conformance["surface"] != bootstrap_receipt["surface"]:
+    conformance_surface_identity = {
+        field: conformance["surface"][field]
+        for field in ("exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest")
+    }
+    if measured_surface != expected_surface or conformance_surface_identity != bootstrap_receipt["surface"]:
         failures.append("surface:measured_contract")
     if failures:
         raise WorkItemGovernanceError(
@@ -716,20 +726,19 @@ def build_fresh_pilot_preflight_receipt(
             details={"failed_measurements": sorted(set(failures))},
         )
     observed = utc_now()
-    private_evidence_clean = _token_absent_from_private_evidence(value, token)
     decision_matches = canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings[
         "authorization_digest"
     ]
     authentication = {
         "caller_auth_mode": "token",
         "principal_authenticated_by": "local_session",
-        "token_file_mode": format(stat.S_IMODE(value.token_file.stat().st_mode), "04o"),
-        "token_parent_mode": "0700" if stat.S_IMODE(value.token_file.parent.stat().st_mode) == 0o700 else "stricter_than_0700",
-        "token_owner_matches_runtime_user": value.token_file.stat().st_uid == os.getuid(),
-        "token_format_valid": True,  # nosec B105
+        "token_file_mode": format(token_mode, "04o"),
+        "token_parent_mode": "0700" if token_parent_mode == 0o700 else "stricter_than_0700",
+        "token_owner_matches_runtime_user": token_owner_matches,
+        "token_format_valid": token_format_valid,  # nosec B105
         "token_ledger_binding_valid": ledger_metadata == expected_source_metadata,  # nosec B105
-        "token_absent_from_cmdline": True,  # nosec B105
-        "token_absent_from_environment": True,  # nosec B105
+        "token_absent_from_cmdline": token_absent_from_cmdline,  # nosec B105
+        "token_absent_from_environment": token_absent_from_environment,  # nosec B105
         "token_absent_from_bundle": private_evidence_clean,  # nosec B105
         "token_absent_from_logs": private_evidence_clean,  # nosec B105
         "authentication_conformance_receipt_digest": canonical_sha256(conformance),
@@ -784,12 +793,12 @@ def build_fresh_pilot_preflight_receipt(
         "runtime": bootstrap_receipt["runtime"],
         "semantic_validation": semantic_validation,
         "safety": {
-            "public_endpoint": not bootstrap_receipt["runtime"]["port_available"],
-            "relay_or_tunnel": bootstrap_receipt["runtime"]["listener_before_activation"],
-            "existing_service_modified": measured_context != execution_context,
-            "other_project_modified": not registry_valid,
-            "push": actual_head != project["head_commit"],
-            "stable_promotion": any(actual_zero.values()),
+            "public_endpoint": conformance["safety"]["public_endpoint"],
+            "relay_or_tunnel": conformance["safety"]["relay_or_tunnel"],
+            "existing_service_modified": conformance["safety"]["existing_service_modified"],
+            "other_project_modified": conformance["safety"]["other_project_modified"],
+            "push": conformance["safety"]["push"],
+            "stable_promotion": conformance["safety"]["stable_promotion"],
             "one_unconsumed_decision_matches": decision_matches,
         },
     }

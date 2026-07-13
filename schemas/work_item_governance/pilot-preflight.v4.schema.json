@@ -14,7 +14,7 @@
     "bindings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["authorization_digest", "scope_envelope_digest", "candidate_manifest_sha256", "file_list_root_sha256", "storage_schema_contract_digest", "fact_reconciliation_contract_digest", "semantic_rules_digest", "project_snapshot_digest", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "execution_authorization_receipt_digest", "authentication_conformance_receipt_schema_sha256", "expiry_conformance_receipt_schema_sha256"],
+      "required": ["authorization_digest", "scope_envelope_digest", "candidate_manifest_sha256", "file_list_root_sha256", "storage_schema_contract_digest", "fact_reconciliation_contract_digest", "semantic_rules_digest", "project_snapshot_digest", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "execution_authorization_receipt_digest", "authentication_conformance_receipt_schema_sha256", "authentication_conformance_receipt_digest", "expiry_conformance_receipt_schema_sha256"],
       "properties": {
         "authorization_digest": {"$ref": "#/$defs/sha256"},
         "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
@@ -28,6 +28,7 @@
         "execution_authorization_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
         "execution_authorization_receipt_digest": {"$ref": "#/$defs/sha256"}
         ,"authentication_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"}
+        ,"authentication_conformance_receipt_digest": {"$ref": "#/$defs/sha256"}
         ,"expiry_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"}
       }
     },

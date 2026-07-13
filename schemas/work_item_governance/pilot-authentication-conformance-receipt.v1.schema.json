@@ -4,7 +4,7 @@
   "title": "Pilot Authentication Conformance Receipt v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "tested_at", "source_binding", "runtime_binding", "authentication", "surface", "result"],
+  "required": ["schema_version", "tested_at", "source_binding", "runtime_binding", "authentication", "surface", "safety", "result"],
   "properties": {
     "schema_version": {"const": "wig_p3_pilot_authentication_conformance_receipt.v1"},
     "tested_at": {"$ref": "#/$defs/date_time"},
@@ -44,12 +44,41 @@
     },
     "surface": {
       "type": "object", "additionalProperties": false,
-      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest"],
+      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
       "properties": {
         "exposure_profile": {"const": "authoritative_canary"},
         "scope_mode": {"const": "bounded_single_project_pilot.v1"},
         "visible_tool_count": {"const": 14},
-        "visible_tool_set_digest": {"$ref": "#/$defs/sha256"}
+        "visible_tool_set_digest": {"$ref": "#/$defs/sha256"},
+        "tool_list_response_digest": {"$ref": "#/$defs/sha256"},
+        "resources_list_response_digest": {"$ref": "#/$defs/sha256"},
+        "resource_read_error_code": {"const": "resources_disabled"},
+        "hidden_tool_error_code": {"const": "TOOL_NOT_EXPOSED"},
+        "alternate_dispatch_error_code": {"const": "legacy_method_alias_disabled"},
+        "worker_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "definitions_dispatch_exact_match": {"const": true},
+        "resources_disabled_or_empty": {"const": true},
+        "actions_disabled": {"const": true},
+        "hidden_tool_rejected": {"const": true},
+        "alternate_dispatch_rejected": {"const": true},
+        "prohibited_workers_running": {"const": false}
+      }
+    },
+    "safety": {
+      "type": "object", "additionalProperties": false,
+      "required": ["network_inventory_digest", "process_inventory_digest", "project_registry_snapshot_digest", "git_remote_snapshot_digest", "stable_promotion_snapshot_digest", "public_endpoint", "relay_or_tunnel", "existing_service_modified", "other_project_modified", "push", "stable_promotion"],
+      "properties": {
+        "network_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "process_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "project_registry_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "git_remote_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "stable_promotion_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "public_endpoint": {"const": false},
+        "relay_or_tunnel": {"const": false},
+        "existing_service_modified": {"const": false},
+        "other_project_modified": {"const": false},
+        "push": {"const": false},
+        "stable_promotion": {"const": false}
       }
     },
     "result": {"const": "PASS"}

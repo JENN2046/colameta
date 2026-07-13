@@ -38,7 +38,7 @@ PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "036f21ec4c9afd08fc15a8927df866a47682b305952115385c43fbd8ed71c3ea",
+    "spec_manifest_digest": "f9ea5a2257be5f55eb62c5195d26d6c87e52454862e82c4363462e74b10184aa",
     "storage_schema_contract_digest": "72305af12e47eba743b84d40f786bd077315ee8e222e5e0241f723b38f5a19ef",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "5b1a1d8d70f14b72c36f843389bc324a990d4406345d4031450b92a422edf026",
@@ -46,7 +46,7 @@ PILOT_FROZEN_CONTRACT_DIGESTS = {
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "9f002bd70f4ad571a687c4801d9845bc9531fc53b81f3678b2cf4f3a3c3c4857",
+    "authentication_conformance_receipt_schema_sha256": "48fe51964e32819afc7d686e3cd7f3583f23beaa693d72b862e3ed056a4b2f68",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
@@ -65,7 +65,7 @@ PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
     "write_path_inventory_sha256": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
-    "preflight_schema_sha256": "c23c7b8a3c2cedfed2a633806b49879ff564bf807a69115e556f9cd9e67e55b9",
+    "preflight_schema_sha256": "5ee567a5a4293d6301f91191d101f8652415b25eaa0abb26e65892ed45a37a89",
     "closeout_schema_sha256": "4801f2e2503f1ec47de1a813c184b0884f3a2b6f59af85c0a451bd15a789c2c6",
     "negative_test_matrix_sha256": "a9e9b69429e848d362e5447c14686eb965714d41f1121222770c09c5a883daa9",
 }
@@ -503,6 +503,7 @@ def validate_pilot_authority_chain(
         "execution_authorization_receipt_schema_sha256": bindings["execution_authorization_receipt_schema_sha256"],
         "execution_authorization_receipt_digest": canonical_sha256(execution_authorization_receipt),
         "authentication_conformance_receipt_schema_sha256": bindings["authentication_conformance_receipt_schema_sha256"],
+        "authentication_conformance_receipt_digest": canonical_sha256(authentication_conformance_receipt),
         "expiry_conformance_receipt_schema_sha256": bindings["expiry_conformance_receipt_schema_sha256"],
     }
     if set(preflight_bindings) != set(expected):
@@ -512,6 +513,8 @@ def validate_pilot_authority_chain(
             errors.append(f"preflight:{field}")
     if bindings["execution_authorization_receipt_digest"] != expected["execution_authorization_receipt_digest"]:
         errors.append("bindings:execution_authorization_receipt_digest")
+    if bindings["authentication_conformance_receipt_digest"] != expected["authentication_conformance_receipt_digest"]:
+        errors.append("bindings:authentication_conformance_receipt_digest")
     context = preflight_receipt["execution_context"]
     for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
         if context[field] != source[field] or context[field] != scope_source[field]:

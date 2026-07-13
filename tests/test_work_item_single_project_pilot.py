@@ -12,12 +12,18 @@ from pathlib import Path
 import pytest
 
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.work_item_pilot_conformance import (
+    capture_pilot_safety_snapshot,
+    measure_pilot_safety_conformance,
+    measure_pilot_transport_surface,
+)
 from runner.work_item_governance.canonical import canonical_sha256, sha256_file
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.pilot import (
     PILOT_AUTHORIZATION_FROZEN_BINDINGS,
     PILOT_FROZEN_CONTRACT_DIGESTS,
+    PILOT_FROZEN_RESOURCE_DIGESTS,
     PILOT_DENIED_WRITES,
     PILOT_SCOPE_MODE,
     PILOT_TOOLS,
@@ -42,7 +48,11 @@ from runner.work_item_governance.pilot_authorization import (
 )
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.repository import MIGRATIONS, SQLiteWorkItemLedger
-from runner.work_item_governance.schema_loader import load_all_governance_schemas, load_governance_contract
+from runner.work_item_governance.schema_loader import (
+    load_all_governance_schemas,
+    load_governance_contract,
+    validate_governance_record,
+)
 
 
 SHA = "a" * 64
@@ -181,6 +191,7 @@ def _consumed_authority(
     return PilotAuthorizationDecisionConsumer(
         decision_path=decision_path,
         tombstone_path=tombstone_path,
+        ledger=ledger,
     ).consume(
         scope_envelope=scope,
         execution_authorization_receipt=execution,
@@ -695,6 +706,9 @@ def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
 
 def test_frozen_storage_contract_matches_runtime_ddl() -> None:
     verify_pilot_frozen_contract_resources()
+    assert PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"] == canonical_sha256(
+        PILOT_FROZEN_RESOURCE_DIGESTS
+    )
     contract = load_governance_contract("pilot_storage_schema_v6.v2")
     assert contract["migration"]["from_schema_version"] == 5
     assert contract["migration"]["to_schema_version"] == 6
@@ -717,6 +731,7 @@ def test_authorization_binding_contract_has_no_unclassified_fields() -> None:
         "authorized_scope_digest",
         "project_snapshot_digest",
         "execution_authorization_receipt_digest",
+        "authentication_conformance_receipt_digest",
     }
     assert set(PILOT_AUTHORIZATION_FROZEN_BINDINGS) | dynamic == required
 
@@ -1007,9 +1022,35 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             "scope_mode": PILOT_SCOPE_MODE,
             "visible_tool_count": len(PILOT_TOOLS),
             "visible_tool_set_digest": canonical_sha256(list(PILOT_TOOLS)),
+            "tool_list_response_digest": SHA,
+            "resources_list_response_digest": SHA,
+            "resource_read_error_code": "resources_disabled",
+            "hidden_tool_error_code": "TOOL_NOT_EXPOSED",
+            "alternate_dispatch_error_code": "legacy_method_alias_disabled",
+            "worker_inventory_digest": SHA,
+            "definitions_dispatch_exact_match": True,
+            "resources_disabled_or_empty": True,
+            "actions_disabled": True,
+            "hidden_tool_rejected": True,
+            "alternate_dispatch_rejected": True,
+            "prohibited_workers_running": False,
+        },
+        "safety": {
+            "network_inventory_digest": SHA,
+            "process_inventory_digest": SHA,
+            "project_registry_snapshot_digest": SHA,
+            "git_remote_snapshot_digest": SHA,
+            "stable_promotion_snapshot_digest": SHA,
+            "public_endpoint": False,
+            "relay_or_tunnel": False,
+            "existing_service_modified": False,
+            "other_project_modified": False,
+            "push": False,
+            "stable_promotion": False,
         },
         "result": "PASS",
     }
+    bindings["authentication_conformance_receipt_digest"] = canonical_sha256(authentication_receipt)
     semantic = build_pilot_semantic_validation_receipt(
         stage="pre_import",
         input_bindings={
@@ -1074,6 +1115,25 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert token_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     leaked_evidence.unlink()
+    oversized_evidence = root / "evidence/oversized-token.log"
+    with oversized_evidence.open("wb") as handle:
+        handle.truncate(16 * 1024 * 1024 + 1)
+        handle.seek(0)
+        handle.write(leaked_token.encode("utf-8"))
+    with pytest.raises(WorkItemGovernanceError) as oversized_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert oversized_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    oversized_evidence.unlink()
+    incomplete_surface = json.loads(json.dumps(authentication_receipt))
+    incomplete_surface["surface"].pop("hidden_tool_error_code")
+    with pytest.raises(WorkItemGovernanceError):
+        build_fresh_pilot_preflight_receipt(
+            **{**preflight_kwargs, "authentication_conformance_receipt": incomplete_surface}
+        )
+    wrong_conformance_binding = {**bindings, "authentication_conformance_receipt_digest": SHA}
+    with pytest.raises(WorkItemGovernanceError) as conformance_binding_error:
+        build_fresh_pilot_preflight_receipt(**{**preflight_kwargs, "bindings": wrong_conformance_binding})
+    assert conformance_binding_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     protected_files = [
         Path(receipt["ledger_path"]),
         paths.backup_path,
@@ -1096,6 +1156,110 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             wheel_artifact=wheel,
         )
     assert error.value.code == "PILOT_LEDGER_NOT_FRESH"
+
+
+def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path: Path) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    surface = measure_pilot_transport_surface(server)
+    assert surface["visible_tool_count"] == 14
+    assert surface["definitions_dispatch_exact_match"] is True
+    assert surface["resources_disabled_or_empty"] is True
+    assert surface["hidden_tool_rejected"] is True
+    assert surface["alternate_dispatch_rejected"] is True
+    assert surface["prohibited_workers_running"] is False
+    receipt = {
+        "schema_version": "wig_p3_pilot_authentication_conformance_receipt.v1",
+        "tested_at": isoformat_utc(utc_now()),
+        "source_binding": {
+            "implementation_commit": "1" * 40,
+            "implementation_tree": "2" * 40,
+            "wheel_sha256": SHA,
+            "installed_inventory_sha256": SHA,
+        },
+        "runtime_binding": {
+            "runtime_binding_digest": SHA,
+            "scope_envelope_digest": SHA,
+            "ledger_state_digest": SHA,
+            "token_file_path_digest": SHA,
+        },
+        "authentication": {
+            "auth_mode": "token",
+            "token_format_valid": True,
+            "token_ledger_binding_valid": True,
+            "no_token_status": 401,
+            "wrong_token_status": 401,
+            "correct_token_status": 200,
+            "request_capability_non_json": True,
+            "request_capability_single_use": True,
+        },
+        "surface": surface,
+        "safety": {
+            "network_inventory_digest": SHA,
+            "process_inventory_digest": SHA,
+            "project_registry_snapshot_digest": SHA,
+            "git_remote_snapshot_digest": SHA,
+            "stable_promotion_snapshot_digest": SHA,
+            "public_endpoint": False,
+            "relay_or_tunnel": False,
+            "existing_service_modified": False,
+            "other_project_modified": False,
+            "push": False,
+            "stable_promotion": False,
+        },
+        "result": "PASS",
+    }
+    validate_governance_record("pilot_authentication_conformance_receipt.v1", receipt)
+
+    normal = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    with pytest.raises(WorkItemGovernanceError) as error:
+        measure_pilot_transport_surface(normal)
+    assert error.value.code == "PILOT_TRANSPORT_CONFORMANCE_INVALID"
+
+
+def test_safety_conformance_is_bound_to_measured_host_and_project_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runner.work_item_pilot_conformance as conformance_module
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+    registry = tmp_path / "registry.json"
+    registry.write_text("{}", encoding="utf-8")
+    stable = tmp_path / "stable"
+    stable.mkdir()
+    snapshot = capture_pilot_safety_snapshot(
+        project_root=project,
+        registry_path=registry,
+        stable_promotion_root=stable,
+        port=48794,
+    )
+    assert snapshot["public_endpoint"] is False
+    assert snapshot["relay_or_tunnel"] is False
+    monkeypatch.setattr(conformance_module, "capture_pilot_safety_snapshot", lambda **_kwargs: snapshot)
+    measured = measure_pilot_safety_conformance(
+        expected_snapshot=snapshot,
+        project_root=project,
+        registry_path=registry,
+        stable_promotion_root=stable,
+        port=48794,
+    )
+    assert measured["existing_service_modified"] is False
+    assert measured["push"] is False
+    with pytest.raises(WorkItemGovernanceError) as mismatch:
+        measure_pilot_safety_conformance(
+            expected_snapshot={**snapshot, "git_remote_snapshot_digest": SHA},
+            project_root=project,
+            registry_path=registry,
+            stable_promotion_root=stable,
+            port=48794,
+        )
+    assert mismatch.value.code == "PILOT_SAFETY_SNAPSHOT_MISMATCH"
 
 
 def test_bootstrap_rejects_project_nested_in_private_pilot_root(tmp_path: Path) -> None:
@@ -1131,6 +1295,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
 
     assert not hasattr(module, "_mint_consumed_pilot_authorization")
     assert not hasattr(module, "_CAPABILITY_REGISTRY")
+    assert PilotAuthorizationDecisionConsumer.consume.__closure__ is None
 
     decision = {
         "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
@@ -1149,6 +1314,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     consumer = PilotAuthorizationDecisionConsumer(
         decision_path=decision_path,
         tombstone_path=tombstone_path,
+        ledger=_v6_ledger(tmp_path),
     )
     tombstone = consumer.consume(
         scope_envelope=scope,
@@ -1188,18 +1354,24 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert error.value.code == "PILOT_AUTHORIZATION_ALREADY_CONSUMED"
 
 
-def test_capability_registry_detects_mutation_and_one_shot_replay(
+def test_persisted_authority_detects_mutation_reflection_and_one_shot_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ledger = _v6_ledger(tmp_path)
     lease = _lease(new_stable_id("work_item"))
     authority = _consumed_authority(monkeypatch, tmp_path, lease)
+    reflected_clone = object.__new__(ConsumedPilotAuthorization)
+    for field in ConsumedPilotAuthorization.__slots__:
+        object.__setattr__(reflected_clone, field, getattr(authority, field))
     assert require_consumed_pilot_authorization(authority) is authority
     assert consume_pilot_authorization_capability(authority) is authority
     with pytest.raises(WorkItemGovernanceError) as replay:
         consume_pilot_authorization_capability(authority)
     assert replay.value.code == "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED"
+    with pytest.raises(WorkItemGovernanceError) as reflected_replay:
+        consume_pilot_authorization_capability(reflected_clone)
+    assert reflected_replay.value.code == "PILOT_AUTHORIZATION_CAPABILITY_CONSUMED"
 
     other_root = tmp_path / "other"
     other_root.mkdir()
