@@ -124,6 +124,17 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
             "PILOT_HTTP_CONFORMANCE_RESPONSE_INVALID",
             "Authenticated tools/list response lacks the exact tool definitions.",
         ) from exc
+    correct_result = correct_response.get("result")
+    correct_structured = (
+        correct_result.get("structuredContent")
+        if isinstance(correct_result, dict)
+        else None
+    )
+    authenticated_tool_call_error_code = (
+        correct_structured.get("error_code")
+        if isinstance(correct_structured, dict)
+        else None
+    )
     actions_code = actions_response.get("error_code")
     listener_instances = {
         headers.get("x-colameta-listener-instance")
@@ -147,6 +158,7 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
         no_status != 401
         or wrong_status != 401
         or correct_status != 200
+        or authenticated_tool_call_error_code != "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
         or tools_status != 200
         or visible != PILOT_TOOLS
         or actions_status != 404
@@ -176,6 +188,7 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
             "tool_list_response_digest": canonical_sha256(tools_response),
             "actions_response_digest": canonical_sha256(actions_response),
             "actions_error_code": actions_code,
+            "authenticated_tool_call_error_code": authenticated_tool_call_error_code,
             "listener_instance_nonce": next(iter(listener_instances)),
             "server_binding_digest": next(iter(server_bindings)),
             "request_capability_non_json": capability_non_json,
@@ -512,6 +525,9 @@ def build_pilot_authentication_conformance_receipt(
     surface.update(
         {
             "preflight_conformance_only": True,
+            "authenticated_tool_call_error_code": http["surface"][
+                "authenticated_tool_call_error_code"
+            ],
             "tool_list_response_digest": http["surface"]["tool_list_response_digest"],
             "actions_response_digest": http["surface"]["actions_response_digest"],
             "actions_error_code": http["surface"]["actions_error_code"],

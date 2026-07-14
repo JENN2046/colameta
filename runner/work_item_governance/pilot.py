@@ -38,7 +38,7 @@ PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "6d5d4a83717537aafd3122c1009d95bf6c9a179eb6296dc3dcb2e85b18b30ade",
+    "spec_manifest_digest": "981039fcc08d89189eccee317fa39b6d916e9353f6795eedd126618a8739c9fa",
     "storage_schema_contract_digest": "fbaac247078f8c89869968e8e9aadceb598f53ee1afb137fef36645140ea2ba8",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "80c628c020e78498f4d70964a820f963ca339b52bd84ecbb4c7d5b9e570f4857",
@@ -46,7 +46,7 @@ PILOT_FROZEN_CONTRACT_DIGESTS = {
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "d0e87ca053e0314f67e76b3b4281cf6e53edd21a2549dbd08dd48c0d735363a7",
+    "authentication_conformance_receipt_schema_sha256": "19ab8e804385a2b7783e0bd82ba9213b21fc7ef3138ef59d0c9f4630bf3e9c69",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {

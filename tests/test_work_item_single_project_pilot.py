@@ -1114,6 +1114,7 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             "exposure_profile": "authoritative_canary",
             "scope_mode": PILOT_SCOPE_MODE,
             "preflight_conformance_only": True,
+            "authenticated_tool_call_error_code": "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED",
             "visible_tool_count": len(PILOT_TOOLS),
             "visible_tool_set_digest": canonical_sha256(list(PILOT_TOOLS)),
             "tool_list_response_digest": SHA,
@@ -1271,6 +1272,7 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
     surface = {
         **measure_pilot_transport_surface(server),
         "preflight_conformance_only": True,
+        "authenticated_tool_call_error_code": "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED",
         "actions_response_digest": SHA,
         "actions_error_code": "ACTIONS_DISABLED",
         "listener_instance_digest": SHA,
@@ -1606,6 +1608,25 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             port=port,
         )
         assert receipt["result"] == "PASS"
+        assert (
+            receipt["surface"]["authenticated_tool_call_error_code"]
+            == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
+        )
+
+        original_call_tool = server._call_tool
+        monkeypatch.setattr(
+            server,
+            "_call_tool",
+            lambda name, _arguments, **_kwargs: {
+                "ok": True,
+                "tool": name,
+                "data": {"unexpected_dispatch": True},
+            },
+        )
+        with pytest.raises(WorkItemGovernanceError) as live_denial_error:
+            measure_pilot_http_authentication(endpoint=endpoint, correct_token=token)
+        assert live_denial_error.value.code == "PILOT_HTTP_CONFORMANCE_FAILED"
+        monkeypatch.setattr(server, "_call_tool", original_call_tool)
 
         def invoke_visible_write(sequence: int) -> str:
             payload = json.dumps(
