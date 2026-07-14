@@ -21,6 +21,7 @@ _EXPECTED_DISTRIBUTION_VERSIONS = {
     "pip-audit": "2.10.1",
     "pytest": "9.1.1",
     "ruff": "0.15.20",
+    "setuptools": "83.0.0",
 }
 _REQUIRED_TOOL_WRAPPERS = ("bandit", "pip-audit", "pytest", "ruff")
 _EXPECTED_BIN_ENTRIES = (
@@ -54,7 +55,7 @@ _EXPECTED_BIN_ENTRIES = (
     "wheel",
 )
 _EXPECTED_ENVIRONMENT_ROOT_SHA256 = (
-    "4ecf453d05551ac42aff2155c996bebb880fdc63f5b1277b7ae6103ff4706582"
+    "72b70a68133de9ad900c4c06f697b92d0409d2d85c4fa32cda3ee8bd87e38c72"
 )
 
 

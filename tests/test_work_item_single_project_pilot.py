@@ -9,13 +9,18 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from runner.mcp_server import AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE, MCPPlanningBridgeServer
+from runner.mcp_server import (
+    AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+    MCPPlanningBridgeServer,
+    PlanningBridgeError,
+)
 from runner.work_item_pilot_conformance import (
     build_pilot_authentication_conformance_receipt,
     capture_pilot_safety_snapshot,
@@ -32,12 +37,14 @@ from runner.work_item_governance.pilot import (
     PILOT_FROZEN_RESOURCE_DIGESTS,
     PILOT_DENIED_WRITES,
     PILOT_SCOPE_MODE,
+    PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
     PilotActivationControlPlane,
     build_pilot_semantic_validation_receipt,
     canonical_path_digest,
     verify_pilot_frozen_contract_resources,
     initial_execution_slot_usage,
+    require_pilot_preflight_conformance_baseline,
     validate_execution_authorization_receipt,
     verify_pilot_event_chain,
 )
@@ -1106,6 +1113,7 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         "surface": {
             "exposure_profile": "authoritative_canary",
             "scope_mode": PILOT_SCOPE_MODE,
+            "preflight_conformance_only": True,
             "visible_tool_count": len(PILOT_TOOLS),
             "visible_tool_set_digest": canonical_sha256(list(PILOT_TOOLS)),
             "tool_list_response_digest": SHA,
@@ -1262,6 +1270,7 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
     )
     surface = {
         **measure_pilot_transport_surface(server),
+        "preflight_conformance_only": True,
         "actions_response_digest": SHA,
         "actions_error_code": "ACTIONS_DISABLED",
         "listener_instance_digest": SHA,
@@ -1374,15 +1383,6 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    from runner.work_item_governance.activation import process_identity_inputs
-
-    lease = _lease(new_stable_id("work_item"))
-    lease["runtime_binding"]["expected_process_identity"] = process_identity_inputs(str(project))[
-        "expected_process_identity"
-    ]
-    control = PilotActivationControlPlane(ledger)
-    control.prepare_lease(lease, authority=_consumed_authority(monkeypatch, project, lease))
-
     thread = threading.Thread(
         target=server.serve_http,
         kwargs={
@@ -1393,10 +1393,8 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
             "auth_token_file_sha256": token_file_sha256,
             "auth_token_evidence_digest": token_evidence_digest,
             "auth_mode": "token",
-            "activation_control_plane": control,
-            "activation_lease_id": lease["lease_id"],
-            "activation_envelope_path": str(tmp_path / "envelope.json"),
-            "claimed_activation_envelope_path": str(tmp_path / "envelope.claimed.json"),
+            "preflight_conformance": True,
+            "preflight_conformance_timeout_seconds": 10,
         },
         daemon=True,
     )
@@ -1483,6 +1481,287 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
     assert receipt["authentication"]["token_ledger_binding_valid"] is True
     assert receipt["authentication"]["proof_issued_delta"] == 2
     assert receipt["authentication"]["proof_retired_delta"] == 2
+
+
+def test_preflight_conformance_listener_closes_authority_ordering_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = f"mvr_{secrets.token_urlsafe(32)}"
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    ledger = _v7_ledger(project)
+    token_file = tmp_path / "auth.json"
+    token_file.write_text(json.dumps({"schema_version": 1, "auth_token": token}), encoding="utf-8")
+    token_file.chmod(0o600)
+    token_file_sha256 = sha256_file(token_file)
+    token_evidence_digest = canonical_sha256(
+        {"token_file_sha256": token_file_sha256, "token_file_path_digest": canonical_path_digest(token_file)}
+    )
+    with ledger.write_transaction() as connection:
+        connection.execute(
+            "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
+            ("authoritative_canary_token_file_sha256", token_file_sha256, isoformat_utc(utc_now())),
+        )
+        connection.execute(
+            "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
+            ("authoritative_canary_token_evidence_digest", token_evidence_digest, isoformat_utc(utc_now())),
+        )
+    baseline = require_pilot_preflight_conformance_baseline(project)
+    assert not any(baseline["zero_fact_baseline"].values())
+
+    safety = {
+        "network_inventory_digest": SHA,
+        "process_inventory_digest": SHA,
+        "project_registry_snapshot_digest": SHA,
+        "git_remote_snapshot_digest": SHA,
+        "stable_promotion_snapshot_digest": SHA,
+        "public_endpoint": False,
+        "relay_or_tunnel": False,
+        "existing_service_modified": False,
+        "other_project_modified": False,
+        "push": False,
+        "stable_promotion": False,
+    }
+    import runner.work_item_pilot_conformance as conformance_module
+
+    monkeypatch.setattr(conformance_module, "measure_pilot_safety_conformance", lambda **_kwargs: safety)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    rejected_lease_server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    with pytest.raises(PlanningBridgeError, match="forbids Activation Lease inputs"):
+        rejected_lease_server.serve_http(
+            host="127.0.0.1",
+            port=0,
+            auth_token=token,
+            auth_token_source=AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+            auth_token_file_sha256=token_file_sha256,
+            auth_token_evidence_digest=token_evidence_digest,
+            auth_mode="token",
+            activation_lease_id="lease_forbidden",
+            preflight_conformance=True,
+        )
+    thread = threading.Thread(
+        target=server.serve_http,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": 0,
+            "auth_token": token,
+            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+            "auth_token_file_sha256": token_file_sha256,
+            "auth_token_evidence_digest": token_evidence_digest,
+            "auth_mode": "token",
+            "preflight_conformance": True,
+            "preflight_conformance_timeout_seconds": 10,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            getattr(server, "_httpd", None) is None
+            or not callable(server._token_transport_proof_validator)
+        ):
+            if not thread.is_alive() or time.monotonic() >= deadline:
+                raise AssertionError("preflight-only Pilot MCP listener failed to start")
+            time.sleep(0.01)
+        port = int(server._httpd.server_address[1])
+        endpoint = f"http://127.0.0.1:{port}"
+        snapshot = server._pilot_http_conformance_snapshot()
+        assert snapshot["preflight_conformance_only"] is True
+
+        receipt = build_pilot_authentication_conformance_receipt(
+            server=server,
+            endpoint=endpoint,
+            correct_token=token,
+            token_file=token_file,
+            token_binding={
+                "authoritative_canary_token_file_sha256": token_file_sha256,
+                "authoritative_canary_token_evidence_digest": token_evidence_digest,
+            },
+            source_binding={
+                "implementation_commit": "1" * 40,
+                "implementation_tree": "2" * 40,
+                "wheel_sha256": SHA,
+                "installed_inventory_sha256": SHA,
+            },
+            runtime_binding={
+                "runtime_binding_digest": SHA,
+                "scope_envelope_digest": SHA,
+                "ledger_state_digest": SHA,
+                "token_file_path_digest": canonical_path_digest(token_file),
+            },
+            expected_safety_snapshot=safety,
+            project_root=project,
+            registry_path=tmp_path / "registry.json",
+            stable_promotion_root=tmp_path / "stable",
+            port=port,
+        )
+        assert receipt["result"] == "PASS"
+
+        def invoke_visible_write(sequence: int) -> str:
+            payload = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": sequence,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "apply_work_item_create",
+                        "arguments": {"preview_id": f"preview_{sequence}"},
+                    },
+                }
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"{endpoint}/mcp",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:  # nosec B310 - loopback endpoint
+                body = json.loads(response.read().decode("utf-8"))
+            return str(body["result"]["structuredContent"]["error_code"])
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            codes = list(executor.map(invoke_visible_write, range(8)))
+        assert codes == ["PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"] * 8
+        direct = server._call_tool("apply_work_item_create", {"preview_id": "direct-bypass"})
+        assert direct["error_code"] == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
+        after = require_pilot_preflight_conformance_baseline(project)
+        assert after["zero_fact_baseline"] == baseline["zero_fact_baseline"]
+    finally:
+        if getattr(server, "_httpd", None) is not None:
+            server._httpd.shutdown()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert server._preflight_conformance_only is False
+
+    timeout_server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    timeout_thread = threading.Thread(
+        target=timeout_server.serve_http,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": 0,
+            "auth_token": token,
+            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+            "auth_token_file_sha256": token_file_sha256,
+            "auth_token_evidence_digest": token_evidence_digest,
+            "auth_mode": "token",
+            "preflight_conformance": True,
+            "preflight_conformance_timeout_seconds": 0.2,
+        },
+        daemon=True,
+    )
+    timeout_thread.start()
+    timeout_thread.join(timeout=3)
+    assert not timeout_thread.is_alive()
+    assert timeout_server._preflight_conformance_only is False
+    require_pilot_preflight_conformance_baseline(project)
+
+
+def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero_facts(
+    tmp_path: Path,
+) -> None:
+    normal = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    with pytest.raises(PlanningBridgeError, match="exact bounded authoritative Pilot profile"):
+        normal.serve_http(preflight_conformance=True)
+
+    missing = tmp_path / "missing-ledger"
+    missing.mkdir()
+    missing_path = missing / ".colameta/ledger/work-items.sqlite3"
+    with pytest.raises(WorkItemGovernanceError) as missing_error:
+        require_pilot_preflight_conformance_baseline(missing)
+    assert missing_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+    assert not missing_path.exists()
+    missing_server = MCPPlanningBridgeServer(
+        str(missing),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    with pytest.raises(WorkItemGovernanceError) as missing_startup_error:
+        missing_server.serve_http(
+            host="127.0.0.1",
+            port=0,
+            auth_token=f"mvr_{secrets.token_urlsafe(32)}",
+            auth_token_source=AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+            auth_token_file_sha256=SHA,
+            auth_token_evidence_digest=SHA,
+            auth_mode="token",
+            preflight_conformance=True,
+        )
+    assert missing_startup_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+    assert not missing_path.exists()
+
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    ledger = _v7_ledger(project)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    with pytest.raises(PlanningBridgeError, match="at most 120 seconds"):
+        server.serve_http(preflight_conformance=True, preflight_conformance_timeout_seconds=121)
+
+    now = isoformat_utc(utc_now())
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute(
+            """
+            INSERT INTO work_items(
+                work_item_id,schema_version,state,state_version,origin_kind,origin_ref,
+                origin_snapshot_digest,imported,current_task_version,attributes_json,
+                content_digest,creation_operation,creation_preview_id,
+                creation_idempotency_key,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                new_stable_id("work_item"),
+                "work_item.v1",
+                "proposed",
+                0,
+                "manual",
+                "synthetic://preflight-negative",
+                SHA,
+                0,
+                1,
+                "{}",
+                SHA,
+                "create",
+                "preview_negative",
+                "preflight-negative",
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+    with pytest.raises(WorkItemGovernanceError) as baseline_error:
+        require_pilot_preflight_conformance_baseline(project)
+    assert baseline_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+    assert baseline_error.value.details == {
+        "nonzero_tables": ["work_items"],
+        "foreign_key_violations": 0,
+    }
+    with sqlite3.connect(ledger.path) as connection:
+        counts = {
+            table: int(connection.execute(query).fetchone()[0])
+            for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+        }
+    assert counts["work_items"] == 1
+    assert sum(counts.values()) == 1
 
 
 def test_safety_conformance_is_bound_to_measured_host_and_project_snapshot(

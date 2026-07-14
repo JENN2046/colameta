@@ -51,10 +51,11 @@
     },
     "surface": {
       "type": "object", "additionalProperties": false,
-      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "actions_response_digest", "actions_error_code", "listener_instance_digest", "server_binding_digest", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
+      "required": ["exposure_profile", "scope_mode", "preflight_conformance_only", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "actions_response_digest", "actions_error_code", "listener_instance_digest", "server_binding_digest", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
       "properties": {
         "exposure_profile": {"const": "authoritative_canary"},
         "scope_mode": {"const": "bounded_single_project_pilot.v1"},
+        "preflight_conformance_only": {"const": true},
         "visible_tool_count": {"const": 14},
         "visible_tool_set_digest": {"$ref": "#/$defs/sha256"},
         "tool_list_response_digest": {"$ref": "#/$defs/sha256"},

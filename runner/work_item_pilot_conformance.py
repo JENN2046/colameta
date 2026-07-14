@@ -23,6 +23,7 @@ from runner.work_item_governance.pilot import (
     PILOT_SCOPE_MODE,
     PILOT_TOOLS,
     measure_pilot_durable_token_binding,
+    require_pilot_preflight_conformance_baseline,
 )
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.schema_loader import validate_governance_record
@@ -402,7 +403,7 @@ def build_pilot_authentication_conformance_receipt(
     stable_promotion_root: str | os.PathLike[str],
     port: int,
 ) -> dict[str, Any]:
-    """Build the receipt only from live HTTP, composed surface and durable bindings."""
+    """Build a formal receipt only from the zero-fact preflight listener."""
 
     validate_authoritative_bearer_token(correct_token)
     auth_path = Path(token_file).expanduser().resolve()
@@ -457,6 +458,7 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
             "Pilot conformance requires the actual active ColaMeta MCP listener.",
         )
+    require_pilot_preflight_conformance_baseline(project_root)
     try:
         listener_before = snapshot_method()
     except Exception as exc:
@@ -471,6 +473,7 @@ def build_pilot_authentication_conformance_receipt(
         or (parsed_endpoint.port or 80) != listener_before.get("port")
         or listener_before.get("token_file_sha256") != token_file_sha256
         or listener_before.get("token_evidence_digest") != token_evidence_digest
+        or listener_before.get("preflight_conformance_only") is not True
     ):
         raise WorkItemGovernanceError(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
@@ -478,6 +481,12 @@ def build_pilot_authentication_conformance_receipt(
         )
     http = measure_pilot_http_authentication(endpoint=endpoint, correct_token=correct_token)
     listener_after = snapshot_method()
+    if listener_after.get("preflight_conformance_only") is not True:
+        raise WorkItemGovernanceError(
+            "PILOT_TRANSPORT_CONFORMANCE_INVALID",
+            "Pilot Preflight requires the exact read-only conformance listener mode.",
+        )
+    require_pilot_preflight_conformance_baseline(project_root)
     proof_deltas = {
         key: int(listener_after[key]) - int(listener_before[key])
         for key in ("issued_count", "activated_count", "retired_count")
@@ -502,6 +511,7 @@ def build_pilot_authentication_conformance_receipt(
         )
     surface.update(
         {
+            "preflight_conformance_only": True,
             "tool_list_response_digest": http["surface"]["tool_list_response_digest"],
             "actions_response_digest": http["surface"]["actions_response_digest"],
             "actions_error_code": http["surface"]["actions_error_code"],

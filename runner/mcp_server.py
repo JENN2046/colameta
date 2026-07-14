@@ -110,6 +110,8 @@ from runner.work_item_governance.pilot import (
     PILOT_SCOPE_MODE,
     PILOT_TOOLS,
     PilotActivationControlPlane,
+    measure_pilot_durable_token_binding,
+    require_pilot_preflight_conformance_baseline,
 )
 from runner.work_item_mcp_adapter import (
     AUTHORITATIVE_CANARY_MCP_TOOLS,
@@ -1191,6 +1193,7 @@ class MCPPlanningBridgeServer:
         if work_item_scope_mode == PILOT_SCOPE_MODE and self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
         self._token_transport_proof_validator = None
+        self._preflight_conformance_only = False
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -4614,12 +4617,14 @@ class MCPPlanningBridgeServer:
         ):
             raise PlanningBridgeError("Pilot conformance requires the exact active authenticated MCP listener.")
         snapshot = _authenticated_token_listener_conformance_snapshot(self)
+        snapshot["preflight_conformance_only"] = bool(self._preflight_conformance_only)
         snapshot["server_binding_digest"] = hashlib.sha256(
             json.dumps(
                 {
                     "project_root": self.project_root,
                     "scope_mode": self.work_item_scope_mode,
                     "exposure_profile": self.mcp_exposure_profile,
+                    "preflight_conformance_only": bool(self._preflight_conformance_only),
                     "listener_instance_nonce": snapshot["listener_instance_nonce"],
                 },
                 sort_keys=True,
@@ -4650,6 +4655,8 @@ class MCPPlanningBridgeServer:
         activation_lease_id: str | None = None,
         activation_envelope_path: str | None = None,
         claimed_activation_envelope_path: str | None = None,
+        preflight_conformance: bool = False,
+        preflight_conformance_timeout_seconds: float = 120.0,
     ) -> int:
         server = self
         _debug_counter = 0
@@ -4657,6 +4664,21 @@ class MCPPlanningBridgeServer:
         authoritative_canary = (
             self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
         )
+        preflight_conformance_only = bool(preflight_conformance)
+        if preflight_conformance_only and (
+            not authoritative_canary or self.work_item_scope_mode != PILOT_SCOPE_MODE
+        ):
+            raise PlanningBridgeError(
+                "preflight_conformance requires the exact bounded authoritative Pilot profile."
+            )
+        if preflight_conformance_only and (
+            isinstance(preflight_conformance_timeout_seconds, bool)
+            or not isinstance(preflight_conformance_timeout_seconds, (int, float))
+            or not 0 < float(preflight_conformance_timeout_seconds) <= 120
+        ):
+            raise PlanningBridgeError(
+                "preflight_conformance timeout must be greater than zero and at most 120 seconds."
+            )
         if authoritative_canary:
             if host != "127.0.0.1":
                 raise PlanningBridgeError("authoritative_canary must bind exactly 127.0.0.1.")
@@ -4685,7 +4707,29 @@ class MCPPlanningBridgeServer:
                 raise PlanningBridgeError(
                     "authoritative_canary forbids public/actions configuration."
                 )
-            if (
+            if preflight_conformance_only:
+                if any(
+                    value is not None
+                    for value in (
+                        activation_control_plane,
+                        activation_lease_id,
+                        activation_envelope_path,
+                        claimed_activation_envelope_path,
+                    )
+                ):
+                    raise PlanningBridgeError(
+                        "preflight_conformance forbids Activation Lease inputs."
+                    )
+                require_pilot_preflight_conformance_baseline(self.project_root)
+                durable_token_binding = measure_pilot_durable_token_binding(self.project_root)
+                if durable_token_binding != {
+                    "authoritative_canary_token_file_sha256": auth_token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": auth_token_evidence_digest,
+                }:
+                    raise PlanningBridgeError(
+                        "preflight_conformance Token evidence differs from the durable Ledger binding."
+                    )
+            elif (
                 activation_control_plane is None
                 or not activation_lease_id
                 or not activation_envelope_path
@@ -4741,7 +4785,11 @@ class MCPPlanningBridgeServer:
         resolved_token_evidence_digest = auth_token_evidence_digest or hashlib.sha256(
             f"non-authoritative-token-evidence:{auth_token or ''}".encode("utf-8")
         ).hexdigest()
-        resolved_proof_lease_id = activation_lease_id or "non-authoritative-token-listener"
+        resolved_proof_lease_id = activation_lease_id or (
+            "pilot-preflight-conformance"
+            if preflight_conformance_only
+            else "non-authoritative-token-listener"
+        )
 
         def _validate_listener_token_proof(candidate: object) -> bool:
             if type(candidate) is not AuthenticatedTokenRequestProof:
@@ -5478,7 +5526,7 @@ class MCPPlanningBridgeServer:
 
         claimed = False
         active = False
-        if authoritative_canary:
+        if authoritative_canary and not preflight_conformance_only:
             if (
                 activation_control_plane is None
                 or activation_lease_id is None
@@ -5504,7 +5552,8 @@ class MCPPlanningBridgeServer:
                 )
             raise
         self._httpd = httpd
-        if authoritative_canary:
+        self._preflight_conformance_only = preflight_conformance_only
+        if authoritative_canary and not preflight_conformance_only:
             if activation_control_plane is None or activation_lease_id is None:
                 httpd.server_close()
                 raise PlanningBridgeError(
@@ -5531,6 +5580,7 @@ class MCPPlanningBridgeServer:
                         pass
                 raise
         installed_token_validator = False
+        preflight_timeout: threading.Timer | None = None
         try:
             if resolved_auth_mode == "token":
                 listener_proof_boundary = _bind_authenticated_token_listener(
@@ -5543,10 +5593,20 @@ class MCPPlanningBridgeServer:
                 )
                 self._token_transport_proof_validator = _validate_listener_token_proof
                 installed_token_validator = True
+            if preflight_conformance_only:
+                preflight_timeout = threading.Timer(
+                    float(preflight_conformance_timeout_seconds),
+                    httpd.shutdown,
+                )
+                preflight_timeout.name = "colameta-pilot-preflight-conformance-timeout"
+                preflight_timeout.daemon = True
+                preflight_timeout.start()
             httpd.serve_forever()
         except KeyboardInterrupt:
             self._log("MCP HTTP server interrupted")
         finally:
+            if preflight_timeout is not None:
+                preflight_timeout.cancel()
             httpd.shutdown()
             httpd.server_close()
             if listener_proof_boundary is not None:
@@ -5557,8 +5617,10 @@ class MCPPlanningBridgeServer:
                 is _validate_listener_token_proof
             ):
                 self._token_transport_proof_validator = None
+            self._preflight_conformance_only = False
             if (
                 authoritative_canary
+                and not preflight_conformance_only
                 and active
                 and activation_control_plane is not None
                 and activation_lease_id is not None
@@ -9153,6 +9215,12 @@ class MCPPlanningBridgeServer:
                 name,
                 "TOOL_NOT_EXPOSED",
                 "The tool is denied by the active server exposure profile.",
+            )
+        if self._preflight_conformance_only:
+            return self._tool_error(
+                name,
+                "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED",
+                "The preflight conformance listener exposes definitions for measurement but denies every tool call.",
             )
         listener_proof_validator = self._token_transport_proof_validator
         transport_authenticated = False
