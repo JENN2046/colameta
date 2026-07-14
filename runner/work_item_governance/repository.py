@@ -1059,7 +1059,10 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         )
-        from runner.work_item_governance.pilot_authorization import PilotAuthorizationDecisionConsumer
+        from runner.work_item_governance.pilot_authorization import (
+            _PilotAuthorizationPersistenceController,
+            _is_issued_pilot_authorization_persistence_controller,
+        )
 
         if (
             type(controller) not in {
@@ -1067,9 +1070,13 @@ class SQLiteWorkItemLedger:
                 AuthoritativeCanaryGuard,
                 PilotActivationControlPlane,
                 PilotActivationGuard,
-                PilotAuthorizationDecisionConsumer,
+                _PilotAuthorizationPersistenceController,
             }
             or getattr(controller, "ledger", None) is not self
+            or (
+                type(controller) is _PilotAuthorizationPersistenceController
+                and not _is_issued_pilot_authorization_persistence_controller(controller)
+            )
             or id(controller) in self.__issued_controller_bindings
         ):
             raise WorkItemGovernanceError(
@@ -1083,6 +1090,14 @@ class SQLiteWorkItemLedger:
         )
         self.__issued_controller_bindings[id(controller)] = binding
         return binding
+
+    def _release_activation_controller(self, controller: Any, binding: Any) -> None:
+        if not self._is_issued_controller_binding(controller, binding):
+            raise WorkItemGovernanceError(
+                "ACTIVATION_CONTROLLER_BINDING_INVALID",
+                "Only the exact issued controller binding can be released.",
+            )
+        self.__issued_controller_bindings.pop(id(controller), None)
 
     def _is_issued_controller_binding(
         self,
@@ -1121,7 +1136,11 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         )
-        from runner.work_item_governance.pilot_authorization import PilotAuthorizationDecisionConsumer
+        from runner.work_item_governance.pilot_authorization import (
+            _PilotAuthorizationPersistenceController,
+            _is_issued_pilot_authorization_persistence_controller,
+            _pilot_authorization_persistence_controller_table,
+        )
 
         state = self._activation_transaction_states.get(id(connection))
         trusted_controller = type(controller) in {
@@ -1129,13 +1148,17 @@ class SQLiteWorkItemLedger:
             AuthoritativeCanaryGuard,
             PilotActivationControlPlane,
             PilotActivationGuard,
-            PilotAuthorizationDecisionConsumer,
+            _PilotAuthorizationPersistenceController,
         }
         if (
             state is None
             or state.get("connection") is not connection
             or not trusted_controller
             or getattr(controller, "ledger", None) is not self
+            or (
+                type(controller) is _PilotAuthorizationPersistenceController
+                and not _is_issued_pilot_authorization_persistence_controller(controller)
+            )
             or not self._is_issued_controller_binding(controller, controller_binding)
             or state.get("domain_write_authorized") is True
             or (
@@ -1174,11 +1197,14 @@ class SQLiteWorkItemLedger:
             PilotActivationControlPlane,
             PilotActivationGuard,
         }
-        if type(controller) is PilotAuthorizationDecisionConsumer:
-            authorized_tables = {
-                "pilot_authorization_facts",
-                "pilot_authorization_claims",
-            }
+        if type(controller) is _PilotAuthorizationPersistenceController:
+            authorized_table = _pilot_authorization_persistence_controller_table(controller)
+            if authorized_table is None:
+                raise WorkItemGovernanceError(
+                    "ACTIVATION_CONTROL_CAPABILITY_INVALID",
+                    "Pilot authorization persistence controller is not issued or is already consumed.",
+                )
+            authorized_tables = {authorized_table}
         elif pilot_controller:
             authorized_tables = {
                 "pilot_activation_leases",
@@ -1532,6 +1558,14 @@ class SQLiteWorkItemLedger:
                         "Authorization-fact migration requires exact Schema v6 input.",
                         details={"actual": before_version},
                     )
+                schema_meta_rows = connection.execute(
+                    "SELECT value FROM ledger_meta WHERE key='schema_version'"
+                ).fetchall()
+                if len(schema_meta_rows) != 1 or str(schema_meta_rows[0]["value"]) != "6":
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORITY_MIGRATION_SOURCE_VERSION_INVALID",
+                        "Schema v7 migration requires one exact Schema v6 Ledger metadata row.",
+                    )
                 live_pilot = connection.execute(
                     "SELECT lease_id,status FROM pilot_activation_leases LIMIT 1"
                 ).fetchone()
@@ -1550,7 +1584,7 @@ class SQLiteWorkItemLedger:
                 for statement in self._migrations[7]:
                     connection.execute(statement)
                 connection.execute("PRAGMA user_version=7")
-                connection.execute(
+                metadata_update = connection.execute(
                     "UPDATE ledger_meta SET value='7', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                     "WHERE key='schema_version'"
                 )
@@ -1564,8 +1598,14 @@ class SQLiteWorkItemLedger:
                 }
                 integrity_after = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
                 foreign_keys_after = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
+                schema_meta_after = connection.execute(
+                    "SELECT value FROM ledger_meta WHERE key='schema_version'"
+                ).fetchall()
                 if (
                     int(connection.execute("PRAGMA user_version").fetchone()[0]) != 7
+                    or metadata_update.rowcount != 1
+                    or len(schema_meta_after) != 1
+                    or str(schema_meta_after[0]["value"]) != "7"
                     or any(counts.values())
                     or integrity_after != ["ok"]
                     or foreign_keys_after

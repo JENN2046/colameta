@@ -8,14 +8,14 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE, MCPPlanningBridgeServer
 from runner.work_item_pilot_conformance import (
     build_pilot_authentication_conformance_receipt,
     capture_pilot_safety_snapshot,
@@ -567,6 +567,31 @@ def test_schema_v7_authority_migration_is_explicit_atomic_and_append_only(tmp_pa
         assert connection.execute("SELECT COUNT(*) FROM pilot_authorization_claims").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("metadata_mutation", ["missing", "mismatched"])
+def test_schema_v7_migration_rejects_inconsistent_schema_metadata_atomically(
+    tmp_path: Path,
+    metadata_mutation: str,
+) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    ledger.migrate_to_v6()
+    with sqlite3.connect(ledger.path) as connection:
+        if metadata_mutation == "missing":
+            connection.execute("DELETE FROM ledger_meta WHERE key='schema_version'")
+        else:
+            connection.execute("UPDATE ledger_meta SET value='5' WHERE key='schema_version'")
+        connection.commit()
+
+    with pytest.raises(WorkItemGovernanceError) as error:
+        SQLiteWorkItemLedger(tmp_path, target_schema_version=6).migrate_to_v7()
+    assert error.value.code == "PILOT_AUTHORITY_MIGRATION_SOURCE_VERSION_INVALID"
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_authorization_facts'"
+        ).fetchone()[0] == 0
+
+
 def test_multi_version_execution_receipt_and_retry_rules() -> None:
     work_item_id = new_stable_id("work_item")
     receipt = _receipt(work_item_id)
@@ -646,7 +671,7 @@ def test_pilot_control_plane_event_chain_and_terminal_close(tmp_path: Path, monk
         lease_id=lease["lease_id"],
         bind_address="127.0.0.1",
         port=8799,
-        observed_listeners=[{"address": "127.0.0.1", "port": 8799}],
+        observed_listeners=[("127.0.0.1", 8799)],
     )
     closed = control.close(lease_id=lease["lease_id"], reason="test_complete")
     assert closed["status"] == "closed"
@@ -714,6 +739,27 @@ def test_pilot_controller_capability_rejects_subclass_and_direct_service_bypass(
             }
         )
     assert missing.value.code == "PILOT_ACTIVATION_LEASE_REQUIRED"
+
+
+def test_public_authorization_consumer_cannot_mint_repository_write_authority(tmp_path: Path) -> None:
+    from runner.work_item_governance.pilot_authorization import _PilotAuthorizationPersistenceController
+
+    ledger = _v7_ledger(tmp_path)
+    consumer = PilotAuthorizationDecisionConsumer(
+        decision_path=tmp_path / "decision.json",
+        tombstone_path=tmp_path / "decision.tombstone.json",
+        ledger=ledger,
+    )
+    assert not hasattr(consumer, "_authorize_control_write")
+    with pytest.raises(WorkItemGovernanceError) as binding:
+        ledger._bind_activation_controller(consumer)
+    assert binding.value.code == "ACTIVATION_CONTROLLER_BINDING_INVALID"
+    with pytest.raises(TypeError, match="internal one-operation capabilities"):
+        _PilotAuthorizationPersistenceController(
+            ledger=ledger,
+            table="pilot_authorization_facts",
+            _factory_seal=object(),
+        )
 
 
 def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
@@ -1052,6 +1098,10 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             "correct_token_response_digest": SHA,
             "request_capability_non_json": True,
             "request_capability_single_use": True,
+            "proof_issued_delta": 2,
+            "proof_activated_delta": 2,
+            "proof_retired_delta": 2,
+            "active_proof_count_after": 0,
         },
         "surface": {
             "exposure_profile": "authoritative_canary",
@@ -1065,6 +1115,8 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             "alternate_dispatch_error_code": "legacy_method_alias_disabled",
             "actions_response_digest": SHA,
             "actions_error_code": "ACTIONS_DISABLED",
+            "listener_instance_digest": SHA,
+            "server_binding_digest": SHA,
             "worker_inventory_digest": SHA,
             "definitions_dispatch_exact_match": True,
             "resources_disabled_or_empty": True,
@@ -1212,6 +1264,8 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
         **measure_pilot_transport_surface(server),
         "actions_response_digest": SHA,
         "actions_error_code": "ACTIONS_DISABLED",
+        "listener_instance_digest": SHA,
+        "server_binding_digest": SHA,
     }
     assert surface["visible_tool_count"] == 14
     assert surface["definitions_dispatch_exact_match"] is True
@@ -1246,6 +1300,10 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
             "correct_token_response_digest": SHA,
             "request_capability_non_json": True,
             "request_capability_single_use": True,
+            "proof_issued_delta": 2,
+            "proof_activated_delta": 2,
+            "proof_retired_delta": 2,
+            "active_proof_count_after": 0,
         },
         "surface": surface,
         "safety": {
@@ -1276,54 +1334,6 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     token = f"mvr_{secrets.token_urlsafe(32)}"
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, _format: str, *_args: object) -> None:
-            return None
-
-        def _send(self, status: int, value: dict[str, object]) -> None:
-            raw = json.dumps(value).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-
-        def do_POST(self) -> None:
-            if self.headers.get("Authorization") != f"Bearer {token}":
-                self._send(401, {"ok": False, "error_code": "UNAUTHORIZED"})
-                return
-            if self.path.startswith("/api/"):
-                self._send(404, {"ok": False, "error_code": "ACTIONS_DISABLED"})
-                return
-            size = int(self.headers.get("Content-Length", "0"))
-            request = json.loads(self.rfile.read(size))
-            if request["method"] == "tools/list":
-                result: dict[str, object] = {"tools": [{"name": name} for name in PILOT_TOOLS]}
-            else:
-                assert request["method"] == "tools/call"
-                assert request["params"]["name"] == "get_work_item_governance_status"
-                result = {"content": [], "structuredContent": {"ok": True}}
-            self._send(200, {"jsonrpc": "2.0", "id": request["id"], "result": result})
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        measured = measure_pilot_http_authentication(
-            endpoint=f"http://127.0.0.1:{httpd.server_port}",
-            correct_token=token,
-        )
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=5)
-    assert measured["authentication"]["no_token_status"] == 401
-    assert measured["authentication"]["wrong_token_status"] == 401
-    assert measured["authentication"]["correct_token_status"] == 200
-    assert measured["surface"]["visible_tool_count"] == 14
-    assert measured["surface"]["actions_error_code"] == "ACTIONS_DISABLED"
-
     project = tmp_path / "pilot-project"
     project.mkdir()
     ledger = _v7_ledger(project)
@@ -1364,13 +1374,47 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    from runner.work_item_governance.activation import process_identity_inputs
+
+    lease = _lease(new_stable_id("work_item"))
+    lease["runtime_binding"]["expected_process_identity"] = process_identity_inputs(str(project))[
+        "expected_process_identity"
+    ]
+    control = PilotActivationControlPlane(ledger)
+    control.prepare_lease(lease, authority=_consumed_authority(monkeypatch, project, lease))
+
+    thread = threading.Thread(
+        target=server.serve_http,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": 0,
+            "auth_token": token,
+            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+            "auth_token_file_sha256": token_file_sha256,
+            "auth_token_evidence_digest": token_evidence_digest,
+            "auth_mode": "token",
+            "activation_control_plane": control,
+            "activation_lease_id": lease["lease_id"],
+            "activation_envelope_path": str(tmp_path / "envelope.json"),
+            "claimed_activation_envelope_path": str(tmp_path / "envelope.claimed.json"),
+        },
+        daemon=True,
+    )
     thread.start()
     try:
+        deadline = time.monotonic() + 5
+        while (
+            getattr(server, "_httpd", None) is None
+            or not callable(server._token_transport_proof_validator)
+        ):
+            if not thread.is_alive() or time.monotonic() >= deadline:
+                raise AssertionError("actual Pilot MCP listener failed to start")
+            time.sleep(0.01)
+        port = int(server._httpd.server_address[1])
+        endpoint = f"http://127.0.0.1:{port}"
         receipt = build_pilot_authentication_conformance_receipt(
             server=server,
-            endpoint=f"http://127.0.0.1:{httpd.server_port}",
+            endpoint=endpoint,
             correct_token=token,
             token_file=token_file,
             token_binding={
@@ -1393,14 +1437,52 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
             project_root=project,
             registry_path=tmp_path / "registry.json",
             stable_promotion_root=tmp_path / "stable",
-            port=httpd.server_port,
+            port=port,
         )
+        with sqlite3.connect(ledger.path) as connection:
+            connection.execute(
+                "UPDATE ledger_meta SET value=? WHERE key=?",
+                ("f" * 64, "authoritative_canary_token_evidence_digest"),
+            )
+            connection.commit()
+        with pytest.raises(WorkItemGovernanceError) as durable_mismatch:
+            build_pilot_authentication_conformance_receipt(
+                server=server,
+                endpoint=endpoint,
+                correct_token=token,
+                token_file=token_file,
+                token_binding={
+                    "authoritative_canary_token_file_sha256": token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": token_evidence_digest,
+                },
+                source_binding={
+                    "implementation_commit": "1" * 40,
+                    "implementation_tree": "2" * 40,
+                    "wheel_sha256": SHA,
+                    "installed_inventory_sha256": SHA,
+                },
+                runtime_binding={
+                    "runtime_binding_digest": SHA,
+                    "scope_envelope_digest": SHA,
+                    "ledger_state_digest": SHA,
+                    "token_file_path_digest": canonical_path_digest(token_file),
+                },
+                expected_safety_snapshot=safety,
+                project_root=project,
+                registry_path=tmp_path / "registry.json",
+                stable_promotion_root=tmp_path / "stable",
+                port=port,
+            )
+        assert durable_mismatch.value.code == "PILOT_AUTHENTICATION_CONFORMANCE_INVALID"
     finally:
-        httpd.shutdown()
-        httpd.server_close()
+        if getattr(server, "_httpd", None) is not None:
+            server._httpd.shutdown()
         thread.join(timeout=5)
+        assert not thread.is_alive()
     assert receipt["result"] == "PASS"
     assert receipt["authentication"]["token_ledger_binding_valid"] is True
+    assert receipt["authentication"]["proof_issued_delta"] == 2
+    assert receipt["authentication"]["proof_retired_delta"] == 2
 
 
 def test_safety_conformance_is_bound_to_measured_host_and_project_snapshot(

@@ -43,12 +43,14 @@
     "commit_only_after_postcondition_checks": true
   },
   "preconditions": {
+    "ledger_meta_schema_version": "exactly_one_row_equal_to_6",
     "pilot_activation_lease_count": 0,
     "integrity_check": "ok",
     "foreign_key_violations": 0
   },
   "postconditions": {
     "schema_version": 7,
+    "ledger_meta_schema_version": "exactly_one_row_equal_to_7",
     "pilot_authorization_fact_count": 0,
     "pilot_authorization_claim_count": 0,
     "integrity_check": "ok",

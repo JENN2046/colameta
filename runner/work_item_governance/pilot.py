@@ -38,15 +38,15 @@ PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "4f2d6c1370076f42e5001ea1617fb559ce061f200f54aa7f91b1b1d513b31a2b",
-    "storage_schema_contract_digest": "cc63137f77f4517677d0b387db1ea772da7a5cd1d405ce76ed5198dd9881767b",
+    "spec_manifest_digest": "aa211d0b50f1f7ef5c31a75d198d0ad6be2347fa12c8304d4241c8495f017ca3",
+    "storage_schema_contract_digest": "fbaac247078f8c89869968e8e9aadceb598f53ee1afb137fef36645140ea2ba8",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
-    "semantic_rules_digest": "5b1a1d8d70f14b72c36f843389bc324a990d4406345d4031450b92a422edf026",
+    "semantic_rules_digest": "80c628c020e78498f4d70964a820f963ca339b52bd84ecbb4c7d5b9e570f4857",
     "tool_allowlist_digest": "fae456a0ed7aa3cbfa925ffc9de367d6d8cc103793ef973e69a6a7fea66fd985",
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "7d23b2a9cc9bc235efa4455771726b1fc357ffdc29ad08ea9f0062f60c43e5ee",
+    "authentication_conformance_receipt_schema_sha256": "1ff4a3d23784a889e45082437ba3ebfea1abaf3e52fd7b57f27a76d0e8bfc7a9",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
@@ -64,11 +64,37 @@ PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
     "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
-    "write_path_inventory_sha256": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
+    "write_path_inventory_sha256": "bcdc4d68fe580166750e32934d2a7c6ff86b48a5b3fc84b19ba1b126fc6ab30f",
     "preflight_schema_sha256": "b1ef40b640b0218441efaed3da6f2ea01f6a997d60eb78c13cbee288b8f7a7f1",
     "closeout_schema_sha256": "6ac9888da62d60480419bf137e18679212ecf54fa90b0c6eaf5d89b97c992c4f",
-    "negative_test_matrix_sha256": "a9e9b69429e848d362e5447c14686eb965714d41f1121222770c09c5a883daa9",
+    "negative_test_matrix_sha256": "c32f0c3d735139fb11881dc70d03fc713c8a6a0379550e3dfd11ed76d3a6a2fd",
 }
+
+
+def measure_pilot_durable_token_binding(project_root: str | Path) -> dict[str, str]:
+    """Read the exact durable Token binding through the Pilot core read boundary."""
+
+    ledger = SQLiteWorkItemLedger(project_root, target_schema_version=7)
+    binding: dict[str, str] = {}
+    with ledger.read_connection() as connection:
+        for key in (
+            AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
+            AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
+        ):
+            rows = connection.execute(
+                "SELECT value FROM ledger_meta WHERE key=?",
+                (key,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+                    "Pilot Token binding requires one exact durable Ledger metadata row.",
+                    details={"key": key, "row_count": len(rows)},
+                )
+            binding[key] = str(rows[0]["value"])
+    return binding
+
+
 PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-semantic-rules.v4.json": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
     "pilot-storage-schema-v6.v2.json": "72305af12e47eba743b84d40f786bd077315ee8e222e5e0241f723b38f5a19ef",
@@ -81,7 +107,7 @@ PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-authentication-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
     "pilot-expiry-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
     "pilot-semantic-validation-receipt.v3.schema.json": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
-    "pilot-write-path-inventory.v3.json": "a2276da55e61c428ed4880291b1c6a4e129252dbbdedddcc70e2aacc536bf62b",
+    "pilot-write-path-inventory.v3.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["write_path_inventory_sha256"],
     "pilot-scope-envelope.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["scope_schema_sha256"],
     "pilot-authorization.v4.schema.json": "4df85cd005ae005d7fe5b84a999eded308571abd63cb31fd687bc984036e7225",
     "pilot-activation-lease.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["activation_lease_schema_sha256"],
@@ -1019,12 +1045,12 @@ class PilotActivationControlPlane:
         lease_id: str,
         bind_address: str,
         port: int,
-        observed_listeners: list[dict[str, Any]],
+        observed_listeners: list[tuple[str, int]],
     ) -> dict[str, Any]:
         if bind_address != "127.0.0.1":
             raise WorkItemGovernanceError("PILOT_LISTENER_BINDING_INVALID", "Pilot listener must use strict loopback.")
-        observed = [item for item in observed_listeners if item.get("address") == bind_address and int(item.get("port", -1)) == port]
-        if len(observed) != 1:
+        observed = sorted((str(address), int(listener_port)) for address, listener_port in observed_listeners)
+        if observed != [(bind_address, port)]:
             raise WorkItemGovernanceError("PILOT_LISTENER_ATTESTATION_FAILED", "Exactly one Pilot listener must be observed.")
         with self.ledger.read_connection() as connection:
             row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()

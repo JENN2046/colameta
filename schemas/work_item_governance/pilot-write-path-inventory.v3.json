@@ -22,7 +22,7 @@
     {"id": "gate_derived_audit_outbox_manifest", "policy": "same CAS transaction and reconciled counts no worker dispatch", "lease_transaction_required": true},
     {"id": "backup", "policy": "control plane only generation-bound SQLite Backup API", "lease_transaction_required": false},
     {"id": "restore", "policy": "denied from prepared through Closeout", "lease_transaction_required": false},
-    {"id": "migration", "policy": "one forward-only v5-to-v6 migration matching exact storage contract; preserve legacy tables; before Pilot Lease only", "lease_transaction_required": false},
+    {"id": "migration", "policy": "two explicit forward-only v5-to-v6 and v6-to-v7 migrations matching both exact storage contracts; preserve legacy tables; complete before authorization issuance and Pilot Lease", "lease_transaction_required": false},
     {"id": "preview_signing_key_rotation", "policy": "preprovision only; denied during activation", "lease_transaction_required": false},
     {"id": "external_executor", "policy": "separate exact authorization and path boundary; not composed by Pilot endpoint", "lease_transaction_required": false},
     {"id": "delivery_outbox_worker", "policy": "not composed or started", "lease_transaction_required": false},

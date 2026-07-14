@@ -113,6 +113,9 @@ class _AuthenticatedTokenListenerBoundary:
         self.__token_evidence_digest = token_evidence_digest
         self.__listener_instance_nonce = secrets.token_hex(32)
         self.__closed = False
+        self.__issued_count = 0
+        self.__activated_count = 0
+        self.__retired_count = 0
 
     def issue(self) -> AuthenticatedTokenRequestProof:
         if self.__closed:
@@ -143,6 +146,7 @@ class _AuthenticatedTokenListenerBoundary:
             if self.__closed:
                 raise RuntimeError("Authenticated listener boundary is closed.")
             _ISSUED_LISTENER_PROOFS[id(proof)] = (proof, self)
+            self.__issued_count += 1
         return proof
 
     def activate(self, proof: object) -> bool:
@@ -158,6 +162,7 @@ class _AuthenticatedTokenListenerBoundary:
             ):
                 return False
             _ACTIVE_LISTENER_PROOFS[id(proof)] = (proof, self)
+            self.__activated_count += 1
             return True
 
     def is_active(self, proof: object) -> bool:
@@ -179,7 +184,29 @@ class _AuthenticatedTokenListenerBoundary:
                 _ACTIVE_LISTENER_PROOFS.pop(id(proof), None)
             if was_issued:
                 _ISSUED_LISTENER_PROOFS.pop(id(proof), None)
+                self.__retired_count += 1
             return was_issued
+
+    def conformance_snapshot(self) -> dict[str, Any]:
+        with _LISTENER_PROOF_LOCK:
+            address = getattr(self.__httpd, "server_address", None)
+            if self.__closed or not isinstance(address, tuple) or len(address) < 2:
+                raise RuntimeError("Authenticated listener boundary is not active.")
+            return {
+                "bind_address": str(address[0]),
+                "port": int(address[1]),
+                "lease_id_digest": hashlib.sha256(self.__lease_id.encode("utf-8")).hexdigest(),
+                "listener_instance_nonce": self.__listener_instance_nonce,
+                "token_file_sha256": self.__token_file_sha256,
+                "token_evidence_digest": self.__token_evidence_digest,
+                "proof_type": "AuthenticatedTokenRequestProof",
+                "issued_count": self.__issued_count,
+                "activated_count": self.__activated_count,
+                "retired_count": self.__retired_count,
+                "active_proof_count": sum(
+                    1 for _proof, boundary in _ACTIVE_LISTENER_PROOFS.values() if boundary is self
+                ),
+            }
 
     def close(self) -> None:
         with _LISTENER_PROOF_LOCK:
@@ -244,6 +271,14 @@ def _authenticated_token_request_proof_is_active(proof: object) -> bool:
         issued = _ISSUED_LISTENER_PROOFS.get(id(proof))
         active = _ACTIVE_LISTENER_PROOFS.get(id(proof))
         return bool(issued is not None and issued == active and issued[0] is proof)
+
+
+def _authenticated_token_listener_conformance_snapshot(owner: object) -> dict[str, Any]:
+    with _LISTENER_PROOF_LOCK:
+        boundary = _LISTENER_BOUNDARIES.get(id(owner))
+        if boundary is None:
+            raise RuntimeError("No active authenticated listener is bound to this server.")
+        return boundary.conformance_snapshot()
 
 
 @dataclass(frozen=True)

@@ -97,6 +97,7 @@ from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.request_context import (
     AuthenticatedTokenRequestProof,
     _AuthenticatedTokenListenerBoundary,
+    _authenticated_token_listener_conformance_snapshot,
     _bind_authenticated_token_listener,
 )
 from runner.work_item_governance.activation import (
@@ -4604,6 +4605,29 @@ class MCPPlanningBridgeServer:
         self._log("MCP Planning Bridge server stopped")
         return 0
 
+    def _pilot_http_conformance_snapshot(self) -> dict[str, Any]:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            or self.work_item_scope_mode != PILOT_SCOPE_MODE
+            or not callable(self._token_transport_proof_validator)
+            or getattr(self, "_httpd", None) is None
+        ):
+            raise PlanningBridgeError("Pilot conformance requires the exact active authenticated MCP listener.")
+        snapshot = _authenticated_token_listener_conformance_snapshot(self)
+        snapshot["server_binding_digest"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "project_root": self.project_root,
+                    "scope_mode": self.work_item_scope_mode,
+                    "exposure_profile": self.mcp_exposure_profile,
+                    "listener_instance_nonce": snapshot["listener_instance_nonce"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return snapshot
+
     def serve_http(
         self,
         host: str = "127.0.0.1",
@@ -4940,6 +4964,20 @@ class MCPPlanningBridgeServer:
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-Request-Id", self._request_id())
+                if (
+                    authoritative_canary
+                    and server.work_item_scope_mode == PILOT_SCOPE_MODE
+                    and listener_proof_boundary is not None
+                ):
+                    listener_snapshot = server._pilot_http_conformance_snapshot()
+                    self.send_header(
+                        "X-ColaMeta-Listener-Instance",
+                        str(listener_snapshot["listener_instance_nonce"]),
+                    )
+                    self.send_header(
+                        "X-ColaMeta-Server-Binding",
+                        str(listener_snapshot["server_binding_digest"]),
+                    )
                 for key, value in (headers or {}).items():
                     self.send_header(key, value)
                 self.end_headers()
@@ -5473,10 +5511,11 @@ class MCPPlanningBridgeServer:
                     "authoritative_canary listener attestation inputs became unavailable."
                 )
             try:
+                bound_port = int(httpd.server_address[1])
                 activation_control_plane.attest_listener(
                     lease_id=activation_lease_id,
                     bind_address=host,
-                    port=port,
+                    port=bound_port,
                     observed_listeners=process_tcp_listener_inventory(),
                 )
                 active = True
@@ -9193,6 +9232,7 @@ class MCPPlanningBridgeServer:
     def _stop_authoritative_canary_if_inactive(self) -> None:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             return
+        bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
         effective_active = False
         try:
             status = execute_work_item_mcp_command(
@@ -9200,7 +9240,8 @@ class MCPPlanningBridgeServer:
                 "get_work_item_governance_status",
                 {},
                 principal_context=current_work_item_principal(),
-                authoritative_canary=True,
+                authoritative_canary=not bounded_pilot,
+                bounded_single_project_pilot=bounded_pilot,
             )
             lease = status.get("activation_lease") if isinstance(status, dict) else None
             effective_active = bool(isinstance(lease, dict) and lease.get("effective_active") is True)

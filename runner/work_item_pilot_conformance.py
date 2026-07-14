@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from runner.work_item_governance.canonical import canonical_sha256, sha256_file
+from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.activation import (
     AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
     AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
@@ -19,7 +19,11 @@ from runner.work_item_governance.activation import (
     validate_authoritative_bearer_token,
 )
 from runner.work_item_governance.errors import WorkItemGovernanceError
-from runner.work_item_governance.pilot import PILOT_SCOPE_MODE, PILOT_TOOLS
+from runner.work_item_governance.pilot import (
+    PILOT_SCOPE_MODE,
+    PILOT_TOOLS,
+    measure_pilot_durable_token_binding,
+)
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.schema_loader import validate_governance_record
 
@@ -39,7 +43,7 @@ def _loopback_json_request(
     payload: dict[str, Any] | None = None,
     token: str | None = None,
     path: str = "/mcp",
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any], dict[str, str]]:
     parsed = urlparse(endpoint)
     if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.username or parsed.password:
         raise WorkItemGovernanceError(
@@ -61,9 +65,11 @@ def _loopback_json_request(
         with urllib.request.urlopen(request, timeout=5) as response:  # nosec B310 - validated loopback URL
             status = int(response.status)
             raw = response.read()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
         raw = exc.read()
+        response_headers = {key.lower(): value for key, value in exc.headers.items()}
     try:
         value = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -76,7 +82,7 @@ def _loopback_json_request(
             "PILOT_HTTP_CONFORMANCE_RESPONSE_INVALID",
             "Pilot HTTP conformance response must be a JSON object.",
         )
-    return status, value
+    return status, value, response_headers
 
 
 def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> dict[str, Any]:
@@ -92,15 +98,19 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
         "params": {"name": "get_work_item_governance_status", "arguments": {}},
     }
     tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-    no_status, no_response = _loopback_json_request(endpoint, payload=authenticated_dispatch)
-    wrong_status, wrong_response = _loopback_json_request(endpoint, payload=authenticated_dispatch, token=wrong_token)
-    correct_status, correct_response = _loopback_json_request(
+    no_status, no_response, no_headers = _loopback_json_request(endpoint, payload=authenticated_dispatch)
+    wrong_status, wrong_response, wrong_headers = _loopback_json_request(
+        endpoint, payload=authenticated_dispatch, token=wrong_token
+    )
+    correct_status, correct_response, correct_headers = _loopback_json_request(
         endpoint,
         payload=authenticated_dispatch,
         token=correct_token,
     )
-    tools_status, tools_response = _loopback_json_request(endpoint, payload=tools_request, token=correct_token)
-    actions_status, actions_response = _loopback_json_request(
+    tools_status, tools_response, tools_headers = _loopback_json_request(
+        endpoint, payload=tools_request, token=correct_token
+    )
+    actions_status, actions_response, actions_headers = _loopback_json_request(
         endpoint,
         payload={},
         token=correct_token,
@@ -114,6 +124,24 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
             "Authenticated tools/list response lacks the exact tool definitions.",
         ) from exc
     actions_code = actions_response.get("error_code")
+    listener_instances = {
+        headers.get("x-colameta-listener-instance")
+        for headers in (no_headers, wrong_headers, correct_headers, tools_headers, actions_headers)
+    }
+    server_bindings = {
+        headers.get("x-colameta-server-binding")
+        for headers in (no_headers, wrong_headers, correct_headers, tools_headers, actions_headers)
+    }
+    forbidden_proof_fields = {
+        "request_nonce",
+        "signature",
+        "token_file_sha256",
+        "token_evidence_digest",
+    }
+    serialized_responses = canonical_json(
+        [no_response, wrong_response, correct_response, tools_response, actions_response]
+    )
+    capability_non_json = all(field not in serialized_responses for field in forbidden_proof_fields)
     if (
         no_status != 401
         or wrong_status != 401
@@ -122,6 +150,11 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
         or visible != PILOT_TOOLS
         or actions_status != 404
         or actions_code != "ACTIONS_DISABLED"
+        or len(listener_instances) != 1
+        or None in listener_instances
+        or len(server_bindings) != 1
+        or None in server_bindings
+        or not capability_non_json
     ):
         raise WorkItemGovernanceError(
             "PILOT_HTTP_CONFORMANCE_FAILED",
@@ -142,6 +175,9 @@ def measure_pilot_http_authentication(*, endpoint: str, correct_token: str) -> d
             "tool_list_response_digest": canonical_sha256(tools_response),
             "actions_response_digest": canonical_sha256(actions_response),
             "actions_error_code": actions_code,
+            "listener_instance_nonce": next(iter(listener_instances)),
+            "server_binding_digest": next(iter(server_bindings)),
+            "request_capability_non_json": capability_non_json,
         },
     }
 
@@ -388,22 +424,77 @@ def build_pilot_authentication_conformance_receipt(
         AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
         AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
     }
+    try:
+        durable_binding = measure_pilot_durable_token_binding(project_root)
+    except WorkItemGovernanceError:
+        raise
+    except Exception as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot Token binding could not be measured from the exact durable Ledger.",
+        ) from exc
+    token_ledger_binding_valid = bool(
+        durable_binding
+        == {
+            AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY: token_file_sha256,
+            AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY: token_evidence_digest,
+        }
+        and token_binding == durable_binding
+    )
     if (
         not isinstance(token_payload, dict)
         or token_payload.get("auth_token") != correct_token
         or set(token_binding) != expected_binding_keys
-        or token_binding.get(AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY) != token_file_sha256
-        or token_binding.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY) != token_evidence_digest
+        or not token_ledger_binding_valid
     ):
         raise WorkItemGovernanceError(
             "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
             "Pilot Token file, live Token and Ledger binding do not match.",
         )
+    snapshot_method = getattr(server, "_pilot_http_conformance_snapshot", None)
+    if not callable(snapshot_method):
+        raise WorkItemGovernanceError(
+            "PILOT_TRANSPORT_CONFORMANCE_INVALID",
+            "Pilot conformance requires the actual active ColaMeta MCP listener.",
+        )
+    try:
+        listener_before = snapshot_method()
+    except Exception as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_TRANSPORT_CONFORMANCE_INVALID",
+            "Pilot conformance could not attest the supplied live MCP listener.",
+        ) from exc
+    parsed_endpoint = urlparse(endpoint)
+    if (
+        parsed_endpoint.scheme != "http"
+        or parsed_endpoint.hostname != listener_before.get("bind_address")
+        or (parsed_endpoint.port or 80) != listener_before.get("port")
+        or listener_before.get("token_file_sha256") != token_file_sha256
+        or listener_before.get("token_evidence_digest") != token_evidence_digest
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_TRANSPORT_CONFORMANCE_INVALID",
+            "Pilot endpoint, listener and Token binding do not identify the same runtime.",
+        )
     http = measure_pilot_http_authentication(endpoint=endpoint, correct_token=correct_token)
+    listener_after = snapshot_method()
+    proof_deltas = {
+        key: int(listener_after[key]) - int(listener_before[key])
+        for key in ("issued_count", "activated_count", "retired_count")
+    }
+    request_capability_single_use = bool(
+        proof_deltas == {"issued_count": 2, "activated_count": 2, "retired_count": 2}
+        and int(listener_after["active_proof_count"]) == 0
+    )
     surface = measure_pilot_transport_surface(server)
     if (
         http["surface"]["visible_tool_count"] != surface["visible_tool_count"]
         or http["surface"]["visible_tool_set_digest"] != surface["visible_tool_set_digest"]
+        or http["surface"]["listener_instance_nonce"] != listener_before["listener_instance_nonce"]
+        or http["surface"]["server_binding_digest"] != listener_before["server_binding_digest"]
+        or listener_before["listener_instance_nonce"] != listener_after["listener_instance_nonce"]
+        or listener_before["server_binding_digest"] != listener_after["server_binding_digest"]
+        or not request_capability_single_use
     ):
         raise WorkItemGovernanceError(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
@@ -415,6 +506,10 @@ def build_pilot_authentication_conformance_receipt(
             "actions_response_digest": http["surface"]["actions_response_digest"],
             "actions_error_code": http["surface"]["actions_error_code"],
             "actions_disabled": http["surface"]["actions_error_code"] == "ACTIONS_DISABLED",
+            "listener_instance_digest": canonical_sha256(
+                http["surface"]["listener_instance_nonce"]
+            ),
+            "server_binding_digest": http["surface"]["server_binding_digest"],
         }
     )
     safety = measure_pilot_safety_conformance(
@@ -432,10 +527,14 @@ def build_pilot_authentication_conformance_receipt(
         "authentication": {
             "auth_mode": "token",
             "token_format_valid": True,
-            "token_ledger_binding_valid": True,
+            "token_ledger_binding_valid": token_ledger_binding_valid,
             **http["authentication"],
-            "request_capability_non_json": True,
-            "request_capability_single_use": True,
+            "request_capability_non_json": http["surface"]["request_capability_non_json"],
+            "request_capability_single_use": request_capability_single_use,
+            "proof_issued_delta": proof_deltas["issued_count"],
+            "proof_activated_delta": proof_deltas["activated_count"],
+            "proof_retired_delta": proof_deltas["retired_count"],
+            "active_proof_count_after": listener_after["active_proof_count"],
         },
         "surface": surface,
         "safety": safety,
