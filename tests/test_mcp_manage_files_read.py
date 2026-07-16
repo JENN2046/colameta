@@ -19,8 +19,23 @@ def test_registry_review_and_decision_yaml_are_narrowly_readable() -> None:
     assert policy.is_allowed_source_path(
         "control-plane/registry/decisions/f4-r9-freeze.yaml"
     )
+    assert policy.is_allowed_source_path(
+        "control-plane/registry/reviews/f4-r9-independent-review.yaml"
+    )
+    assert policy.is_allowed_source_path(
+        "control-plane/registry/reports/f4-r9-freeze-decision-package.md"
+    )
+    assert policy.is_allowed_source_path(
+        "control-plane/registry/receipts/f4-r9-closeout.md"
+    )
     assert not policy.is_allowed_source_path(
         "control-plane/registry/drafts/f4-r9-amendment.yaml"
+    )
+    assert not policy.is_allowed_source_path(
+        "control-plane/registry/reviews/private-notes.md"
+    )
+    assert not policy.is_allowed_source_path(
+        "control-plane/registry/receipts/runtime-state.yaml"
     )
     assert not policy.is_allowed_source_path("config/production.yaml")
 

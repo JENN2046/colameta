@@ -124,8 +124,14 @@ COMMON_TEXT_DOC_NAMES = (
 GOVERNANCE_EVIDENCE_FILES = (
     "control-plane/registry/reports/*.yaml",
     "control-plane/registry/reports/**/*.yaml",
+    "control-plane/registry/reports/*.md",
+    "control-plane/registry/reports/**/*.md",
     "control-plane/registry/decisions/*.yaml",
     "control-plane/registry/decisions/**/*.yaml",
+    "control-plane/registry/reviews/*.yaml",
+    "control-plane/registry/reviews/**/*.yaml",
+    "control-plane/registry/receipts/*.md",
+    "control-plane/registry/receipts/**/*.md",
 )
 
 RUNNER_MANAGED_FILES = (
