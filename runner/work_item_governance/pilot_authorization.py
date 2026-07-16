@@ -22,7 +22,7 @@ from runner.work_item_governance.pilot import (
     validate_pilot_preflight,
     validate_pilot_scope_envelope,
 )
-from runner.work_item_governance.preview import isoformat_utc, utc_now
+from runner.work_item_governance.preview import isoformat_utc, parse_timestamp, utc_now
 from runner.work_item_governance.repository import SQLiteWorkItemLedger
 
 
@@ -193,6 +193,49 @@ def _persist_authorization_fact(ledger: SQLiteWorkItemLedger, record: dict[str, 
             record["issued_at"],
         ),
     )
+
+
+def _load_persisted_authorization_fact(
+    ledger: SQLiteWorkItemLedger,
+    authorization_digest: str,
+) -> dict[str, Any] | None:
+    with ledger.read_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM pilot_authorization_facts WHERE authorization_digest=?",
+            (authorization_digest,),
+        ).fetchone()
+        claimed = connection.execute(
+            "SELECT 1 FROM pilot_authorization_claims WHERE authorization_digest=?",
+            (authorization_digest,),
+        ).fetchone()
+    if claimed is not None:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_ALREADY_CONSUMED",
+            "Pilot authorization already has persisted consumption state.",
+        )
+    if row is None:
+        return None
+    try:
+        record = _strict_json_object(str(row["issued_record_json"]).encode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_PERSISTED_STATE_INVALID",
+            "Persisted Pilot authorization state is malformed.",
+        ) from exc
+    row_bindings = {
+        "authorization_digest": str(row["authorization_digest"]),
+        "schema_version": str(row["schema_version"]),
+        "tombstone_digest": str(row["tombstone_digest"]),
+        "tombstone_path_digest": str(row["tombstone_path_digest"]),
+        "payload_digest": str(row["payload_digest"]),
+        "issued_at": str(row["issued_at"]),
+    }
+    if record != row_bindings or record["authorization_digest"] != authorization_digest:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_PERSISTED_STATE_INVALID",
+            "Persisted Pilot authorization state differs from its indexed bindings.",
+        )
+    return record
 
 
 def _persist_authorization_claim(
@@ -521,6 +564,25 @@ class PilotAuthorizationDecisionConsumer:
                     "PILOT_AUTHORIZATION_DIGEST_MISMATCH",
                     "Pilot authorization differs from the exact reviewed digest.",
                 )
+            persisted_record = _load_persisted_authorization_fact(
+                self.ledger,
+                digest,
+            )
+            if persisted_record is None:
+                semantic_validation_time = utc_now()
+                issued_at = isoformat_utc(semantic_validation_time)
+            else:
+                issued_at = str(persisted_record["issued_at"])
+                try:
+                    semantic_validation_time = parse_timestamp(
+                        issued_at,
+                        "persisted_authorization.issued_at",
+                    )
+                except WorkItemGovernanceError as exc:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORIZATION_PERSISTED_STATE_INVALID",
+                        "Persisted Pilot authorization issuance time is invalid.",
+                    ) from exc
             semantic_receipt = build_pilot_semantic_validation_receipt(
                 stage="decision_consumption",
                 input_bindings={
@@ -533,6 +595,7 @@ class PilotAuthorizationDecisionConsumer:
                     "runtime_binding_digest": canonical_sha256(preflight_receipt["execution_context"]),
                     "ledger_state_digest": canonical_sha256(preflight_receipt["ledger"]),
                 },
+                now=semantic_validation_time,
             )
             tombstone = {
                 "schema_version": "wig_p3_bounded_single_project_pilot_authorization_tombstone.v1",
@@ -550,43 +613,6 @@ class PilotAuthorizationDecisionConsumer:
                 "decision": "CONSUMED",
                 "retry_allowed": False,
             }
-            temporary_name = self.tombstone_path.name + ".tmp"
-            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
-            temp_fd = os.open(
-                temporary_name, flags, 0o600, dir_fd=tombstone_directory_fd
-            )
-            try:
-                remaining = memoryview(canonical_json(tombstone).encode("utf-8"))
-                while remaining:
-                    written = os.write(temp_fd, remaining)
-                    remaining = remaining[written:]
-                os.fsync(temp_fd)
-            finally:
-                os.close(temp_fd)
-            os.replace(
-                temporary_name,
-                self.tombstone_path.name,
-                src_dir_fd=tombstone_directory_fd,
-                dst_dir_fd=tombstone_directory_fd,
-            )
-            decision_after = os.stat(
-                self.decision_path.name,
-                dir_fd=decision_directory_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISREG(decision_after.st_mode)
-                or (decision_after.st_dev, decision_after.st_ino)
-                != decision_identity
-            ):
-                raise WorkItemGovernanceError(
-                    "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
-                    "Pilot authorization changed before one-shot consumption.",
-                )
-            os.unlink(self.decision_path.name, dir_fd=decision_directory_fd)
-            os.fsync(tombstone_directory_fd)
-            if decision_directory_fd != tombstone_directory_fd:
-                os.fsync(decision_directory_fd)
             payload = {
                 "tombstone": tombstone,
                 "candidate_validation_receipt": candidate_validation_receipt,
@@ -620,16 +646,64 @@ class PilotAuthorizationDecisionConsumer:
                 "tombstone_digest": canonical_sha256(tombstone),
                 "tombstone_path_digest": tombstone_path_digest,
                 "payload_digest": canonical_sha256(list(snapshots)),
-                "issued_at": isoformat_utc(utc_now()),
+                "issued_at": issued_at,
             }
-            issued_record_json = canonical_json(issued_record)
-            try:
-                _persist_authorization_fact(self.ledger, issued_record)
-            except sqlite3.IntegrityError as exc:
+            decision_after, decision_after_identity = _read_private_regular_json_at(
+                decision_directory_fd,
+                self.decision_path.name,
+            )
+            if (
+                decision_after_identity != decision_identity
+                or canonical_json(decision_after) != canonical_json(decision)
+            ):
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+                    "Pilot authorization changed before one-shot consumption.",
+                )
+            if persisted_record is not None and persisted_record != issued_record:
                 raise WorkItemGovernanceError(
                     "PILOT_AUTHORIZATION_ALREADY_CONSUMED",
-                    "Pilot authorization already has persisted issuance or consumption state.",
-                ) from exc
+                    "Pilot authorization already has different persisted issuance state.",
+                )
+            if persisted_record is None:
+                try:
+                    _persist_authorization_fact(self.ledger, issued_record)
+                except sqlite3.IntegrityError as exc:
+                    raise WorkItemGovernanceError(
+                        "PILOT_AUTHORIZATION_ALREADY_CONSUMED",
+                        "Pilot authorization already has persisted issuance or consumption state.",
+                    ) from exc
+            temporary_name = self.tombstone_path.name + ".tmp"
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                temp_fd = os.open(
+                    temporary_name, flags, 0o600, dir_fd=tombstone_directory_fd
+                )
+                try:
+                    remaining = memoryview(canonical_json(tombstone).encode("utf-8"))
+                    while remaining:
+                        written = os.write(temp_fd, remaining)
+                        remaining = remaining[written:]
+                    os.fsync(temp_fd)
+                finally:
+                    os.close(temp_fd)
+                os.replace(
+                    temporary_name,
+                    self.tombstone_path.name,
+                    src_dir_fd=tombstone_directory_fd,
+                    dst_dir_fd=tombstone_directory_fd,
+                )
+            except Exception:
+                try:
+                    os.unlink(temporary_name, dir_fd=tombstone_directory_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+            os.unlink(self.decision_path.name, dir_fd=decision_directory_fd)
+            os.fsync(tombstone_directory_fd)
+            if decision_directory_fd != tombstone_directory_fd:
+                os.fsync(decision_directory_fd)
+            issued_record_json = canonical_json(issued_record)
             for field, snapshot in zip(_CAPABILITY_FIELDS, snapshots, strict=True):
                 object.__setattr__(capability, field, snapshot)
             object.__setattr__(capability, "_ledger", self.ledger)

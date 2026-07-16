@@ -47,15 +47,21 @@
     "reporting_destination": {"type": "object"},
     "expected_receipt_contract": {"type": "object"}
   },
-  "allOf": [
+  "oneOf": [
     {
-      "if": {"properties": {"work_item_id": {"type": "string"}}, "required": ["work_item_id"]},
-      "then": {
-        "properties": {
-          "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
-          "attempt_id": {"$ref": "definitions.v1.schema.json#/$defs/attemptId"},
-          "objective_ref": {"type": "string", "minLength": 1, "maxLength": 8192}
-        }
+      "properties": {
+        "work_item_id": {"type": "null"},
+        "task_version": {"type": "null"},
+        "attempt_id": {"type": "null"},
+        "objective_ref": {"type": "null"}
+      }
+    },
+    {
+      "properties": {
+        "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+        "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+        "attempt_id": {"$ref": "definitions.v1.schema.json#/$defs/attemptId"},
+        "objective_ref": {"type": "string", "minLength": 1, "maxLength": 8192}
       }
     }
   ],

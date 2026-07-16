@@ -407,7 +407,8 @@ def _validate_work_item_binding(
     work_item_id = envelope.get("work_item_id")
     task_version = envelope.get("task_version")
     attempt_id = envelope.get("attempt_id")
-    binding_values = (work_item_id, task_version, attempt_id)
+    objective_ref = envelope.get("objective_ref")
+    binding_values = (work_item_id, task_version, attempt_id, objective_ref)
     bound = any(value is not None for value in binding_values)
     if bound:
         if not isinstance(work_item_id, str) or WORK_ITEM_ID_PATTERN.fullmatch(work_item_id) is None:
@@ -425,7 +426,6 @@ def _validate_work_item_binding(
             rejection_reasons.append(
                 _reason("ATTEMPT_ID_INVALID", "Bound v2 Envelope requires a valid attempt_id.", {})
             )
-        objective_ref = envelope.get("objective_ref")
         if not isinstance(objective_ref, str) or not objective_ref.strip():
             rejected_fields.add("objective_ref")
             rejection_reasons.append(

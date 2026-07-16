@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -42,6 +42,7 @@ from runner.work_item_governance.pilot import (
     PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
     PilotActivationControlPlane,
+    PilotActivationGuard,
     build_pilot_semantic_validation_receipt,
     canonical_path_digest,
     verify_pilot_frozen_contract_resources,
@@ -64,7 +65,7 @@ from runner.work_item_governance.pilot_authorization import (
     consume_pilot_authorization_capability,
     require_consumed_pilot_authorization,
 )
-from runner.work_item_governance.preview import isoformat_utc, utc_now
+from runner.work_item_governance.preview import isoformat_utc, parse_timestamp, utc_now
 from runner.work_item_governance.repository import MIGRATIONS, SQLiteWorkItemLedger
 from runner.work_item_governance.schema_loader import (
     load_all_governance_schemas,
@@ -749,6 +750,61 @@ def test_pilot_control_plane_event_chain_and_terminal_close(tmp_path: Path, monk
     assert [row["sequence"] for row in events] == [1, 2, 3, 4]
     assert events[0]["previous_event_digest"] is None
     assert all(events[index]["previous_event_digest"] == events[index - 1]["event_digest"] for index in range(1, 4))
+
+
+def test_pilot_runtime_status_fails_closed_after_utc_or_monotonic_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runner.work_item_governance.activation import process_identity_inputs
+
+    ledger = _v7_ledger(tmp_path)
+    lease = _lease(new_stable_id("work_item"))
+    lease["runtime_binding"]["expected_process_identity"] = process_identity_inputs(str(tmp_path))[
+        "expected_process_identity"
+    ]
+    control = PilotActivationControlPlane(ledger)
+    control.prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
+    claimed = control.claim_prepared_lease(
+        lease_id=lease["lease_id"],
+        envelope_path=str(tmp_path / "lease.json"),
+        claimed_envelope_path=str(tmp_path / "lease.claimed.json"),
+    )
+    control.attest_listener(
+        lease_id=lease["lease_id"],
+        bind_address="127.0.0.1",
+        port=8799,
+        observed_listeners=[("127.0.0.1", 8799)],
+    )
+    deadline = claimed["runtime_binding"]["monotonic_deadline_ns"]
+    assert isinstance(deadline, int)
+    within_window = parse_timestamp(str(lease["window"]["not_before"]), "not_before") + timedelta(seconds=1)
+    utc_expired = parse_timestamp(str(lease["window"]["expires_at"]), "expires_at")
+
+    active_guard = PilotActivationGuard(
+        ledger,
+        now=lambda: within_window,
+        monotonic_ns=lambda: deadline - 1,
+    )
+    assert active_guard.runtime_status()["effective_active"] is True
+    assert active_guard.dispatch_authority_active() is True
+
+    for expired_guard in (
+        PilotActivationGuard(
+            ledger,
+            now=lambda: utc_expired,
+            monotonic_ns=lambda: deadline - 1,
+        ),
+        PilotActivationGuard(
+            ledger,
+            now=lambda: within_window,
+            monotonic_ns=lambda: deadline,
+        ),
+    ):
+        status = expired_guard.runtime_status()
+        assert status["status"] == "active"
+        assert status["effective_active"] is False
+        assert expired_guard.dispatch_authority_active() is False
 
 
 def test_v6_raw_repository_write_and_maintenance_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1934,7 +1990,16 @@ def test_one_shot_authorization_is_atomically_tombstoned(
         execution["mutated"] = True
 
     monkeypatch.setattr(module, "validate_pilot_authority_chain", mutate_caller_inputs)
-    monkeypatch.setattr(module, "build_pilot_semantic_validation_receipt", lambda **kwargs: {"result": "PASS"})
+
+    def semantic_receipt(**kwargs: object) -> dict[str, str]:
+        now = kwargs.get("now")
+        assert isinstance(now, datetime)
+        return {
+            "result": "PASS",
+            "validated_at": isoformat_utc(now),
+        }
+
+    monkeypatch.setattr(module, "build_pilot_semantic_validation_receipt", semantic_receipt)
     candidate_dir = _write_test_pilot_candidate(
         monkeypatch,
         tmp_path / "candidate",
@@ -1942,12 +2007,110 @@ def test_one_shot_authorization_is_atomically_tombstoned(
         scope=scope,
         execution=execution,
     )
+    ledger = _v7_ledger(tmp_path)
     consumer = PilotAuthorizationDecisionConsumer(
         candidate_dir=candidate_dir,
         decision_path=decision_path,
         tombstone_path=tombstone_path,
-        ledger=_v7_ledger(tmp_path),
+        ledger=ledger,
     )
+
+    def mutate_decision_before_persistence(**kwargs: object) -> dict[str, str]:
+        del kwargs
+        changed = {**decision, "gate_id": "changed-during-consumption"}
+        decision_path.write_text(json.dumps(changed), encoding="utf-8")
+        decision_path.chmod(0o600)
+        return {"result": "PASS"}
+
+    monkeypatch.setattr(
+        module,
+        "build_pilot_semantic_validation_receipt",
+        mutate_decision_before_persistence,
+    )
+    with pytest.raises(WorkItemGovernanceError) as changed_decision:
+        consumer.consume(
+            scope_envelope=scope,
+            execution_authorization_receipt=execution,
+            preflight_receipt={"execution_context": {}, "ledger": {}},
+            authentication_conformance_receipt={},
+            preflight_semantic_validation_receipt={},
+            expected_authorization_digest=canonical_sha256(decision),
+        )
+    assert changed_decision.value.code == "PILOT_AUTHORIZATION_FILE_UNTRUSTED"
+    assert not tombstone_path.exists()
+    with ledger.read_connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pilot_authorization_facts"
+        ).fetchone()[0] == 0
+
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    decision_path.chmod(0o600)
+    scope["scope"] = "test"
+    execution.clear()
+    monkeypatch.setattr(
+        module,
+        "build_pilot_semantic_validation_receipt",
+        semantic_receipt,
+    )
+    persist_authorization_fact = module._persist_authorization_fact
+
+    def fail_fact_persistence(*args: object, **kwargs: object) -> None:
+        raise sqlite3.OperationalError("injected authorization fact failure")
+
+    monkeypatch.setattr(
+        module,
+        "_persist_authorization_fact",
+        fail_fact_persistence,
+    )
+    with pytest.raises(sqlite3.OperationalError):
+        consumer.consume(
+            scope_envelope=scope,
+            execution_authorization_receipt=execution,
+            preflight_receipt={"execution_context": {}, "ledger": {}},
+            authentication_conformance_receipt={},
+            preflight_semantic_validation_receipt={},
+            expected_authorization_digest=canonical_sha256(decision),
+        )
+    assert decision_path.is_file()
+    assert not tombstone_path.exists()
+    with ledger.read_connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pilot_authorization_facts"
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(
+        module,
+        "_persist_authorization_fact",
+        persist_authorization_fact,
+    )
+    scope["scope"] = "test"
+    execution.clear()
+    replace = module.os.replace
+
+    def fail_tombstone_publication(*args: object, **kwargs: object) -> None:
+        raise OSError("injected Tombstone publication failure")
+
+    monkeypatch.setattr(module.os, "replace", fail_tombstone_publication)
+    with pytest.raises(OSError):
+        consumer.consume(
+            scope_envelope=scope,
+            execution_authorization_receipt=execution,
+            preflight_receipt={"execution_context": {}, "ledger": {}},
+            authentication_conformance_receipt={},
+            preflight_semantic_validation_receipt={},
+            expected_authorization_digest=canonical_sha256(decision),
+        )
+    assert decision_path.is_file()
+    assert not tombstone_path.exists()
+    assert not tombstone_path.with_suffix(".json.tmp").exists()
+    with ledger.read_connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pilot_authorization_facts"
+        ).fetchone()[0] == 1
+
+    monkeypatch.setattr(module.os, "replace", replace)
+    scope["scope"] = "test"
+    execution.clear()
     tombstone = consumer.consume(
         scope_envelope=scope,
         execution_authorization_receipt=execution,
@@ -1978,6 +2141,10 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert not decision_path.exists()
     assert tombstone_path.is_file()
     assert tombstone_path.stat().st_mode & 0o077 == 0
+    with ledger.read_connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pilot_authorization_facts"
+        ).fetchone()[0] == 1
     with pytest.raises(WorkItemGovernanceError) as error:
         consumer.consume(
             scope_envelope=tombstone.scope_envelope,

@@ -18,6 +18,7 @@ from runner.executor_run_claims import ExecutorRunClaimStore
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_session import ExecutorSessionStore
 from runner.plan_loader import PlanLoader
+from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.ids import new_stable_id
 from runner.work_item_governance.references import resolve_execution_attempt_binding
 from runner.work_item_governance.schema_loader import validate_governance_record
@@ -75,10 +76,37 @@ def test_v2_accepts_caller_supplied_taskbook_hashes_and_bound_attempt() -> None:
 
 
 def test_v2_allows_explicit_unbound_compatibility_path() -> None:
-    result = validate_execution_envelope(envelope_v2(bound=False))
+    envelope = envelope_v2(bound=False)
+    result = validate_execution_envelope(envelope)
     assert result["envelope_check_result"] == ENVELOPE_CHECK_PASSED
     assert result["work_item_id"] is None
     assert result["work_item_binding_is_optional_for_legacy_execution"] is True
+    validate_governance_record("execution_envelope.v2", envelope)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("work_item_id", new_stable_id("work_item")),
+        ("task_version", 1),
+        ("attempt_id", new_stable_id("attempt")),
+        ("objective_ref", "objective://partial"),
+    ),
+)
+def test_v2_schema_and_runtime_reject_every_partial_attempt_binding(
+    field: str,
+    value: object,
+) -> None:
+    envelope = envelope_v2(bound=False)
+    envelope[field] = value
+
+    with pytest.raises(WorkItemGovernanceError) as error:
+        validate_governance_record("execution_envelope.v2", envelope)
+    assert error.value.code == "SCHEMA_VALIDATION_FAILED"
+    assert (
+        validate_execution_envelope(envelope)["envelope_check_result"]
+        == ENVELOPE_CHECK_FAILED_CLOSED
+    )
 
 
 def test_v2_partial_binding_and_unsafe_taskbook_ref_fail_closed() -> None:

@@ -1365,6 +1365,10 @@ class PilotActivationGuard:
         row = self._latest(connection)
         if row["status"] != "active":
             raise WorkItemGovernanceError("PILOT_ACTIVE_LEASE_REQUIRED", "Pilot writes require an active Lease.")
+        self._require_active_time_window(row)
+        return row
+
+    def _require_active_time_window(self, row: sqlite3.Row) -> None:
         now = self.now().astimezone(timezone.utc)
         if now < parse_timestamp(str(row["not_before"]), "not_before") or now >= parse_timestamp(str(row["expires_at"]), "expires_at"):
             raise WorkItemGovernanceError("PILOT_LEASE_EXPIRED", "Pilot Lease is outside its authorized UTC window.")
@@ -1372,7 +1376,6 @@ class PilotActivationGuard:
         deadline = runtime.get("monotonic_deadline_ns")
         if isinstance(deadline, int) and self.monotonic_ns() >= deadline:
             raise WorkItemGovernanceError("PILOT_LEASE_EXPIRED", "Pilot Lease monotonic deadline has expired.")
-        return row
 
     @staticmethod
     def _principal(row: sqlite3.Row, principal: PrincipalContext | None) -> PrincipalContext:
@@ -1418,11 +1421,17 @@ class PilotActivationGuard:
                 row = self._latest(connection)
             except WorkItemGovernanceError:
                 return {"present": False, "status": None, "effective_active": False}
+        effective_active = str(row["status"]) == "active"
+        if effective_active:
+            try:
+                self._require_active_time_window(row)
+            except WorkItemGovernanceError:
+                effective_active = False
         return {
             "present": True,
             "lease_id": str(row["lease_id"]),
             "status": str(row["status"]),
-            "effective_active": str(row["status"]) == "active",
+            "effective_active": effective_active,
             "authorized_work_item_id": row["authorized_work_item_id"],
             "scope_mode": PILOT_SCOPE_MODE,
         }
