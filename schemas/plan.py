@@ -76,6 +76,9 @@ class BuildVersion:
     execution: Optional[VersionExecutionProfile] = None
     allow_no_changes: bool = False
     required_changed_files: list[str] = field(default_factory=list)
+    work_item_id: Optional[str] = None
+    task_version: Optional[int] = None
+    attempt_id: Optional[str] = None
 
 @dataclass
 class BuildRunnerPlan:
@@ -92,3 +95,6 @@ class BuildRunnerPlan:
     runtime_dir: str = ".mvp-runner/runtime"
     rules_file: str = ".mvp-runner/rules.md"
     state_file: str = ".mvp-runner/state.json"
+    work_item_id: Optional[str] = None
+    task_version: Optional[int] = None
+    attempt_id: Optional[str] = None

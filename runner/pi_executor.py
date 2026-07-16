@@ -6,6 +6,7 @@ from adapters.pi_rpc_adapter import PiRpcAdapter, PiRpcRunResult
 from runner.execution_profile import load_runner_settings_for_project, resolve_version_execution_model
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
+from runner.work_item_governance.references import resolve_execution_attempt_binding
 from runner.workspace import ProjectWorkspace
 from schemas.plan import BuildRunnerPlan
 from schemas.state import BuildRunnerState
@@ -186,6 +187,7 @@ class PiExecutor:
         resume_supported: bool,
     ) -> None:
         try:
+            attempt_binding = resolve_execution_attempt_binding(plan, version)
             ExecutorSessionStore(plan.project_root).record_execution(
                 provider="pi",
                 version=version,
@@ -199,6 +201,7 @@ class PiExecutor:
                 log_path=log_path,
                 summary_path=summary_path,
                 source=source,
+                **attempt_binding,
             )
         except Exception:
             pass

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/work-item-governance/work-item.v1.schema.json",
+  "title": "ColaMeta Work Item v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "work_item_id", "state", "state_version", "origin",
+    "imported", "current_task_version", "attributes", "created_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "work_item.v1"},
+    "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+    "state": {"enum": ["proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"]},
+    "state_version": {"type": "integer", "minimum": 0},
+    "origin": {"$ref": "definitions.v1.schema.json#/$defs/origin"},
+    "imported": {"type": "boolean"},
+    "current_task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+    "attributes": {"$ref": "definitions.v1.schema.json#/$defs/metadata"},
+    "blocked": {"type": "boolean"},
+    "active_blocker_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^blocker_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      }
+    },
+    "delivery_state_authority": {"enum": ["work_item_application_service", "shadow_only"]},
+    "gate_mode": {"enum": ["off", "shadow", "authoritative"]},
+    "runner_status_is_authority": {"const": false},
+    "connector_status_is_authority": {"const": false},
+    "stable_promotion_is_authority": {"const": false},
+    "product_submission_is_authority": {"const": false},
+    "task_versions": {
+      "type": "array",
+      "items": {"$ref": "task-version.v1.schema.json"}
+    },
+    "execution_attempts": {
+      "type": "array",
+      "items": {"$ref": "execution-attempt.v1.schema.json"}
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {"$ref": "artifact-reference.v1.schema.json"}
+    },
+    "decision_records": {
+      "type": "array",
+      "items": {"$ref": "decision-record.v1.schema.json"}
+    },
+    "gate_events": {
+      "type": "array",
+      "items": {"$ref": "gate-event.v1.schema.json"}
+    },
+    "delivery_receipts": {
+      "type": "array",
+      "items": {"$ref": "delivery-receipt.v1.schema.json"}
+    },
+    "accepted_evidence_manifest": {
+      "anyOf": [
+        {"$ref": "acceptance-evidence-manifest.v1.schema.json"},
+        {"type": "null"}
+      ]
+    },
+    "created_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"},
+    "updated_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"}
+  }
+}

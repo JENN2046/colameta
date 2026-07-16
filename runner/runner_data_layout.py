@@ -56,6 +56,17 @@ PROJECT_LOCAL_RULES = _rules_for_runner_dirs(
     )
 )
 
+PROJECT_LOCAL_DURABLE_RULES = _rules_for_runner_dirs(
+    (
+        (
+            "ledger/**",
+            "project_local_durable",
+            "private",
+            "Work Item Ledger data is durable project-local state and must not be tracked or treated as runtime data.",
+        ),
+    )
+)
+
 RUNTIME_EPHEMERAL_RULES = _rules_for_runner_dirs(
     tuple(
         (suffix, "runtime_ephemeral", "ignore", reason)
@@ -80,6 +91,7 @@ ARCHIVE_PRIVATE_OR_EXPORTABLE_RULES = _rules_for_runner_dirs(
 
 _ALL_RULES = (
     *PROJECT_TRACKED_RULES,
+    *PROJECT_LOCAL_DURABLE_RULES,
     *PROJECT_LOCAL_RULES,
     *RUNTIME_EPHEMERAL_RULES,
     *ARCHIVE_PRIVATE_OR_EXPORTABLE_RULES,
@@ -91,6 +103,7 @@ _RECOMMENDED_GITIGNORE_TEXT = dedent(
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/runtime/
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/logs/
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/local/
+    {PRIMARY_PROJECT_RUNNER_DIRNAME}/ledger/
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/reports/
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/audits/
     {PRIMARY_PROJECT_RUNNER_DIRNAME}/plan-patches/
@@ -259,6 +272,7 @@ def inspect_project_layout(project_root: str) -> dict[str, Any]:
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/runtime/",
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/logs/",
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/local/",
+        f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/ledger/",
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/reports/",
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/audits/",
         f"{PRIMARY_PROJECT_RUNNER_DIRNAME}/plan-patches/",
@@ -279,6 +293,7 @@ def inspect_project_layout(project_root: str) -> dict[str, Any]:
 
     tracked_candidates: list[str] = []
     private_candidates: list[str] = []
+    durable_candidates: list[str] = []
     runtime_candidates: list[str] = []
     archive_candidates: list[str] = []
     unknown_candidates: list[str] = []
@@ -292,6 +307,8 @@ def inspect_project_layout(project_root: str) -> dict[str, Any]:
             tracked_candidates.append(rel_path)
         elif category == "project_local":
             private_candidates.append(rel_path)
+        elif category == "project_local_durable":
+            durable_candidates.append(rel_path)
         elif category == "runtime_ephemeral":
             runtime_candidates.append(rel_path)
         elif category == "archive_private_or_exportable":
@@ -333,6 +350,7 @@ def inspect_project_layout(project_root: str) -> dict[str, Any]:
         "classified_paths": classified_paths,
         "tracked_candidates": tracked_candidates,
         "private_candidates": private_candidates,
+        "durable_candidates": durable_candidates,
         "runtime_candidates": runtime_candidates,
         "archive_candidates": archive_candidates,
         "unknown_candidates": unknown_candidates,

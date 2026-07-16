@@ -10,6 +10,7 @@ from adapters.opencode_server_adapter import (
 )
 from runner.executor_session import ExecutorSessionStore
 from runner.prompt_builder import PromptBuilder
+from runner.work_item_governance.references import resolve_execution_attempt_binding
 from runner.execution_profile import (
     load_runner_settings_for_project,
     resolve_version_execution_model,
@@ -366,6 +367,7 @@ class OpenCodeExecutor:
         opencode_run: OpenCodeRunResult,
     ) -> None:
         try:
+            attempt_binding = resolve_execution_attempt_binding(plan, version)
             conversation_id = opencode_run.conversation_id
             session_id = opencode_run.session_id
             session_file = opencode_run.session_file
@@ -392,6 +394,7 @@ class OpenCodeExecutor:
                 log_path=log_path,
                 summary_path=summary_path,
                 source=source,
+                **attempt_binding,
             )
         except Exception as rec_exc:
             rec_msg = f"record_execution_session_failed:{rec_exc.__class__.__name__}:{str(rec_exc)[:300]}"

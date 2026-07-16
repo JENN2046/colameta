@@ -285,6 +285,18 @@ def main() -> int:
 
         import_script = "; ".join(f"import {name}" for name in PACKAGE_IMPORTS)
         run([runtime_python, "-c", import_script])
+        governance_validation_script = """
+from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.schema_loader import validate_governance_record
+try:
+    validate_governance_record("decision_record.v1", {})
+except WorkItemGovernanceError as exc:
+    if exc.code != "SCHEMA_VALIDATION_FAILED":
+        raise
+else:
+    raise RuntimeError("invalid governance record unexpectedly passed validation")
+"""
+        run([runtime_python, "-c", governance_validation_script])
         run([venv_script(runtime_dir, "colameta"), "help"])
 
     print("self-hosting smoke passed")

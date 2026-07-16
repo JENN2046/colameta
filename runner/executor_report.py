@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from runner.work_item_governance.references import optional_work_item_reference_rejections
+
 
 EXECUTOR_REPORT_READY = "executor_report_ready"
 EXECUTOR_REPORT_FAILED_CLOSED = "executor_report_failed_closed"
@@ -84,6 +86,10 @@ def build_executor_report(
     master_taskbook_hash: str,
     stage_taskbook_hash: str,
     receipt_records: list[dict[str, Any]],
+    work_item_id: str | None = None,
+    task_version: int | None = None,
+    attempt_id: str | None = None,
+    artifact_refs: list[str] | None = None,
 ) -> dict[str, Any]:
     blockers: list[dict[str, Any]] = []
     receipt_refs: list[dict[str, Any]] = []
@@ -96,6 +102,23 @@ def build_executor_report(
     known_gaps: list[dict[str, Any]] = []
     remaining_risks: list[dict[str, Any]] = []
     known_conflicts: list[dict[str, Any]] = []
+
+    work_item_binding: dict[str, Any] = {}
+    if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
+        work_item_binding = {
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "attempt_id": attempt_id,
+            "artifact_refs": list(artifact_refs or []),
+        }
+        for rejection in optional_work_item_reference_rejections(work_item_binding):
+            blockers.append(
+                _blocker(
+                    str(rejection["code"]).lower(),
+                    "Executor report Work Item binding is invalid or incomplete.",
+                    {"field": rejection["field"]},
+                )
+            )
 
     if not receipt_records:
         blockers.append(_blocker("receipt_records_missing", "Executor report requires at least one receipt record.", {}))
@@ -236,6 +259,7 @@ def build_executor_report(
         "emits_gate_event": False,
         "writes_delivery_state": False,
     }
+    report.update(work_item_binding)
     assert_executor_report_contract(report)
     return report
 
@@ -256,6 +280,13 @@ def assert_executor_report_contract(report: dict[str, Any]) -> None:
             "EXECUTOR_REPORT_STATUS_INVALID",
             "Executor report status is unsupported.",
             details={"report_status": status},
+        )
+    binding_rejections = optional_work_item_reference_rejections(report)
+    if binding_rejections and status == EXECUTOR_REPORT_READY:
+        raise ExecutorReportError(
+            "EXECUTOR_REPORT_WORK_ITEM_BINDING_INVALID",
+            "Ready Executor report Work Item binding is invalid or incomplete.",
+            details={"rejections": binding_rejections},
         )
     blockers = report.get("failures_and_blockers")
     if not isinstance(blockers, list):

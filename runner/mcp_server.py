@@ -3,10 +3,13 @@ import copy
 import threading
 import os
 import re
+import secrets
 import sys
 import time
 import hashlib
+import hmac
 import urllib.request
+from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from dataclasses import dataclass
@@ -73,6 +76,9 @@ from runner.release_submission_readiness import (
 )
 from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_stable_promotion_readiness
 from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
+from runner.app_submission_work_items import AppSubmissionWorkItemCommands
+from runner.commander_projections import CommanderProjectionService
+from runner.stable_promotion_work_item import StablePromotionWorkItemReader
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.stage_parallel_plan import (
     build_stage_parallel_closeout_packet,
@@ -87,6 +93,41 @@ from runner.stage_parallel_executor_results import build_stage_parallel_executor
 from runner.stage_parallel_next_action import build_stage_parallel_next_action_packet
 from runner.workflow_engine import should_record_tool, record_tool_call
 from runner.workflow_records import WorkflowRecordStore
+from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.request_context import (
+    AuthenticatedTokenRequestProof,
+    _AuthenticatedTokenListenerBoundary,
+    _authenticated_token_listener_conformance_snapshot,
+    _bind_authenticated_token_listener,
+)
+from runner.work_item_governance.activation import (
+    ActivationLeaseControlPlane,
+    process_tcp_listener_inventory,
+    validate_authoritative_bearer_token,
+    validate_runtime_policy_contracts,
+)
+from runner.work_item_governance.pilot import (
+    PILOT_SCOPE_MODE,
+    PILOT_TOOLS,
+    PilotActivationControlPlane,
+    measure_pilot_durable_token_binding,
+    require_pilot_preflight_conformance_baseline,
+)
+from runner.work_item_mcp_adapter import (
+    AUTHORITATIVE_CANARY_MCP_TOOLS,
+    WORK_ITEM_APPLY_TOOLS,
+    WORK_ITEM_MCP_TOOLS,
+    WORK_ITEM_PREVIEW_TOOLS,
+    WORK_ITEM_READ_TOOLS,
+    execute_work_item_mcp_command,
+    work_item_mcp_tool_specs,
+)
+from runner.work_item_principal_adapter import (
+    current_authenticated_token_request_proof,
+    current_work_item_principal,
+    work_item_authenticated_request_scope,
+    work_item_principal_scope,
+)
 from runner.runner_paths import (
     is_project_runner_path,
     resolve_project_runner_dir,
@@ -94,6 +135,9 @@ from runner.runner_paths import (
     resolve_project_runner_plan_path,
     resolve_project_runner_rel_dir,
 )
+
+
+MCPAuthContext = object | None
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -122,6 +166,8 @@ MCP_EXPOSURE_PROFILE_ENV = "MCP_EXPOSURE_PROFILE"
 MCP_EXPOSURE_PROFILE_NORMAL = "normal"
 MCP_EXPOSURE_PROFILE_MAINTAINER = "maintainer"
 MCP_EXPOSURE_PROFILE_LEGACY = "legacy"
+MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY = "authoritative_canary"
+AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE = "isolated_xdg_auth_json"
 ACTIONS_API_PREFIX = "/api/"
 ACTIONS_TARGET_RESPONSE_CHARS = 60000
 ACTIONS_HARD_RESPONSE_CHARS = 75000
@@ -153,7 +199,6 @@ REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES: dict[str, str] = {
     "mcp:commit": "REMOTE_MCP_COMMIT_DENIED",
     "mcp:plan": "REMOTE_MCP_PLAN_DENIED",
 }
-
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
@@ -213,7 +258,7 @@ NORMAL_EXPOSED_TOOLS = (
     "list_executor_run_reports",
     "get_executor_run_report",
     "inspect_executor_activity",
-)
+) + WORK_ITEM_MCP_TOOLS
 
 MAINTAINER_EXTRA_TOOLS = (
     "get_project_identity",
@@ -243,6 +288,7 @@ _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
     MCP_EXPOSURE_PROFILE_NORMAL: NORMAL_EXPOSED_TOOLS,
     MCP_EXPOSURE_PROFILE_MAINTAINER: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS,
     MCP_EXPOSURE_PROFILE_LEGACY: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS + LEGACY_EXTRA_TOOLS,
+    MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY: AUTHORITATIVE_CANARY_MCP_TOOLS,
 }
 
 
@@ -612,6 +658,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "manage_workflow_run",
     "list_workflow_runs",
     "get_workflow_run",
+    *WORK_ITEM_MCP_TOOLS,
 }
 
 
@@ -904,6 +951,9 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_workflow_run",
     }
     policies = {name: _static_policy(name, "mcp:read") for name in read_tools}
+    policies.update({name: _static_policy(name, "mcp:read") for name in WORK_ITEM_READ_TOOLS})
+    policies.update({name: _static_policy(name, "mcp:preview") for name in WORK_ITEM_PREVIEW_TOOLS})
+    policies.update({name: _static_policy(name, "mcp:commit") for name in WORK_ITEM_APPLY_TOOLS})
     for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
         policies[name] = _static_policy(name, "mcp:preview")
     for name in (
@@ -1125,11 +1175,25 @@ class MCPToolInputError(Exception):
 
 
 class MCPPlanningBridgeServer:
-    def __init__(self, project_path: str, *, service_mode: bool = False):
+    def __init__(
+        self,
+        project_path: str,
+        *,
+        service_mode: bool = False,
+        exposure_profile: str | None = None,
+        work_item_scope_mode: str | None = None,
+    ):
         self.project_root = os.path.abspath(os.path.expanduser(project_path))
         self.service_mode = service_mode
         self.project_registry = ProjectRegistry()
-        self.mcp_exposure_profile = self._get_exposure_profile()
+        self.mcp_exposure_profile = self._get_exposure_profile(exposure_profile)
+        self.work_item_scope_mode = work_item_scope_mode
+        if work_item_scope_mode not in {None, PILOT_SCOPE_MODE}:
+            raise PlanningBridgeError(f"Unsupported Work Item scope mode: {work_item_scope_mode}")
+        if work_item_scope_mode == PILOT_SCOPE_MODE and self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+            raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
+        self._token_transport_proof_validator = None
+        self._preflight_conformance_only = False
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -1246,6 +1310,12 @@ class MCPPlanningBridgeServer:
             "list_workflow_runs": self._tool_list_workflow_runs,
             "get_workflow_run": self._tool_get_workflow_run,
         }
+        self.tools.update(
+            {
+                name: (lambda params, command_name=name: self._tool_work_item_command(command_name, params))
+                for name in WORK_ITEM_MCP_TOOLS
+            }
+        )
         self.tool_defs = [
             MCPToolDef(
                 name="list_registered_projects",
@@ -1634,7 +1704,11 @@ class MCPPlanningBridgeServer:
                         "project_name": {
                             "type": "string",
                             "description": "可选。按已登记 project_name 路由读取目标项目稳定晋升预检；服务模式下必须显式提供。",
-                        }
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "description": "可选。把预检绑定到最终 Acceptance Gate 的冻结证据清单。",
+                        },
                     },
                     "required": [],
                     "additionalProperties": False,
@@ -1664,6 +1738,10 @@ class MCPPlanningBridgeServer:
                         "candidate_head": {
                             "type": "string",
                             "description": "preview/status 可选。精确候选 commit；省略时使用当前 HEAD。",
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "description": "可选。验证 candidate 是否属于最终 Acceptance Gate 的冻结证据清单。",
                         },
                         "preview_id": {
                             "type": "string",
@@ -4430,6 +4508,70 @@ class MCPPlanningBridgeServer:
                 output_schema=common_output_schema,
             ),
         ]
+        self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+            if self.work_item_scope_mode != PILOT_SCOPE_MODE:
+                validate_runtime_policy_contracts()
+            expected_tools = (
+                PILOT_TOOLS
+                if self.work_item_scope_mode == PILOT_SCOPE_MODE
+                else AUTHORITATIVE_CANARY_MCP_TOOLS
+            )
+            actual = tuple(tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs))
+            if actual != expected_tools:
+                raise PlanningBridgeError(
+                    "authoritative_canary tool definition set differs from the frozen exact allowlist."
+                )
+            missing_dispatch_handlers = tuple(
+                name for name in expected_tools if not callable(self.tools.get(name))
+            )
+            if missing_dispatch_handlers:
+                raise PlanningBridgeError(
+                    "authoritative_canary dispatch handlers differ from the frozen exact allowlist: "
+                    + ", ".join(missing_dispatch_handlers)
+                )
+
+    def _work_item_tool_definitions(self, output_schema: dict[str, Any]) -> list[MCPToolDef]:
+        return [
+            MCPToolDef(output_schema=output_schema, **spec)
+            for spec in work_item_mcp_tool_specs(
+                self.project_hint,
+                authoritative_canary=(
+                    self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+                ),
+                bounded_single_project_pilot=(self.work_item_scope_mode == PILOT_SCOPE_MODE),
+            )
+        ]
+
+    def _tool_work_item_command(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
+        authoritative_canary = (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+        )
+        bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
+        if authoritative_canary and params.get("project_name") is not None:
+            raise MCPToolInputError(
+                "ACTIVATION_PROJECT_ROUTING_DENIED",
+                "The Authoritative Canary endpoint is bound to one exact project and forbids routing overrides.",
+            )
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool(
+                name,
+                params,
+                require_managed=name not in WORK_ITEM_READ_TOOLS,
+            )
+        clean = self._strip_project_name_param(params)
+        try:
+            return execute_work_item_mcp_command(
+                self.project_root,
+                name,
+                clean,
+                principal_context=current_work_item_principal(),
+                authoritative_canary=authoritative_canary,
+                bounded_single_project_pilot=bounded_pilot,
+                authenticated_request_proof=current_authenticated_token_request_proof(),
+            )
+        except WorkItemGovernanceError as exc:
+            raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
 
     def validate_project(self, mode: str | None = None) -> None:
         if not os.path.isdir(self.project_root):
@@ -4453,6 +4595,10 @@ class MCPPlanningBridgeServer:
         raise PlanningBridgeError(f"缺少计划文件或 Git 仓库：{plan_file}")
 
     def serve_stdio(self) -> int:
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+            raise PlanningBridgeError(
+                "authoritative_canary requires the Token-authenticated loopback HTTP transport."
+            )
         self._log(f"MCP Planning Bridge server started, project={self.project_root}")
         for raw_line in sys.stdin:
             line = raw_line.strip()
@@ -4466,11 +4612,39 @@ class MCPPlanningBridgeServer:
         self._log("MCP Planning Bridge server stopped")
         return 0
 
+    def _pilot_http_conformance_snapshot(self) -> dict[str, Any]:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            or self.work_item_scope_mode != PILOT_SCOPE_MODE
+            or not callable(self._token_transport_proof_validator)
+            or getattr(self, "_httpd", None) is None
+        ):
+            raise PlanningBridgeError("Pilot conformance requires the exact active authenticated MCP listener.")
+        snapshot = _authenticated_token_listener_conformance_snapshot(self)
+        snapshot["preflight_conformance_only"] = bool(self._preflight_conformance_only)
+        snapshot["server_binding_digest"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "project_root": self.project_root,
+                    "scope_mode": self.work_item_scope_mode,
+                    "exposure_profile": self.mcp_exposure_profile,
+                    "preflight_conformance_only": bool(self._preflight_conformance_only),
+                    "listener_instance_nonce": snapshot["listener_instance_nonce"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return snapshot
+
     def serve_http(
         self,
         host: str = "127.0.0.1",
         port: int = 8765,
         auth_token: str | None = None,
+        auth_token_source: str | None = None,
+        auth_token_file_sha256: str | None = None,
+        auth_token_evidence_digest: str | None = None,
         auth_mode: str | None = None,
         public_base_url: str | None = None,
         oauth_token_ttl_seconds: int = 3600,
@@ -4481,14 +4655,99 @@ class MCPPlanningBridgeServer:
         oauth_algorithms: str | list[str] | tuple[str, ...] | None = None,
         oauth_token_leeway_seconds: int = 60,
         debug_actions: bool = False,
+        activation_control_plane: ActivationLeaseControlPlane | PilotActivationControlPlane | None = None,
+        activation_lease_id: str | None = None,
+        activation_envelope_path: str | None = None,
+        claimed_activation_envelope_path: str | None = None,
+        preflight_conformance: bool = False,
+        preflight_conformance_timeout_seconds: float = 120.0,
     ) -> int:
         server = self
         _debug_counter = 0
         resolved_auth_mode = auth_mode or ("token" if auth_token else "none")
+        authoritative_canary = (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+        )
+        preflight_conformance_only = bool(preflight_conformance)
+        if preflight_conformance_only and (
+            not authoritative_canary or self.work_item_scope_mode != PILOT_SCOPE_MODE
+        ):
+            raise PlanningBridgeError(
+                "preflight_conformance requires the exact bounded authoritative Pilot profile."
+            )
+        if preflight_conformance_only and (
+            isinstance(preflight_conformance_timeout_seconds, bool)
+            or not isinstance(preflight_conformance_timeout_seconds, (int, float))
+            or not 0 < float(preflight_conformance_timeout_seconds) <= 120
+        ):
+            raise PlanningBridgeError(
+                "preflight_conformance timeout must be greater than zero and at most 120 seconds."
+            )
+        if authoritative_canary:
+            if host != "127.0.0.1":
+                raise PlanningBridgeError("authoritative_canary must bind exactly 127.0.0.1.")
+            if resolved_auth_mode != "token" or not auth_token:
+                raise PlanningBridgeError("authoritative_canary requires private Bearer Token authentication.")
+            if auth_token_source != AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE:
+                raise PlanningBridgeError(
+                    "authoritative_canary Token must be loaded from isolated 0600 XDG auth.json."
+                )
+            if not (
+                isinstance(auth_token_file_sha256, str)
+                and re.fullmatch(r"[0-9a-f]{64}", auth_token_file_sha256)
+                and isinstance(auth_token_evidence_digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", auth_token_evidence_digest)
+            ):
+                raise PlanningBridgeError(
+                    "authoritative_canary requires exact Ledger-bound Token evidence digests."
+                )
+            try:
+                validate_authoritative_bearer_token(auth_token)
+            except WorkItemGovernanceError as exc:
+                raise PlanningBridgeError(
+                    "authoritative_canary token must match the exact bound 256-bit CSPRNG format."
+                ) from exc
+            if public_base_url is not None or debug_actions:
+                raise PlanningBridgeError(
+                    "authoritative_canary forbids public/actions configuration."
+                )
+            if preflight_conformance_only:
+                if any(
+                    value is not None
+                    for value in (
+                        activation_control_plane,
+                        activation_lease_id,
+                        activation_envelope_path,
+                        claimed_activation_envelope_path,
+                    )
+                ):
+                    raise PlanningBridgeError(
+                        "preflight_conformance forbids Activation Lease inputs."
+                    )
+                require_pilot_preflight_conformance_baseline(self.project_root)
+                durable_token_binding = measure_pilot_durable_token_binding(self.project_root)
+                if durable_token_binding != {
+                    "authoritative_canary_token_file_sha256": auth_token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": auth_token_evidence_digest,
+                }:
+                    raise PlanningBridgeError(
+                        "preflight_conformance Token evidence differs from the durable Ledger binding."
+                    )
+            elif (
+                activation_control_plane is None
+                or not activation_lease_id
+                or not activation_envelope_path
+                or not claimed_activation_envelope_path
+            ):
+                raise PlanningBridgeError(
+                    "authoritative_canary requires its one-shot Activation Lease control-plane claim."
+                )
         if resolved_auth_mode not in {"none", "token", "oauth", "external-oauth"}:
             raise PlanningBridgeError(f"auth_mode 无效：{resolved_auth_mode}")
         if resolved_auth_mode == "token" and not auth_token:
             raise PlanningBridgeError("token auth mode requires auth_token.")
+        if resolved_auth_mode == "token" and self._token_transport_proof_validator is not None:
+            raise PlanningBridgeError("This MCP server already owns an active Token listener boundary.")
         normalized_public_base_url = public_base_url.rstrip("/") if public_base_url else None
         oauth_provider: MCPOAuthProvider | None = None
         external_oauth_provider: ExternalOAuthProvider | None = None
@@ -4519,6 +4778,61 @@ class MCPPlanningBridgeServer:
                 )
             )
         resource_oauth_provider = external_oauth_provider or oauth_provider
+        listener_dispatch_context: ContextVar[object | None] = ContextVar(
+            f"colameta_token_listener_{id(self)}_{id(object())}",
+            default=None,
+        )
+        listener_proof_boundary: _AuthenticatedTokenListenerBoundary | None = None
+        resolved_token_file_sha256 = auth_token_file_sha256 or hashlib.sha256(
+            f"non-authoritative-token-file:{auth_token or ''}".encode("utf-8")
+        ).hexdigest()
+        resolved_token_evidence_digest = auth_token_evidence_digest or hashlib.sha256(
+            f"non-authoritative-token-evidence:{auth_token or ''}".encode("utf-8")
+        ).hexdigest()
+        resolved_proof_lease_id = activation_lease_id or (
+            "pilot-preflight-conformance"
+            if preflight_conformance_only
+            else "non-authoritative-token-listener"
+        )
+
+        def _validate_listener_token_proof(candidate: object) -> bool:
+            if type(candidate) is not AuthenticatedTokenRequestProof:
+                return False
+            if listener_dispatch_context.get() is not candidate:
+                return False
+            proof = candidate
+            if (
+                proof.lease_id != resolved_proof_lease_id
+                or proof.token_file_sha256 != resolved_token_file_sha256
+                or proof.token_evidence_digest != resolved_token_evidence_digest
+                or listener_proof_boundary is None
+                or not listener_proof_boundary.is_active(proof)
+            ):
+                return False
+            return proof.verify_signature(auth_token or "")
+
+        def _mint_listener_token_proof() -> AuthenticatedTokenRequestProof:
+            if listener_proof_boundary is None:
+                raise PlanningBridgeError("Token listener proof boundary is unavailable.")
+            return listener_proof_boundary.issue()
+
+        def _activate_listener_token_proof(candidate: object) -> None:
+            if type(candidate) is not AuthenticatedTokenRequestProof:
+                return
+            proof = candidate
+            if (
+                proof.lease_id == resolved_proof_lease_id
+                and proof.token_file_sha256 == resolved_token_file_sha256
+                and proof.token_evidence_digest == resolved_token_evidence_digest
+                and proof.verify_signature(auth_token or "")
+                and listener_proof_boundary is not None
+            ):
+                listener_proof_boundary.activate(proof)
+
+        def _retire_listener_token_proof(candidate: object) -> None:
+            if listener_proof_boundary is not None:
+                listener_proof_boundary.retire(candidate)
+
         rate_limiter = _MCPRateLimiter(
             global_per_minute=MCP_GLOBAL_RATE_LIMIT_PER_MINUTE,
             global_burst=MCP_GLOBAL_RATE_LIMIT_BURST,
@@ -4702,6 +5016,20 @@ class MCPPlanningBridgeServer:
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-Request-Id", self._request_id())
+                if (
+                    authoritative_canary
+                    and server.work_item_scope_mode == PILOT_SCOPE_MODE
+                    and listener_proof_boundary is not None
+                ):
+                    listener_snapshot = server._pilot_http_conformance_snapshot()
+                    self.send_header(
+                        "X-ColaMeta-Listener-Instance",
+                        str(listener_snapshot["listener_instance_nonce"]),
+                    )
+                    self.send_header(
+                        "X-ColaMeta-Server-Binding",
+                        str(listener_snapshot["server_binding_digest"]),
+                    )
                 for key, value in (headers or {}).items():
                     self.send_header(key, value)
                 self.end_headers()
@@ -4803,7 +5131,7 @@ class MCPPlanningBridgeServer:
             def _body_timed_out(self) -> bool:
                 return bool(getattr(self, "_request_body_timed_out", False))
 
-            def _auth_context(self) -> dict[str, Any] | None:
+            def _auth_context(self) -> MCPAuthContext:
                 if resolved_auth_mode == "none":
                     return {"mode": "none"}
                 authorization = self.headers.get("Authorization", "")
@@ -4811,7 +5139,9 @@ class MCPPlanningBridgeServer:
                     if not authorization.startswith("Bearer "):
                         return None
                     token = authorization[len("Bearer ") :]
-                    return {"mode": "token"} if token == auth_token else None
+                    if not hmac.compare_digest(token, auth_token):
+                        return None
+                    return _mint_listener_token_proof()
                 if resolved_auth_mode == "oauth" and oauth_provider is not None:
                     if not authorization.startswith("Bearer "):
                         return None
@@ -4942,6 +5272,12 @@ class MCPPlanningBridgeServer:
                         )
                         return
                 if path == "/openapi.json":
+                    if authoritative_canary:
+                        self._send_json(
+                            404,
+                            {"ok": False, "error_code": "ACTIONS_DISABLED", "message": "Actions are disabled."},
+                        )
+                        return
                     payload = server._build_actions_openapi_schema(
                         public_base_url=normalized_public_base_url,
                         host=host,
@@ -5041,6 +5377,12 @@ class MCPPlanningBridgeServer:
                     return
                 tool_name = server._actions_tool_name_from_path(path)
                 if tool_name is not None:
+                    if authoritative_canary:
+                        self._send_json(
+                            404,
+                            {"ok": False, "error_code": "ACTIONS_DISABLED", "message": "Actions are disabled."},
+                        )
+                        return
                     auth_context = self._auth_context()
                     if auth_context is None:
                         self._send_auth_error()
@@ -5104,7 +5446,17 @@ class MCPPlanningBridgeServer:
                         return
                     if debug_actions and isinstance(arguments, dict):
                         self._debug_body_keys = list(arguments.keys())
-                    tool_result = server._call_tool(tool_name, arguments, auth_context=auth_context)
+                    _activate_listener_token_proof(auth_context)
+                    dispatch_token = listener_dispatch_context.set(auth_context)
+                    try:
+                        tool_result = server._call_tool(
+                            tool_name,
+                            arguments,
+                            auth_context=auth_context,
+                        )
+                    finally:
+                        listener_dispatch_context.reset(dispatch_token)
+                        _retire_listener_token_proof(auth_context)
                     response_payload = server._package_actions_rest_response(tool_name, arguments, tool_result)
                     self._send_json(200, response_payload)
                     return
@@ -5158,7 +5510,16 @@ class MCPPlanningBridgeServer:
                         },
                     )
                     return
-                response = server._handle_jsonrpc_request(request, auth_context=auth_context)
+                _activate_listener_token_proof(auth_context)
+                dispatch_token = listener_dispatch_context.set(auth_context)
+                try:
+                    response = server._handle_jsonrpc_request(
+                        request,
+                        auth_context=auth_context,
+                    )
+                finally:
+                    listener_dispatch_context.reset(dispatch_token)
+                    _retire_listener_token_proof(auth_context)
                 if response is None:
                     self.send_response(202)
                     self.send_header("Content-Length", "0")
@@ -5167,15 +5528,114 @@ class MCPPlanningBridgeServer:
                     return
                 self._send_json(200, response)
 
-        httpd = ReusableThreadingHTTPServer((host, port), MCPHTTPRequestHandler)
-        self._httpd = httpd
+        claimed = False
+        active = False
+        if authoritative_canary and not preflight_conformance_only:
+            if (
+                activation_control_plane is None
+                or activation_lease_id is None
+                or activation_envelope_path is None
+                or claimed_activation_envelope_path is None
+            ):
+                raise PlanningBridgeError(
+                    "authoritative_canary Activation Lease claim inputs became unavailable."
+                )
+            activation_control_plane.claim_prepared_lease(
+                lease_id=activation_lease_id,
+                envelope_path=activation_envelope_path,
+                claimed_envelope_path=claimed_activation_envelope_path,
+            )
+            claimed = True
         try:
+            httpd = ReusableThreadingHTTPServer((host, port), MCPHTTPRequestHandler)
+        except Exception:
+            if claimed and activation_control_plane is not None and activation_lease_id is not None:
+                activation_control_plane.revoke(
+                    lease_id=activation_lease_id,
+                    reason="listener_bind_failed_after_claim",
+                )
+            raise
+        self._httpd = httpd
+        self._preflight_conformance_only = preflight_conformance_only
+        if authoritative_canary and not preflight_conformance_only:
+            if activation_control_plane is None or activation_lease_id is None:
+                httpd.server_close()
+                raise PlanningBridgeError(
+                    "authoritative_canary listener attestation inputs became unavailable."
+                )
+            try:
+                bound_port = int(httpd.server_address[1])
+                activation_control_plane.attest_listener(
+                    lease_id=activation_lease_id,
+                    bind_address=host,
+                    port=bound_port,
+                    observed_listeners=process_tcp_listener_inventory(),
+                )
+                active = True
+            except Exception:
+                httpd.server_close()
+                if claimed:
+                    try:
+                        activation_control_plane.revoke(
+                            lease_id=activation_lease_id,
+                            reason="listener_attestation_failed",
+                        )
+                    except WorkItemGovernanceError:
+                        pass
+                raise
+        installed_token_validator = False
+        preflight_timeout: threading.Timer | None = None
+        try:
+            if resolved_auth_mode == "token":
+                listener_proof_boundary = _bind_authenticated_token_listener(
+                    owner=self,
+                    httpd=httpd,
+                    auth_token=auth_token or "",
+                    lease_id=resolved_proof_lease_id,
+                    token_file_sha256=resolved_token_file_sha256,
+                    token_evidence_digest=resolved_token_evidence_digest,
+                )
+                self._token_transport_proof_validator = _validate_listener_token_proof
+                installed_token_validator = True
+            if preflight_conformance_only:
+                preflight_timeout = threading.Timer(
+                    float(preflight_conformance_timeout_seconds),
+                    httpd.shutdown,
+                )
+                preflight_timeout.name = "colameta-pilot-preflight-conformance-timeout"
+                preflight_timeout.daemon = True
+                preflight_timeout.start()
             httpd.serve_forever()
         except KeyboardInterrupt:
             self._log("MCP HTTP server interrupted")
         finally:
+            if preflight_timeout is not None:
+                preflight_timeout.cancel()
             httpd.shutdown()
             httpd.server_close()
+            if listener_proof_boundary is not None:
+                listener_proof_boundary.close()
+            if (
+                installed_token_validator
+                and self._token_transport_proof_validator
+                is _validate_listener_token_proof
+            ):
+                self._token_transport_proof_validator = None
+            self._preflight_conformance_only = False
+            if (
+                authoritative_canary
+                and not preflight_conformance_only
+                and active
+                and activation_control_plane is not None
+                and activation_lease_id is not None
+            ):
+                try:
+                    activation_control_plane.freeze(
+                        lease_id=activation_lease_id,
+                        reason="endpoint_stopped",
+                    )
+                except WorkItemGovernanceError:
+                    pass
             self._log("MCP HTTP server stopped")
         return 0
 
@@ -7228,7 +7688,7 @@ class MCPPlanningBridgeServer:
     def _handle_jsonrpc_request(
         self,
         request: dict[str, Any],
-        auth_context: dict[str, Any] | None = None,
+        auth_context: MCPAuthContext = None,
     ) -> dict[str, Any] | None:
         req_id = request.get("id")
         method = request.get("method")
@@ -7239,17 +7699,39 @@ class MCPPlanningBridgeServer:
         if is_notification and isinstance(method, str) and method.startswith("notifications/"):
             return None
 
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            and method in {"list_tools", "call_tool", "list_resources", "read_resource"}
+        ):
+            return self._protocol_error(
+                req_id,
+                -32601,
+                "legacy_method_alias_disabled",
+                "Only canonical MCP method names are enabled for authoritative_canary.",
+            )
+
         try:
             if method == "initialize":
+                authoritative_canary = (
+                    self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+                )
                 return self._result(
                     req_id,
                     {
                         "protocolVersion": "2025-06-18",
                         "serverInfo": {"name": "colameta-mcp", "version": "1.0.0"},
-                        "instructions": COMMANDER_APP_SERVER_INSTRUCTIONS,
+                        "instructions": (
+                            "Isolated, Token-authenticated, Lease-scoped synthetic Work Item Canary."
+                            if authoritative_canary
+                            else COMMANDER_APP_SERVER_INSTRUCTIONS
+                        ),
                         "capabilities": {
                             "tools": {"listChanged": False},
-                            "resources": {"subscribe": False, "listChanged": False},
+                            **(
+                                {}
+                                if authoritative_canary
+                                else {"resources": {"subscribe": False, "listChanged": False}}
+                            ),
                         },
                     },
                 )
@@ -7260,8 +7742,17 @@ class MCPPlanningBridgeServer:
             if method in ("list_tools", "tools/list"):
                 return self._result(req_id, {"tools": self._tool_defs_payload()})
             if method in ("list_resources", "resources/list"):
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+                    return self._result(req_id, {"resources": []})
                 return self._result(req_id, self._mcp_resources_list_result())
             if method in ("read_resource", "resources/read"):
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+                    return self._protocol_error(
+                        req_id,
+                        -32601,
+                        "resources_disabled",
+                        "MCP Resources are disabled for authoritative_canary.",
+                    )
                 if not isinstance(params, dict):
                     return self._protocol_error(req_id, -32602, "invalid_params", "params 必须是对象。")
                 uri = params.get("uri")
@@ -7295,6 +7786,13 @@ class MCPPlanningBridgeServer:
                     ),
                 )
             if method in self.tools:
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+                    return self._protocol_error(
+                        req_id,
+                        -32601,
+                        "direct_tool_method_disabled",
+                        "Direct named JSON-RPC tool methods are disabled; use tools/call.",
+                    )
                 return self._result(req_id, self._call_tool(method, params, auth_context=auth_context))
             return self._protocol_error(req_id, -32601, "method_not_found", f"未知方法：{method}")
         except Exception as e:
@@ -7441,6 +7939,7 @@ class MCPPlanningBridgeServer:
             "get_workflow_run",
             "todo_read",
             "decision_read",
+            *WORK_ITEM_READ_TOOLS,
         }
 
     def _is_actions_consequential_tool(self, tool_name: str) -> bool:
@@ -7679,8 +8178,11 @@ class MCPPlanningBridgeServer:
         }
         return self._normalize_openapi_schema(schema)
 
-    def _get_exposure_profile(self) -> str:
-        raw = os.getenv(MCP_EXPOSURE_PROFILE_ENV, MCP_EXPOSURE_PROFILE_NORMAL)
+    def _get_exposure_profile(self, requested: str | None = None) -> str:
+        raw = requested if requested is not None else os.getenv(
+            MCP_EXPOSURE_PROFILE_ENV,
+            MCP_EXPOSURE_PROFILE_NORMAL,
+        )
         if isinstance(raw, str):
             normalized = raw.strip().lower()
         else:
@@ -7736,7 +8238,15 @@ class MCPPlanningBridgeServer:
         safe_params = params if isinstance(params, dict) else {}
         is_error = not bool(structured_tool_result.get("ok"))
         tool_name = str(structured_tool_result.get("tool") or "unknown_tool")
-        if self._json_char_count(structured_tool_result) <= MCP_TARGET_TOOL_RESULT_CHARS:
+        # The Commander widget consumes structuredContent directly. Keep its
+        # manifest intact up to the existing hard response ceiling; generic
+        # tools retain the lower packaging target.
+        target_chars = (
+            MCP_HARD_TOOL_RESULT_CHARS
+            if tool_name == "render_commander_app"
+            else MCP_TARGET_TOOL_RESULT_CHARS
+        )
+        if self._json_char_count(structured_tool_result) <= target_chars:
             if is_error:
                 err_msg = str(structured_tool_result.get("message") or "unknown error")
                 text_payload = f"{tool_name} failed: {err_msg}"
@@ -7953,6 +8463,10 @@ class MCPPlanningBridgeServer:
                         "notes": {"type": "string"},
                     },
                     "additionalProperties": True,
+                },
+                "work_item_id": {
+                    "type": "string",
+                    "description": "可选。通过 App Submission Application Command 引用现有 Work Item。",
                 },
             },
             "required": [],
@@ -8687,7 +9201,7 @@ class MCPPlanningBridgeServer:
         self,
         name: Any,
         params: Any,
-        auth_context: dict[str, Any] | None = None,
+        auth_context: MCPAuthContext = None,
     ) -> dict[str, Any]:
         if not isinstance(name, str) or not name:
             return self._tool_error("unknown", "INVALID_TOOL", "tool 名称无效。")
@@ -8697,6 +9211,37 @@ class MCPPlanningBridgeServer:
                 "TOOL_NOT_EXPOSED",
                 "apply_plan_patch is intentionally not exposed over MCP. Runner applies pending patches locally via Web Console or CLI.",
             )
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            and name not in self._get_exposed_tool_names(self.mcp_exposure_profile)
+        ):
+            return self._tool_error(
+                name,
+                "TOOL_NOT_EXPOSED",
+                "The tool is denied by the active server exposure profile.",
+            )
+        if self._preflight_conformance_only:
+            return self._tool_error(
+                name,
+                "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED",
+                "The preflight conformance listener exposes definitions for measurement but denies every tool call.",
+            )
+        listener_proof_validator = self._token_transport_proof_validator
+        transport_authenticated = False
+        if callable(listener_proof_validator) and auth_context is not None:
+            try:
+                transport_authenticated = bool(listener_proof_validator(auth_context))
+            except Exception:
+                transport_authenticated = False
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            and not transport_authenticated
+        ):
+            return self._tool_error(
+                name,
+                "UNAUTHORIZED",
+                "A Token-authenticated HTTP transport capability is required.",
+            )
         tool = self.tools.get(name)
         if tool is None:
             return self._tool_error(name, "TOOL_NOT_FOUND", f"未知 tool：{name}")
@@ -8704,7 +9249,11 @@ class MCPPlanningBridgeServer:
             params = {}
         if not isinstance(params, dict):
             return self._tool_error(name, "INVALID_PARAMS", "tool 参数必须是 JSON 对象。")
-        if (self.service_mode or auth_context is not None) and name in PROJECT_NAME_REQUIRED_TOOLS:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            and (self.service_mode or auth_context is not None)
+            and name in PROJECT_NAME_REQUIRED_TOOLS
+        ):
             project_name = params.get("project_name")
             if not isinstance(project_name, str) or not project_name.strip():
                 include_available_projects = self.service_mode and auth_context is None
@@ -8731,7 +9280,10 @@ class MCPPlanningBridgeServer:
         if relay_scope_error is not None:
             return relay_scope_error
         try:
-            data = tool(params)
+            with work_item_authenticated_request_scope(auth_context), work_item_principal_scope(
+                auth_context
+            ):
+                data = tool(params)
             result = {"ok": True, "tool": name, "data": data}
             if isinstance(data, dict) and isinstance(data.get("_meta"), dict):
                 clean_data = dict(data)
@@ -8739,13 +9291,43 @@ class MCPPlanningBridgeServer:
                 result["data"] = clean_data
             return result
         except MCPToolInputError as e:
+            self._stop_authoritative_canary_if_inactive()
             return self._tool_error(name, e.error_code, e.message, e.details)
         except PlanningBridgeError as e:
             return self._tool_error(name, "BRIDGE_ERROR", str(e))
         except SourceReviewError as e:
             return self._tool_error(name, "SOURCE_REVIEW_ERROR", str(e))
         except Exception as e:
+            self._stop_authoritative_canary_if_inactive()
             return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。", {"message": str(e)})
+
+    def _stop_authoritative_canary_if_inactive(self) -> None:
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+            return
+        bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
+        effective_active = False
+        try:
+            status = execute_work_item_mcp_command(
+                self.project_root,
+                "get_work_item_governance_status",
+                {},
+                principal_context=current_work_item_principal(),
+                authoritative_canary=not bounded_pilot,
+                bounded_single_project_pilot=bounded_pilot,
+            )
+            lease = status.get("activation_lease") if isinstance(status, dict) else None
+            effective_active = bool(isinstance(lease, dict) and lease.get("effective_active") is True)
+        except Exception:
+            effective_active = False
+        if effective_active:
+            return
+        httpd = getattr(self, "_httpd", None)
+        if httpd is not None:
+            threading.Thread(
+                target=httpd.shutdown,
+                name="colameta-authoritative-canary-stop",
+                daemon=True,
+            ).start()
 
     def call_tool_for_agent(
         self,
@@ -8790,7 +9372,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") not in {"oauth", "external-oauth"}:
             return None
@@ -8812,7 +9394,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
             return None
@@ -8841,7 +9423,7 @@ class MCPPlanningBridgeServer:
         self,
         name: str,
         params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
+        auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "cloud-relay":
             return None
@@ -10563,7 +11145,7 @@ class MCPPlanningBridgeServer:
     def _tool_get_release_submission_readiness(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
         project_name = self._project_name_for_context(project_root, project_record, params)
-        return build_release_submission_readiness(
+        result = build_release_submission_readiness(
             project_root,
             project_name=project_name,
             app_name=params.get("app_name") if isinstance(params.get("app_name"), str) else None,
@@ -10584,6 +11166,21 @@ class MCPPlanningBridgeServer:
             if isinstance(params.get("submission_materials"), dict)
             else None,
         )
+        work_item_id = params.get("work_item_id")
+        if isinstance(work_item_id, str) and work_item_id.strip():
+            try:
+                result["work_item_reference"] = AppSubmissionWorkItemCommands(
+                    project_root
+                ).reference_existing(work_item_id.strip())
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
+        result["work_item_command_boundary"] = {
+            "create_path": ["preview_work_item_create", "apply_work_item_create"],
+            "reference_path": "get_work_item",
+            "direct_ledger_write": False,
+            "automatic_work_item_creation": False,
+        }
+        return result
 
     def _tool_init_submission_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
@@ -10766,6 +11363,26 @@ class MCPPlanningBridgeServer:
             **apps_connector_closeout,
             "release_submission_evidence": release_submission_evidence,
         }
+        domain_projections = CommanderProjectionService(
+            project_root,
+            service_operations_reader=lambda: {
+                "source": "connector_runtime_health_projection",
+                "overall_status": connector_summary.get("overall_status"),
+                "local_service_status": connector_summary.get("local_service_status"),
+                "external_connector_status": connector_summary.get("external_connector_status"),
+                "operator_closeout_status": connector_summary.get("operator_closeout_status"),
+            },
+            app_submission_reader=lambda: {
+                "source": release_submission_evidence.get("source"),
+                "status": release_submission_evidence.get("status"),
+                "ready": release_submission_evidence.get("ready") is True,
+                "blocker_codes": copy.deepcopy(release_submission_evidence.get("blocker_codes") or []),
+                "needs_attention_codes": copy.deepcopy(
+                    release_submission_evidence.get("needs_attention_codes") or []
+                ),
+                "safe_next_action": copy.deepcopy(release_submission_evidence.get("safe_next_action")),
+            },
+        ).project()["sections"]
         app_status = str(connector_summary.get("overall_status") or "unknown")
         readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
@@ -10834,6 +11451,7 @@ class MCPPlanningBridgeServer:
             "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
             "connector": connector_summary,
+            "domain_projections": domain_projections,
             "registered_projects": self._web_gpt_registered_project_summary(),
             "profiles": profiles,
             "initial_reads": [
@@ -10864,6 +11482,7 @@ class MCPPlanningBridgeServer:
             "commander_panel": {
                 "primary_sections": [
                     "agent_operator_flow",
+                    "work_item_governance",
                     "service_readiness",
                     "apps_connector_closeout",
                     "release_submission_evidence",
@@ -11176,12 +11795,19 @@ class MCPPlanningBridgeServer:
             if params.get("project_name") is not None
             else None
         )
-        return self._build_stable_promotion_readiness_packet(project_root, project_name)
+        return self._build_stable_promotion_readiness_packet(
+            project_root,
+            project_name,
+            work_item_id=params.get("work_item_id")
+            if isinstance(params.get("work_item_id"), str)
+            else None,
+        )
 
     def _build_stable_promotion_readiness_packet(
         self,
         project_root: str,
         project_name: str | None,
+        work_item_id: str | None = None,
     ) -> dict[str, Any]:
         result = get_stable_promotion_readiness(
             project_root,
@@ -11202,6 +11828,21 @@ class MCPPlanningBridgeServer:
                 safe_next_action = packet.get("safe_next_action") if isinstance(packet, dict) else None
                 if isinstance(safe_next_action, dict):
                     _inject_project_name_into_action(safe_next_action, project_name)
+        if work_item_id:
+            exact_commit = str(
+                (result.get("project") or {}).get("head")
+                or (result.get("git") or {}).get("head")
+                or ""
+            )
+            try:
+                result["work_item_acceptance_candidate"] = StablePromotionWorkItemReader(
+                    project_root
+                ).inspect_accepted_candidate(
+                    work_item_id=work_item_id,
+                    exact_commit=exact_commit,
+                )
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
         return result
 
     def _tool_manage_stable_promotion_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -11216,6 +11857,20 @@ class MCPPlanningBridgeServer:
             return self._route_project_name_tool("manage_stable_promotion_evidence", params, require_managed=True)
         manager = MCPStablePromotionEvidenceManager(self.project_root)
         result = manager.handle(action, params)
+        work_item_id = params.get("work_item_id")
+        if isinstance(work_item_id, str) and work_item_id.strip():
+            exact_commit = params.get("candidate_head")
+            if not isinstance(exact_commit, str) or not exact_commit:
+                exact_commit = str(git_checkout_metadata(self.project_root).get("head") or "")
+            try:
+                result["work_item_acceptance_candidate"] = StablePromotionWorkItemReader(
+                    self.project_root
+                ).inspect_accepted_candidate(
+                    work_item_id=work_item_id.strip(),
+                    exact_commit=exact_commit,
+                )
+            except WorkItemGovernanceError as exc:
+                raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
         self._record_workflow_if_needed("manage_stable_promotion_evidence", action, params, result)
         return self._with_project_identity(result)
 

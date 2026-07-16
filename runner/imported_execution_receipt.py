@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from runner.work_item_governance.references import (
+    optional_work_item_reference_projection,
+    optional_work_item_reference_rejections,
+)
+
 
 IMPORTED_RECEIPT_CHECK_PASSED = "imported_receipt_check_passed"
 IMPORTED_RECEIPT_CHECK_FAILED_CLOSED = "imported_receipt_check_failed_closed"
@@ -137,6 +142,17 @@ def validate_imported_execution_receipt(receipt: dict[str, Any]) -> dict[str, An
             rejected_fields.add(field)
             rejection_reasons.extend(field_rejections)
 
+    work_item_rejections = optional_work_item_reference_rejections(receipt)
+    for rejection in work_item_rejections:
+        rejected_fields.add(str(rejection["field"]))
+        rejection_reasons.append(
+            _reason(
+                str(rejection["code"]),
+                "Optional Work Item imported-receipt binding is invalid or incomplete.",
+                {"field": rejection["field"]},
+            )
+        )
+
     confidence_level = receipt.get("confidence_level")
     if confidence_level not in VALID_CONFIDENCE_LEVELS:
         rejected_fields.add("confidence_level")
@@ -227,7 +243,7 @@ def _imported_receipt_result(
     known_conflicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     passed = not rejection_reasons
-    return {
+    result = {
         "imported_receipt_check_result": IMPORTED_RECEIPT_CHECK_PASSED if passed else IMPORTED_RECEIPT_CHECK_FAILED_CLOSED,
         "validation_result": "passed" if passed else "failed_closed",
         "recognized_fields": [field for field in REQUIRED_IMPORTED_RECEIPT_FIELDS if field in receipt],
@@ -259,6 +275,8 @@ def _imported_receipt_result(
         "emits_gate_event": False,
         "writes_delivery_state": False,
     }
+    result.update(optional_work_item_reference_projection(receipt))
+    return result
 
 
 def _claimed_list_rejections(value: Any, field: str) -> list[dict[str, Any]]:

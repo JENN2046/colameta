@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/specs/work-item-governance/preflight-receipt.v1.schema.json",
+  "title": "ColaMeta Authoritative Canary Fresh Preflight Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authorization_id",
+    "authorization_digest",
+    "activation_lease_id",
+    "observed_at",
+    "valid_until",
+    "maximum_age_seconds",
+    "source_binding",
+    "process_identity_inputs",
+    "runtime_isolation",
+    "authentication",
+    "principal_binding",
+    "restricted_surface",
+    "fresh_ledger",
+    "pre_activation_backup",
+    "result"
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_object": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "maxLength": 64
+    },
+    "zero_business_tables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_items",
+        "task_versions",
+        "execution_attempts",
+        "artifact_refs",
+        "decision_records",
+        "gate_events",
+        "acceptance_manifests",
+        "delivery_receipts",
+        "audit_events",
+        "blocker_events",
+        "outbox_events",
+        "inbox_events"
+      ],
+      "properties": {
+        "work_items": {"const": 0},
+        "task_versions": {"const": 0},
+        "execution_attempts": {"const": 0},
+        "artifact_refs": {"const": 0},
+        "decision_records": {"const": 0},
+        "gate_events": {"const": 0},
+        "acceptance_manifests": {"const": 0},
+        "delivery_receipts": {"const": 0},
+        "audit_events": {"const": 0},
+        "blocker_events": {"const": 0},
+        "outbox_events": {"const": 0},
+        "inbox_events": {"const": 0}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "work_item_authoritative_canary_preflight_receipt.v1"},
+    "authorization_id": {
+      "type": "string",
+      "pattern": "^WIG-P3-CANARY-A1-R2(?:-[A-Z0-9]+)*$",
+      "maxLength": 128
+    },
+    "authorization_digest": {"$ref": "#/$defs/sha256"},
+    "activation_lease_id": {
+      "type": "string",
+      "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "observed_at": {"$ref": "#/$defs/timestamp"},
+    "valid_until": {"$ref": "#/$defs/timestamp"},
+    "maximum_age_seconds": {"const": 120},
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core_baseline_commit", "implementation_commit", "implementation_tree", "wheel_sha256"],
+      "properties": {
+        "core_baseline_commit": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"},
+        "implementation_commit": {
+          "allOf": [
+            {"$ref": "#/$defs/git_object"},
+            {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}
+          ]
+        },
+        "implementation_tree": {"$ref": "#/$defs/git_object"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "process_identity_inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_ticks",
+        "boot_id",
+        "executable_sha256",
+        "runtime_instance_nonce",
+        "identity_algorithm",
+        "expected_process_identity"
+      ],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "process_start_ticks": {"type": "integer", "minimum": 1},
+        "boot_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "executable_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_instance_nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{32,256}$"},
+        "identity_algorithm": {
+          "const": "sha256(canonical_json({pid,process_start_ticks,boot_id,executable_sha256,runtime_instance_nonce}))"
+        },
+        "expected_process_identity": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runtime_isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canary_root_path_digest",
+        "canary_root_resolved_path",
+        "home_relative_path",
+        "xdg_config_relative_path",
+        "xdg_state_relative_path",
+        "xdg_cache_relative_path",
+        "registry_relative_path",
+        "project_root_relative_path",
+        "runtime_executable_relative_path",
+        "cwd_relative_path",
+        "settings_relative_path",
+        "ledger_relative_path",
+        "backup_relative_path",
+        "activation_envelope_relative_path",
+        "claimed_activation_envelope_relative_path",
+        "fixture_root_relative_path",
+        "home_path_digest",
+        "xdg_config_path_digest",
+        "xdg_state_path_digest",
+        "xdg_cache_path_digest",
+        "registry_path_digest",
+        "project_root_digest",
+        "runtime_executable_path_digest",
+        "cwd_path_digest",
+        "settings_path_digest",
+        "ledger_path_digest",
+        "backup_path_digest",
+        "activation_envelope_path_digest",
+        "claimed_activation_envelope_path_digest",
+        "fixture_root_path_digest",
+        "all_paths_under_canary_root",
+        "registry_project_count",
+        "global_registry_selected",
+        "global_registry_open",
+        "preclaim_listener_count",
+        "intended_bind_address",
+        "intended_port",
+        "public_endpoint_created",
+        "relay_enabled",
+        "tunnel_enabled",
+        "proxy_enabled",
+        "background_side_effect_workers_started"
+      ],
+      "properties": {
+        "canary_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "canary_root_resolved_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000]{1,4095}$",
+          "maxLength": 4096
+        },
+        "home_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "xdg_config_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "xdg_state_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "xdg_cache_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "registry_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "project_root_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "runtime_executable_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "cwd_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "settings_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "ledger_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "backup_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "activation_envelope_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "claimed_activation_envelope_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "fixture_root_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "home_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_config_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_state_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_cache_path_digest": {"$ref": "#/$defs/sha256"},
+        "registry_path_digest": {"$ref": "#/$defs/sha256"},
+        "project_root_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_executable_path_digest": {"$ref": "#/$defs/sha256"},
+        "cwd_path_digest": {"$ref": "#/$defs/sha256"},
+        "settings_path_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_path_digest": {"$ref": "#/$defs/sha256"},
+        "backup_path_digest": {"$ref": "#/$defs/sha256"},
+        "activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "claimed_activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "fixture_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "all_paths_under_canary_root": {"const": true},
+        "registry_project_count": {"const": 1},
+        "global_registry_selected": {"const": false},
+        "global_registry_open": {"const": false},
+        "preclaim_listener_count": {"const": 0},
+        "intended_bind_address": {"const": "127.0.0.1"},
+        "intended_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "public_endpoint_created": {"const": false},
+        "relay_enabled": {"const": false},
+        "tunnel_enabled": {"const": false},
+        "proxy_enabled": {"const": false},
+        "background_side_effect_workers_started": {"const": false}
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auth_mode",
+        "token_source",
+        "token_file_relative_path",
+        "token_file_path_digest",
+        "token_file_mode",
+        "token_parent_mode",
+        "token_owner_matches_canary_user",
+        "token_generation_algorithm",
+        "token_entropy_bits",
+        "token_generation_evidence_digest",
+        "weak_token_configuration_rejected",
+        "token_absent_from_public_surfaces"
+      ],
+      "properties": {
+        "auth_mode": {"const": "token"},
+        "token_source": {"const": "isolated_xdg_auth_json"},
+        "token_file_relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4096}$"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"},
+        "token_file_mode": {"const": "0600"},
+        "token_parent_mode": {"enum": ["0700", "stricter_than_0700"]},
+        "token_owner_matches_canary_user": {"const": true},
+        "token_generation_algorithm": {"const": "os_csprng_256_bits_minimum_base64url"},
+        "token_entropy_bits": {"type": "integer", "minimum": 256, "maximum": 4096},
+        "token_generation_evidence_digest": {"$ref": "#/$defs/sha256"},
+        "weak_token_configuration_rejected": {"const": true},
+        "token_absent_from_public_surfaces": {"const": true}
+      }
+    },
+    "principal_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "principal_kind", "session_ref", "authenticated_by", "permissions"],
+      "properties": {
+        "principal_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "principal_kind": {"enum": ["human", "service", "agent"]},
+        "session_ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "authenticated_by": {"const": "local_session"},
+        "permissions": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "work_item.accept"},
+            {"const": "work_item.approve"},
+            {"const": "work_item.cancel"},
+            {"const": "work_item.ready"},
+            {"const": "work_item.return_for_revision"},
+            {"const": "work_item.start_delivery"},
+            {"const": "work_item.submit"}
+          ],
+          "items": false,
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        }
+      }
+    },
+    "restricted_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "tool_count",
+        "listed_tools_sha256",
+        "tool_allowlist_digest",
+        "command_matrix_digest",
+        "definitions_dispatch_exact_match",
+        "resources_disabled_or_empty",
+        "actions_disabled"
+      ],
+      "properties": {
+        "profile": {"const": "authoritative_canary"},
+        "tool_count": {"const": 14},
+        "listed_tools_sha256": {"$ref": "#/$defs/sha256"},
+        "tool_allowlist_digest": {"$ref": "#/$defs/sha256"},
+        "command_matrix_digest": {"$ref": "#/$defs/sha256"},
+        "definitions_dispatch_exact_match": {"const": true},
+        "resources_disabled_or_empty": {"const": true},
+        "actions_disabled": {"const": true}
+      }
+    },
+    "fresh_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "database_generation",
+        "business_fact_counts",
+        "external_associations",
+        "attempt_events",
+        "prior_activation_leases_for_authorization",
+        "preview_signing_key_preprovisioned",
+        "baseline_digest",
+        "integrity_check",
+        "foreign_key_violations"
+      ],
+      "properties": {
+        "schema_version": {"const": 5},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "business_fact_counts": {"$ref": "#/$defs/zero_business_tables"},
+        "external_associations": {"const": 0},
+        "attempt_events": {"const": 0},
+        "prior_activation_leases_for_authorization": {"const": 0},
+        "preview_signing_key_preprovisioned": {"const": true},
+        "baseline_digest": {"$ref": "#/$defs/sha256"},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0}
+      }
+    },
+    "pre_activation_backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api",
+        "receipt_digest",
+        "backup_sha256",
+        "database_generation",
+        "schema_version",
+        "integrity_check",
+        "foreign_key_violations",
+        "mode"
+      ],
+      "properties": {
+        "api": {"const": "sqlite3.Connection.backup"},
+        "receipt_digest": {"$ref": "#/$defs/sha256"},
+        "backup_sha256": {"$ref": "#/$defs/sha256"},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "schema_version": {"const": 5},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0},
+        "mode": {"const": "0600"}
+      }
+    },
+    "result": {"const": "PASS"}
+  }
+}

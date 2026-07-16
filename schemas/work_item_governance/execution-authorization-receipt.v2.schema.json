@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-pilot-execution-authorization-receipt.v2.schema.json",
+  "title": "Bounded Pilot Multi-Version External Execution Authorization Receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "authorization_id", "decision", "issued_at", "not_before", "expires_at", "issuer", "scope", "one_shot", "authority"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_pilot_execution_authorization_receipt.v2"},
+    "authorization_id": {"type": "string", "pattern": "^exec_auth_[A-Za-z0-9._-]{8,192}$"},
+    "decision": {"const": "AUTHORIZED"},
+    "issued_at": {"$ref": "#/$defs/date_time"},
+    "not_before": {"$ref": "#/$defs/date_time"},
+    "expires_at": {"$ref": "#/$defs/date_time"},
+    "issuer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal_id", "principal_kind", "authority_basis", "decision_digest"],
+      "properties": {
+        "principal_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "principal_kind": {"enum": ["human", "service"]},
+        "authority_basis": {"const": "pilot.external_execution.authorize"},
+        "decision_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["project_id", "project_snapshot_digest", "work_item_id", "attempt_slot_schema_sha256", "attempt_slots", "executor_identity", "allowed_read_path_manifest_digest", "allowed_write_path_manifest_digest", "protected_path_manifest_digest"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "project_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "work_item_id": {"$ref": "#/$defs/work_item_id"},
+        "attempt_slot_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "attempt_slots": {
+          "type": "array", "minItems": 1, "maxItems": 4,
+          "items": {"$ref": "https://colameta.local/schemas/wig-p3-pilot-execution-attempt-slot.v1.schema.json"}
+        },
+        "executor_identity": {"type": "string", "minLength": 1, "maxLength": 512},
+        "allowed_read_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_write_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "protected_path_manifest_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "one_shot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maximum_attempts", "consumption_key", "retry_requires_next_authorized_slot", "revocation_check_required"],
+      "properties": {
+        "maximum_attempts": {"type": "integer", "minimum": 1, "maximum": 4},
+        "consumption_key": {"type": "string", "minLength": 16, "maxLength": 256},
+        "retry_requires_next_authorized_slot": {"const": true},
+        "revocation_check_required": {"const": true}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["create_runtime_attempt", "dispatch_exact_attempt", "historical_binding", "delivery", "push", "stable_promotion"],
+      "properties": {
+        "create_runtime_attempt": {"const": true},
+        "dispatch_exact_attempt": {"const": true},
+        "historical_binding": {"const": false},
+        "delivery": {"const": false},
+        "push": {"const": false},
+        "stable_promotion": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64},
+    "work_item_id": {"type": "string", "pattern": "^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"}
+  }
+}

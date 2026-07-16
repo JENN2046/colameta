@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/specs/work-item-governance/activation-envelope.v1.schema.json",
+  "title": "ColaMeta Authoritative Canary Activation Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "authorization_id",
+    "authorization_digest",
+    "activation_lease_id",
+    "spec_manifest_digest",
+    "source_binding",
+    "runtime_binding",
+    "authentication",
+    "principal_binding",
+    "window",
+    "synthetic_fixture_contract_digest",
+    "preflight_receipt_digest",
+    "fresh_ledger_baseline_digest",
+    "pre_activation_backup_receipt_digest",
+    "pre_activation_backup_sha256",
+    "tool_allowlist_digest",
+    "command_matrix_digest",
+    "created_at",
+    "single_use"
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_object": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "maxLength": 64
+    },
+    "uuid7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "work_item_activation_envelope.v1"},
+    "envelope_id": {
+      "type": "string",
+      "pattern": "^envelope_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "authorization_id": {
+      "type": "string",
+      "pattern": "^WIG-P3-CANARY-A1-R2(?:-[A-Z0-9]+)*$",
+      "maxLength": 128
+    },
+    "authorization_digest": {"$ref": "#/$defs/sha256"},
+    "activation_lease_id": {
+      "type": "string",
+      "pattern": "^lease_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "spec_manifest_digest": {"$ref": "#/$defs/sha256"},
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core_baseline_commit", "implementation_commit", "implementation_tree", "wheel_sha256"],
+      "properties": {
+        "core_baseline_commit": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"},
+        "implementation_commit": {
+          "allOf": [
+            {"$ref": "#/$defs/git_object"},
+            {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}
+          ]
+        },
+        "implementation_tree": {"$ref": "#/$defs/git_object"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runtime_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "runtime_instance_nonce",
+        "expected_process_identity",
+        "canary_root_path_digest",
+        "activation_envelope_path_digest",
+        "claimed_activation_envelope_path_digest",
+        "project_name",
+        "project_root_digest",
+        "bind_address",
+        "port"
+      ],
+      "properties": {
+        "instance_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "runtime_instance_nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{32,256}$"},
+        "expected_process_identity": {"$ref": "#/$defs/sha256"},
+        "canary_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "claimed_activation_envelope_path_digest": {"$ref": "#/$defs/sha256"},
+        "project_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "project_root_digest": {"$ref": "#/$defs/sha256"},
+        "bind_address": {"const": "127.0.0.1"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "token_source",
+        "token_file_path_digest",
+        "token_generation_algorithm",
+        "minimum_entropy_bits",
+        "request_context_mode",
+        "request_context_binding_algorithm",
+        "bearer_token_embedded"
+      ],
+      "properties": {
+        "mode": {"const": "token"},
+        "token_source": {"const": "isolated_xdg_auth_json"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"},
+        "token_generation_algorithm": {"const": "os_csprng_256_bits_minimum_base64url"},
+        "minimum_entropy_bits": {"const": 256},
+        "request_context_mode": {"const": "sealed_token_verified_listener_attested_context"},
+        "request_context_binding_algorithm": {
+          "const": "sha256(canonical_json({lease_id,authorization_digest,claimed_process_identity,runtime_instance_nonce,listener_attestation_digest,principal_id,session_ref}))"
+        },
+        "bearer_token_embedded": {"const": false}
+      }
+    },
+    "principal_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "principal_kind", "session_ref", "authenticated_by", "permissions"],
+      "properties": {
+        "principal_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "principal_kind": {"enum": ["human", "service", "agent"]},
+        "session_ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "authenticated_by": {"const": "local_session"},
+        "permissions": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "work_item.accept"},
+            {"const": "work_item.approve"},
+            {"const": "work_item.cancel"},
+            {"const": "work_item.ready"},
+            {"const": "work_item.return_for_revision"},
+            {"const": "work_item.start_delivery"},
+            {"const": "work_item.submit"}
+          ],
+          "items": false,
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issued_at", "not_before", "expires_at", "maximum_runtime_seconds"],
+      "properties": {
+        "issued_at": {"$ref": "#/$defs/timestamp"},
+        "not_before": {"$ref": "#/$defs/timestamp"},
+        "expires_at": {"$ref": "#/$defs/timestamp"},
+        "maximum_runtime_seconds": {"const": 1800}
+      }
+    },
+    "synthetic_fixture_contract_digest": {"$ref": "#/$defs/sha256"},
+    "preflight_receipt_digest": {"$ref": "#/$defs/sha256"},
+    "fresh_ledger_baseline_digest": {"$ref": "#/$defs/sha256"},
+    "pre_activation_backup_receipt_digest": {"$ref": "#/$defs/sha256"},
+    "pre_activation_backup_sha256": {"$ref": "#/$defs/sha256"},
+    "tool_allowlist_digest": {"$ref": "#/$defs/sha256"},
+    "command_matrix_digest": {"$ref": "#/$defs/sha256"},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "single_use": {"const": true}
+  }
+}

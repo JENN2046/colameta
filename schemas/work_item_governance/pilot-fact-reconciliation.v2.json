@@ -1,0 +1,93 @@
+{
+  "schema_version": "wig_p3_bounded_single_project_pilot_fact_reconciliation.v2",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-S1-R4",
+  "baseline": {
+    "all_domain_fact_tables_zero": true,
+    "legacy_activation_leases": 0,
+    "legacy_activation_lease_events": 0,
+    "pilot_activation_leases": 0,
+    "pilot_activation_lease_events": 0
+  },
+  "usage_fields": ["new_work_items", "task_versions", "runtime_attempts", "attempt_events", "artifacts", "decisions", "applied_gate_events", "rejected_gate_events", "gate_events_total", "audit_events", "outbox_events", "acceptance_manifests", "lease_events"],
+  "quotas": {
+    "maximum_new_work_items": 1,
+    "maximum_task_versions": 3,
+    "maximum_runtime_attempts": 4,
+    "maximum_attempt_events": 8,
+    "maximum_artifacts": 12,
+    "maximum_decisions": 8,
+    "maximum_applied_gate_events": 10,
+    "maximum_rejected_gate_events": 10,
+    "maximum_gate_events_total": 20,
+    "maximum_audit_events": 20,
+    "maximum_outbox_events": 20,
+    "maximum_acceptance_manifests": 1,
+    "maximum_lease_events": 64
+  },
+  "direct_count_bindings": [
+    {"usage_field": "new_work_items", "sql": "SELECT COUNT(*) FROM work_items"},
+    {"usage_field": "task_versions", "sql": "SELECT COUNT(*) FROM task_versions"},
+    {"usage_field": "runtime_attempts", "sql": "SELECT COUNT(*) FROM execution_attempts WHERE attempt_kind='runtime'"},
+    {"usage_field": "attempt_events", "sql": "SELECT COUNT(*) FROM attempt_events"},
+    {"usage_field": "artifacts", "sql": "SELECT COUNT(*) FROM artifact_refs"},
+    {"usage_field": "decisions", "sql": "SELECT COUNT(*) FROM decision_records"},
+    {"usage_field": "applied_gate_events", "sql": "SELECT COUNT(*) FROM gate_events WHERE outcome='transition_applied'"},
+    {"usage_field": "rejected_gate_events", "sql": "SELECT COUNT(*) FROM gate_events WHERE outcome='transition_rejected'"},
+    {"usage_field": "gate_events_total", "sql": "SELECT COUNT(*) FROM gate_events"},
+    {"usage_field": "audit_events", "sql": "SELECT COUNT(*) FROM audit_events"},
+    {"usage_field": "outbox_events", "sql": "SELECT COUNT(*) FROM outbox_events"},
+    {"usage_field": "acceptance_manifests", "sql": "SELECT COUNT(*) FROM acceptance_manifests"},
+    {"usage_field": "lease_events", "sql": "SELECT COUNT(*) FROM pilot_activation_lease_events WHERE lease_id=:lease_id"}
+  ],
+  "derived_equations": [
+    {
+      "id": "execution_slot_inventory_equation",
+      "left": "canonical_projection(usage.execution_slots,[slot_id,ordinal,task_version,task_version_payload_digest,objective_digest,retry_of_slot_id,maximum_attempt_runtime_seconds])",
+      "operator": "equals",
+      "right": "canonical_projection(execution_authorization_receipt.scope.attempt_slots,[slot_id,ordinal,task_version,task_version_payload_digest,objective_digest,retry_of_slot_id,maximum_attempt_runtime_seconds])"
+    },
+    {
+      "id": "execution_slot_count_equation",
+      "left": "length(usage.execution_slots)",
+      "operator": "equals",
+      "right": "execution_authorization_receipt.one_shot.maximum_attempts"
+    },
+    {
+      "id": "execution_slot_binding_equation",
+      "left": "usage.runtime_attempts",
+      "operator": "equals",
+      "right": "count(usage.execution_slots where status in ['bound','completed'])"
+    },
+    {
+      "id": "execution_slot_attempt_join_equation",
+      "left": "ordered [(attempt_id,task_version,sha256(canonical_json(objective_ref))) from execution_attempts where attempt_kind='runtime']",
+      "operator": "equals",
+      "right": "ordered [(attempt_id,task_version,objective_digest) from usage.execution_slots where status in ['bound','completed']]"
+    },
+    {"id": "attempt_event_equation", "left": "usage.attempt_events", "operator": "equals", "right_sql": "SELECT COUNT(*) + COALESCE(SUM(CASE WHEN completion_event_key IS NOT NULL THEN 1 ELSE 0 END),0) FROM execution_attempts WHERE attempt_kind='runtime'"},
+    {"id": "gate_total_equation", "left": "usage.gate_events_total", "operator": "equals_sum", "right_fields": ["usage.applied_gate_events", "usage.rejected_gate_events"]},
+    {"id": "audit_gate_equation", "left": "usage.audit_events", "operator": "equals", "right": "usage.gate_events_total"},
+    {"id": "outbox_gate_equation", "left": "usage.outbox_events", "operator": "equals", "right": "usage.gate_events_total"},
+    {"id": "accepted_manifest_equation", "left": "usage.acceptance_manifests", "operator": "equals", "right_sql": "SELECT COALESCE(MAX(CASE WHEN state='accepted' THEN 1 ELSE 0 END),0) FROM work_items WHERE work_item_id=:authorized_work_item_id"}
+  ],
+  "denied_fact_queries": [
+    {"id": "external_associations", "sql": "SELECT COUNT(*) FROM external_associations", "expected": 0},
+    {"id": "historical_execution_attempts", "sql": "SELECT COUNT(*) FROM execution_attempts WHERE attempt_kind='historical'", "expected": 0},
+    {"id": "delivery_receipts", "sql": "SELECT COUNT(*) FROM delivery_receipts", "expected": 0},
+    {"id": "blocker_events", "sql": "SELECT COUNT(*) FROM blocker_events", "expected": 0},
+    {"id": "inbox_events", "sql": "SELECT COUNT(*) FROM inbox_events", "expected": 0}
+  ],
+  "transaction_rules": {
+    "check_before_and_after_every_write": true,
+    "new_fact_and_usage_commit_together": true,
+    "exact_idempotent_replay_delta": 0,
+    "idempotency_conflict_delta": 0,
+    "nested_facts_share_parent_transaction": true,
+    "mismatch_rejects_domain_transaction_and_freezes_writes": true,
+    "slot_binding_and_attempt_creation_are_atomic": true,
+    "slot_completion_and_attempt_completion_are_atomic": true,
+    "slot_ordinal_and_slot_id_are_unique": true,
+    "next_slot_must_match_current_task_version_and_payload_digest": true,
+    "retry_slot_predecessor_must_have_lower_ordinal_and_equal_task_payload_objective": true
+  }
+}

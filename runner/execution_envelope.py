@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -26,8 +27,30 @@ REQUIRED_ENVELOPE_FIELDS = (
     "retry_policy",
     "stop_conditions",
 )
+WORK_ITEM_ENVELOPE_FIELDS = (
+    "work_item_id",
+    "task_version",
+    "attempt_id",
+    "objective_ref",
+    "artifact_contract",
+    "approval_requirements",
+    "reporting_destination",
+    "expected_receipt_contract",
+)
+REQUIRED_ENVELOPE_V2_FIELDS = REQUIRED_ENVELOPE_FIELDS + WORK_ITEM_ENVELOPE_FIELDS
 VALID_AUTHORITY_MODES = frozenset({"local_execution", "imported_receipt", "validation_only"})
 EXPECTED_ENVELOPE_SCHEMA_VERSION = "execution_envelope.v1"
+CURRENT_ENVELOPE_SCHEMA_VERSION = "execution_envelope.v2"
+SUPPORTED_ENVELOPE_SCHEMA_VERSIONS = frozenset(
+    {EXPECTED_ENVELOPE_SCHEMA_VERSION, CURRENT_ENVELOPE_SCHEMA_VERSION}
+)
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+WORK_ITEM_ID_PATTERN = re.compile(
+    r"^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+ATTEMPT_ID_PATTERN = re.compile(
+    r"^attempt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 EXPECTED_MASTER_TASKBOOK_REF = {
     "path": "PROJECT_MASTER_TASKBOOK.md",
     "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
@@ -94,9 +117,6 @@ def validate_execution_envelope(
     expected_master_taskbook_ref: dict[str, str] | None = None,
     expected_stage_taskbook_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    expected_version_ref = expected_version_taskbook_ref or EXPECTED_VERSION_TASKBOOK_REF
-    expected_master_ref = expected_master_taskbook_ref or EXPECTED_MASTER_TASKBOOK_REF
-    expected_stage_ref = expected_stage_taskbook_ref or EXPECTED_STAGE_TASKBOOK_REF
     rejected_fields: set[str] = set()
     rejection_reasons: list[dict[str, Any]] = []
     known_conflicts: list[dict[str, Any]] = []
@@ -115,7 +135,10 @@ def validate_execution_envelope(
             known_conflicts=[],
         )
 
-    missing = [field for field in REQUIRED_ENVELOPE_FIELDS if field not in envelope]
+    schema_version = envelope.get("envelope_schema_version")
+    is_v2 = schema_version == CURRENT_ENVELOPE_SCHEMA_VERSION
+    required_fields = REQUIRED_ENVELOPE_V2_FIELDS if is_v2 else REQUIRED_ENVELOPE_FIELDS
+    missing = [field for field in required_fields if field not in envelope]
     if missing:
         rejected_fields.update(missing)
         rejection_reasons.append(
@@ -126,22 +149,53 @@ def validate_execution_envelope(
             )
         )
 
-    if envelope.get("envelope_schema_version") != EXPECTED_ENVELOPE_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_ENVELOPE_SCHEMA_VERSIONS:
         rejected_fields.add("envelope_schema_version")
         rejection_reasons.append(
             _reason(
                 "ENVELOPE_SCHEMA_VERSION_UNSUPPORTED",
                 "ExecutionEnvelope schema version is unsupported.",
                 {
-                    "expected": EXPECTED_ENVELOPE_SCHEMA_VERSION,
-                    "actual": envelope.get("envelope_schema_version"),
+                    "supported": sorted(SUPPORTED_ENVELOPE_SCHEMA_VERSIONS),
+                    "actual": schema_version,
                 },
             )
         )
 
-    _validate_ref(envelope.get("version_taskbook_ref"), expected_version_ref, "version_taskbook_ref", rejected_fields, rejection_reasons, known_conflicts)
-    _validate_ref(envelope.get("master_taskbook_ref"), expected_master_ref, "master_taskbook_ref", rejected_fields, rejection_reasons, known_conflicts)
-    _validate_ref(envelope.get("stage_taskbook_ref"), expected_stage_ref, "stage_taskbook_ref", rejected_fields, rejection_reasons, known_conflicts)
+    # v1 retains its exact historical binding for compatibility.  v2 removes
+    # the generic hard-coded hashes: the caller supplies bindings and may pass
+    # exact expected refs to this validator.  Without exact expected refs, v2
+    # still verifies a safe relative path and lowercase snapshot digest.
+    expected_version_ref = (
+        expected_version_taskbook_ref
+        if is_v2
+        else expected_version_taskbook_ref or EXPECTED_VERSION_TASKBOOK_REF
+    )
+    expected_master_ref = (
+        expected_master_taskbook_ref
+        if is_v2
+        else expected_master_taskbook_ref or EXPECTED_MASTER_TASKBOOK_REF
+    )
+    expected_stage_ref = (
+        expected_stage_taskbook_ref
+        if is_v2
+        else expected_stage_taskbook_ref or EXPECTED_STAGE_TASKBOOK_REF
+    )
+    _validate_ref(
+        envelope.get("version_taskbook_ref"), expected_version_ref, "version_taskbook_ref",
+        rejected_fields, rejection_reasons, known_conflicts, require_caller_binding=is_v2,
+    )
+    _validate_ref(
+        envelope.get("master_taskbook_ref"), expected_master_ref, "master_taskbook_ref",
+        rejected_fields, rejection_reasons, known_conflicts, require_caller_binding=is_v2,
+    )
+    _validate_ref(
+        envelope.get("stage_taskbook_ref"), expected_stage_ref, "stage_taskbook_ref",
+        rejected_fields, rejection_reasons, known_conflicts, require_caller_binding=is_v2,
+    )
+
+    if is_v2:
+        _validate_work_item_binding(envelope, rejected_fields, rejection_reasons)
 
     authority_mode = envelope.get("authority_mode")
     if authority_mode not in VALID_AUTHORITY_MODES:
@@ -258,7 +312,11 @@ def _envelope_result(
     return {
         "envelope_check_result": ENVELOPE_CHECK_PASSED if passed else ENVELOPE_CHECK_FAILED_CLOSED,
         "validation_result": "passed" if passed else "failed_closed",
-        "recognized_fields": [field for field in REQUIRED_ENVELOPE_FIELDS if field in envelope],
+        "recognized_fields": [
+            field
+            for field in (REQUIRED_ENVELOPE_V2_FIELDS if envelope.get("envelope_schema_version") == CURRENT_ENVELOPE_SCHEMA_VERSION else REQUIRED_ENVELOPE_FIELDS)
+            if field in envelope
+        ],
         "rejected_fields": rejected_fields,
         "rejection_reasons": rejection_reasons,
         "known_conflicts": known_conflicts,
@@ -266,6 +324,16 @@ def _envelope_result(
         "version_taskbook_ref": envelope.get("version_taskbook_ref", {}),
         "master_taskbook_ref": envelope.get("master_taskbook_ref", {}),
         "stage_taskbook_ref": envelope.get("stage_taskbook_ref", {}),
+        "envelope_schema_version": envelope.get("envelope_schema_version"),
+        "work_item_id": envelope.get("work_item_id"),
+        "task_version": envelope.get("task_version"),
+        "attempt_id": envelope.get("attempt_id"),
+        "objective_ref": envelope.get("objective_ref"),
+        "artifact_contract": envelope.get("artifact_contract", {}),
+        "approval_requirements": envelope.get("approval_requirements", {}),
+        "reporting_destination": envelope.get("reporting_destination", {}),
+        "expected_receipt_contract": envelope.get("expected_receipt_contract", {}),
+        "work_item_binding_is_optional_for_legacy_execution": True,
         "authority_boundary": dict(AUTHORITY_BOUNDARY_EXPECTATIONS),
         "dispatch_authorized_by_envelope_existence": False,
         "executor_dispatch_authorized": False,
@@ -282,15 +350,38 @@ def _envelope_result(
 
 def _validate_ref(
     actual: Any,
-    expected: dict[str, str],
+    expected: dict[str, str] | None,
     field: str,
     rejected_fields: set[str],
     rejection_reasons: list[dict[str, Any]],
     known_conflicts: list[dict[str, Any]],
+    *,
+    require_caller_binding: bool = False,
 ) -> None:
     if not isinstance(actual, dict):
         rejected_fields.add(field)
         rejection_reasons.append(_reason("REFERENCE_MISSING", f"{field} must be an object.", {"field": field}))
+        return
+    if require_caller_binding:
+        path = actual.get("path")
+        digest = actual.get("raw_snapshot_sha256")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or path.startswith(("/", "\\"))
+            or ".." in path.replace("\\", "/").split("/")
+            or not isinstance(digest, str)
+            or SHA256_PATTERN.fullmatch(digest) is None
+        ):
+            rejected_fields.add(field)
+            rejection_reasons.append(
+                _reason(
+                    "CALLER_TASKBOOK_BINDING_INVALID",
+                    f"{field} must contain a safe relative path and lowercase raw_snapshot_sha256.",
+                    {"field": field},
+                )
+            )
+    if expected is None:
         return
     for key, expected_value in expected.items():
         actual_value = actual.get(key)
@@ -305,6 +396,54 @@ def _validate_ref(
             )
             known_conflicts.append(
                 {"conflict_type": "reference_mismatch", "field": f"{field}.{key}", "expected": expected_value, "actual": actual_value}
+            )
+
+
+def _validate_work_item_binding(
+    envelope: dict[str, Any],
+    rejected_fields: set[str],
+    rejection_reasons: list[dict[str, Any]],
+) -> None:
+    work_item_id = envelope.get("work_item_id")
+    task_version = envelope.get("task_version")
+    attempt_id = envelope.get("attempt_id")
+    objective_ref = envelope.get("objective_ref")
+    binding_values = (work_item_id, task_version, attempt_id, objective_ref)
+    bound = any(value is not None for value in binding_values)
+    if bound:
+        if not isinstance(work_item_id, str) or WORK_ITEM_ID_PATTERN.fullmatch(work_item_id) is None:
+            rejected_fields.add("work_item_id")
+            rejection_reasons.append(
+                _reason("WORK_ITEM_ID_INVALID", "Bound v2 Envelope requires a valid work_item_id.", {})
+            )
+        if isinstance(task_version, bool) or not isinstance(task_version, int) or task_version < 1:
+            rejected_fields.add("task_version")
+            rejection_reasons.append(
+                _reason("TASK_VERSION_INVALID", "Bound v2 Envelope requires a positive task_version.", {})
+            )
+        if not isinstance(attempt_id, str) or ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is None:
+            rejected_fields.add("attempt_id")
+            rejection_reasons.append(
+                _reason("ATTEMPT_ID_INVALID", "Bound v2 Envelope requires a valid attempt_id.", {})
+            )
+        if not isinstance(objective_ref, str) or not objective_ref.strip():
+            rejected_fields.add("objective_ref")
+            rejection_reasons.append(
+                _reason("OBJECTIVE_REF_REQUIRED", "Bound v2 Envelope requires objective_ref.", {})
+            )
+    elif any(value is not None for value in (work_item_id, task_version, attempt_id)):
+        # Kept explicit for readability if the bound predicate changes.
+        rejected_fields.update({"work_item_id", "task_version", "attempt_id"})
+    for field in (
+        "artifact_contract",
+        "approval_requirements",
+        "reporting_destination",
+        "expected_receipt_contract",
+    ):
+        if field in envelope and not isinstance(envelope.get(field), dict):
+            rejected_fields.add(field)
+            rejection_reasons.append(
+                _reason("WORK_ITEM_CONTRACT_INVALID", f"{field} must be an object.", {"field": field})
             )
 
 

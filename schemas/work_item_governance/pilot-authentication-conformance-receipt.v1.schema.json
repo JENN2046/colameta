@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-pilot-authentication-conformance-receipt.v1.schema.json",
+  "title": "Pilot Authentication Conformance Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tested_at", "source_binding", "runtime_binding", "authentication", "surface", "safety", "result"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_pilot_authentication_conformance_receipt.v1"},
+    "tested_at": {"$ref": "#/$defs/date_time"},
+    "source_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"],
+      "properties": {
+        "implementation_commit": {"$ref": "#/$defs/git_sha1"},
+        "implementation_tree": {"$ref": "#/$defs/git_sha1"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"},
+        "installed_inventory_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runtime_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime_binding_digest", "scope_envelope_digest", "ledger_state_digest", "token_file_path_digest"],
+      "properties": {
+        "runtime_binding_digest": {"$ref": "#/$defs/sha256"},
+        "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_state_digest": {"$ref": "#/$defs/sha256"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authentication": {
+      "type": "object", "additionalProperties": false,
+      "required": ["auth_mode", "token_format_valid", "token_ledger_binding_valid", "no_token_status", "wrong_token_status", "correct_token_status", "no_token_response_digest", "wrong_token_response_digest", "correct_token_response_digest", "request_capability_non_json", "request_capability_single_use", "proof_issued_delta", "proof_activated_delta", "proof_retired_delta", "active_proof_count_after"],
+      "properties": {
+        "auth_mode": {"const": "token"},
+        "token_format_valid": {"const": true},
+        "token_ledger_binding_valid": {"const": true},
+        "no_token_status": {"const": 401},
+        "wrong_token_status": {"const": 401},
+        "correct_token_status": {"const": 200},
+        "no_token_response_digest": {"$ref": "#/$defs/sha256"},
+        "wrong_token_response_digest": {"$ref": "#/$defs/sha256"},
+        "correct_token_response_digest": {"$ref": "#/$defs/sha256"},
+        "request_capability_non_json": {"const": true},
+        "request_capability_single_use": {"const": true},
+        "proof_issued_delta": {"const": 2},
+        "proof_activated_delta": {"const": 2},
+        "proof_retired_delta": {"const": 2},
+        "active_proof_count_after": {"const": 0}
+      }
+    },
+    "surface": {
+      "type": "object", "additionalProperties": false,
+      "required": ["exposure_profile", "scope_mode", "preflight_conformance_only", "authenticated_tool_call_error_code", "visible_tool_count", "visible_tool_set_digest", "tool_list_response_digest", "resources_list_response_digest", "resource_read_error_code", "hidden_tool_error_code", "alternate_dispatch_error_code", "actions_response_digest", "actions_error_code", "listener_instance_digest", "server_binding_digest", "worker_inventory_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
+      "properties": {
+        "exposure_profile": {"const": "authoritative_canary"},
+        "scope_mode": {"const": "bounded_single_project_pilot.v1"},
+        "preflight_conformance_only": {"const": true},
+        "authenticated_tool_call_error_code": {"const": "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"},
+        "visible_tool_count": {"const": 14},
+        "visible_tool_set_digest": {"$ref": "#/$defs/sha256"},
+        "tool_list_response_digest": {"$ref": "#/$defs/sha256"},
+        "resources_list_response_digest": {"$ref": "#/$defs/sha256"},
+        "resource_read_error_code": {"const": "resources_disabled"},
+        "hidden_tool_error_code": {"const": "TOOL_NOT_EXPOSED"},
+        "alternate_dispatch_error_code": {"const": "legacy_method_alias_disabled"},
+        "actions_response_digest": {"$ref": "#/$defs/sha256"},
+        "actions_error_code": {"const": "ACTIONS_DISABLED"},
+        "listener_instance_digest": {"$ref": "#/$defs/sha256"},
+        "server_binding_digest": {"$ref": "#/$defs/sha256"},
+        "worker_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "definitions_dispatch_exact_match": {"const": true},
+        "resources_disabled_or_empty": {"const": true},
+        "actions_disabled": {"const": true},
+        "hidden_tool_rejected": {"const": true},
+        "alternate_dispatch_rejected": {"const": true},
+        "prohibited_workers_running": {"const": false}
+      }
+    },
+    "safety": {
+      "type": "object", "additionalProperties": false,
+      "required": ["network_inventory_digest", "process_inventory_digest", "project_registry_snapshot_digest", "git_remote_snapshot_digest", "stable_promotion_snapshot_digest", "public_endpoint", "relay_or_tunnel", "existing_service_modified", "other_project_modified", "push", "stable_promotion"],
+      "properties": {
+        "network_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "process_inventory_digest": {"$ref": "#/$defs/sha256"},
+        "project_registry_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "git_remote_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "stable_promotion_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "public_endpoint": {"const": false},
+        "relay_or_tunnel": {"const": false},
+        "existing_service_modified": {"const": false},
+        "other_project_modified": {"const": false},
+        "push": {"const": false},
+        "stable_promotion": {"const": false}
+      }
+    },
+    "result": {"const": "PASS"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64}
+  }
+}

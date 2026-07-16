@@ -1,0 +1,78 @@
+{
+  "schema_version": "wig_p3_single_project_pilot_implementation_r3_closeout.v1",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-IMPLEMENTATION-D1-R3",
+  "result": "PASS",
+  "source": {
+    "parent_commit": "f70844bf9ddd66a9ccd36bf60644d48a76b275f3",
+    "parent_tree": "ccbd3052f6e25be3456a77e16c785bd5ebaeb18a",
+    "candidate_commit": null,
+    "candidate_status": "LOCAL_COMMIT_PENDING",
+    "push_performed": false
+  },
+  "remediation": {
+    "capability_registry": "CLOSED",
+    "capability_forgery_and_mutation": "CLOSED",
+    "capability_prepare_replay": "CLOSED",
+    "explicit_schema_v6_migration_entry": "CLOSED",
+    "authorization_24_field_classification": "CLOSED",
+    "authorization_scope_execution_preflight_cross_binding": "CLOSED",
+    "lease_work_item_runtime_window_and_quota_cross_binding": "CLOSED",
+    "measured_preflight_generation": "CLOSED",
+    "preflight_failure_no_mutation": "CLOSED"
+  },
+  "verification": {
+    "full_pytest": {
+      "command": "find .venv -type f ( -name '*.pyc' -o -name '*.pyo' ) -delete; PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q",
+      "exit_code": 0,
+      "passed": 1396,
+      "skipped": 2,
+      "subtests_passed": 55,
+      "duration_seconds": 262.08
+    },
+    "focused_pilot": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q tests/test_work_item_single_project_pilot.py",
+      "exit_code": 0,
+      "passed": 118,
+      "matrix_rows_executed_for_semantic_or_boundary_mapping": 96
+    },
+    "ruff": {
+      "command": ".venv/bin/ruff check runner tests",
+      "exit_code": 0
+    },
+    "bandit_changed_scope": {
+      "command": ".venv/bin/bandit -q -r runner/work_item_governance/pilot.py runner/work_item_governance/pilot_authorization.py runner/work_item_governance/pilot_bootstrap.py runner/work_item_governance/repository.py -f json",
+      "exit_code": 0,
+      "retained_findings": 0
+    },
+    "pip_audit": {
+      "command": ".venv/bin/pip-audit --progress-spinner off",
+      "exit_code": 0,
+      "result": "No known vulnerabilities found"
+    },
+    "wheel": {
+      "command": ".venv/bin/pip wheel --no-deps --no-build-isolation --wheel-dir /tmp/colameta-pilot-r3-wheel .",
+      "path": "/tmp/colameta-pilot-r3-wheel/colameta-0.1.2-py3-none-any.whl",
+      "sha256": "d9d744184bcf56ba4cd12616c28e999773b4c2ca9f4e4f92e7408e6f581b6af0",
+      "required_pilot_contract_resources_present": true
+    }
+  },
+  "safety": {
+    "existing_service_modified": false,
+    "existing_canary_modified": false,
+    "main_workspace_ledger_created": false,
+    "real_work_item_used": false,
+    "deployment_performed": false,
+    "authoritative_activation_performed": false,
+    "stable_promotion_performed": false,
+    "push_performed": false,
+    "protected_agents_assets_staged": false,
+    "protected_agents_assets_committed": false
+  },
+  "protected_assets_observed_git_object_ids": {
+    "AGENTS.md": "33789e1ccd96487f3d88fbd08b96068c004b060f",
+    "AGENTS - 副本.amd": "4cda6d240af49458cbb123e1e56584c83896f322",
+    "AGENTS - 副本.md:Zone.Identifier": "d6c1ec682968c796b9f5e9e080cc6f674b57c766",
+    "AGENTS.md:Zone.Identifier": "d6c1ec682968c796b9f5e9e080cc6f674b57c766"
+  },
+  "review_note": "This receipt binds pre-commit local verification. The exact candidate commit and tree are supplied after the single scoped local commit is created. It does not authorize deployment, activation, push, stable promotion, or real Work Item use."
+}

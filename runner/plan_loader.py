@@ -13,6 +13,7 @@ from schemas.plan import (
 )
 from runner.executor_registry import is_supported_execution_provider
 from runner.runner_paths import primary_project_runner_relpath
+from runner.work_item_governance.references import optional_plan_work_item_reference_rejections
 
 class PlanLoader:
     def load_plan(self, path: str) -> BuildRunnerPlan:
@@ -96,6 +97,9 @@ class PlanLoader:
                 execution=execution,
                 allow_no_changes=v_data.get("allow_no_changes", False),
                 required_changed_files=v_data.get("required_changed_files", []),
+                work_item_id=v_data.get("work_item_id"),
+                task_version=v_data.get("task_version"),
+                attempt_id=v_data.get("attempt_id"),
             ))
 
         return BuildRunnerPlan(
@@ -111,7 +115,10 @@ class PlanLoader:
             logs_dir=data.get("logs_dir", primary_project_runner_relpath("logs")),
             runtime_dir=data.get("runtime_dir", primary_project_runner_relpath("runtime")),
             rules_file=data.get("rules_file", primary_project_runner_relpath("rules.md")),
-            state_file=data.get("state_file", primary_project_runner_relpath("state.json"))
+            state_file=data.get("state_file", primary_project_runner_relpath("state.json")),
+            work_item_id=data.get("work_item_id"),
+            task_version=data.get("task_version"),
+            attempt_id=data.get("attempt_id"),
         )
 
     def _parse_review_policy(self, value: Any) -> ReviewPolicy:
@@ -183,6 +190,15 @@ class PlanLoader:
         )
 
     def validate_plan(self, plan: BuildRunnerPlan) -> None:
+        plan_rejections = optional_plan_work_item_reference_rejections(plan)
+        if plan_rejections:
+            raise ValueError(f"plan Work Item binding invalid: {plan_rejections}")
+        for version in plan.versions:
+            version_rejections = optional_plan_work_item_reference_rejections(version)
+            if version_rejections:
+                raise ValueError(
+                    f"plan version {version.version!r} Work Item binding invalid: {version_rejections}"
+                )
         if not plan.versions:
             return
         if not [version for version in plan.versions if version.enabled]:

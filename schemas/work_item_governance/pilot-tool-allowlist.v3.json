@@ -1,0 +1,36 @@
+{
+  "schema_version": "wig_p3_bounded_single_project_pilot_tool_allowlist.v3",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-S1-R3",
+  "exposure_profile": "authoritative_canary",
+  "scope_mode": "bounded_single_project_pilot.v1",
+  "default_policy": "deny",
+  "expected_tool_count": 14,
+  "enforcement": {
+    "tool_definitions": "exact_match_required",
+    "central_dispatch": "exact_match_required",
+    "routed_project_dispatch": "exact_match_required",
+    "agent_dispatch": "exact_match_required",
+    "compatibility_aliases": "disabled",
+    "actions": "disabled",
+    "resources": "disabled_or_empty",
+    "unknown_or_hidden_tool": "deny",
+    "startup_set_or_scope_mode_mismatch": "refuse_startup"
+  },
+  "tools": [
+    {"name": "get_work_item_governance_status", "class": "read", "scope": "mcp:read", "active_lease_required": false, "bound_work_item_required": false},
+    {"name": "get_work_item", "class": "read", "scope": "mcp:read", "active_lease_required": false, "bound_work_item_required": true},
+    {"name": "list_work_items", "class": "read", "scope": "mcp:read", "active_lease_required": false, "bound_work_item_required": false, "result_constraint": "at most the one Lease-bound Work Item"},
+    {"name": "get_work_item_timeline", "class": "read", "scope": "mcp:read", "active_lease_required": false, "bound_work_item_required": true},
+    {"name": "get_execution_attempt_dispatch_authority", "class": "read", "scope": "mcp:read", "active_lease_required": true, "bound_work_item_required": true, "execution_receipt_recheck_required": true},
+    {"name": "preview_work_item_create", "class": "preview", "scope": "mcp:preview", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": false, "scope_envelope_required": true},
+    {"name": "preview_work_item_transition", "class": "preview", "scope": "mcp:preview", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "scope_envelope_required": true},
+    {"name": "apply_work_item_create", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": false, "atomic_first_binding": true},
+    {"name": "add_task_version", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true},
+    {"name": "create_execution_attempt", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "execution_receipt_required": true},
+    {"name": "complete_execution_attempt", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true},
+    {"name": "register_artifact_reference", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true},
+    {"name": "record_review_decision", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true},
+    {"name": "apply_work_item_transition", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true}
+  ],
+  "explicitly_absent_categories": ["all other Work Item tools", "Git mutation", "file mutation", "plan mutation", "executor dispatch or management", "delivery and outbox mutation", "product submission", "stable promotion", "connector tunnel relay or proxy", "project registration", "generic tool dispatch"]
+}

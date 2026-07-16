@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-bounded-single-project-pilot-semantic-validation-receipt.v3.schema.json",
+  "title": "Bounded Single-Project Pilot Semantic Validation Receipt v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "gate_id", "validated_at", "stage", "rules_digest", "input_bindings", "applicable_rule_ids", "passed_rule_ids", "failed_rules", "result"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_bounded_single_project_pilot_semantic_validation_receipt.v3"},
+    "gate_id": {"type": "string", "minLength": 1, "maxLength": 192},
+    "validated_at": {"type": "string", "format": "date-time", "maxLength": 64},
+    "stage": {"enum": ["pre_import", "decision_consumption", "lease_prepare", "process_claim", "listener_attestation", "preview", "write_transaction", "dispatch_authority", "closeout"]},
+    "rules_digest": {"$ref": "#/$defs/sha256"},
+    "input_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_manifest_sha256", "scope_envelope_digest", "storage_schema_contract_digest", "fact_reconciliation_contract_digest", "authorization_digest", "project_snapshot_digest", "runtime_binding_digest", "ledger_state_digest"],
+      "properties": {
+        "candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "storage_schema_contract_digest": {"$ref": "#/$defs/sha256"},
+        "fact_reconciliation_contract_digest": {"$ref": "#/$defs/sha256"},
+        "authorization_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "project_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_binding_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "ledger_state_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+      }
+    },
+    "applicable_rule_ids": {"type": "array", "minItems": 1, "maxItems": 27, "uniqueItems": true, "items": {"$ref": "#/$defs/rule_id"}},
+    "passed_rule_ids": {"type": "array", "minItems": 0, "maxItems": 27, "uniqueItems": true, "items": {"$ref": "#/$defs/rule_id"}},
+    "failed_rules": {
+      "type": "array",
+      "maxItems": 27,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "error_code", "evidence_digest"],
+        "properties": {
+          "rule_id": {"$ref": "#/$defs/rule_id"},
+          "error_code": {"type": "string", "pattern": "^[A-Z0-9_]{1,128}$"},
+          "evidence_digest": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "result": {"enum": ["PASS", "FAIL"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"result": {"const": "PASS"}}, "required": ["result"]},
+      "then": {"properties": {"failed_rules": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"result": {"const": "FAIL"}}, "required": ["result"]},
+      "then": {"properties": {"failed_rules": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rule_id": {"type": "string", "pattern": "^(TIME|GEN|PATH|GIT|ROLE|AUTH|SCOPE|EXEC|ART|LEASE|EVENT|PROFILE|CLOSE|VALID)-[0-9]{3}$"}
+  }
+}

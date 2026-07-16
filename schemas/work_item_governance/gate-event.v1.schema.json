@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/work-item-governance/gate-event.v1.schema.json",
+  "title": "ColaMeta Gate Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "gate_event_id", "work_item_id", "task_version", "from_state",
+    "target_state", "expected_state_version", "outcome", "reason_code", "decision_ids",
+    "evidence_artifact_ids", "authority_basis", "principal_context",
+    "transition_result", "command_digest", "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "gate_event.v1"},
+    "gate_event_id": {"$ref": "definitions.v1.schema.json#/$defs/gateEventId"},
+    "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+    "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+    "from_state": {"enum": ["proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"]},
+    "target_state": {"enum": ["proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"]},
+    "expected_state_version": {"type": "integer", "minimum": 0},
+    "outcome": {"enum": ["transition_applied", "transition_rejected"]},
+    "reason_code": {"type": "string", "minLength": 1, "maxLength": 256},
+    "decision_ids": {
+      "type": "array", "maxItems": 1024, "uniqueItems": true,
+      "items": {"$ref": "definitions.v1.schema.json#/$defs/decisionId"}
+    },
+    "evidence_artifact_ids": {
+      "type": "array", "maxItems": 1024, "uniqueItems": true,
+      "items": {"$ref": "definitions.v1.schema.json#/$defs/artifactId"}
+    },
+    "authority_basis": {"$ref": "definitions.v1.schema.json#/$defs/authorityBasis"},
+    "principal_context": {"$ref": "definitions.v1.schema.json#/$defs/principalContext"},
+    "transition_result": {"enum": ["state_advanced", "returned_for_revision"]},
+    "command_digest": {"$ref": "definitions.v1.schema.json#/$defs/sha256"},
+    "created_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"}
+  }
+}

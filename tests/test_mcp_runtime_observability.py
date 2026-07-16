@@ -4200,6 +4200,20 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert data["initial_reads"][3]["arguments"]["profile_id"] == "reviewer_agent"
         assert data["initial_reads"][4]["arguments"]["profile_id"] == "reviewer_agent"
         assert data["apps_connector_closeout"]["status"] in {"ready", "needs_attention"}
+        projections = data["domain_projections"]
+        assert set(projections) == {"core", "service_operations", "app_submission"}
+        assert projections["core"]["write_path"] == "application_commands_only"
+        assert projections["core"]["read_only_surface"] is True
+        assert (
+            projections["service_operations"]["read_model"]["overall_status"]
+            == data["connector"]["overall_status"]
+        )
+        assert (
+            projections["app_submission"]["read_model"]["status"]
+            == data["apps_connector_closeout"]["release_submission_evidence"]["status"]
+        )
+        assert projections["service_operations"]["can_write_work_item_state"] is False
+        assert projections["app_submission"]["can_write_work_item_state"] is False
         assert data["apps_connector_closeout"]["project_list_check"]["tool"] == "list_registered_projects"
         assert data["apps_connector_closeout"]["connector_closeout_check"]["tool"] == "get_connector_runtime_health_status"
         release_evidence = data["apps_connector_closeout"]["release_submission_evidence"]

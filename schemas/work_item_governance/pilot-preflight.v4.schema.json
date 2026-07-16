@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-bounded-single-project-pilot-preflight.v4.schema.json",
+  "title": "Bounded Single-Project Pilot Preflight Receipt v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "gate_id", "observed_at", "valid_until", "result", "bindings", "execution_context", "isolation", "project", "ledger", "backup", "authentication", "surface", "runtime", "semantic_validation", "safety"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_bounded_single_project_pilot_preflight.v4"},
+    "gate_id": {"type": "string", "minLength": 1, "maxLength": 192},
+    "observed_at": {"$ref": "#/$defs/date_time"},
+    "valid_until": {"$ref": "#/$defs/date_time"},
+    "result": {"const": "PASS"},
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_digest", "scope_envelope_digest", "candidate_manifest_sha256", "file_list_root_sha256", "storage_schema_contract_digest", "fact_reconciliation_contract_digest", "semantic_rules_digest", "project_snapshot_digest", "execution_attempt_slot_schema_sha256", "execution_authorization_receipt_schema_sha256", "execution_authorization_receipt_digest", "authentication_conformance_receipt_schema_sha256", "authentication_conformance_receipt_digest", "expiry_conformance_receipt_schema_sha256"],
+      "properties": {
+        "authorization_digest": {"$ref": "#/$defs/sha256"},
+        "scope_envelope_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "file_list_root_sha256": {"$ref": "#/$defs/sha256"},
+        "storage_schema_contract_digest": {"$ref": "#/$defs/sha256"},
+        "fact_reconciliation_contract_digest": {"$ref": "#/$defs/sha256"},
+        "semantic_rules_digest": {"$ref": "#/$defs/sha256"},
+        "project_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "execution_attempt_slot_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_authorization_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_authorization_receipt_digest": {"$ref": "#/$defs/sha256"}
+        ,"authentication_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"}
+        ,"authentication_conformance_receipt_digest": {"$ref": "#/$defs/sha256"}
+        ,"expiry_conformance_receipt_schema_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "execution_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256", "python_executable", "cwd", "runtime_binding_digest"],
+      "properties": {
+        "implementation_commit": {"$ref": "#/$defs/git_sha1"},
+        "implementation_tree": {"$ref": "#/$defs/git_sha1"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"},
+        "installed_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "python_executable": {"$ref": "#/$defs/absolute_path"},
+        "cwd": {"$ref": "#/$defs/absolute_path"},
+        "runtime_binding_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pilot_root", "home", "xdg_config_home", "xdg_state_home", "xdg_cache_home", "xdg_data_home", "registry_path", "token_file_path", "all_private_paths_under_pilot_root", "root_disjointness", "symlink_boundary", "ownership_and_modes", "forbidden_roots_absent"],
+      "properties": {
+        "pilot_root": {"$ref": "#/$defs/absolute_path"},
+        "home": {"$ref": "#/$defs/absolute_path"},
+        "xdg_config_home": {"$ref": "#/$defs/absolute_path"},
+        "xdg_state_home": {"$ref": "#/$defs/absolute_path"},
+        "xdg_cache_home": {"$ref": "#/$defs/absolute_path"},
+        "xdg_data_home": {"$ref": "#/$defs/absolute_path"},
+        "registry_path": {"$ref": "#/$defs/absolute_path"},
+        "token_file_path": {"$ref": "#/$defs/absolute_path"},
+        "all_private_paths_under_pilot_root": {"const": true},
+        "root_disjointness": {"const": "PASS"},
+        "symlink_boundary": {"const": "PASS"},
+        "ownership_and_modes": {"const": "PASS"},
+        "forbidden_roots_absent": {"const": true}
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "project_root", "registry_project_count", "snapshot_digest", "head_commit", "head_tree", "index_digest", "protected_path_manifest_digest", "allowed_read_path_manifest_digest", "allowed_write_path_manifest_digest", "ledger_git_ignored", "ledger_not_tracked", "ledger_not_staged", "root_override_disabled"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "project_root": {"$ref": "#/$defs/absolute_path"},
+        "registry_project_count": {"const": 1},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "head_commit": {"$ref": "#/$defs/git_sha1"},
+        "head_tree": {"$ref": "#/$defs/git_sha1"},
+        "index_digest": {"$ref": "#/$defs/sha256"},
+        "protected_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_read_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_write_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_git_ignored": {"const": true},
+        "ledger_not_tracked": {"const": true},
+        "ledger_not_staged": {"const": true},
+        "root_override_disabled": {"const": true}
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "path_digest", "schema_version", "database_generation", "storage_migration_receipt_digest", "legacy_table_digests_unchanged", "integrity_check", "foreign_key_violations", "zero_fact_baseline", "preview_signing_key_preprovisioned"],
+      "properties": {
+        "path": {"$ref": "#/$defs/absolute_path"},
+        "path_digest": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"const": 7},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "storage_migration_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "legacy_table_digests_unchanged": {"const": true},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0},
+        "zero_fact_baseline": {"$ref": "#/$defs/zero_facts"},
+        "preview_signing_key_preprovisioned": {"const": true}
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api", "path_digest", "receipt_digest", "sha256", "database_generation", "schema_version", "integrity_check", "foreign_key_violations", "mode"],
+      "properties": {
+        "api": {"const": "sqlite3.Connection.backup"},
+        "path_digest": {"$ref": "#/$defs/sha256"},
+        "receipt_digest": {"$ref": "#/$defs/sha256"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "database_generation": {"type": "integer", "minimum": 1},
+        "schema_version": {"const": 7},
+        "integrity_check": {"const": "ok"},
+        "foreign_key_violations": {"type": "array", "maxItems": 0},
+        "mode": {"const": "0600"}
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caller_auth_mode", "principal_authenticated_by", "token_file_mode", "token_parent_mode", "token_owner_matches_runtime_user", "token_format_valid", "token_ledger_binding_valid", "token_absent_from_cmdline", "token_absent_from_environment", "token_absent_from_bundle", "token_absent_from_logs", "authentication_conformance_receipt_digest", "principal_binding_digest"],
+      "properties": {
+        "caller_auth_mode": {"const": "token"},
+        "principal_authenticated_by": {"const": "local_session"},
+        "token_file_mode": {"const": "0600"},
+        "token_parent_mode": {"enum": ["0700", "stricter_than_0700"]},
+        "token_owner_matches_runtime_user": {"const": true},
+        "token_format_valid": {"const": true},
+        "token_ledger_binding_valid": {"const": true},
+        "token_absent_from_cmdline": {"const": true},
+        "token_absent_from_environment": {"const": true},
+        "token_absent_from_bundle": {"const": true},
+        "token_absent_from_logs": {"const": true},
+        "authentication_conformance_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "principal_binding_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exposure_profile", "scope_mode", "visible_tool_count", "visible_tool_set_digest", "definitions_dispatch_exact_match", "resources_disabled_or_empty", "actions_disabled", "hidden_tool_rejected", "alternate_dispatch_rejected", "prohibited_workers_running"],
+      "properties": {
+        "exposure_profile": {"const": "authoritative_canary"},
+        "scope_mode": {"const": "bounded_single_project_pilot.v1"},
+        "visible_tool_count": {"const": 14},
+        "visible_tool_set_digest": {"$ref": "#/$defs/sha256"},
+        "definitions_dispatch_exact_match": {"const": true},
+        "resources_disabled_or_empty": {"const": true},
+        "actions_disabled": {"const": true},
+        "hidden_tool_rejected": {"const": true},
+        "alternate_dispatch_rejected": {"const": true},
+        "prohibited_workers_running": {"const": false}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bind_address", "port", "listener_before_activation", "port_available", "gate_mode", "authoritative"],
+      "properties": {
+        "bind_address": {"const": "127.0.0.1"},
+        "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "listener_before_activation": {"const": false},
+        "port_available": {"const": true},
+        "gate_mode": {"const": "shadow"},
+        "authoritative": {"const": false}
+      }
+    },
+    "semantic_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules_digest", "receipt_digest", "rules_evaluated", "rules_failed", "result"],
+      "properties": {
+        "rules_digest": {"$ref": "#/$defs/sha256"},
+        "receipt_digest": {"$ref": "#/$defs/sha256"},
+        "rules_evaluated": {"type": "integer", "minimum": 1},
+        "rules_failed": {"const": 0},
+        "result": {"const": "PASS"}
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_endpoint", "relay_or_tunnel", "existing_service_modified", "other_project_modified", "push", "stable_promotion", "one_unconsumed_decision_matches"],
+      "properties": {
+        "public_endpoint": {"const": false},
+        "relay_or_tunnel": {"const": false},
+        "existing_service_modified": {"const": false},
+        "other_project_modified": {"const": false},
+        "push": {"const": false},
+        "stable_promotion": {"const": false},
+        "one_unconsumed_decision_matches": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64},
+    "absolute_path": {"type": "string", "pattern": "^/", "minLength": 2, "maxLength": 4096},
+    "zero_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work_items", "task_versions", "execution_attempts", "attempt_events", "artifact_refs", "decision_records", "gate_events", "acceptance_manifests", "activation_leases", "activation_lease_events", "pilot_authorization_facts", "pilot_authorization_claims", "pilot_activation_leases", "pilot_activation_lease_events", "external_associations", "delivery_receipts", "blocker_events", "audit_events", "outbox_events", "inbox_events"],
+      "properties": {
+        "work_items": {"const": 0}, "task_versions": {"const": 0}, "execution_attempts": {"const": 0}, "attempt_events": {"const": 0}, "artifact_refs": {"const": 0}, "decision_records": {"const": 0}, "gate_events": {"const": 0}, "acceptance_manifests": {"const": 0}, "activation_leases": {"const": 0}, "activation_lease_events": {"const": 0}, "pilot_authorization_facts": {"const": 0}, "pilot_authorization_claims": {"const": 0}, "pilot_activation_leases": {"const": 0}, "pilot_activation_lease_events": {"const": 0}, "external_associations": {"const": 0}, "delivery_receipts": {"const": 0}, "blocker_events": {"const": 0}, "audit_events": {"const": 0}, "outbox_events": {"const": 0}, "inbox_events": {"const": 0}
+      }
+    }
+  }
+}

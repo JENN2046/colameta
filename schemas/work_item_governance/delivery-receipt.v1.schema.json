@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/work-item-governance/delivery-receipt.v1.schema.json",
+  "title": "ColaMeta Delivery Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "delivery_receipt_id", "work_item_id", "task_version", "destination",
+    "payload_digest", "status", "attempt_count", "created_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "delivery_receipt.v1"},
+    "delivery_receipt_id": {"$ref": "definitions.v1.schema.json#/$defs/deliveryReceiptId"},
+    "work_item_id": {"$ref": "definitions.v1.schema.json#/$defs/workItemId"},
+    "task_version": {"$ref": "definitions.v1.schema.json#/$defs/taskVersion"},
+    "destination": {"type": "string", "minLength": 1, "maxLength": 8192},
+    "payload_digest": {"$ref": "definitions.v1.schema.json#/$defs/sha256"},
+    "status": {"enum": ["pending", "retry_scheduled", "delivered", "acknowledged", "failed"]},
+    "attempt_count": {"type": "integer", "minimum": 0},
+    "last_error": {"type": ["string", "null"], "maxLength": 65536},
+    "next_attempt_at": {
+      "anyOf": [{"$ref": "definitions.v1.schema.json#/$defs/timestamp"}, {"type": "null"}]
+    },
+    "created_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"},
+    "updated_at": {"$ref": "definitions.v1.schema.json#/$defs/timestamp"},
+    "acknowledged_at": {
+      "anyOf": [{"$ref": "definitions.v1.schema.json#/$defs/timestamp"}, {"type": "null"}]
+    }
+  }
+}

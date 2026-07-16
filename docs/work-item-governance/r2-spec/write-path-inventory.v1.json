@@ -1,0 +1,252 @@
+{
+  "schema_version": "authoritative_canary_write_path_inventory.v1",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "default_policy": "deny",
+  "transport_dispatch_paths": [
+    {
+      "path": "MCP JSON-RPC tools/call and call_tool",
+      "current_reality": "calls _call_tool directly",
+      "r2_policy": "central exact allowlist required before registry lookup and execution"
+    },
+    {
+      "path": "direct named JSON-RPC tool method",
+      "current_reality": "method names present in the tool registry can call _call_tool",
+      "r2_policy": "disabled for authoritative_canary"
+    },
+    {
+      "path": "HTTP Actions /api tool route",
+      "current_reality": "route checks visible tool names before _call_tool",
+      "r2_policy": "disabled for authoritative_canary"
+    },
+    {
+      "path": "call_tool_for_agent",
+      "current_reality": "calls _call_tool directly",
+      "r2_policy": "same central exact allowlist; no internal bypass"
+    },
+    {
+      "path": "Cloud Agent client",
+      "current_reality": "delegates to call_tool_for_agent",
+      "r2_policy": "not configured for isolated Canary and still covered by central deny"
+    },
+    {
+      "path": "routed project tool",
+      "current_reality": "resolves a registered project and invokes routed tool callable",
+      "r2_policy": "one exact project only; route and callable both checked against allowlist"
+    },
+    {
+      "path": "Web Console and other local adapters",
+      "current_reality": "may call agent/server tools in process",
+      "r2_policy": "not composed into the Canary endpoint; central deny remains effective if accidentally reached"
+    }
+  ],
+  "work_item_application_writes": [
+    {
+      "method": "apply_work_item_create",
+      "mcp_command": "apply_work_item_create",
+      "policy": "lease_controlled",
+      "nested_facts": ["work_item", "initial_task_version", "external_associations"],
+      "transactional_requirements": ["first Work Item binding", "new fact quota", "idempotency"]
+    },
+    {
+      "method": "apply_legacy_work_item_import",
+      "mcp_command": "apply_legacy_work_item_import",
+      "policy": "denied"
+    },
+    {
+      "method": "add_task_version",
+      "mcp_command": "add_task_version",
+      "policy": "lease_controlled",
+      "nested_facts": ["task_version", "external_associations"]
+    },
+    {
+      "method": "create_execution_attempt",
+      "mcp_command": "create_execution_attempt",
+      "policy": "lease_controlled",
+      "nested_facts": ["runtime_attempt", "external_associations"]
+    },
+    {
+      "method": "bind_historical_execution_attempt",
+      "mcp_command": "bind_historical_execution_attempt",
+      "policy": "denied"
+    },
+    {
+      "method": "complete_execution_attempt",
+      "mcp_command": "complete_execution_attempt",
+      "policy": "lease_controlled",
+      "nested_facts": ["attempt_event", "zero_or_more_artifacts"],
+      "transactional_requirements": ["nested Artifact quota", "authorized Attempt scope", "idempotency"]
+    },
+    {
+      "method": "register_artifact_reference",
+      "mcp_command": "register_artifact_reference",
+      "policy": "lease_controlled",
+      "nested_facts": ["artifact"]
+    },
+    {
+      "method": "record_review_decision",
+      "mcp_command": "record_review_decision",
+      "policy": "lease_controlled",
+      "nested_facts": ["decision"],
+      "transactional_requirements": ["trusted Principal", "policy-derived authority"]
+    },
+    {
+      "method": "apply_work_item_transition",
+      "mcp_command": "apply_work_item_transition",
+      "policy": "lease_controlled",
+      "nested_facts": [
+        "work_item_state_CAS_when_applied",
+        "gate_event",
+        "audit_event",
+        "outbox_event",
+        "acceptance_manifest_when_accepted"
+      ],
+      "transactional_requirements": ["Gate outcome quota", "total Gate quota", "Lease usage CAS"]
+    },
+    {
+      "method": "apply_blocker",
+      "mcp_command": "apply_blocker",
+      "policy": "denied"
+    },
+    {
+      "method": "clear_blocker",
+      "mcp_command": "clear_blocker",
+      "policy": "denied"
+    },
+    {
+      "method": "create_delivery_receipt",
+      "mcp_command": "create_delivery_receipt",
+      "policy": "denied"
+    },
+    {
+      "method": "retry_delivery",
+      "mcp_command": "retry_delivery",
+      "policy": "denied"
+    },
+    {
+      "method": "acknowledge_delivery",
+      "mcp_command": "acknowledge_delivery",
+      "policy": "denied"
+    },
+    {
+      "method": "record_outbox_delivery_result",
+      "mcp_command": "record_outbox_delivery_result",
+      "policy": "denied"
+    },
+    {
+      "method": "recover_outbox_event",
+      "mcp_command": "recover_outbox_event",
+      "policy": "denied"
+    }
+  ],
+  "non_mcp_and_control_plane_paths": [
+        {
+            "path": "WorkItemApplicationService(authoritative_transitions=True)",
+            "mutation_kind": "composition bypass",
+            "activation_policy": "authoritative writes denied unless the exact attested active Lease and sealed Token-authenticated request context are present; PrincipalContext alone is insufficient"
+        },
+        {
+            "path": "Bearer Token HTTP handler to AuthoritativeCanaryRequestContext",
+            "mutation_kind": "request capability mint",
+            "activation_policy": "only a correct private Token after persisted Listener attestation may mint the non-JSON sealed context; context is bound to lease ID, authorization digest, process identity, runtime nonce, Principal/session and listener-attestation digest"
+        },
+        {
+            "path": "one-shot activation envelope and prepared Lease claim",
+            "mutation_kind": "control-plane activation",
+            "activation_policy": "listener-free waiting process first emits a fresh schema-valid Preflight and expected process identity; control plane atomically writes/fsyncs the 0600 Envelope then inserts the prepared Lease and lease_issued Event transactionally; no prepared Lease may exist without its durable Envelope; Envelope is atomically moved with no replacement and parent fsynced; prepared becomes claimed before bind and active only after persisted Listener attestation; orphan or failed/crashed claims are not reusable"
+    },
+    {
+      "path": "Fresh Preflight and Backup binding",
+      "mutation_kind": "control-plane evidence and baseline assertion",
+            "activation_policy": "receipt validates against the frozen Preflight Schema with format assertions; exact receipt/baseline/backup, executable/CWD/settings/Token/Envelope/Fixture/Ledger/Backup path digests and Linux process-identity inputs are bound to Lease; maximum age 120 seconds; zero baseline rechecked in claim transaction"
+    },
+        {
+            "path": "execute_work_item_command / WorkItemCommandGateway direct Python call",
+            "mutation_kind": "transport-neutral command",
+            "activation_policy": "same Principal, attested Lease and sealed Token-authenticated request context as MCP; direct call with a valid Lease and Principal but no request capability is denied"
+    },
+    {
+      "path": "synthetic Fixture normalization and generated-ID binding",
+      "mutation_kind": "scope policy",
+            "activation_policy": "every Preview/write matches the frozen Fixture Schema and exact Lease-bound canonical Fixture; command slots, Runtime Attempt objectives, Decision actions, lifecycle transitions, Artifact policy and empty external/Plan references agree under semantic cross-field validation; typed generated IDs bind atomically; real references are denied"
+    },
+    {
+      "path": "SQLiteWorkItemLedger direct construction or write_transaction",
+      "mutation_kind": "repository bypass",
+      "activation_policy": "not exported to Canary callers; exact composition and architecture tests prohibit external mutation"
+    },
+    {
+      "path": "SQLiteWorkItemLedger.initialize and migration",
+      "mutation_kind": "schema write",
+      "activation_policy": "only exact forward startup schema before Lease activation; denied while active"
+    },
+    {
+      "path": "PreviewCodec signing key get_or_create",
+      "mutation_kind": "ledger_meta write or write-lock transaction",
+      "activation_policy": "key must be provisioned before activation; active runtime reads existing key and fails closed if absent"
+    },
+    {
+      "path": "backup_ledger / SQLite Backup API",
+      "mutation_kind": "external backup-file write and Ledger read lock",
+      "activation_policy": "control plane only before or after activation; absent from endpoint"
+    },
+    {
+      "path": "restore_ledger / restore_from_backup",
+      "mutation_kind": "whole-Ledger replacement",
+      "activation_policy": "denied from Lease preparation through closeout; requires a later maintenance authorization"
+    },
+    {
+      "path": "export_audit_package",
+      "mutation_kind": "read and in-memory package creation",
+      "activation_policy": "read-only control plane after write freeze; absent from endpoint"
+    },
+    {
+      "path": "project settings mutation",
+      "mutation_kind": "gate-mode/configuration write",
+      "activation_policy": "not exposed; separate control plane only; never a substitute for synchronous Lease enforcement"
+    },
+    {
+      "path": "one-time Token deletion or rotation",
+      "mutation_kind": "control-plane secret closeout",
+      "activation_policy": "mandatory after endpoint stop or terminal Lease; old Token authentication must fail"
+    },
+        {
+            "path": "activation_lease_events append",
+            "mutation_kind": "control-plane audit write",
+            "activation_policy": "every row validates against the frozen Lease Event Schema, exact event-type lifecycle edge, contiguous state-version rule and hash chain; includes issue, process claim, post-bind listener attestation and closeout; command events bind request context, source key, Principal and fact delta; at most one event per newly committed command, zero on exact replay, one deduplicated hard-freeze event, maximum 40 total; sanitized snapshot and Event exports make closeout roots independently recomputable"
+    },
+    {
+      "path": "Stable Promotion, App Submission, Git, Files, Project, Executor, Product or Operations command",
+      "mutation_kind": "non-Work-Item side effect",
+      "activation_policy": "not registered and central dispatch denied"
+    },
+    {
+      "path": "background Outbox/Delivery/Stable/Product/Connector/Executor worker",
+      "mutation_kind": "asynchronous or external side effect",
+      "activation_policy": "not composed or started; Gate-generated Outbox rows remain pending evidence"
+    }
+  ],
+  "read_and_preview_policy": [
+    {
+      "path": "five frozen Work Item Read tools",
+      "policy": "token-authenticated; remain available after Lease freeze for closeout"
+    },
+    {
+      "path": "preview_work_item_create and preview_work_item_transition",
+      "policy": "active Lease, exact Principal/project/scope and existing signing key required; unavailable after expiry"
+    },
+    {
+      "path": "list_outbox_events",
+      "policy": "not exposed on Authoritative Canary"
+    },
+    {
+      "path": "preview_legacy_work_item_import",
+      "policy": "not exposed on Authoritative Canary"
+    }
+  ],
+  "coverage_assertions": {
+    "source_work_item_write_commands": 16,
+    "matrix_entries": 16,
+    "unclassified_source_work_item_write_commands": 0,
+    "unknown_future_write_command": "deny_and_refuse_startup_until_matrix_updated"
+  }
+}

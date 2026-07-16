@@ -1,0 +1,59 @@
+{
+  "schema_version": "wig_p3_bounded_single_project_pilot_storage_schema_v7.v1",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-IMPLEMENTATION-D1-R4",
+  "migration": {
+    "from_schema_version": 6,
+    "to_schema_version": 7,
+    "direction": "forward_only",
+    "transactional": true,
+    "explicit_entry_required": true,
+    "fresh_pilot_precondition": true,
+    "failure_rolls_back_schema_version": true
+  },
+  "new_tables": {
+    "pilot_authorization_facts": {
+      "primary_key": "authorization_digest",
+      "schema_version_const": "wig_p3_pilot_persisted_authority.v2",
+      "append_only_triggers_required": true,
+      "tombstone_path_and_digest_required": true,
+      "payload_digest_required": true
+    },
+    "pilot_authorization_claims": {
+      "primary_key": "authorization_digest",
+      "schema_version_const": "wig_p3_pilot_authorization_claim.v1",
+      "authorization_foreign_key": "pilot_authorization_facts.authorization_digest",
+      "one_claim_per_authorization": true,
+      "append_only_triggers_required": true
+    }
+  },
+  "required_ddl": [
+    "CREATE TABLE pilot_authorization_facts (authorization_digest TEXT PRIMARY KEY CHECK (length(authorization_digest)=64), schema_version TEXT NOT NULL CHECK (schema_version='wig_p3_pilot_persisted_authority.v2'), tombstone_digest TEXT NOT NULL CHECK (length(tombstone_digest)=64), tombstone_path_digest TEXT NOT NULL CHECK (length(tombstone_path_digest)=64), payload_digest TEXT NOT NULL CHECK (length(payload_digest)=64), issued_record_json TEXT NOT NULL CHECK (json_valid(issued_record_json)), issued_at TEXT NOT NULL)",
+    "CREATE TABLE pilot_authorization_claims (authorization_digest TEXT PRIMARY KEY, schema_version TEXT NOT NULL CHECK (schema_version='wig_p3_pilot_authorization_claim.v1'), claim_digest TEXT NOT NULL UNIQUE CHECK (length(claim_digest)=64), claimed_at TEXT NOT NULL, FOREIGN KEY (authorization_digest) REFERENCES pilot_authorization_facts(authorization_digest) ON DELETE RESTRICT)",
+    "CREATE TRIGGER pilot_authorization_facts_no_update BEFORE UPDATE ON pilot_authorization_facts BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    "CREATE TRIGGER pilot_authorization_facts_no_delete BEFORE DELETE ON pilot_authorization_facts BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    "CREATE TRIGGER pilot_authorization_claims_no_update BEFORE UPDATE ON pilot_authorization_claims BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    "CREATE TRIGGER pilot_authorization_claims_no_delete BEFORE DELETE ON pilot_authorization_claims BEGIN SELECT RAISE(ABORT,'append-only table'); END"
+  ],
+  "repository_migration_framework": {
+    "transaction": "BEGIN_IMMEDIATE",
+    "maintenance_lock": "exclusive",
+    "locked_current_version_must_equal": 6,
+    "set_pragma_user_version": 7,
+    "set_ledger_meta_schema_version": "7",
+    "commit_only_after_postcondition_checks": true
+  },
+  "preconditions": {
+    "ledger_meta_schema_version": "exactly_one_row_equal_to_6",
+    "pilot_activation_lease_count": 0,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0
+  },
+  "postconditions": {
+    "schema_version": 7,
+    "ledger_meta_schema_version": "exactly_one_row_equal_to_7",
+    "pilot_authorization_fact_count": 0,
+    "pilot_authorization_claim_count": 0,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0
+  }
+}

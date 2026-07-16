@@ -1,0 +1,84 @@
+{
+  "schema_version": "wig_p3_bounded_single_project_pilot_storage_schema_v6.v2",
+  "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-S1-R4",
+  "migration": {
+    "from_schema_version": 5,
+    "to_schema_version": 6,
+    "direction": "forward_only",
+    "transactional": true,
+    "legacy_tables_modified": false,
+    "legacy_rows_rewritten": false,
+    "fresh_pilot_precondition": true,
+    "failure_rolls_back_schema_version": true
+  },
+  "new_tables": {
+    "pilot_activation_leases": {
+      "primary_key": "lease_id",
+      "schema_version_const": "wig_p3_bounded_single_project_pilot_activation_lease.v4",
+      "maximum_runtime_seconds_const": 14400,
+      "status_enum": ["prepared", "claimed", "active", "write_frozen", "expired", "closed", "revoked"],
+      "single_live_statuses": ["claimed", "active", "write_frozen"],
+      "authorization_id_unique": true,
+      "authorized_work_item_foreign_key": "work_items.work_item_id",
+      "json_columns": ["source_binding_json", "runtime_binding_json", "principal_binding_json", "scope_binding_json", "quotas_json", "usage_json", "policy_json", "maintenance_json", "failure_behavior_json"],
+      "terminal_statuses": ["closed", "revoked", "expired"],
+      "terminal_states_irreversible": true
+    },
+    "pilot_activation_lease_events": {
+      "primary_key": "lease_event_id",
+      "schema_version_const": "wig_p3_bounded_single_project_pilot_activation_lease_event.v4",
+      "lease_foreign_key": "pilot_activation_leases.lease_id",
+      "sequence_minimum": 1,
+      "sequence_maximum": 64,
+      "event_type_enum": ["lease_issued", "process_claimed", "listener_attested", "command_committed", "domain_rejected", "lease_write_frozen", "lease_expired", "lease_closed", "lease_revoked"],
+      "unique_keys": [["lease_id", "sequence"], ["lease_id", "source_event_key_digest"]],
+      "append_only_triggers_required": true,
+      "digest_chain_required": true
+    }
+  },
+  "required_ddl": [
+    "CREATE TABLE pilot_activation_leases (lease_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL CHECK (schema_version='wig_p3_bounded_single_project_pilot_activation_lease.v4'), authorization_id TEXT NOT NULL UNIQUE, authorization_digest TEXT NOT NULL CHECK (length(authorization_digest)=64), scope_envelope_digest TEXT NOT NULL CHECK (length(scope_envelope_digest)=64), spec_manifest_digest TEXT NOT NULL CHECK (length(spec_manifest_digest)=64), storage_schema_contract_digest TEXT NOT NULL CHECK (length(storage_schema_contract_digest)=64), fact_reconciliation_contract_digest TEXT NOT NULL CHECK (length(fact_reconciliation_contract_digest)=64), semantic_rules_digest TEXT NOT NULL CHECK (length(semantic_rules_digest)=64), tool_allowlist_digest TEXT NOT NULL CHECK (length(tool_allowlist_digest)=64), write_matrix_digest TEXT NOT NULL CHECK (length(write_matrix_digest)=64), execution_attempt_slot_schema_sha256 TEXT NOT NULL CHECK (length(execution_attempt_slot_schema_sha256)=64), execution_authorization_receipt_schema_sha256 TEXT NOT NULL CHECK (length(execution_authorization_receipt_schema_sha256)=64), authentication_conformance_receipt_schema_sha256 TEXT NOT NULL CHECK (length(authentication_conformance_receipt_schema_sha256)=64), expiry_conformance_receipt_schema_sha256 TEXT NOT NULL CHECK (length(expiry_conformance_receipt_schema_sha256)=64), authorized_work_item_id TEXT, source_binding_json TEXT NOT NULL CHECK (json_valid(source_binding_json)), runtime_binding_json TEXT NOT NULL CHECK (json_valid(runtime_binding_json)), principal_binding_json TEXT NOT NULL CHECK (json_valid(principal_binding_json)), scope_binding_json TEXT NOT NULL CHECK (json_valid(scope_binding_json)), issued_at TEXT NOT NULL, not_before TEXT NOT NULL, expires_at TEXT NOT NULL, maximum_runtime_seconds INTEGER NOT NULL CHECK (maximum_runtime_seconds=14400), quotas_json TEXT NOT NULL CHECK (json_valid(quotas_json)), usage_json TEXT NOT NULL CHECK (json_valid(usage_json)), policy_json TEXT NOT NULL CHECK (json_valid(policy_json)), maintenance_json TEXT NOT NULL CHECK (json_valid(maintenance_json)), failure_behavior_json TEXT NOT NULL CHECK (json_valid(failure_behavior_json)), status TEXT NOT NULL CHECK (status IN ('prepared','claimed','active','write_frozen','expired','closed','revoked')), state_version INTEGER NOT NULL CHECK (state_version>=1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY (authorized_work_item_id) REFERENCES work_items(work_item_id) ON DELETE RESTRICT)",
+    "CREATE TABLE pilot_activation_lease_events (lease_event_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL CHECK (schema_version='wig_p3_bounded_single_project_pilot_activation_lease_event.v4'), lease_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 64), event_type TEXT NOT NULL CHECK (event_type IN ('lease_issued','process_claimed','listener_attested','command_committed','domain_rejected','lease_write_frozen','lease_expired','lease_closed','lease_revoked')), status_before TEXT, status_after TEXT NOT NULL, state_version_before INTEGER NOT NULL CHECK (state_version_before>=0), state_version_after INTEGER NOT NULL CHECK (state_version_after>=1), authorization_digest TEXT NOT NULL CHECK (length(authorization_digest)=64), authorized_work_item_id TEXT, process_identity_digest TEXT, listener_attestation_digest TEXT, command_name TEXT, source_event_key_digest TEXT, request_context_digest TEXT, principal_digest TEXT, fact_delta_json TEXT NOT NULL CHECK (json_valid(fact_delta_json)), rejection_code TEXT, previous_event_digest TEXT, event_digest TEXT NOT NULL CHECK (length(event_digest)=64), event_json TEXT NOT NULL CHECK (json_valid(event_json)), created_at TEXT NOT NULL, UNIQUE (lease_id,sequence), UNIQUE (lease_id,source_event_key_digest), FOREIGN KEY (lease_id) REFERENCES pilot_activation_leases(lease_id) ON DELETE RESTRICT)",
+    "CREATE UNIQUE INDEX idx_pilot_activation_single_live_lease ON pilot_activation_leases((1)) WHERE status IN ('claimed','active','write_frozen')",
+    "CREATE INDEX idx_pilot_activation_lease_status ON pilot_activation_leases(status,updated_at)",
+    "CREATE INDEX idx_pilot_activation_events_lease ON pilot_activation_lease_events(lease_id,sequence)",
+    "CREATE TRIGGER pilot_activation_lease_events_no_update BEFORE UPDATE ON pilot_activation_lease_events BEGIN SELECT RAISE(ABORT,'append-only table'); END",
+    "CREATE TRIGGER pilot_activation_lease_events_no_delete BEFORE DELETE ON pilot_activation_lease_events BEGIN SELECT RAISE(ABORT,'append-only table'); END"
+  ],
+  "repository_migration_framework": {
+    "transaction": "BEGIN_IMMEDIATE",
+    "locked_current_version_must_equal": 5,
+    "execute_required_ddl_in_declared_order": true,
+    "set_pragma_user_version": 6,
+    "set_ledger_meta_schema_version": "6",
+    "commit_only_after_postcondition_checks": true,
+    "rollback_restores_schema_version_and_schema_objects": true
+  },
+  "legacy_table_digest_algorithm": {
+    "table_order": ["activation_leases", "activation_lease_events"],
+    "per_table_input": "canonical_json({name: table_name, sqlite_schema_sql: exact_sql_text, rows: rows_ordered_by_primary_key_with_column_order_from_pragma_table_info})",
+    "per_table_digest": "sha256(utf8(per_table_input))",
+    "aggregate": "sha256(canonical_json([{name, sha256} in table_order]))",
+    "before_and_after_aggregate_must_match": true
+  },
+  "legacy_v5_tables": {
+    "activation_leases": "preserve_read_only_history",
+    "activation_lease_events": "preserve_read_only_history",
+    "eligible_for_pilot_claim": false
+  },
+  "migration_preconditions": {
+    "no_nonterminal_legacy_lease": true,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "maintenance_lock": "exclusive",
+    "active_writer_count": 0
+  },
+  "postconditions": {
+    "schema_version": 6,
+    "pilot_activation_lease_count": 0,
+    "pilot_activation_lease_event_count": 0,
+    "legacy_table_digests_unchanged": true,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0
+  }
+}

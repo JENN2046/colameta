@@ -26,6 +26,7 @@ dist/
 .colameta/plan-patches/**
 .colameta/tmp/**
 .colameta/local/**
+.colameta/ledger/**
 .colameta/executor-session.json
 .colameta/executor-sessions/**
 .colameta/settings.json

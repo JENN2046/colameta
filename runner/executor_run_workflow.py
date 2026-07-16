@@ -33,7 +33,13 @@ from runner.state_machine import RunnerStateMachine
 from runner.state_mutation import ExecutorRunLifecycleStatePersistMutation, RunnerStateMutationService
 from runner.state_store import StateStore
 from runner.plan_loader import PlanLoader
+from runner.work_item_governance.references import (
+    optional_plan_work_item_reference_rejections,
+    resolve_execution_attempt_binding,
+)
 from runner.workspace import ProjectWorkspace
+from runner.work_item_commands import WorkItemCommandGateway
+from runner.work_item_governance.errors import WorkItemGovernanceError
 
 if TYPE_CHECKING:
     from runner.development_target import ResolvedDevelopmentTarget
@@ -284,6 +290,16 @@ class ExecutorRunOnceService:
         if current_version and version_spec is None:
             blocks.append({"code": "VERSION_NOT_FOUND", "message": "plan.versions 找不到当前版本。"})
 
+        if isinstance(plan_data, dict):
+            binding_rejections = optional_plan_work_item_reference_rejections(plan_data)
+            if isinstance(version_spec, dict):
+                binding_rejections.extend(optional_plan_work_item_reference_rejections(version_spec))
+            if binding_rejections:
+                blocks.append({
+                    "code": "WORK_ITEM_BINDING_INVALID",
+                    "message": f"plan Work Item binding 无效：{binding_rejections}",
+                })
+
         if mode == "run":
             status_block = _RUN_BLOCKED_STATUS_CODES.get(runner_status)
             if status_block:
@@ -316,7 +332,46 @@ class ExecutorRunOnceService:
         if self._provider_unavailable(inventory_raw, resolved_provider):
             blocks.append({"code": "PROVIDER_UNAVAILABLE", "message": "执行器 provider 当前不可用。"})
 
-        return {
+        attempt_binding = (
+            resolve_execution_attempt_binding(plan_data, version_spec)
+            if isinstance(plan_data, dict)
+            else {}
+        )
+        if attempt_binding:
+            try:
+                gateway = WorkItemCommandGateway(project_root)
+                governance_status = gateway.execute("get_work_item_governance_status", {})
+                if governance_status.get("enabled") is not True:
+                    blocks.append({
+                        "code": "WORK_ITEM_ATTEMPT_GOVERNANCE_DISABLED",
+                        "message": "plan 已绑定 Work Item Attempt，但 Work Item governance 未启用。",
+                    })
+                elif not isinstance(governance_status.get("ledger_schema_version"), int):
+                    blocks.append({
+                        "code": "WORK_ITEM_ATTEMPT_LEDGER_MISSING",
+                        "message": "plan 已绑定 Work Item Attempt，但 Work Item governance ledger 不存在。",
+                    })
+                else:
+                    dispatch = gateway.execute(
+                        "get_execution_attempt_dispatch_authority",
+                        {
+                            "work_item_id": attempt_binding["work_item_id"],
+                            "task_version": attempt_binding["task_version"],
+                            "attempt_id": attempt_binding["attempt_id"],
+                        },
+                    )
+                    if dispatch.get("dispatch_authorized") is not True:
+                        blocks.append({
+                            "code": "WORK_ITEM_ATTEMPT_DISPATCH_DENIED",
+                            "message": f"Work Item Attempt 不允许 runtime dispatch：{dispatch.get('reason_codes', [])}",
+                        })
+            except WorkItemGovernanceError as exc:
+                blocks.append({
+                    "code": "WORK_ITEM_ATTEMPT_DISPATCH_INVALID",
+                    "message": f"Work Item Attempt dispatch 校验失败：{exc.code}",
+                })
+
+        result = {
             "ok": True,
             "preflight_blocked": len(blocks) > 0,
             "blocks": blocks,
@@ -346,6 +401,8 @@ class ExecutorRunOnceService:
             "runner_input_source": runner_input_source,
             "runner_input_overlay": self._compact_runner_input_overlay(overlay) if runner_input_source == "stage_parallel_shard_overlay" else None,
         }
+        result.update(attempt_binding)
+        return result
 
     def _compact_runner_input_overlay(self, overlay: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(overlay, dict):
@@ -459,6 +516,7 @@ class ExecutorRunOnceService:
             "provider": provider_norm,
             "execution_mode": mode,
         }
+        base_ctx.update(resolve_execution_attempt_binding(plan, current_version_str))
 
         self._maybe_write_event(run_id, "run_claimed", {
             "run_id": run_id,
@@ -1502,10 +1560,12 @@ class ExecutorRunOnceService:
             store = ExecutorRunReportStore(self.project_root)
             version = str(state.current_version or "")
             version_name = ""
+            version_plan = None
             if version and plan:
                 for v in plan.versions:
                     if str(v.version) == version:
                         version_name = str(v.name or "")
+                        version_plan = v
                         break
             report_text = None
             log_path = None
@@ -1587,6 +1647,7 @@ class ExecutorRunOnceService:
                 },
             )
             ce = dict(completion_evidence) if isinstance(completion_evidence, dict) else None
+            attempt_binding = resolve_execution_attempt_binding(plan, version_plan or version)
             store.record_report(
                 version=version,
                 version_name=version_name,
@@ -1606,6 +1667,7 @@ class ExecutorRunOnceService:
                 execution_lineage=execution_lineage,
                 completion_evidence=ce,
                 token_usage=token_usage,
+                **attempt_binding,
             )
         except Exception:
             import logging

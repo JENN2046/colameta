@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from runner._internal_utils import write_json_atomic
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 
 _PREVIEW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -82,6 +83,21 @@ class ExecutorRunClaimStore:
         claimed_at = self.now_iso()
         artifact_model = str(artifact.get("model") or "").strip()
         artifact_model_source = str(artifact.get("model_source") or "").strip()
+        work_item_binding: dict[str, Any] = {}
+        if any(field in artifact for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs")):
+            work_item_binding = {
+                "work_item_id": artifact.get("work_item_id"),
+                "task_version": artifact.get("task_version"),
+                "attempt_id": artifact.get("attempt_id"),
+                "artifact_refs": list(artifact.get("artifact_refs") or []),
+            }
+            binding_rejections = optional_work_item_reference_rejections(work_item_binding)
+            if binding_rejections:
+                return {
+                    "ok": False,
+                    "error_code": "WORK_ITEM_BINDING_INVALID",
+                    "binding_rejections": binding_rejections,
+                }
         claim_record = {
             "preview_id": preview_id,
             "run_id": run_id,
@@ -104,6 +120,7 @@ class ExecutorRunClaimStore:
             "original_preview_created_at": str(artifact.get("created_at") or ""),
             "original_preview_expires_at": str(artifact.get("expires_at") or ""),
         }
+        claim_record.update(work_item_binding)
         try:
             fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:

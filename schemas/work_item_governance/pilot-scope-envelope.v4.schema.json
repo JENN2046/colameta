@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colameta.local/schemas/wig-p3-bounded-single-project-pilot-scope-envelope.v4.schema.json",
+  "title": "Bounded Single-Project Pilot Scope Envelope v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope_mode", "authorization_id", "source_binding", "target_project", "pilot_isolation", "principal_binding", "work_item_scope", "execution_scope", "artifact_policy", "quotas", "window", "maintenance", "closeout"],
+  "properties": {
+    "schema_version": {"const": "wig_p3_bounded_single_project_pilot_scope_envelope.v4"},
+    "scope_mode": {"const": "bounded_single_project_pilot.v1"},
+    "authorization_id": {"type": "string", "pattern": "^WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-[A-Z0-9-]+$", "maxLength": 192},
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core_baseline_commit", "implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256", "storage_schema_contract_digest", "fact_reconciliation_contract_digest"],
+      "properties": {
+        "core_baseline_commit": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"},
+        "implementation_commit": {"allOf": [{"$ref": "#/$defs/git_sha1"}, {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}]},
+        "implementation_tree": {"$ref": "#/$defs/git_sha1"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"},
+        "installed_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "storage_schema_contract_digest": {"$ref": "#/$defs/sha256"},
+        "fact_reconciliation_contract_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "target_project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "project_name", "project_root", "project_root_path_digest", "project_snapshot_digest", "git_state", "protected_path_manifest_digest", "allowed_read_path_manifest_digest", "allowed_write_path_manifest_digest", "ledger_git_exclusion_receipt_digest"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "project_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "project_root": {"$ref": "#/$defs/absolute_path"},
+        "project_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "project_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "git_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "head_commit", "head_tree", "tracked_changes_digest", "untracked_changes_digest", "index_digest", "protected_assets_digest"],
+          "properties": {
+            "repository": {"const": true},
+            "head_commit": {"$ref": "#/$defs/git_sha1"},
+            "head_tree": {"$ref": "#/$defs/git_sha1"},
+            "tracked_changes_digest": {"$ref": "#/$defs/sha256"},
+            "untracked_changes_digest": {"$ref": "#/$defs/sha256"},
+            "index_digest": {"$ref": "#/$defs/sha256"},
+            "protected_assets_digest": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "protected_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_read_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_write_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_git_exclusion_receipt_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "pilot_isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pilot_root", "pilot_root_path_digest", "runtime_executable_path_digest", "cwd_path_digest", "home_path_digest", "xdg_config_path_digest", "xdg_state_path_digest", "xdg_cache_path_digest", "xdg_data_path_digest", "registry_path_digest", "settings_path_digest", "ledger_path_digest", "backup_path_digest", "token_file_path_digest", "forbidden_root_path_digests", "registry_project_count", "global_registry_fallback"],
+      "properties": {
+        "pilot_root": {"$ref": "#/$defs/absolute_path"},
+        "pilot_root_path_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_executable_path_digest": {"$ref": "#/$defs/sha256"},
+        "cwd_path_digest": {"$ref": "#/$defs/sha256"},
+        "home_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_config_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_state_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_cache_path_digest": {"$ref": "#/$defs/sha256"},
+        "xdg_data_path_digest": {"$ref": "#/$defs/sha256"},
+        "registry_path_digest": {"$ref": "#/$defs/sha256"},
+        "settings_path_digest": {"$ref": "#/$defs/sha256"},
+        "ledger_path_digest": {"$ref": "#/$defs/sha256"},
+        "backup_path_digest": {"$ref": "#/$defs/sha256"},
+        "token_file_path_digest": {"$ref": "#/$defs/sha256"},
+        "forbidden_root_path_digests": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "registry_project_count": {"const": 1},
+        "global_registry_fallback": {"const": false}
+      }
+    },
+    "principal_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "principal_kind", "session_ref", "caller_auth_mode", "principal_authenticated_by", "permissions", "combined_operator_reviewer_role_explicitly_authorized"],
+      "properties": {
+        "principal_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "principal_kind": {"enum": ["human", "service", "agent"]},
+        "session_ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "caller_auth_mode": {"const": "token"},
+        "principal_authenticated_by": {"const": "local_session"},
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {"enum": ["work_item.accept", "work_item.approve", "work_item.cancel", "work_item.ready", "work_item.return_for_revision", "work_item.start_delivery", "work_item.submit"]}
+        },
+        "combined_operator_reviewer_role_explicitly_authorized": {"type": "boolean"}
+      }
+    },
+    "work_item_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposed_work_item_id", "authorized_work_item_id", "origin", "authorized_create_command_digest", "objective_ref", "objective_digest", "task_version_payload_digests", "artifact_contract_digest", "approval_requirements_digest", "reporting_destination_digest", "expected_receipt_contract_digest", "external_associations_allowed", "legacy_import_allowed", "historical_attempt_allowed"],
+      "properties": {
+        "proposed_work_item_id": {"$ref": "#/$defs/work_item_id"},
+        "authorized_work_item_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/work_item_id"}]},
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ref", "snapshot_digest"],
+          "properties": {
+            "kind": {"enum": ["quick_chat", "project", "workbench", "slack", "linear", "manual"]},
+            "ref": {"type": "string", "minLength": 1, "maxLength": 2048},
+            "snapshot_digest": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "authorized_create_command_digest": {"$ref": "#/$defs/sha256"},
+        "objective_ref": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "objective_digest": {"$ref": "#/$defs/sha256"},
+        "task_version_payload_digests": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "artifact_contract_digest": {"$ref": "#/$defs/sha256"},
+        "approval_requirements_digest": {"$ref": "#/$defs/sha256"},
+        "reporting_destination_digest": {"$ref": "#/$defs/sha256"},
+        "expected_receipt_contract_digest": {"$ref": "#/$defs/sha256"},
+        "external_associations_allowed": {"const": false},
+        "legacy_import_allowed": {"const": false},
+        "historical_attempt_allowed": {"const": false}
+      }
+    },
+    "execution_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_allowed", "attempt_slot_schema_sha256", "authorization_receipt_schema_sha256", "authorization_receipt_digest", "executor_identity", "allowed_read_path_manifest_digest", "allowed_write_path_manifest_digest", "protected_path_manifest_digest", "maximum_attempt_runtime_seconds", "dispatch_authority_recheck_required"],
+      "properties": {
+        "execution_allowed": {"const": true},
+        "attempt_slot_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "authorization_receipt_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "authorization_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "executor_identity": {"type": "string", "minLength": 1, "maxLength": 512},
+        "allowed_read_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "allowed_write_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "protected_path_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "maximum_attempt_runtime_seconds": {"type": "integer", "minimum": 1, "maximum": 14400},
+        "dispatch_authority_recheck_required": {"const": true}
+      }
+    },
+    "artifact_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_kinds", "allowed_uri_schemes", "allowed_root_path_digests", "sha256_required", "immutable_ref_required", "symlink_escape", "body_storage_in_ledger", "sensitive_content"],
+      "properties": {
+        "allowed_kinds": {
+          "type": "array",
+          "prefixItems": [{"const": "evidence_receipt"}, {"const": "file"}, {"const": "git_commit"}, {"const": "git_diff"}, {"const": "report"}, {"const": "test_report"}, {"const": "validation"}],
+          "items": false,
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        },
+        "allowed_uri_schemes": {
+          "type": "array",
+          "prefixItems": [{"const": "project"}, {"const": "file"}, {"const": "relative"}],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "allowed_root_path_digests": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "sha256_required": {"const": true},
+        "immutable_ref_required": {"const": true},
+        "symlink_escape": {"const": "deny"},
+        "body_storage_in_ledger": {"const": false},
+        "sensitive_content": {"const": "deny"}
+      }
+    },
+    "quotas": {"$ref": "#/$defs/quotas"},
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issued_at", "not_before", "expires_at", "maximum_runtime_seconds", "maximum_preflight_age_seconds"],
+      "properties": {
+        "issued_at": {"$ref": "#/$defs/date_time"},
+        "not_before": {"$ref": "#/$defs/date_time"},
+        "expires_at": {"$ref": "#/$defs/date_time"},
+        "maximum_runtime_seconds": {"const": 14400},
+        "maximum_preflight_age_seconds": {"const": 120}
+      }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restore", "migration", "backup", "signing_key_rotation", "delivery", "outbox_dispatch", "product_submission", "stable_promotion", "push", "public_endpoint", "relay_or_tunnel"],
+      "properties": {
+        "restore": {"const": "deny_during_activation"},
+        "migration": {"const": "startup_only_exact_schema"},
+        "backup": {"const": "control_plane_only"},
+        "signing_key_rotation": {"const": "deny_during_activation"},
+        "delivery": {"const": "deny"},
+        "outbox_dispatch": {"const": "deny"},
+        "product_submission": {"const": "deny"},
+        "stable_promotion": {"const": "deny"},
+        "push": {"const": "deny"},
+        "public_endpoint": {"const": "deny"},
+        "relay_or_tunnel": {"const": "deny"}
+      }
+    },
+    "closeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listener_stopped", "lease_terminal", "token_revoked", "shadow_restored", "append_only_evidence_preserved", "decision_tombstoned", "secret_free_bundle"],
+      "properties": {
+        "listener_stopped": {"const": true},
+        "lease_terminal": {"const": true},
+        "token_revoked": {"const": true},
+        "shadow_restored": {"const": true},
+        "append_only_evidence_preserved": {"const": true},
+        "decision_tombstoned": {"const": true},
+        "secret_free_bundle": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "date_time": {"type": "string", "format": "date-time", "maxLength": 64},
+    "absolute_path": {"type": "string", "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]{1,4095}$", "maxLength": 4096},
+    "work_item_id": {"type": "string", "pattern": "^wi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "quotas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_new_work_items", "maximum_task_versions", "maximum_runtime_attempts", "maximum_attempt_events", "maximum_artifacts", "maximum_decisions", "maximum_applied_gate_events", "maximum_rejected_gate_events", "maximum_gate_events_total", "maximum_audit_events", "maximum_outbox_events", "maximum_acceptance_manifests", "maximum_lease_events"],
+      "properties": {
+        "maximum_new_work_items": {"const": 1},
+        "maximum_task_versions": {"const": 3},
+        "maximum_runtime_attempts": {"const": 4},
+        "maximum_attempt_events": {"const": 8},
+        "maximum_artifacts": {"const": 12},
+        "maximum_decisions": {"const": 8},
+        "maximum_applied_gate_events": {"const": 10},
+        "maximum_rejected_gate_events": {"const": 10},
+        "maximum_gate_events_total": {"const": 20},
+        "maximum_audit_events": {"const": 20},
+        "maximum_outbox_events": {"const": 20},
+        "maximum_acceptance_manifests": {"const": 1},
+        "maximum_lease_events": {"const": 64}
+      }
+    }
+  }
+}

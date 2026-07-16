@@ -1,0 +1,187 @@
+{
+  "schema_version": "wig_p3_canary_a1_r2_s1_closeout_receipt.v3",
+  "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
+  "supersedes_freeze_manifest_sha256": "5272431b672489d8ee810fd9fb51f97011bbdc22259bf1b0467d240439e5baf3",
+  "generated_at": "2026-07-11T18:54:28Z",
+  "verification_window": {
+    "started_at": "2026-07-11T16:59:00Z",
+    "ended_at": "2026-07-11T18:54:28Z",
+    "timezone": "UTC"
+  },
+  "outcome": {
+    "spec_candidate": "READY_FOR_INDEPENDENT_REVIEW",
+    "implementation": "NOT_AUTHORIZED_NOT_PERFORMED",
+    "deployment": "NOT_AUTHORIZED_NOT_PERFORMED",
+    "authoritative_activation": "NOT_AUTHORIZED_NOT_PERFORMED",
+    "commit": "NOT_AUTHORIZED_NOT_PERFORMED",
+    "push": "NOT_AUTHORIZED_NOT_PERFORMED",
+    "stable_promotion": "NOT_AUTHORIZED_NOT_PERFORMED"
+  },
+  "source_binding": {
+    "core_baseline_commit": "53d8939af22b019b2df2b555b85869ac39c5bba2",
+    "core_baseline_tree": "255caefec1fcbe2c56f4c19673cc8c37cefe2427",
+    "branch": "main",
+    "ahead_of_origin": 1,
+    "behind_origin": 0
+  },
+  "deliverables": {
+    "main_spec": "docs/work-item-governance/R2_SPEC_FREEZE.md",
+    "tool_allowlist": "docs/work-item-governance/r2-spec/authoritative-canary-tool-allowlist.v1.json",
+    "write_command_matrix": "docs/work-item-governance/r2-spec/work-item-write-command-matrix.v1.json",
+    "write_path_inventory": "docs/work-item-governance/r2-spec/write-path-inventory.v1.json",
+    "activation_envelope_schema": "docs/work-item-governance/r2-spec/activation-envelope.v1.schema.json",
+    "synthetic_fixture_schema": "docs/work-item-governance/r2-spec/synthetic-fixture-contract.v1.schema.json",
+    "preflight_receipt_schema": "docs/work-item-governance/r2-spec/preflight-receipt.v1.schema.json",
+    "activation_lease_schema": "docs/work-item-governance/r2-spec/activation-lease.v1.schema.json",
+    "activation_lease_event_schema": "docs/work-item-governance/r2-spec/activation-lease-event.v1.schema.json",
+    "negative_test_matrix": "docs/work-item-governance/r2-spec/negative-test-matrix.v1.json",
+    "future_closeout_receipt_schema": "docs/work-item-governance/r2-spec/r2-closeout-receipt.v1.schema.json",
+    "freeze_manifest": "docs/work-item-governance/r2-spec/FREEZE_MANIFEST.json",
+    "sanitized_review_bundle": "docs/WIG-P3-CANARY-A1-R2-S1-R3-review/manifest.json"
+  },
+  "frozen_counts": {
+    "tools": 14,
+    "write_commands": 16,
+    "allowed_writes": 7,
+    "denied_writes": 9,
+    "minimum_negative_tests": 81
+  },
+  "review_findings_closed": [
+    "one_shot_pre_listener_process_claim",
+    "lease_bound_synthetic_fixture_content",
+    "fresh_preflight_backup_and_baseline_binding",
+    "bounded_idempotent_activation_lease_events",
+    "runtime_isolation_and_token_revocation_evidence",
+    "complete_fresh_ledger_business_table_baseline",
+    "preclaim_and_postbind_listener_phase_separation",
+    "atomic_non_reusable_activation_envelope_claim",
+    "exact_lease_to_closeout_receipt_binding",
+    "review_endpoint_terminal_newline_normalization",
+    "application_request_capability_and_listener_readiness",
+    "machine_readable_fixture_envelope_preflight_and_event_contracts",
+    "closeout_false_pass_acceptance",
+    "digest_recomputation_algorithms",
+    "post_binding_create_replay_order",
+    "token_entropy_evidence",
+    "complete_runtime_path_and_process_identity_binding",
+    "request_context_exact_lease_and_authorization_binding",
+    "fixture_cross_field_semantic_contract",
+    "lease_event_lifecycle_and_state_version_semantics",
+    "recomputable_lease_snapshot_and_event_exports",
+    "implementation_conformance_vs_deployed_activation_boundary",
+    "persisted_monotonic_deadline_binding"
+  ],
+  "verification": [
+    {
+      "name": "json_parse_and_schema_meta_validation",
+      "command": "python3 inline validator using json and Draft202012Validator.check_schema",
+      "exit_code": 0,
+      "result": "all JSON parsed; all six Draft 2020-12 Schemas are meta-valid"
+    },
+    {
+      "name": "source_command_matrix_crosscheck",
+      "command": "python3 AST crosscheck against runner/work_item_mcp_adapter.py",
+      "exit_code": 0,
+      "result": "16 source writes exactly classified; 7 allowed and 9 denied"
+    },
+    {
+      "name": "allowlist_lease_matrix_crosscheck",
+      "command": "python3 exact-set and ordered Lease policy crosscheck",
+      "exit_code": 0,
+      "result": "14 unique tools; allowed and denied write sets match Lease Schema"
+    },
+    {
+      "name": "negative_test_inventory",
+      "command": "python3 count and unique-ID crosscheck",
+      "exit_code": 0,
+      "result": "81 unique required tests"
+    },
+    {
+      "name": "lease_prepared_claimed_active_conditionals",
+      "command": "python3 Draft202012Validator positive and negative Lease readiness examples",
+      "exit_code": 0,
+      "result": "prepared has no process/listener proof; claimed has process proof only; active requires persisted Listener and request-context bindings"
+    },
+    {
+      "name": "closeout_exact_zero_table_schema",
+      "command": "python3 Draft202012Validator positive receipt and bogus-key/Lease-binding rejection checks",
+      "exit_code": 0,
+      "result": "twelve arbitrary zero keys rejected; all 12 exact business-table names required"
+    },
+    {
+      "name": "wire_contract_positive_and_negative_instances",
+      "command": "python3 Draft202012Validator Envelope, Fixture, Preflight, Lease Event and Closeout instances",
+      "exit_code": 0,
+      "result": "all positive contracts validate with an explicitly registered strict RFC3339 checker; library-default empty date-time checking was detected and rejected; missing readiness, escaping path evidence, cross-field Fixture mismatch and invalid Event lifecycle bindings fail closed"
+    },
+    {
+      "name": "closeout_adversarial_pass_rejection",
+      "command": "python3 mutate valid PASS receipt with nonzero/passed=false verification, revoked Lease, fake protected asset, gap and wrong verification slot",
+      "exit_code": 0,
+      "result": "nonzero or passed=false verification, revoked Lease, fake protected asset, gap and wrong verification slot are rejected"
+    },
+    {
+      "name": "whitespace_and_secret_pattern_scan",
+      "command": "rg scans over R2 spec package",
+      "exit_code": 0,
+      "result": "no trailing whitespace or credential material found"
+    },
+    {
+      "name": "manifest_hash_recalculation",
+      "command": "python3 SHA-256 and byte-count recalculation for every manifest entry",
+      "exit_code": 0,
+      "result": "all file digests, byte counts and file-list root match"
+    },
+    {
+      "name": "sanitized_review_bundle_access_mechanism_precheck",
+      "command": "review source policy and approved JSON-RPC manage_files access mechanism for 127.0.0.1:8766 and 127.0.0.1:8776",
+      "exit_code": 0,
+      "result": "access mechanism is available; exact final frozen-bundle bytes are deliberately verified after this source-bound receipt and recorded by the final independent review, not self-attested here"
+    }
+  ],
+  "test_interpretation": {
+    "runtime_or_domain_tests_run": false,
+    "reason": "S1-R3 is a Machine Contract Semantic Closeout authorization; no runtime code changed",
+    "implementation_readiness_claimed": false
+  },
+  "protected_user_assets": {
+    "changed_by_spec_preparation": false,
+    "staged": false,
+    "committed": false,
+    "assets": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "93f35d00c48c99d357adc74101d5944a809bc5a8e54347c4470ba51e41b1fbef"
+      },
+      {
+        "path": "AGENTS - 副本.amd",
+        "sha256": "6a0ca4bfeaccc8f7ce360f33e05a4a970fa10903dcc425c8cc59b479e6ee8152"
+      },
+      {
+        "path": "AGENTS - 副本.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      },
+      {
+        "path": "AGENTS.md:Zone.Identifier",
+        "sha256": "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+      }
+    ]
+  },
+  "runtime_safety": {
+    "existing_shadow_canary_pid": 87149,
+    "existing_shadow_canary_auth_mode": "none",
+    "existing_shadow_canary_gate_mode": "shadow",
+    "existing_shadow_canary_restarted": false,
+    "a1_snapshot_refreshed": false,
+    "existing_service_modified": false,
+    "stable_runtime_modified": false
+  },
+  "workspace": {
+    "runtime_code_modified": false,
+    "schema_runtime_files_modified": false,
+    "new_files_are_specification_only": true,
+    "staged": false,
+    "committed": false
+  },
+  "result": "PASS"
+}
