@@ -14,8 +14,8 @@
       "additionalProperties": false,
       "required": ["core_baseline_commit", "implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256", "storage_schema_contract_digest", "fact_reconciliation_contract_digest"],
       "properties": {
-        "core_baseline_commit": {"const": "23d0a1799052502642302874be137e798692a87a"},
-        "implementation_commit": {"allOf": [{"$ref": "#/$defs/git_sha1"}, {"not": {"const": "23d0a1799052502642302874be137e798692a87a"}}]},
+        "core_baseline_commit": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"},
+        "implementation_commit": {"allOf": [{"$ref": "#/$defs/git_sha1"}, {"not": {"const": "53d8939af22b019b2df2b555b85869ac39c5bba2"}}]},
         "implementation_tree": {"$ref": "#/$defs/git_sha1"},
         "wheel_sha256": {"$ref": "#/$defs/sha256"},
         "installed_inventory_sha256": {"$ref": "#/$defs/sha256"},

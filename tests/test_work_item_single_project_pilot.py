@@ -73,6 +73,7 @@ from runner.work_item_governance.schema_loader import (
     load_governance_contract,
     validate_governance_record,
 )
+from runner.work_item_governance.source_binding import CORE_BASELINE_COMMIT
 
 
 SHA = "a" * 64
@@ -945,6 +946,14 @@ def test_frozen_storage_contract_matches_runtime_ddl() -> None:
     assert len(negative["tests"]) == 96
     assert len({item["id"] for item in negative["tests"]}) == 96
     assert all(isinstance(item["expected"], str) and item["expected"] for item in negative["tests"])
+
+
+def test_pilot_scope_schema_uses_runtime_attested_core_baseline() -> None:
+    schema = load_all_governance_schemas()["pilot_scope_envelope.v4"]
+    source_properties = schema["properties"]["source_binding"]["properties"]
+
+    assert source_properties["core_baseline_commit"]["const"] == CORE_BASELINE_COMMIT
+    assert source_properties["implementation_commit"]["allOf"][1]["not"]["const"] == CORE_BASELINE_COMMIT
 
 
 def test_authorization_binding_contract_has_no_unclassified_fields() -> None:

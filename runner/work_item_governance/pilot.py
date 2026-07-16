@@ -38,7 +38,7 @@ PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "981039fcc08d89189eccee317fa39b6d916e9353f6795eedd126618a8739c9fa",
+    "spec_manifest_digest": "7d7b265e0afe6492a3ef90d366ef9849c522959290f30003f1cd75dac2733b91",
     "storage_schema_contract_digest": "fbaac247078f8c89869968e8e9aadceb598f53ee1afb137fef36645140ea2ba8",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "80c628c020e78498f4d70964a820f963ca339b52bd84ecbb4c7d5b9e570f4857",
@@ -51,7 +51,7 @@ PILOT_FROZEN_CONTRACT_DIGESTS = {
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "remediated_spec_manifest_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"],
-    "scope_schema_sha256": "bba0e6a3771d74687c3b6e042b7e51af1198fe6dd218206b1fad2b65d9b45423",
+    "scope_schema_sha256": "4cc1aa87d04adccff37b7d08289339d764a20f096de7b0100623366835c190c2",
     "storage_schema_contract_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
     "activation_lease_schema_sha256": "359b82d7eba0e9c3018cc6c17573aa54dca312d4fe4fcd0af9ec20fce8f77c9c",
     "lease_event_schema_sha256": "c871099663b640acd7a0b4f3ae9e0ed21c1ff30e8fd180f255bb05062fa63380",
