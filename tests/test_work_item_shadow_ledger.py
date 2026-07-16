@@ -253,6 +253,101 @@ def test_missing_relative_completion_artifact_fails_without_completion(tmp_path:
     assert current["artifact_refs"] == []
 
 
+def test_completion_activation_reconciles_only_new_unique_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WorkItemApplicationService(tmp_path, enabled=True)
+    item = create(service)
+    work_item_id = item["work_item_id"]
+    attempt = service.create_execution_attempt(
+        {
+            "work_item_id": work_item_id,
+            "task_version": 1,
+            "source_event_key": "claim:artifact-reconciliation",
+        }
+    )["attempt"]
+    attempt_id = attempt["attempt_id"]
+    existing_artifact = {
+        "work_item_id": work_item_id,
+        "task_version": 1,
+        "attempt_id": attempt_id,
+        "kind": "report",
+        "uri": "https://e.invalid/existing-report",
+        "immutable_ref": "report:existing",
+        "digest": "a" * 64,
+        "source_event_key": "artifact:existing",
+    }
+    service.register_artifact_reference(existing_artifact)
+    new_artifact = {
+        "work_item_id": work_item_id,
+        "task_version": 1,
+        "attempt_id": attempt_id,
+        "kind": "test_report",
+        "uri": "https://e.invalid/new-report",
+        "immutable_ref": "report:new",
+        "digest": "b" * 64,
+        "source_event_key": "artifact:new",
+    }
+    observed: dict[str, object] = {}
+
+    class ReconciliationActivation:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.baseline = int(connection.execute("SELECT COUNT(*) FROM artifact_refs").fetchone()[0])
+            self.declared = -1
+
+        def authorize_new(
+            self,
+            *,
+            work_item_id: str,
+            fact_delta: dict[str, int],
+            domain_fact_delta: dict[str, int],
+        ) -> None:
+            assert work_item_id == item["work_item_id"]
+            assert fact_delta["artifacts"] == domain_fact_delta["artifacts"]
+            self.declared = fact_delta["artifacts"]
+            observed["declared"] = self.declared
+
+        def commit_new(
+            self,
+            *,
+            work_item_id: str,
+            generated_ids: dict[str, list[str]],
+        ) -> None:
+            assert work_item_id == item["work_item_id"]
+            actual = int(self.connection.execute("SELECT COUNT(*) FROM artifact_refs").fetchone()[0]) - self.baseline
+            assert actual == self.declared
+            observed["actual"] = actual
+            observed["generated_ids"] = generated_ids
+
+    monkeypatch.setattr(
+        service,
+        "_activation_begin",
+        lambda connection, **_kwargs: ReconciliationActivation(connection),
+    )
+    completion = service.complete_execution_attempt(
+        {
+            "attempt_id": attempt_id,
+            "status": "completed",
+            "source_event_key": "complete:artifact-reconciliation",
+            "artifacts": [existing_artifact, new_artifact, new_artifact],
+        }
+    )
+    inserted = next(
+        artifact
+        for artifact in completion["artifacts"]
+        if artifact["immutable_ref"] == new_artifact["immutable_ref"]
+    )
+
+    assert observed == {
+        "declared": 1,
+        "actual": 1,
+        "generated_ids": {"artifact_ids": [inserted["artifact_id"]]},
+    }
+    assert len(completion["artifacts"]) == 2
+
+
 def test_completion_idempotency_key_rejects_changed_content(tmp_path: Path) -> None:
     service = WorkItemApplicationService(tmp_path, enabled=True)
     item = create(service)

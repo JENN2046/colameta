@@ -1388,13 +1388,17 @@ class WorkItemApplicationService:
                                 "ARTIFACT_CONTEXT_MISMATCH",
                                 "Completion artifact Work Item/Task Version does not match the Attempt.",
                             )
+                    new_artifact_count = self._count_new_completion_artifacts(
+                        connection,
+                        normalized_artifacts,
+                    )
                     if activation is not None:
                         activation.authorize_new(
                             work_item_id=str(attempt["work_item_id"]),
-                            fact_delta={"artifacts": len(normalized_artifacts)},
+                            fact_delta={"artifacts": new_artifact_count},
                             domain_fact_delta=self._activation_domain_delta(
                                 attempt_events=1,
-                                artifacts=len(normalized_artifacts),
+                                artifacts=new_artifact_count,
                             ),
                         )
                     connection.execute(
@@ -1420,14 +1424,19 @@ class WorkItemApplicationService:
                             completed_at,
                         ),
                     )
+                    inserted_artifact_ids: list[str] = []
                     for artifact in normalized_artifacts:
-                        self._insert_artifact(connection, artifact, created_at=completed_at)
+                        artifact_row, artifact_replay = self._insert_artifact(
+                            connection,
+                            artifact,
+                            created_at=completed_at,
+                        )
+                        if not artifact_replay:
+                            inserted_artifact_ids.append(str(artifact_row["artifact_id"]))
                     if activation is not None:
                         activation.commit_new(
                             work_item_id=str(attempt["work_item_id"]),
-                            generated_ids={
-                                "artifact_ids": [artifact["artifact_id"] for artifact in normalized_artifacts]
-                            },
+                            generated_ids={"artifact_ids": inserted_artifact_ids},
                         )
                     idempotent = False
                 row = connection.execute("SELECT * FROM execution_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
@@ -2809,19 +2818,7 @@ class WorkItemApplicationService:
         *,
         created_at: str,
     ) -> tuple[sqlite3.Row, bool]:
-        existing = connection.execute(
-            "SELECT * FROM artifact_refs WHERE source_event_key=?", (artifact["source_event_key"],)
-        ).fetchone()
-        if existing is not None:
-            self._assert_existing_artifact_matches(existing, artifact)
-            return existing, True
-        existing = connection.execute(
-            """
-            SELECT * FROM artifact_refs
-            WHERE work_item_id=? AND kind=? AND immutable_ref=?
-            """,
-            (artifact["work_item_id"], artifact["kind"], artifact["immutable_ref"]),
-        ).fetchone()
+        existing = self._find_existing_artifact(connection, artifact)
         if existing is not None:
             self._assert_existing_artifact_matches(existing, artifact)
             return existing, True
@@ -2863,6 +2860,81 @@ class WorkItemApplicationService:
             "SELECT * FROM artifact_refs WHERE artifact_id=?", (artifact["artifact_id"],)
         ).fetchone()
         return row, False
+
+    @staticmethod
+    def _find_existing_artifact(
+        connection: sqlite3.Connection,
+        artifact: dict[str, Any],
+    ) -> sqlite3.Row | None:
+        existing = connection.execute(
+            "SELECT * FROM artifact_refs WHERE source_event_key=?", (artifact["source_event_key"],)
+        ).fetchone()
+        if existing is not None:
+            return existing
+        return connection.execute(
+            """
+            SELECT * FROM artifact_refs
+            WHERE work_item_id=? AND kind=? AND immutable_ref=?
+            """,
+            (artifact["work_item_id"], artifact["kind"], artifact["immutable_ref"]),
+        ).fetchone()
+
+    def _count_new_completion_artifacts(
+        self,
+        connection: sqlite3.Connection,
+        artifacts: list[dict[str, Any]],
+    ) -> int:
+        pending_by_source: dict[str, dict[str, Any]] = {}
+        pending_by_reference: dict[tuple[str, str, str], dict[str, Any]] = {}
+        count = 0
+        for artifact in artifacts:
+            existing = self._find_existing_artifact(connection, artifact)
+            if existing is not None:
+                self._assert_existing_artifact_matches(existing, artifact)
+                continue
+            reference_key = (
+                str(artifact["work_item_id"]),
+                str(artifact["kind"]),
+                str(artifact["immutable_ref"]),
+            )
+            pending = pending_by_source.get(str(artifact["source_event_key"]))
+            if pending is None:
+                pending = pending_by_reference.get(reference_key)
+            if pending is not None:
+                self._assert_pending_artifact_matches(pending, artifact)
+                continue
+            pending_by_source[str(artifact["source_event_key"])] = artifact
+            pending_by_reference[reference_key] = artifact
+            count += 1
+        return count
+
+    @staticmethod
+    def _assert_pending_artifact_matches(
+        existing: dict[str, Any],
+        artifact: dict[str, Any],
+    ) -> None:
+        content_fields = (
+            "work_item_id",
+            "task_version",
+            "attempt_id",
+            "kind",
+            "uri",
+            "immutable_ref",
+            "digest",
+            "metadata",
+        )
+        explicit_id_mismatch = (
+            artifact.get("_artifact_id_supplied") is True
+            and existing["artifact_id"] != artifact["artifact_id"]
+        )
+        if explicit_id_mismatch or any(
+            existing[field] != artifact[field] for field in content_fields
+        ):
+            raise WorkItemGovernanceError(
+                "IDEMPOTENCY_CONFLICT",
+                "Artifact registration key/reference is bound to different content.",
+                details={"artifact_id": existing["artifact_id"]},
+            )
 
     @staticmethod
     def _assert_existing_artifact_matches(row: sqlite3.Row, artifact: dict[str, Any]) -> None:
