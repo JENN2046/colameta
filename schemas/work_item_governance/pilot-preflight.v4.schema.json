@@ -35,12 +35,15 @@
     "execution_context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256", "python_executable", "cwd", "runtime_binding_digest"],
+      "required": ["implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256", "durable_artifact_evidence_digest", "durable_checkout_path_digest", "durable_wheel_path_digest", "python_executable", "cwd", "runtime_binding_digest"],
       "properties": {
         "implementation_commit": {"$ref": "#/$defs/git_sha1"},
         "implementation_tree": {"$ref": "#/$defs/git_sha1"},
         "wheel_sha256": {"$ref": "#/$defs/sha256"},
         "installed_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "durable_artifact_evidence_digest": {"$ref": "#/$defs/sha256"},
+        "durable_checkout_path_digest": {"$ref": "#/$defs/sha256"},
+        "durable_wheel_path_digest": {"$ref": "#/$defs/sha256"},
         "python_executable": {"$ref": "#/$defs/absolute_path"},
         "cwd": {"$ref": "#/$defs/absolute_path"},
         "runtime_binding_digest": {"$ref": "#/$defs/sha256"}

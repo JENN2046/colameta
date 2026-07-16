@@ -80,7 +80,9 @@ class PilotBootstrapPaths:
     backup_path: Path
 
     def resolved(self) -> PilotBootstrapPaths:
-        return PilotBootstrapPaths(**{field: Path(getattr(self, field)).expanduser().resolve() for field in self.__dataclass_fields__})
+        return PilotBootstrapPaths(
+            **{field: Path(getattr(self, field)).expanduser().resolve() for field in self.__dataclass_fields__}
+        )
 
 
 def _assert_private_path(root: Path, path: Path, field: str) -> None:
@@ -150,13 +152,7 @@ def _assert_port_available(port: int) -> None:
 def _canonical_relative_manifest_path(value: str) -> str:
     lexical = PurePosixPath(value)
     canonical = lexical.as_posix()
-    if (
-        not lexical.parts
-        or lexical.is_absolute()
-        or ".." in lexical.parts
-        or "\\" in value
-        or canonical != value
-    ):
+    if not lexical.parts or lexical.is_absolute() or ".." in lexical.parts or "\\" in value or canonical != value:
         raise WorkItemGovernanceError(
             "PILOT_PROJECT_SNAPSHOT_MISMATCH",
             "Path manifest entries must be canonical relative POSIX paths.",
@@ -200,7 +196,9 @@ def _measure_path_manifests(
                     )
                 relative = item
             if not isinstance(relative, str) or not relative or relative in seen:
-                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique.")
+                raise WorkItemGovernanceError(
+                    "PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique."
+                )
             relative = _canonical_relative_manifest_path(relative)
             candidate = project_root / relative
             try:
@@ -211,7 +209,9 @@ def _measure_path_manifests(
                     "Path manifest entry escapes the target project.",
                 ) from exc
             if candidate.is_symlink():
-                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest symlinks are forbidden.")
+                raise WorkItemGovernanceError(
+                    "PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest symlinks are forbidden."
+                )
             seen.add(relative)
             if kind == "protected":
                 if not candidate.is_file() or sha256_file(candidate) != item["sha256"]:
@@ -255,9 +255,11 @@ def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
 
     names = PILOT_TOOLS
     evidence = conformance["surface"]
-    exact = len(names) == len(set(names)) and conformance["result"] == "PASS" and evidence[
-        "visible_tool_set_digest"
-    ] == canonical_sha256(list(names))
+    exact = (
+        len(names) == len(set(names))
+        and conformance["result"] == "PASS"
+        and evidence["visible_tool_set_digest"] == canonical_sha256(list(names))
+    )
     return {
         "exposure_profile": "authoritative_canary",
         "scope_mode": PILOT_SCOPE_MODE,
@@ -380,7 +382,9 @@ def bootstrap_fresh_pilot_ledger(
             for table in PILOT_ZERO_FACT_TABLES
         }
     if any(zero.values()):
-        raise WorkItemGovernanceError("PILOT_ZERO_FACT_BASELINE_FAILED", "Fresh Pilot Ledger contains domain or Lease facts.")
+        raise WorkItemGovernanceError(
+            "PILOT_ZERO_FACT_BASELINE_FAILED", "Fresh Pilot Ledger contains domain or Lease facts."
+        )
     backup = ledger.backup_to(value.backup_path)
     backup_sha256 = sha256_file(value.backup_path)
     backup_record = {
@@ -390,9 +394,7 @@ def bootstrap_fresh_pilot_ledger(
         "database_generation": backup["database_generation"],
         "schema_version": backup["schema_version"],
         "integrity_check": (
-            backup["integrity_check"][0]
-            if isinstance(backup["integrity_check"], list)
-            else backup["integrity_check"]
+            backup["integrity_check"][0] if isinstance(backup["integrity_check"], list) else backup["integrity_check"]
         ),
         "foreign_key_violations": backup["foreign_key_violations"],
         "mode": format(stat.S_IMODE(value.backup_path.stat().st_mode), "04o"),
@@ -415,6 +417,9 @@ def bootstrap_fresh_pilot_ledger(
         "source_binding": {
             **source_attestation.source_binding,
             "installed_inventory_sha256": source_attestation.file_manifest_digest,
+            "durable_artifact_evidence_digest": source_attestation.evidence_digest,
+            "durable_checkout_path_digest": source_attestation.public_evidence()["checkout_path_digest"],
+            "durable_wheel_path_digest": source_attestation.public_evidence()["wheel_path_digest"],
         },
         "source_artifact_evidence_digest": source_attestation.evidence_digest,
         "surface": {
@@ -454,9 +459,7 @@ def build_fresh_pilot_preflight_receipt(
     """Measure and build a v4 Preflight; callers supply identities, never PASS flags."""
 
     value = validate_pilot_bootstrap_paths(paths)
-    if bootstrap_receipt.get("database_generation") != bootstrap_receipt.get("backup", {}).get(
-        "database_generation"
-    ):
+    if bootstrap_receipt.get("database_generation") != bootstrap_receipt.get("backup", {}).get("database_generation"):
         raise WorkItemGovernanceError(
             "PILOT_BACKUP_GENERATION_MISMATCH",
             "Fresh Pilot Preflight requires a generation-bound Backup.",
@@ -485,11 +488,15 @@ def build_fresh_pilot_preflight_receipt(
         checkout_root=source_checkout,
         wheel_artifact=wheel_artifact,
     )
+    source_public_evidence = source_attestation.public_evidence()
     measured_context = {
         "implementation_commit": source_attestation.source_binding["implementation_commit"],
         "implementation_tree": source_attestation.source_binding["implementation_tree"],
         "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
         "installed_inventory_sha256": source_attestation.file_manifest_digest,
+        "durable_artifact_evidence_digest": source_public_evidence["artifact_evidence_digest"],
+        "durable_checkout_path_digest": source_public_evidence["checkout_path_digest"],
+        "durable_wheel_path_digest": source_public_evidence["wheel_path_digest"],
         "python_executable": actual_executable,
         "cwd": actual_cwd,
     }
@@ -684,10 +691,7 @@ def build_fresh_pilot_preflight_receipt(
     if not private_evidence_clean:
         failures.append("authentication:token_in_private_evidence")
     conformance = authentication_conformance_receipt
-    if conformance["source_binding"] != {
-        field: execution_context[field]
-        for field in PILOT_SOURCE_BINDING_FIELDS
-    }:
+    if conformance["source_binding"] != {field: execution_context[field] for field in PILOT_SOURCE_BINDING_FIELDS}:
         failures.append("authentication:source_binding")
     if conformance["surface"]["visible_tool_set_digest"] != canonical_sha256(list(PILOT_TOOLS)):
         failures.append("authentication:surface")
@@ -758,9 +762,9 @@ def build_fresh_pilot_preflight_receipt(
             details={"failed_measurements": sorted(set(failures))},
         )
     observed = utc_now()
-    decision_matches = canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings[
-        "authorization_digest"
-    ]
+    decision_matches = (
+        canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings["authorization_digest"]
+    )
     authentication = {
         "caller_auth_mode": "token",
         "principal_authenticated_by": "local_session",
