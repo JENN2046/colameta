@@ -341,7 +341,17 @@ class ExecutorRunOnceService:
             try:
                 gateway = WorkItemCommandGateway(project_root)
                 governance_status = gateway.execute("get_work_item_governance_status", {})
-                if governance_status.get("enabled") is True:
+                if governance_status.get("enabled") is not True:
+                    blocks.append({
+                        "code": "WORK_ITEM_ATTEMPT_GOVERNANCE_DISABLED",
+                        "message": "plan 已绑定 Work Item Attempt，但 Work Item governance 未启用。",
+                    })
+                elif not isinstance(governance_status.get("ledger_schema_version"), int):
+                    blocks.append({
+                        "code": "WORK_ITEM_ATTEMPT_LEDGER_MISSING",
+                        "message": "plan 已绑定 Work Item Attempt，但 Work Item governance ledger 不存在。",
+                    })
+                else:
                     dispatch = gateway.execute(
                         "get_execution_attempt_dispatch_authority",
                         {
