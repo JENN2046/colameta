@@ -12,7 +12,7 @@ import subprocess  # nosec B404
 import sys
 from datetime import timedelta
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runner.work_item_governance.activation import (
@@ -146,6 +146,23 @@ def _assert_port_available(port: int) -> None:
             raise WorkItemGovernanceError("PILOT_PORT_UNAVAILABLE", "Pilot loopback port is unavailable.") from exc
 
 
+def _canonical_relative_manifest_path(value: str) -> str:
+    lexical = PurePosixPath(value)
+    canonical = lexical.as_posix()
+    if (
+        not lexical.parts
+        or lexical.is_absolute()
+        or ".." in lexical.parts
+        or "\\" in value
+        or canonical != value
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_PROJECT_SNAPSHOT_MISMATCH",
+            "Path manifest entries must be canonical relative POSIX paths.",
+        )
+    return canonical
+
+
 def _measure_path_manifests(
     project_root: Path,
     manifests: dict[str, Any],
@@ -183,6 +200,7 @@ def _measure_path_manifests(
                 relative = item
             if not isinstance(relative, str) or not relative or relative in seen:
                 raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique.")
+            relative = _canonical_relative_manifest_path(relative)
             candidate = project_root / relative
             try:
                 candidate.resolve(strict=False).relative_to(project_root)

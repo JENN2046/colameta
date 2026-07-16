@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import runner.work_item_governance.pilot_candidate as candidate_module
+import runner.work_item_governance.pilot_bootstrap as bootstrap_module
 
 from runner.mcp_server import (
     AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
@@ -113,6 +114,37 @@ def _v7_ledger(root: Path) -> SQLiteWorkItemLedger:
     legacy.migrate_to_v6()
     SQLiteWorkItemLedger(root, target_schema_version=6).migrate_to_v7()
     return SQLiteWorkItemLedger(root, target_schema_version=7)
+
+
+@pytest.mark.parametrize(
+    "invalid_path",
+    [
+        "{absolute}",
+        "subdir/../fixture.txt",
+        "./fixture.txt",
+        "subdir//fixture.txt",
+        "fixture.txt/",
+        r"subdir\fixture.txt",
+    ],
+)
+def test_pilot_path_manifests_require_canonical_relative_paths(
+    tmp_path: Path,
+    invalid_path: str,
+) -> None:
+    fixture = tmp_path / "fixture.txt"
+    fixture.write_text("pilot\n", encoding="utf-8")
+    if invalid_path == "{absolute}":
+        invalid_path = str(fixture.resolve())
+    manifests = {
+        "protected": {"paths": [{"path": "fixture.txt", "sha256": sha256_file(fixture)}]},
+        "allowed_read": {"paths": [invalid_path]},
+        "allowed_write": {"paths": ["output"]},
+    }
+
+    with pytest.raises(WorkItemGovernanceError) as raised:
+        bootstrap_module._measure_path_manifests(tmp_path.resolve(), manifests)
+
+    assert raised.value.code == "PILOT_PROJECT_SNAPSHOT_MISMATCH"
 
 
 def _write_test_pilot_candidate(
