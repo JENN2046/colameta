@@ -230,113 +230,175 @@ def _measure_path_manifests(
     return measured
 
 
-def _private_evidence_file_clean(*, root: Path, candidate: Path, token_bytes: bytes) -> bool:
-    """Read one governed evidence file without following or racing a symlink."""
+def _private_evidence_metadata_valid(observed: os.stat_result, *, kind: str) -> bool:
+    expected_kind = stat.S_ISDIR if kind == "directory" else stat.S_ISREG
+    return bool(
+        expected_kind(observed.st_mode)
+        and observed.st_uid == os.getuid()
+        and not stat.S_IMODE(observed.st_mode) & 0o077
+    )
 
-    try:
-        observed = os.lstat(candidate)
-    except OSError:
-        return False
+
+def _stable_evidence_metadata(before: os.stat_result, after: os.stat_result) -> bool:
+    stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_size", "st_mtime_ns", "st_ctime_ns")
+    return all(getattr(before, field) == getattr(after, field) for field in stable_fields)
+
+
+def _private_evidence_file_clean(
+    *,
+    directory_descriptor: int,
+    name: str,
+    observed: os.stat_result,
+    token_bytes: bytes,
+    scan_payload: bool,
+) -> bool:
+    """Read one governed evidence file relative to an already-bound directory."""
+
     if (
-        not stat.S_ISREG(observed.st_mode)
-        or observed.st_uid != os.getuid()
-        or stat.S_IMODE(observed.st_mode) & 0o077
-        or observed.st_size > 16 * 1024 * 1024
+        not _private_evidence_metadata_valid(observed, kind="file")
+        or (scan_payload and observed.st_size > 16 * 1024 * 1024)
     ):
-        return False
-    try:
-        candidate.relative_to(root)
-    except ValueError:
         return False
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(candidate, flags)
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
     except OSError:
         return False
     try:
         before = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(before.st_mode)
+            not _private_evidence_metadata_valid(before, kind="file")
             or (before.st_dev, before.st_ino) != (observed.st_dev, observed.st_ino)
-            or before.st_uid != os.getuid()
-            or stat.S_IMODE(before.st_mode) & 0o077
-            or before.st_size > 16 * 1024 * 1024
+            or (scan_payload and before.st_size > 16 * 1024 * 1024)
         ):
             return False
-        payload = bytearray()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            payload.extend(chunk)
+        payload = bytearray() if scan_payload else None
+        if payload is not None:
+            while chunk := os.read(descriptor, 1024 * 1024):
+                payload.extend(chunk)
         after = os.fstat(descriptor)
-        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        if not _stable_evidence_metadata(before, after):
             return False
-        return token_bytes not in payload
+        return payload is None or token_bytes not in payload
     finally:
         os.close(descriptor)
 
 
-def _token_absent_from_evidence_root(*, root: Path, excluded: set[Path], token_bytes: bytes) -> bool:
-    """Scan one explicit private evidence boundary with stable no-follow reads."""
+def _token_absent_from_evidence_directory(
+    *,
+    directory_descriptor: int,
+    relative_parts: tuple[str, ...],
+    excluded: set[tuple[str, ...]],
+    token_bytes: bytes,
+) -> bool:
+    """Recursively scan from a no-follow directory capability, never a child path."""
 
     try:
-        root_observed = os.lstat(root)
+        before = os.fstat(directory_descriptor)
+        names = sorted(os.listdir(directory_descriptor), key=lambda item: os.fsencode(item))
     except OSError:
         return False
-    if (
-        not stat.S_ISDIR(root_observed.st_mode)
-        or root_observed.st_uid != os.getuid()
-        or stat.S_IMODE(root_observed.st_mode) & 0o077
-    ):
+    if not _private_evidence_metadata_valid(before, kind="directory"):
         return False
-    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
-        current_path = Path(current)
+    for name in names:
+        relative = (*relative_parts, name)
         try:
-            current_observed = os.lstat(current_path)
+            observed = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
         except OSError:
             return False
-        if (
-            not stat.S_ISDIR(current_observed.st_mode)
-            or current_observed.st_uid != os.getuid()
-            or stat.S_IMODE(current_observed.st_mode) & 0o077
-        ):
-            return False
-        for name in directory_names:
-            candidate = current_path / name
+        if stat.S_ISDIR(observed.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
             try:
-                directory_observed = os.lstat(candidate)
+                child_descriptor = os.open(name, flags, dir_fd=directory_descriptor)
             except OSError:
                 return False
-            if (
-                not stat.S_ISDIR(directory_observed.st_mode)
-                or directory_observed.st_uid != os.getuid()
-                or stat.S_IMODE(directory_observed.st_mode) & 0o077
+            try:
+                child_before = os.fstat(child_descriptor)
+                if (
+                    not _private_evidence_metadata_valid(child_before, kind="directory")
+                    or (child_before.st_dev, child_before.st_ino) != (observed.st_dev, observed.st_ino)
+                    or not _token_absent_from_evidence_directory(
+                        directory_descriptor=child_descriptor,
+                        relative_parts=relative,
+                        excluded=excluded,
+                        token_bytes=token_bytes,
+                    )
+                    or not _stable_evidence_metadata(child_before, os.fstat(child_descriptor))
+                ):
+                    return False
+            finally:
+                os.close(child_descriptor)
+        elif stat.S_ISREG(observed.st_mode):
+            if not _private_evidence_file_clean(
+                directory_descriptor=directory_descriptor,
+                name=name,
+                observed=observed,
+                token_bytes=token_bytes,
+                scan_payload=relative not in excluded,
             ):
                 return False
-        for name in file_names:
-            candidate = current_path / name
-            if candidate in excluded:
-                continue
-            if not _private_evidence_file_clean(root=root, candidate=candidate, token_bytes=token_bytes):
-                return False
-    return True
+        else:
+            return False
+    try:
+        after_names = sorted(os.listdir(directory_descriptor), key=lambda item: os.fsencode(item))
+        after = os.fstat(directory_descriptor)
+    except OSError:
+        return False
+    return names == after_names and _stable_evidence_metadata(before, after)
+
+
+def _token_absent_from_evidence_root(
+    *, root: Path, excluded: set[tuple[str, ...]], token_bytes: bytes
+) -> bool:
+    """Bind and scan one explicit private evidence root as a directory capability."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(root, flags)
+    except OSError:
+        return False
+    try:
+        before = os.fstat(descriptor)
+        if not _private_evidence_metadata_valid(before, kind="directory"):
+            return False
+        if not _token_absent_from_evidence_directory(
+            directory_descriptor=descriptor,
+            relative_parts=(),
+            excluded=excluded,
+            token_bytes=token_bytes,
+        ):
+            return False
+        after = os.fstat(descriptor)
+        try:
+            rebound = os.stat(root, follow_symlinks=False)
+        except OSError:
+            return False
+        return (
+            _stable_evidence_metadata(before, after)
+            and stat.S_ISDIR(rebound.st_mode)
+            and (after.st_dev, after.st_ino) == (rebound.st_dev, rebound.st_ino)
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> dict[str, bool]:
     """Measure governed bundle and log roots without traversing runtime/build trees."""
 
     token_bytes = token.encode("utf-8")
-    excluded = {paths.backup_path}
-    bundle_roots = (paths.backup_path.parent, paths.xdg_data_home)
-    log_roots = (paths.xdg_state_home,)
+    roots = {
+        "bundle": (
+            (paths.backup_path.parent, {(paths.backup_path.name,)}),
+            (paths.xdg_data_home, set()),
+        ),
+        "logs": ((paths.xdg_state_home, set()),),
+    }
     return {
-        "bundle": all(
+        category: all(
             _token_absent_from_evidence_root(root=root, excluded=excluded, token_bytes=token_bytes)
-            for root in bundle_roots
-        ),
-        "logs": all(
-            _token_absent_from_evidence_root(root=root, excluded=excluded, token_bytes=token_bytes)
-            for root in log_roots
-        ),
+            for root, excluded in boundaries
+        )
+        for category, boundaries in roots.items()
     }
 
 

@@ -1814,12 +1814,52 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert suffix_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     suffix_bypass.unlink()
+    outside_evidence = tmp_path / "outside-evidence"
+    outside_evidence.mkdir(mode=0o700)
+    outside_payload = outside_evidence / "credential.log"
+    outside_payload.write_text(leaked_token, encoding="utf-8")
+    outside_payload.chmod(0o600)
     symlink_escape = root / "evidence/escaped-evidence"
-    symlink_escape.symlink_to(tmp_path / "outside-evidence")
+    symlink_escape.symlink_to(outside_evidence, target_is_directory=True)
     with pytest.raises(WorkItemGovernanceError) as symlink_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert symlink_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     symlink_escape.unlink()
+    race_directory = root / "evidence/race"
+    race_directory.mkdir(mode=0o700)
+    race_payload = race_directory / "safe.txt"
+    race_payload.write_text("secret-free", encoding="utf-8")
+    race_payload.chmod(0o600)
+    displaced_directory = root / "evidence/race-original"
+    original_open = os.open
+    swapped = False
+
+    def swap_directory_before_open(
+        path: str | bytes | int,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "race" and dir_fd is not None and not swapped:
+            swapped = True
+            race_directory.rename(displaced_directory)
+            race_directory.symlink_to(outside_evidence, target_is_directory=True)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    try:
+        with monkeypatch.context() as race_patch:
+            race_patch.setattr(bootstrap_module.os, "open", swap_directory_before_open)
+            with pytest.raises(WorkItemGovernanceError) as directory_race_error:
+                build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+        assert directory_race_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+        assert swapped is True
+    finally:
+        if race_directory.is_symlink():
+            race_directory.unlink()
+        if displaced_directory.exists():
+            displaced_directory.rename(race_directory)
     incomplete_surface = json.loads(json.dumps(authentication_receipt))
     incomplete_surface["surface"].pop("hidden_tool_error_code")
     with pytest.raises(WorkItemGovernanceError):

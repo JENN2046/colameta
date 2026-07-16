@@ -19,7 +19,7 @@ from typing import Any
 
 
 _EXPECTED_ENVIRONMENT_TREE_SHA256 = (
-    "ac37b262291e178d8e877e1d54045161dfd6bd8e0be2e51b9b1c0324264de36c"
+    "32663b4400cad650c4a1e7678795fb399e428330cf5d3e88b613269b59755d5d"
 )
 _SOURCE_ROOTS = frozenset({"runner", "adapters", "schemas", "scripts", "tests"})
 _PROTECTED_PATHS = frozenset(
