@@ -4554,7 +4554,11 @@ class MCPPlanningBridgeServer:
                 "The Authoritative Canary endpoint is bound to one exact project and forbids routing overrides.",
             )
         if params.get("project_name") is not None:
-            return self._route_project_name_tool(name, params, require_managed=False)
+            return self._route_project_name_tool(
+                name,
+                params,
+                require_managed=name not in WORK_ITEM_READ_TOOLS,
+            )
         clean = self._strip_project_name_param(params)
         try:
             return execute_work_item_mcp_command(

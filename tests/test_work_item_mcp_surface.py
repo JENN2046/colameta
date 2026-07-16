@@ -5,9 +5,12 @@ import json
 from pathlib import Path
 
 from runner.mcp_server import (
+    WORK_ITEM_APPLY_TOOLS,
     WORK_ITEM_MCP_TOOLS,
+    WORK_ITEM_PREVIEW_TOOLS,
     MCPPlanningBridgeServer,
 )
+from runner.project_registry import ProjectRegistry
 from runner.work_item_principal_adapter import principal_from_auth_context
 
 
@@ -19,6 +22,38 @@ def test_work_item_tools_are_registered_with_fail_closed_scopes(tmp_path: Path) 
     assert server.get_required_scope_for_tool("get_work_item", {}) == "mcp:read"
     assert server.get_required_scope_for_tool("preview_work_item_create", {}) == "mcp:preview"
     assert server.get_required_scope_for_tool("apply_work_item_transition", {}) == "mcp:commit"
+
+
+def test_service_mode_work_item_writes_require_managed_project_routing(tmp_path: Path) -> None:
+    source_only = tmp_path / "source-only"
+    (source_only / ".git").mkdir(parents=True)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "project-registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(source_only),
+        project_name="source-only-project",
+        project_mode="source-only",
+    )
+    assert registered["ok"] is True
+
+    server = MCPPlanningBridgeServer(str(tmp_path), service_mode=True)
+    server.project_registry = registry
+    status = server.call_tool_for_agent(
+        "get_work_item_governance_status",
+        {"project_name": "source-only-project"},
+    )
+    assert status["ok"] is True
+
+    for tool_name in (*WORK_ITEM_PREVIEW_TOOLS, *WORK_ITEM_APPLY_TOOLS):
+        denied = server.call_tool_for_agent(
+            tool_name,
+            {"project_name": "source-only-project"},
+        )
+        assert denied["ok"] is False, tool_name
+        assert denied["error_code"] == "PROJECT_MODE_UNSUPPORTED", tool_name
+    assert not (source_only / ".colameta").exists()
 
 
 def test_mcp_feature_is_default_off_and_explicit_preview_apply_works_when_enabled(tmp_path: Path) -> None:
