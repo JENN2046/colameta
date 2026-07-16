@@ -173,6 +173,34 @@ def test_multiple_task_versions_attempts_and_idempotent_completion(tmp_path: Pat
     validate_governance_record("artifact_reference.v1", current["artifact_refs"][0])
 
 
+def test_old_task_version_replay_returns_the_original_version(tmp_path: Path) -> None:
+    service = WorkItemApplicationService(tmp_path, enabled=True)
+    item = create(service)
+    work_item_id = item["work_item_id"]
+    version_two = {
+        "work_item_id": work_item_id,
+        "task_version": 2,
+        "task": {"plan_version_refs": ["plan:v2"]},
+        "source_event_key": "task:replay:v2",
+    }
+    service.add_task_version(version_two)
+    service.add_task_version(
+        {
+            "work_item_id": work_item_id,
+            "task_version": 3,
+            "task": {"plan_version_refs": ["plan:v3"]},
+            "source_event_key": "task:replay:v3",
+        }
+    )
+
+    replay = service.add_task_version(version_two)
+
+    assert replay["idempotent_replay"] is True
+    assert replay["task_version"]["task_version"] == 2
+    assert replay["task_version"]["plan_version_refs"] == ["plan:v2"]
+    assert service.get_work_item(work_item_id)["current_task_version"] == 3
+
+
 def test_artifact_digest_mismatch_fails_without_registration(tmp_path: Path) -> None:
     service = WorkItemApplicationService(tmp_path, enabled=True)
     item = create(service)

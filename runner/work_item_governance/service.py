@@ -919,6 +919,7 @@ class WorkItemApplicationService:
                         raise WorkItemGovernanceError("IDEMPOTENCY_CONFLICT", "Task Version event key is already in use.")
                     if activation is not None:
                         activation.authorize_replay(work_item_id=work_item_id)
+                    result_row = existing
                     idempotent = True
                 else:
                     work_item = self._work_item_row(connection, work_item_id)
@@ -960,10 +961,17 @@ class WorkItemApplicationService:
                     )
                     if activation is not None:
                         activation.commit_new(work_item_id=work_item_id)
+                    result_row = connection.execute(
+                        "SELECT * FROM task_versions WHERE work_item_id=? AND task_version=?",
+                        (work_item_id, task_version),
+                    ).fetchone()
                     idempotent = False
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="add_task_version") from exc
-        return {"task_version": self.get_work_item(work_item_id)["task_versions"][-1], "idempotent_replay": idempotent}
+        return {
+            "task_version": self._materialize_task_version(result_row),
+            "idempotent_replay": idempotent,
+        }
 
     def create_execution_attempt(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
