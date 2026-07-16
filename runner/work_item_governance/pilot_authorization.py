@@ -11,6 +11,9 @@ from typing import Any
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256
 from runner.work_item_governance.activation import canonical_path_digest
 from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.pilot_candidate import (
+    load_validated_pilot_candidate_for_authorization,
+)
 from runner.work_item_governance.pilot import (
     PILOT_FROZEN_CONTRACT_DIGESTS,
     build_pilot_semantic_validation_receipt,
@@ -25,6 +28,7 @@ from runner.work_item_governance.repository import SQLiteWorkItemLedger
 
 _CAPABILITY_FIELDS = (
     "_tombstone_json",
+    "_candidate_validation_receipt_json",
     "_authorization_json",
     "_scope_envelope_json",
     "_execution_receipt_json",
@@ -40,6 +44,7 @@ class ConsumedPilotAuthorization:
 
     __slots__ = (
         "_tombstone_json",
+        "_candidate_validation_receipt_json",
         "_authorization_json",
         "_scope_envelope_json",
         "_execution_receipt_json",
@@ -74,6 +79,10 @@ class ConsumedPilotAuthorization:
     @property
     def authorization(self) -> dict[str, Any]:
         return self._copy("_authorization_json")
+
+    @property
+    def candidate_validation_receipt(self) -> dict[str, Any]:
+        return self._copy("_candidate_validation_receipt_json")
 
     @property
     def scope_envelope(self) -> dict[str, Any]:
@@ -210,28 +219,139 @@ def _persist_authorization_claim(
     )
 
 
-def _read_private_regular_json(path: Path) -> dict[str, Any]:
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_uid != os.getuid():
-        raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
-            "Pilot authorization must be an owned, non-symlink regular file.",
-        )
-    if stat.S_IMODE(info.st_mode) & 0o077:
-        raise WorkItemGovernanceError(
-            "PILOT_AUTHORIZATION_FILE_MODE_INVALID",
-            "Pilot authorization file must not grant group or world access.",
-        )
+def _open_directory_without_symlinks(path: Path) -> int:
+    directory = Path(os.path.abspath(path.expanduser()))
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        descriptor = os.open(directory.anchor, flags)
+        for component in directory.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_PATH_INVALID",
+            "Pilot authorization paths must not traverse symbolic links.",
+        ) from exc
+
+
+def _strict_json_object(raw: bytes) -> dict[str, Any]:
+    def pairs(value: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in value:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = item
+        return result
+
+    value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
+    if not isinstance(value, dict):
+        raise ValueError("JSON object required")
+    return value
+
+
+def _read_private_regular_json_at(
+    directory_fd: int, name: str
+) -> tuple[dict[str, Any], tuple[int, int]]:
+    try:
+        path_info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
         raise WorkItemGovernanceError(
             "PILOT_AUTHORIZATION_FILE_INVALID",
             "Pilot authorization JSON is unreadable or invalid.",
         ) from exc
-    if not isinstance(value, dict):
-        raise WorkItemGovernanceError("PILOT_AUTHORIZATION_FILE_INVALID", "Pilot authorization must be an object.")
-    return value
+    if (
+        stat.S_ISLNK(path_info.st_mode)
+        or not stat.S_ISREG(path_info.st_mode)
+        or path_info.st_uid != os.getuid()
+        or path_info.st_nlink != 1
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+            "Pilot authorization must be an owned, non-symlink regular file.",
+        )
+    if stat.S_IMODE(path_info.st_mode) & 0o077:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_MODE_INVALID",
+            "Pilot authorization file must not grant group or world access.",
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_dev != path_info.st_dev
+                or opened.st_ino != path_info.st_ino
+                or opened.st_uid != os.getuid()
+                or opened.st_nlink != 1
+                or stat.S_IMODE(opened.st_mode) & 0o077
+            ):
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+                    "Pilot authorization changed while it was being opened.",
+                )
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            finished = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except WorkItemGovernanceError:
+        raise
+    except OSError as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_INVALID",
+            "Pilot authorization JSON is unreadable or invalid.",
+        ) from exc
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_uid",
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(getattr(opened, field) != getattr(finished, field) for field in stable_fields):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+            "Pilot authorization changed while it was being read.",
+        )
+    raw = b"".join(chunks)
+    if len(raw) != opened.st_size:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+            "Pilot authorization changed while it was being read.",
+        )
+    try:
+        value = _strict_json_object(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHORIZATION_FILE_INVALID",
+            "Pilot authorization JSON is unreadable or invalid.",
+        ) from exc
+    return value, (opened.st_dev, opened.st_ino)
+
+
+def _read_private_regular_json(path: Path) -> dict[str, Any]:
+    directory_fd = _open_directory_without_symlinks(path.parent)
+    try:
+        value, _ = _read_private_regular_json_at(directory_fd, path.name)
+        return value
+    finally:
+        os.close(directory_fd)
 
 
 class PilotAuthorizationDecisionConsumer:
@@ -245,12 +365,15 @@ class PilotAuthorizationDecisionConsumer:
     def __init__(
         self,
         *,
+        candidate_dir: Path,
         decision_path: Path,
         tombstone_path: Path,
         ledger: SQLiteWorkItemLedger,
     ) -> None:
-        self.decision_path = decision_path.expanduser().resolve()
-        self.tombstone_path = tombstone_path.expanduser().resolve()
+        # Keep final path components unresolved so trust checks still see links.
+        self.candidate_dir = Path(os.path.abspath(candidate_dir.expanduser()))
+        self.decision_path = Path(os.path.abspath(decision_path.expanduser()))
+        self.tombstone_path = Path(os.path.abspath(tombstone_path.expanduser()))
         self.ledger = ledger
         if self.decision_path == self.tombstone_path:
             raise WorkItemGovernanceError(
@@ -269,22 +392,121 @@ class PilotAuthorizationDecisionConsumer:
         preflight_semantic_validation_receipt: dict[str, Any],
         expected_authorization_digest: str,
     ) -> ConsumedPilotAuthorization:
-        self.tombstone_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        os.chmod(self.tombstone_path.parent, 0o700)
-        descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        candidate = load_validated_pilot_candidate_for_authorization(
+            self.candidate_dir
+        )
+        candidate_records = candidate["records"]
+        candidate_validation_receipt = candidate["validation_receipt"]
+        supplied_scope = json.loads(canonical_json(scope_envelope))
+        supplied_execution = json.loads(canonical_json(execution_authorization_receipt))
+        input_mismatches: list[str] = []
+        if canonical_json(supplied_execution) != canonical_json(
+            candidate_records["execution-authorization-receipt.json"]
+        ):
+            input_mismatches.append("execution_authorization_receipt")
+        if canonical_json(supplied_scope) != canonical_json(
+            candidate_records["scope-envelope.json"]
+        ):
+            input_mismatches.append("scope_envelope")
+        if input_mismatches:
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_CANDIDATE_MISMATCH",
+                "Pilot authorization inputs differ from the validated candidate.",
+                details={"mismatched_records": input_mismatches},
+            )
+        # From this point onward consume only private JSON snapshots. In
+        # particular, scope and execution come from the validated candidate,
+        # never from caller-owned mutable dictionaries.
+        scope_envelope = candidate_records["scope-envelope.json"]
+        execution_authorization_receipt = candidate_records[
+            "execution-authorization-receipt.json"
+        ]
+        preflight_receipt = json.loads(canonical_json(preflight_receipt))
+        authentication_conformance_receipt = json.loads(
+            canonical_json(authentication_conformance_receipt)
+        )
+        preflight_semantic_validation_receipt = json.loads(
+            canonical_json(preflight_semantic_validation_receipt)
+        )
+        tombstone_directory_fd = _open_directory_without_symlinks(
+            self.tombstone_path.parent
+        )
+        tombstone_directory_info = os.fstat(tombstone_directory_fd)
+        if (
+            tombstone_directory_info.st_uid != os.getuid()
+            or stat.S_IMODE(tombstone_directory_info.st_mode) != 0o700
+        ):
+            os.close(tombstone_directory_fd)
+            raise WorkItemGovernanceError(
+                "PILOT_AUTHORIZATION_PATH_INVALID",
+                "Pilot authorization Tombstone directory must be owned and mode-0700.",
+            )
+        try:
+            decision_directory_fd = _open_directory_without_symlinks(
+                self.decision_path.parent
+            )
+        except Exception:
+            os.close(tombstone_directory_fd)
+            raise
+        lock_flags = (
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(
+                self.lock_path.name,
+                lock_flags,
+                0o600,
+                dir_fd=tombstone_directory_fd,
+            )
+        except Exception:
+            os.close(decision_directory_fd)
+            os.close(tombstone_directory_fd)
+            raise
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            if self.tombstone_path.exists():
+            try:
+                tombstone_info = os.stat(
+                    self.tombstone_path.name,
+                    dir_fd=tombstone_directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                tombstone_info = None
+            if tombstone_info is not None and stat.S_ISLNK(tombstone_info.st_mode):
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_PATH_INVALID",
+                    "Pilot authorization Tombstone must not be a symbolic link.",
+                )
+            if tombstone_info is not None:
                 raise WorkItemGovernanceError(
                     "PILOT_AUTHORIZATION_ALREADY_CONSUMED",
                     "Pilot one-shot authorization already has a permanent Tombstone.",
                 )
-            if not self.decision_path.is_file():
+            try:
+                os.stat(
+                    self.decision_path.name,
+                    dir_fd=decision_directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError as exc:
                 raise WorkItemGovernanceError(
                     "PILOT_AUTHORIZATION_DECISION_MISSING",
                     "Pilot one-shot authorization decision is missing.",
+                ) from exc
+            decision, decision_identity = _read_private_regular_json_at(
+                decision_directory_fd, self.decision_path.name
+            )
+            if canonical_json(decision) != canonical_json(
+                candidate_records["PILOT_AUTHORIZATION_TEMPLATE.json"]
+            ):
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_CANDIDATE_MISMATCH",
+                    "Pilot authorization decision differs from the validated candidate.",
+                    details={"mismatched_records": ["pilot_authorization"]},
                 )
-            decision = _read_private_regular_json(self.decision_path)
             validate_pilot_authority_chain(
                 decision,
                 scope_envelope=scope_envelope,
@@ -316,6 +538,9 @@ class PilotAuthorizationDecisionConsumer:
                 "schema_version": "wig_p3_bounded_single_project_pilot_authorization_tombstone.v1",
                 "gate_id": decision["gate_id"],
                 "authorization_digest": digest,
+                "candidate_validation_receipt_digest": canonical_sha256(
+                    candidate_validation_receipt
+                ),
                 "scope_envelope_digest": canonical_sha256(scope_envelope),
                 "execution_authorization_receipt_digest": canonical_sha256(execution_authorization_receipt),
                 "preflight_receipt_digest": canonical_sha256(preflight_receipt),
@@ -325,24 +550,46 @@ class PilotAuthorizationDecisionConsumer:
                 "decision": "CONSUMED",
                 "retry_allowed": False,
             }
-            temporary = self.tombstone_path.with_suffix(self.tombstone_path.suffix + ".tmp")
+            temporary_name = self.tombstone_path.name + ".tmp"
             flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
-            temp_fd = os.open(temporary, flags, 0o600)
+            temp_fd = os.open(
+                temporary_name, flags, 0o600, dir_fd=tombstone_directory_fd
+            )
             try:
-                os.write(temp_fd, canonical_json(tombstone).encode("utf-8"))
+                remaining = memoryview(canonical_json(tombstone).encode("utf-8"))
+                while remaining:
+                    written = os.write(temp_fd, remaining)
+                    remaining = remaining[written:]
                 os.fsync(temp_fd)
             finally:
                 os.close(temp_fd)
-            os.replace(temporary, self.tombstone_path)
-            os.chmod(self.tombstone_path, 0o600)
-            self.decision_path.unlink()
-            directory_fd = os.open(self.tombstone_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            os.replace(
+                temporary_name,
+                self.tombstone_path.name,
+                src_dir_fd=tombstone_directory_fd,
+                dst_dir_fd=tombstone_directory_fd,
+            )
+            decision_after = os.stat(
+                self.decision_path.name,
+                dir_fd=decision_directory_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(decision_after.st_mode)
+                or (decision_after.st_dev, decision_after.st_ino)
+                != decision_identity
+            ):
+                raise WorkItemGovernanceError(
+                    "PILOT_AUTHORIZATION_FILE_UNTRUSTED",
+                    "Pilot authorization changed before one-shot consumption.",
+                )
+            os.unlink(self.decision_path.name, dir_fd=decision_directory_fd)
+            os.fsync(tombstone_directory_fd)
+            if decision_directory_fd != tombstone_directory_fd:
+                os.fsync(decision_directory_fd)
             payload = {
                 "tombstone": tombstone,
+                "candidate_validation_receipt": candidate_validation_receipt,
                 "authorization": decision,
                 "scope_envelope": scope_envelope,
                 "execution_receipt": execution_authorization_receipt,
@@ -356,6 +603,7 @@ class PilotAuthorizationDecisionConsumer:
                 canonical_json(payload[field])
                 for field in (
                     "tombstone",
+                    "candidate_validation_receipt",
                     "authorization",
                     "scope_envelope",
                     "execution_receipt",
@@ -394,6 +642,8 @@ class PilotAuthorizationDecisionConsumer:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
+                os.close(decision_directory_fd)
+                os.close(tombstone_directory_fd)
 
 def _verified_persisted_authority(
     value: Any,
@@ -424,10 +674,23 @@ def _verified_persisted_authority(
             "PILOT_AUTHORIZATION_CAPABILITY_INVALID",
             "Persisted Pilot authority has invalid runtime or snapshot types.",
         )
-    tombstone, authorization, scope, execution, preflight, authentication, semantic, decision_semantic = records
+    (
+        tombstone,
+        candidate_validation_receipt,
+        authorization,
+        scope,
+        execution,
+        preflight,
+        authentication,
+        semantic,
+        decision_semantic,
+    ) = records
     authorization_digest = canonical_sha256(authorization)
     expected_tombstone_bindings = {
         "authorization_digest": authorization_digest,
+        "candidate_validation_receipt_digest": canonical_sha256(
+            candidate_validation_receipt
+        ),
         "scope_envelope_digest": canonical_sha256(scope),
         "execution_authorization_receipt_digest": canonical_sha256(execution),
         "preflight_receipt_digest": canonical_sha256(preflight),

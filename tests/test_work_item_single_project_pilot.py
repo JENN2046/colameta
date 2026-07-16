@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import runner.work_item_governance.pilot_candidate as candidate_module
+
 from runner.mcp_server import (
     AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
     MCPPlanningBridgeServer,
@@ -52,6 +54,9 @@ from runner.work_item_governance.pilot_bootstrap import (
     PilotBootstrapPaths,
     bootstrap_fresh_pilot_ledger,
     build_fresh_pilot_preflight_receipt,
+)
+from runner.work_item_governance.pilot_candidate import (
+    write_validated_pilot_candidate_records,
 )
 from runner.work_item_governance.pilot_authorization import (
     ConsumedPilotAuthorization,
@@ -109,6 +114,40 @@ def _v7_ledger(root: Path) -> SQLiteWorkItemLedger:
     return SQLiteWorkItemLedger(root, target_schema_version=7)
 
 
+def _write_test_pilot_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    output: Path,
+    *,
+    authorization: dict[str, object],
+    scope: dict[str, object],
+    execution: dict[str, object],
+) -> Path:
+    monkeypatch.setattr(
+        candidate_module,
+        "validate_execution_authorization_receipt",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        candidate_module,
+        "validate_pilot_scope_envelope",
+        lambda value, **kwargs: value,
+    )
+    monkeypatch.setattr(
+        candidate_module,
+        "validate_pilot_authorization",
+        lambda value, **kwargs: value,
+    )
+    write_validated_pilot_candidate_records(
+        output,
+        {
+            "execution-authorization-receipt.json": execution,
+            "scope-envelope.json": scope,
+            "PILOT_AUTHORIZATION_TEMPLATE.json": authorization,
+        },
+    )
+    return output
+
+
 def _consumed_authority(
     monkeypatch: pytest.MonkeyPatch,
     root: Path,
@@ -119,7 +158,10 @@ def _consumed_authority(
 
     authorization = {
         "gate_id": lease["authorization_id"],
-        "bindings": {"candidate_manifest_sha256": SHA},
+        "bindings": {
+            "candidate_manifest_sha256": SHA,
+            "authentication_conformance_receipt_digest": canonical_sha256({}),
+        },
         "target": {
             "bind_address": lease["runtime_binding"]["bind_address"],
             "port": lease["runtime_binding"]["port"],
@@ -202,7 +244,15 @@ def _consumed_authority(
     lease["scope_envelope_digest"] = canonical_sha256(scope)
     for field, digest in PILOT_FROZEN_CONTRACT_DIGESTS.items():
         lease[field] = digest
+    candidate_dir = _write_test_pilot_candidate(
+        monkeypatch,
+        root / "candidate",
+        authorization=authorization,
+        scope=scope,
+        execution=execution,
+    )
     return PilotAuthorizationDecisionConsumer(
+        candidate_dir=candidate_dir,
         decision_path=decision_path,
         tombstone_path=tombstone_path,
         ledger=ledger,
@@ -753,6 +803,7 @@ def test_public_authorization_consumer_cannot_mint_repository_write_authority(tm
 
     ledger = _v7_ledger(tmp_path)
     consumer = PilotAuthorizationDecisionConsumer(
+        candidate_dir=tmp_path / "candidate",
         decision_path=tmp_path / "decision.json",
         tombstone_path=tmp_path / "decision.tombstone.json",
         ledger=ledger,
@@ -1864,9 +1915,13 @@ def test_one_shot_authorization_is_atomically_tombstoned(
 
     decision = {
         "gate_id": "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST",
-        "bindings": {"candidate_manifest_sha256": SHA},
+        "bindings": {
+            "candidate_manifest_sha256": SHA,
+            "authentication_conformance_receipt_digest": canonical_sha256({}),
+        },
     }
     scope = {"scope": "test", "target_project": {"project_snapshot_digest": SHA}}
+    execution: dict[str, object] = {}
     decision_path = tmp_path / "decision.json"
     tombstone_path = tmp_path / "decision.tombstone.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
@@ -1874,16 +1929,28 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     monkeypatch.setattr(module, "validate_pilot_authorization", lambda value, scope_envelope: value)
     monkeypatch.setattr(module, "validate_pilot_scope_envelope", lambda value, **kwargs: value)
     monkeypatch.setattr(module, "validate_pilot_preflight", lambda value: value)
-    monkeypatch.setattr(module, "validate_pilot_authority_chain", lambda *args, **kwargs: None)
+    def mutate_caller_inputs(*args: object, **kwargs: object) -> None:
+        scope["scope"] = "mutated-during-consumption"
+        execution["mutated"] = True
+
+    monkeypatch.setattr(module, "validate_pilot_authority_chain", mutate_caller_inputs)
     monkeypatch.setattr(module, "build_pilot_semantic_validation_receipt", lambda **kwargs: {"result": "PASS"})
+    candidate_dir = _write_test_pilot_candidate(
+        monkeypatch,
+        tmp_path / "candidate",
+        authorization=decision,
+        scope=scope,
+        execution=execution,
+    )
     consumer = PilotAuthorizationDecisionConsumer(
+        candidate_dir=candidate_dir,
         decision_path=decision_path,
         tombstone_path=tombstone_path,
         ledger=_v7_ledger(tmp_path),
     )
     tombstone = consumer.consume(
         scope_envelope=scope,
-        execution_authorization_receipt={},
+        execution_authorization_receipt=execution,
         preflight_receipt={"execution_context": {}, "ledger": {}},
         authentication_conformance_receipt={},
         preflight_semantic_validation_receipt={},
@@ -1891,6 +1958,10 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     )
     assert tombstone.tombstone["decision"] == "CONSUMED"
     assert tombstone.tombstone["retry_allowed"] is False
+    assert scope["scope"] == "mutated-during-consumption"
+    assert execution == {"mutated": True}
+    assert tombstone.scope_envelope["scope"] == "test"
+    assert tombstone.execution_receipt == {}
     decision["gate_id"] = "mutated-after-consumption"
     scope["scope"] = "mutated-after-consumption"
     assert tombstone.authorization["gate_id"] == "WIG-P3-AUTHORITATIVE-SINGLE-PROJECT-PILOT-TEST"
@@ -1909,12 +1980,12 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert tombstone_path.stat().st_mode & 0o077 == 0
     with pytest.raises(WorkItemGovernanceError) as error:
         consumer.consume(
-            scope_envelope=scope,
-            execution_authorization_receipt={},
-            preflight_receipt={"execution_context": {}, "ledger": {}},
-            authentication_conformance_receipt={},
-            preflight_semantic_validation_receipt={},
-            expected_authorization_digest=canonical_sha256(decision),
+            scope_envelope=tombstone.scope_envelope,
+            execution_authorization_receipt=tombstone.execution_receipt,
+            preflight_receipt=tombstone.preflight,
+            authentication_conformance_receipt=tombstone.authentication_conformance,
+            preflight_semantic_validation_receipt=tombstone.preflight_semantic_receipt,
+            expected_authorization_digest=canonical_sha256(tombstone.authorization),
         )
     assert error.value.code == "PILOT_AUTHORIZATION_ALREADY_CONSUMED"
 
@@ -1943,6 +2014,14 @@ def test_persisted_authority_detects_mutation_reflection_and_one_shot_replay(
     other_ledger = _v7_ledger(other_root)
     other_lease = _lease(new_stable_id("work_item"))
     other = _consumed_authority(monkeypatch, other_root, other_lease)
+    original_candidate_receipt = other._candidate_validation_receipt_json
+    object.__setattr__(other, "_candidate_validation_receipt_json", "{}")
+    with pytest.raises(WorkItemGovernanceError) as candidate_receipt_mutated:
+        require_consumed_pilot_authorization(other)
+    assert candidate_receipt_mutated.value.code == "PILOT_AUTHORIZATION_CAPABILITY_INVALID"
+    object.__setattr__(
+        other, "_candidate_validation_receipt_json", original_candidate_receipt
+    )
     object.__setattr__(other, "_authorization_json", "{}")
     with pytest.raises(WorkItemGovernanceError) as mutated:
         require_consumed_pilot_authorization(other)
