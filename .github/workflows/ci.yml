@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,9 +46,11 @@ jobs:
       - name: Run tests
         run: |
           find .venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          find adapters runner schemas scripts tests -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
           PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q \
             --deselect=tests/test_work_item_r3_closeout_runner.py::test_frozen_toolchain_record_and_environment_root_are_verified \
-            --deselect=tests/test_work_item_r3_closeout_runner.py::test_toolchain_rejects_record_owned_preimport_bytecode
+            --deselect=tests/test_work_item_r3_closeout_runner.py::test_toolchain_rejects_record_owned_preimport_bytecode \
+            --deselect=tests/test_work_item_r3_closeout_runner.py::test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup
 
       - name: Run self-hosting smoke
         run: .venv/bin/python scripts/self_hosting_smoke.py

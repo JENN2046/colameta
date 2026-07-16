@@ -31,7 +31,7 @@ SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY = "authoritative_canary_source_artifact
 _PACKAGE_ROOTS = ("runner", "adapters", "schemas", "scripts")
 _SOURCE_SUFFIXES = (".py", ".json")
 _BUILD_BINDING_FILES = ("pyproject.toml", "README.md")
-_EXPECTED_PYPROJECT_SHA256 = "c4e100c3f4fa8accf2ec6e8c71ae59157a2b69f70b4f95488a0b7a35520670aa"
+_EXPECTED_PYPROJECT_SHA256 = "032627cfef03ae29d7dce5b6a36c89bff22157082e0813314becbac69a9180e7"
 _EXPECTED_WHEEL_FILENAME = "colameta-0.1.2-py3-none-any.whl"
 _EXPECTED_DIST_INFO = "colameta-0.1.2.dist-info"
 _EXPECTED_ENTRY_POINTS = b"[console_scripts]\ncolameta = scripts.runner_cli:main\n"
@@ -61,8 +61,8 @@ _METADATA_HEADERS = {
     "requires-python": (">=3.10",),
     "description-content-type": ("text/markdown",),
     "requires-dist": (
+        "jsonschema<5,>=4.23",
         "PyJWT[crypto]<3,>=2.8",
-        'jsonschema<5,>=4.23; extra == "test"',
         'pytest<10,>=9.0.3; extra == "test"',
         'setuptools>=68; extra == "test"',
         'wheel>=0.43; extra == "test"',
