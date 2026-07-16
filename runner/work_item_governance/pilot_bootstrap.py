@@ -230,46 +230,114 @@ def _measure_path_manifests(
     return measured
 
 
-def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> bool:
-    token_bytes = token.encode("utf-8")
-    excluded = {
-        paths.token_file.resolve(),
-        paths.backup_path.resolve(),
-        (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve(),
-    }
-    # The backup parent is the governed private evidence boundary.  Runtime,
-    # source, and build trees are separately attested and may legitimately
-    # contain internal venv symlinks; recursively treating the entire Pilot
-    # root as evidence made every normal isolated runtime fail closed.
-    evidence_root = paths.backup_path.parent
-    if evidence_root.is_symlink() or not evidence_root.is_dir():
+def _private_evidence_file_clean(*, root: Path, candidate: Path, token_bytes: bytes) -> bool:
+    """Read one governed evidence file without following or racing a symlink."""
+
+    try:
+        observed = os.lstat(candidate)
+    except OSError:
         return False
-    for current, directory_names, file_names in os.walk(
-        evidence_root,
-        topdown=True,
-        followlinks=False,
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_uid != os.getuid()
+        or stat.S_IMODE(observed.st_mode) & 0o077
+        or observed.st_size > 16 * 1024 * 1024
     ):
+        return False
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(candidate, flags)
+    except OSError:
+        return False
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or (before.st_dev, before.st_ino) != (observed.st_dev, observed.st_ino)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) & 0o077
+            or before.st_size > 16 * 1024 * 1024
+        ):
+            return False
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            return False
+        return token_bytes not in payload
+    finally:
+        os.close(descriptor)
+
+
+def _token_absent_from_evidence_root(*, root: Path, excluded: set[Path], token_bytes: bytes) -> bool:
+    """Scan one explicit private evidence boundary with stable no-follow reads."""
+
+    try:
+        root_observed = os.lstat(root)
+    except OSError:
+        return False
+    if (
+        not stat.S_ISDIR(root_observed.st_mode)
+        or root_observed.st_uid != os.getuid()
+        or stat.S_IMODE(root_observed.st_mode) & 0o077
+    ):
+        return False
+    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
-        for name in list(directory_names):
+        try:
+            current_observed = os.lstat(current_path)
+        except OSError:
+            return False
+        if (
+            not stat.S_ISDIR(current_observed.st_mode)
+            or current_observed.st_uid != os.getuid()
+            or stat.S_IMODE(current_observed.st_mode) & 0o077
+        ):
+            return False
+        for name in directory_names:
             candidate = current_path / name
-            if candidate.is_symlink():
+            try:
+                directory_observed = os.lstat(candidate)
+            except OSError:
+                return False
+            if (
+                not stat.S_ISDIR(directory_observed.st_mode)
+                or directory_observed.st_uid != os.getuid()
+                or stat.S_IMODE(directory_observed.st_mode) & 0o077
+            ):
                 return False
         for name in file_names:
             candidate = current_path / name
-            if candidate.is_symlink():
-                return False
-            resolved = candidate.resolve()
-            try:
-                resolved.relative_to(evidence_root.resolve())
-            except ValueError:
-                return False
-            if resolved in excluded:
+            if candidate in excluded:
                 continue
-            if candidate.stat().st_size > 16 * 1024 * 1024:
-                return False
-            if token_bytes in candidate.read_bytes():
+            if not _private_evidence_file_clean(root=root, candidate=candidate, token_bytes=token_bytes):
                 return False
     return True
+
+
+def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> dict[str, bool]:
+    """Measure governed bundle and log roots without traversing runtime/build trees."""
+
+    token_bytes = token.encode("utf-8")
+    excluded = {paths.backup_path}
+    bundle_roots = (paths.backup_path.parent, paths.xdg_data_home)
+    log_roots = (paths.xdg_state_home,)
+    return {
+        "bundle": all(
+            _token_absent_from_evidence_root(root=root, excluded=excluded, token_bytes=token_bytes)
+            for root in bundle_roots
+        ),
+        "logs": all(
+            _token_absent_from_evidence_root(root=root, excluded=excluded, token_bytes=token_bytes)
+            for root in log_roots
+        ),
+    }
 
 
 def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
@@ -711,8 +779,10 @@ def build_fresh_pilot_preflight_receipt(
     }
     if ledger_metadata != expected_source_metadata:
         failures.append("ledger:token_or_source_artifact_binding")
-    private_evidence_clean = bool(token) and _token_absent_from_private_evidence(value, token)
-    if not private_evidence_clean:
+    private_evidence = (
+        _token_absent_from_private_evidence(value, token) if token else {"bundle": False, "logs": False}
+    )
+    if not all(private_evidence.values()):
         failures.append("authentication:token_in_private_evidence")
     conformance = authentication_conformance_receipt
     if conformance["source_binding"] != {field: execution_context[field] for field in PILOT_SOURCE_BINDING_FIELDS}:
@@ -800,8 +870,8 @@ def build_fresh_pilot_preflight_receipt(
         "token_ledger_binding_valid": ledger_metadata == expected_source_metadata,  # nosec B105
         "token_absent_from_cmdline": token_absent_from_cmdline,  # nosec B105
         "token_absent_from_environment": token_absent_from_environment,  # nosec B105
-        "token_absent_from_bundle": private_evidence_clean,  # nosec B105
-        "token_absent_from_logs": private_evidence_clean,  # nosec B105
+        "token_absent_from_bundle": private_evidence["bundle"],  # nosec B105
+        "token_absent_from_logs": private_evidence["logs"],  # nosec B105
         "authentication_conformance_receipt_digest": canonical_sha256(conformance),
         "principal_binding_digest": canonical_sha256(principal_binding),
     }

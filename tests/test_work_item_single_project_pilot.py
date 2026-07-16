@@ -118,6 +118,43 @@ DESCRIPTIVE_NEGATIVE_CATEGORIES = frozenset(
 )
 
 
+def test_execution_context_distinguishes_venv_launcher_from_resolved_interpreter(tmp_path: Path) -> None:
+    interpreter_target = Path(sys.executable).resolve()
+    interpreter_link = tmp_path / "runtime/bin/python"
+    interpreter_link.parent.mkdir(parents=True)
+    interpreter_link.symlink_to(interpreter_target)
+    working_directory = tmp_path / "target"
+    working_directory.mkdir()
+    working_directory_link = tmp_path / "target-link"
+    working_directory_link.symlink_to(working_directory, target_is_directory=True)
+    source_binding = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": "3" * 64,
+        "installed_inventory_sha256": "4" * 64,
+        "durable_artifact_evidence_digest": "5" * 64,
+        "durable_checkout_path_digest": "6" * 64,
+        "durable_wheel_path_digest": "7" * 64,
+    }
+
+    linked_context = build_pilot_execution_context(
+        source_binding=source_binding,
+        python_executable=interpreter_link,
+        cwd=working_directory_link,
+    )
+    resolved_context = build_pilot_execution_context(
+        source_binding=source_binding,
+        python_executable=interpreter_target,
+        cwd=working_directory,
+    )
+
+    assert linked_context["python_executable"] == interpreter_link.as_posix()
+    assert resolved_context["python_executable"] == interpreter_target.as_posix()
+    assert linked_context["cwd"] == working_directory_link.as_posix()
+    assert resolved_context["cwd"] == working_directory.as_posix()
+    assert linked_context["runtime_binding_digest"] != resolved_context["runtime_binding_digest"]
+
+
 def test_durable_source_binding_reproduces_candidate_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1734,21 +1771,45 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
     leaked_token = json.loads(paths.token_file.read_text(encoding="utf-8"))["auth_token"]
     leaked_evidence = root / "evidence/leaked-token.txt"
     leaked_evidence.write_text(leaked_token, encoding="utf-8")
+    leaked_evidence.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as token_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert token_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     leaked_evidence.unlink()
+    leaked_log = paths.xdg_state_home / "pilot.log"
+    leaked_log.write_text(leaked_token, encoding="utf-8")
+    leaked_log.chmod(0o600)
+    with pytest.raises(WorkItemGovernanceError) as log_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert log_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_log.unlink()
+    leaked_data = paths.xdg_data_home / "closeout.json"
+    leaked_data.write_text(leaked_token, encoding="utf-8")
+    leaked_data.chmod(0o600)
+    with pytest.raises(WorkItemGovernanceError) as bundle_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert bundle_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_data.unlink()
+    public_evidence = root / "evidence/public.txt"
+    public_evidence.write_text("secret-free", encoding="utf-8")
+    public_evidence.chmod(0o644)
+    with pytest.raises(WorkItemGovernanceError) as evidence_mode_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert evidence_mode_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    public_evidence.unlink()
     oversized_evidence = root / "evidence/oversized-token.log"
     with oversized_evidence.open("wb") as handle:
         handle.truncate(16 * 1024 * 1024 + 1)
         handle.seek(0)
         handle.write(leaked_token.encode("utf-8"))
+    oversized_evidence.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as oversized_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert oversized_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     oversized_evidence.unlink()
     suffix_bypass = root / "evidence/token-leak-wal"
     suffix_bypass.write_text(leaked_token, encoding="utf-8")
+    suffix_bypass.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as suffix_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert suffix_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"

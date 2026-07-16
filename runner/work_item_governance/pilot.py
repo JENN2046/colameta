@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import secrets
 import sqlite3
 import time
@@ -114,9 +115,9 @@ def build_pilot_execution_context(
 ) -> dict[str, Any]:
     """Build the one runtime identity shared by conformance and execution.
 
-    The two filesystem identities are deliberately resolved, not merely made
-    absolute.  A venv launcher symlink and its interpreter target are therefore
-    never interchangeable caller assertions.
+    The two filesystem identities are absolute lexical invocation paths.  They
+    are deliberately not resolved: a venv launcher symlink and its interpreter
+    target must remain distinct caller assertions.
     """
 
     if set(source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
@@ -124,12 +125,24 @@ def build_pilot_execution_context(
             "PILOT_EXECUTION_CONTEXT_INVALID",
             "Pilot execution context requires the exact durable source-binding keyset.",
         )
-    executable = Path(python_executable).expanduser().resolve(strict=True)
-    working_directory = Path(cwd).expanduser().resolve(strict=True)
+    raw_executable = os.path.expanduser(os.fspath(python_executable))
+    raw_cwd = os.path.expanduser(os.fspath(cwd))
+    if not os.path.isabs(raw_executable) or not os.path.isabs(raw_cwd):
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must be absolute invocation paths.",
+        )
+    executable = Path(os.path.normpath(raw_executable))
+    working_directory = Path(os.path.normpath(raw_cwd))
+    if executable.as_posix() != raw_executable or working_directory.as_posix() != raw_cwd:
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must already be lexically normalized.",
+        )
     if not executable.is_file() or not working_directory.is_dir():
         raise WorkItemGovernanceError(
             "PILOT_EXECUTION_CONTEXT_INVALID",
-            "Pilot executable and working directory must resolve to existing filesystem objects.",
+            "Pilot executable and working directory must identify existing filesystem objects.",
         )
     context: dict[str, Any] = {
         **{field: str(source_binding[field]) for field in PILOT_SOURCE_BINDING_FIELDS},
