@@ -70,7 +70,11 @@ def _stub_exact_project_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _initialize_clean_repository(root: Path) -> Path:
+def _initialize_clean_repository(
+    root: Path,
+    *,
+    tracked_content: str = "tracked\n",
+) -> Path:
     repository = root / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "-q", repository], check=True)
@@ -82,7 +86,7 @@ def _initialize_clean_repository(root: Path) -> Path:
         ["git", "-C", repository, "config", "user.name", "R3 Runner"],
         check=True,
     )
-    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    (repository / "tracked.txt").write_text(tracked_content, encoding="utf-8")
     subprocess.run(["git", "-C", repository, "add", "tracked.txt"], check=True)
     subprocess.run(["git", "-C", repository, "commit", "-q", "-m", "fixture"], check=True)
     return repository
@@ -290,9 +294,18 @@ def test_run_command_ignores_hostile_git_dir_and_work_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = _initialize_clean_repository(tmp_path)
+    expected_commit = subprocess.run(
+        ["git", "-C", repository, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     attacker_root = tmp_path / "attacker"
     attacker_root.mkdir()
-    attacker = _initialize_clean_repository(attacker_root)
+    attacker = _initialize_clean_repository(
+        attacker_root,
+        tracked_content="attacker\n",
+    )
     monkeypatch.chdir(repository)
     monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(attacker))
@@ -305,12 +318,6 @@ def test_run_command_ignores_hostile_git_dir_and_work_tree(
     ) == 0
 
     evidence = json.loads(output.read_text(encoding="utf-8"))
-    expected_commit = subprocess.run(
-        ["git", "-C", repository, "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     assert evidence["source_before"]["repository_root"] == repository.as_posix()
     assert evidence["source_before"]["commit"] == expected_commit
     assert "GIT_DIR" in evidence["environment_policy"]["authority_removed_keys"]
