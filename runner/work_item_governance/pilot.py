@@ -48,6 +48,22 @@ PILOT_SOURCE_BINDING_FIELDS = (
     "durable_checkout_path_digest",
     "durable_wheel_path_digest",
 )
+PILOT_EXECUTION_CONTEXT_FIELDS = (
+    *PILOT_SOURCE_BINDING_FIELDS,
+    "python_executable",
+    "cwd",
+    "runtime_binding_digest",
+)
+PILOT_LEDGER_STATE_FIELDS = (
+    "path_digest",
+    "schema_version",
+    "database_generation",
+    "zero_fact_baseline",
+    "integrity_check",
+    "foreign_key_violations",
+    "token_evidence_digest",
+    "source_artifact_evidence_digest",
+)
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
@@ -88,6 +104,81 @@ PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "closeout_schema_sha256": "6ac9888da62d60480419bf137e18679212ecf54fa90b0c6eaf5d89b97c992c4f",
     "negative_test_matrix_sha256": "c32f0c3d735139fb11881dc70d03fc713c8a6a0379550e3dfd11ed76d3a6a2fd",
 }
+
+
+def build_pilot_execution_context(
+    *,
+    source_binding: dict[str, Any],
+    python_executable: str | Path,
+    cwd: str | Path,
+) -> dict[str, Any]:
+    """Build the one runtime identity shared by conformance and execution.
+
+    The two filesystem identities are deliberately resolved, not merely made
+    absolute.  A venv launcher symlink and its interpreter target are therefore
+    never interchangeable caller assertions.
+    """
+
+    if set(source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot execution context requires the exact durable source-binding keyset.",
+        )
+    executable = Path(python_executable).expanduser().resolve(strict=True)
+    working_directory = Path(cwd).expanduser().resolve(strict=True)
+    if not executable.is_file() or not working_directory.is_dir():
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must resolve to existing filesystem objects.",
+        )
+    context: dict[str, Any] = {
+        **{field: str(source_binding[field]) for field in PILOT_SOURCE_BINDING_FIELDS},
+        "python_executable": executable.as_posix(),
+        "cwd": working_directory.as_posix(),
+    }
+    context["runtime_binding_digest"] = canonical_sha256(context)
+    if tuple(context) != PILOT_EXECUTION_CONTEXT_FIELDS:
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot execution context builder produced a noncanonical field order.",
+        )
+    return context
+
+
+def build_pilot_ledger_state(
+    *,
+    path_digest: str,
+    schema_version: int,
+    database_generation: int,
+    zero_fact_baseline: dict[str, int],
+    integrity_check: str,
+    foreign_key_violations: list[Any],
+    token_evidence_digest: str,
+    source_artifact_evidence_digest: str,
+) -> dict[str, Any]:
+    """Build stable Ledger identity without an ephemeral snapshot path.
+
+    The governed snapshot capability proves how the measurement was obtained;
+    it must not make otherwise identical conformance and execution measurements
+    hash differently merely because their disposable directories differ.
+    """
+
+    state: dict[str, Any] = {
+        "path_digest": str(path_digest),
+        "schema_version": int(schema_version),
+        "database_generation": int(database_generation),
+        "zero_fact_baseline": dict(zero_fact_baseline),
+        "integrity_check": str(integrity_check),
+        "foreign_key_violations": [tuple(item) for item in foreign_key_violations],
+        "token_evidence_digest": str(token_evidence_digest),
+        "source_artifact_evidence_digest": str(source_artifact_evidence_digest),
+    }
+    if tuple(state) != PILOT_LEDGER_STATE_FIELDS:
+        raise WorkItemGovernanceError(
+            "PILOT_LEDGER_STATE_INVALID",
+            "Pilot Ledger state requires the exact stable measurement keyset and order.",
+        )
+    return state
 
 
 def measure_pilot_durable_token_binding(project_root: str | Path) -> dict[str, str]:
@@ -745,12 +836,23 @@ def validate_pilot_authority_chain(
         authentication_conformance_receipt
     ):
         errors.append("authentication:conformance_receipt_digest")
+    if authentication_conformance_receipt["runtime_binding"]["runtime_binding_digest"] != context.get(
+        "runtime_binding_digest"
+    ):
+        errors.append("authentication:runtime_binding_digest")
     if preflight_receipt["semantic_validation"]["receipt_digest"] != canonical_sha256(semantic_validation_receipt):
         errors.append("semantic_validation:receipt_digest")
-    runtime_context = dict(context)
-    reported_runtime_digest = runtime_context.pop("runtime_binding_digest")
-    if reported_runtime_digest != canonical_sha256(runtime_context):
-        errors.append("execution_context:runtime_binding_digest")
+    try:
+        expected_context = build_pilot_execution_context(
+            source_binding={field: scope_source[field] for field in PILOT_SOURCE_BINDING_FIELDS},
+            python_executable=context["python_executable"],
+            cwd=context["cwd"],
+        )
+    except (KeyError, OSError, WorkItemGovernanceError):
+        errors.append("execution_context:canonical_builder")
+    else:
+        if context != expected_context:
+            errors.append("execution_context:canonical_builder")
     if errors:
         raise WorkItemGovernanceError(
             "PILOT_AUTHORITY_BINDING_MISMATCH",

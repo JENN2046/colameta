@@ -27,9 +27,12 @@ from runner.work_item_governance.pilot import (
     PILOT_SOURCE_BINDING_FIELDS,
     PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
+    build_pilot_execution_context,
+    build_pilot_ledger_state,
     canonical_path_digest,
     validate_pilot_preflight,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_governance.schema_loader import validate_governance_record
 from runner.work_item_governance.source_binding import (
     SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY,
@@ -234,19 +237,38 @@ def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) 
         paths.backup_path.resolve(),
         (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve(),
     }
-    for candidate in paths.pilot_root.rglob("*"):
-        if candidate.is_symlink():
-            return False
-        if not candidate.is_file() or candidate.resolve() in excluded:
-            continue
-        ledger = (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve()
-        exact_sidecars = {Path(f"{ledger}-wal"), Path(f"{ledger}-shm")}
-        if candidate.resolve() in exact_sidecars:
-            continue
-        if candidate.stat().st_size > 16 * 1024 * 1024:
-            return False
-        if token_bytes in candidate.read_bytes():
-            return False
+    # The backup parent is the governed private evidence boundary.  Runtime,
+    # source, and build trees are separately attested and may legitimately
+    # contain internal venv symlinks; recursively treating the entire Pilot
+    # root as evidence made every normal isolated runtime fail closed.
+    evidence_root = paths.backup_path.parent
+    if evidence_root.is_symlink() or not evidence_root.is_dir():
+        return False
+    for current, directory_names, file_names in os.walk(
+        evidence_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        for name in list(directory_names):
+            candidate = current_path / name
+            if candidate.is_symlink():
+                return False
+        for name in file_names:
+            candidate = current_path / name
+            if candidate.is_symlink():
+                return False
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(evidence_root.resolve())
+            except ValueError:
+                return False
+            if resolved in excluded:
+                continue
+            if candidate.stat().st_size > 16 * 1024 * 1024:
+                return False
+            if token_bytes in candidate.read_bytes():
+                return False
     return True
 
 
@@ -455,6 +477,7 @@ def build_fresh_pilot_preflight_receipt(
     wheel_artifact: Path,
     principal_binding: dict[str, Any],
     project_path_manifests: dict[str, Any],
+    ledger_snapshot: PilotConformanceLedgerSnapshot,
 ) -> dict[str, Any]:
     """Measure and build a v4 Preflight; callers supply identities, never PASS flags."""
 
@@ -482,25 +505,25 @@ def build_fresh_pilot_preflight_receipt(
         authentication_conformance_receipt
     ):
         failures.append("authentication:authorization_receipt_digest")
-    actual_executable = str(Path(sys.executable).resolve())
-    actual_cwd = str(Path.cwd().resolve())
+    ledger_snapshot.require_bound_to(value.project_root)
     source_attestation = verify_runtime_source_artifacts(
         checkout_root=source_checkout,
         wheel_artifact=wheel_artifact,
     )
     source_public_evidence = source_attestation.public_evidence()
-    measured_context = {
-        "implementation_commit": source_attestation.source_binding["implementation_commit"],
-        "implementation_tree": source_attestation.source_binding["implementation_tree"],
-        "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
-        "installed_inventory_sha256": source_attestation.file_manifest_digest,
-        "durable_artifact_evidence_digest": source_public_evidence["artifact_evidence_digest"],
-        "durable_checkout_path_digest": source_public_evidence["checkout_path_digest"],
-        "durable_wheel_path_digest": source_public_evidence["wheel_path_digest"],
-        "python_executable": actual_executable,
-        "cwd": actual_cwd,
-    }
-    measured_context["runtime_binding_digest"] = canonical_sha256(measured_context)
+    measured_context = build_pilot_execution_context(
+        source_binding={
+            "implementation_commit": source_attestation.source_binding["implementation_commit"],
+            "implementation_tree": source_attestation.source_binding["implementation_tree"],
+            "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
+            "installed_inventory_sha256": source_attestation.file_manifest_digest,
+            "durable_artifact_evidence_digest": source_public_evidence["artifact_evidence_digest"],
+            "durable_checkout_path_digest": source_public_evidence["checkout_path_digest"],
+            "durable_wheel_path_digest": source_public_evidence["wheel_path_digest"],
+        },
+        python_executable=sys.executable,
+        cwd=Path.cwd(),
+    )
     if execution_context != measured_context:
         failures.append("execution_context:measured_runtime_artifacts")
     expected_environment = {
@@ -621,7 +644,8 @@ def build_fresh_pilot_preflight_receipt(
     }
     if project != measured_project:
         failures.append("project:measured_snapshot")
-    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=7)
+    ledger_snapshot.require_bound_to(value.project_root)
+    ledger = SQLiteWorkItemLedger(ledger_snapshot.project_root, target_schema_version=7)
     if ledger.schema_version() != 7:
         failures.append("ledger:schema_version")
     if ledger.database_generation() != bootstrap_receipt["database_generation"]:
@@ -695,16 +719,16 @@ def build_fresh_pilot_preflight_receipt(
         failures.append("authentication:source_binding")
     if conformance["surface"]["visible_tool_set_digest"] != canonical_sha256(list(PILOT_TOOLS)):
         failures.append("authentication:surface")
-    ledger_state = {
-        "path_digest": canonical_path_digest(ledger.path),
-        "schema_version": ledger.schema_version(),
-        "database_generation": ledger.database_generation(),
-        "zero_fact_baseline": actual_zero,
-        "integrity_check": integrity,
-        "foreign_key_violations": [tuple(row) for row in foreign_keys],
-        "token_evidence_digest": expected_token_evidence,
-        "source_artifact_evidence_digest": source_attestation.evidence_digest,
-    }
+    ledger_state = build_pilot_ledger_state(
+        path_digest=ledger_snapshot.source_ledger_path_digest,
+        schema_version=ledger.schema_version(),
+        database_generation=ledger.database_generation(),
+        zero_fact_baseline=actual_zero,
+        integrity_check=integrity,
+        foreign_key_violations=foreign_keys,
+        token_evidence_digest=expected_token_evidence,
+        source_artifact_evidence_digest=source_attestation.evidence_digest,
+    )
     expected_conformance_runtime = {
         "runtime_binding_digest": measured_context["runtime_binding_digest"],
         "scope_envelope_digest": bindings["scope_envelope_digest"],
@@ -761,6 +785,7 @@ def build_fresh_pilot_preflight_receipt(
             "Pilot Preflight refused caller claims that do not match fresh local measurements.",
             details={"failed_measurements": sorted(set(failures))},
         )
+    ledger_snapshot.require_bound_to(value.project_root)
     observed = utc_now()
     decision_matches = (
         canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings["authorization_digest"]

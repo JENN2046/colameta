@@ -21,7 +21,10 @@ from runner.work_item_governance.activation import (
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
     PILOT_SCOPE_MODE,
+    PILOT_SOURCE_BINDING_FIELDS,
     PILOT_TOOLS,
+    build_pilot_execution_context,
+    build_pilot_ledger_state,
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
     validate_pilot_durable_source_binding,
@@ -411,6 +414,7 @@ def build_pilot_authentication_conformance_receipt(
     token_file: str | os.PathLike[str],
     token_binding: dict[str, str],
     source_binding: dict[str, Any],
+    execution_context: dict[str, Any],
     runtime_binding: dict[str, Any],
     expected_safety_snapshot: dict[str, Any],
     project_root: str | os.PathLike[str],
@@ -422,6 +426,26 @@ def build_pilot_authentication_conformance_receipt(
     """Build a formal receipt only from the zero-fact preflight listener."""
 
     validate_authoritative_bearer_token(correct_token)
+    try:
+        expected_execution_context = build_pilot_execution_context(
+            source_binding={field: source_binding[field] for field in PILOT_SOURCE_BINDING_FIELDS},
+            python_executable=execution_context["python_executable"],
+            cwd=execution_context["cwd"],
+        )
+    except (KeyError, OSError, WorkItemGovernanceError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication conformance requires the canonical execution context.",
+        ) from exc
+    if (
+        execution_context != expected_execution_context
+        or runtime_binding.get("runtime_binding_digest")
+        != expected_execution_context["runtime_binding_digest"]
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication runtime binding differs from the canonical execution context.",
+        )
     auth_path = Path(token_file).expanduser().resolve()
     try:
         token_payload = json.loads(auth_path.read_text(encoding="utf-8"))
@@ -481,6 +505,31 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_DURABLE_SOURCE_BINDING_INVALID",
             "Pilot source binding could not be reproduced from the exact durable Ledger.",
         ) from exc
+    baseline = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+    ledger_state = build_pilot_ledger_state(
+        path_digest=ledger_snapshot.source_ledger_path_digest,
+        schema_version=baseline["schema_version"],
+        database_generation=baseline["database_generation"],
+        zero_fact_baseline=baseline["zero_fact_baseline"],
+        integrity_check=baseline["integrity_check"],
+        foreign_key_violations=baseline["foreign_key_violations"],
+        token_evidence_digest=token_evidence_digest,
+        source_artifact_evidence_digest=source_binding["durable_artifact_evidence_digest"],
+    )
+    if (
+        set(runtime_binding)
+        != {
+            "runtime_binding_digest",
+            "scope_envelope_digest",
+            "ledger_state_digest",
+            "token_file_path_digest",
+        }
+        or runtime_binding["ledger_state_digest"] != canonical_sha256(ledger_state)
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication Ledger binding differs from the canonical governed-snapshot measurement.",
+        )
     snapshot_method = getattr(server, "_pilot_http_conformance_snapshot", None)
     if not callable(snapshot_method):
         raise WorkItemGovernanceError(
