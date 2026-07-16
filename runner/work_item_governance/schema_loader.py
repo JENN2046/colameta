@@ -146,7 +146,7 @@ def validate_governance_record(schema_version: str, value: Any) -> Any:
     except ImportError as exc:
         raise WorkItemGovernanceError(
             "JSON_SCHEMA_VALIDATOR_UNAVAILABLE",
-            "Install the ColaMeta test extra to validate governance records.",
+            "The required ColaMeta runtime schema validator is unavailable.",
         ) from exc
     schemas = load_all_governance_schemas()
     schema = schemas.get(schema_version)

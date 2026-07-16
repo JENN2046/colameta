@@ -17,6 +17,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
 ]
 dependencies = [
+    "jsonschema>=4.23,<5",
     "PyJWT[crypto]>=2.8,<3",
 ]
 
@@ -33,9 +34,15 @@ colameta = "scripts.runner_cli:main"
 
     assert metadata["license"] == {"text": "禁止商业使用"}
     assert metadata["classifiers"] == ["Development Status :: 3 - Alpha"]
-    assert metadata["dependencies"] == ["PyJWT[crypto]>=2.8,<3"]
+    assert metadata["dependencies"] == [
+        "jsonschema>=4.23,<5",
+        "PyJWT[crypto]>=2.8,<3",
+    ]
     assert metadata["scripts"] == {"colameta": "scripts.runner_cli:main"}
-    assert self_hosting_smoke._project_dependencies() == ["PyJWT[crypto]>=2.8,<3"]
+    assert self_hosting_smoke._project_dependencies() == [
+        "jsonschema>=4.23,<5",
+        "PyJWT[crypto]>=2.8,<3",
+    ]
 
 
 def test_toml_literal_fallback_reads_empty_inline_table() -> None:
