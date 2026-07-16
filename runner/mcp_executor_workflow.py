@@ -85,6 +85,13 @@ _MANUAL_FIX_PROMPT_REJECTED_RUNNER_STATUSES = {
     "FIX_PROMPT_READY",
 }
 
+_EXECUTION_ATTEMPT_BINDING_PREFLIGHT_CHECKS = (
+    ("work_item_id", "WORK_ITEM_ID_MISMATCH", "work_item_id 已变化。"),
+    ("task_version", "TASK_VERSION_MISMATCH", "task_version 已变化。"),
+    ("attempt_id", "ATTEMPT_ID_MISMATCH", "attempt_id 已变化。"),
+    ("artifact_refs", "ARTIFACT_REFS_MISMATCH", "artifact_refs 已变化。"),
+)
+
 
 class MCPExecutorWorkflowManager:
     def __init__(self, project_root: str):
@@ -4375,6 +4382,7 @@ class MCPExecutorWorkflowManager:
             ("provider", "PROVIDER_MISMATCH", "provider 已变化。"),
             ("execution_mode", "EXECUTION_MODE_MISMATCH", "execution_mode 已变化。"),
             ("execution_branch_status", "EXECUTION_BRANCH_STATUS_MISMATCH", "execution branch 状态已变化。"),
+            *_EXECUTION_ATTEMPT_BINDING_PREFLIGHT_CHECKS,
         ]
         for field, code, message in checks:
             preview_val = artifact.get(field)
@@ -4393,6 +4401,7 @@ class MCPExecutorWorkflowManager:
             ("provider", "PROVIDER_MISMATCH", "provider 已变化。"),
             ("execution_branch_status", "EXECUTION_BRANCH_STATUS_MISMATCH", "execution branch 状态已变化。"),
             ("blocking_git_status_short", "GIT_STATUS_MISMATCH", "blocking_git_status_short 已变化。"),
+            *_EXECUTION_ATTEMPT_BINDING_PREFLIGHT_CHECKS,
         ]
         for field, code, message in checks:
             preview_val = artifact.get(field)
