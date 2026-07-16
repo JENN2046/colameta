@@ -1482,13 +1482,16 @@ class PilotActivationGuard:
                     "Attempt runtime facts differ from its exact Pilot execution Slot.",
                 )
 
-    def authorize_preview(self, *, command_name: str, normalized_command: dict[str, Any], principal_context: PrincipalContext | None, request_context: AuthoritativeCanaryRequestContext | None) -> None:
+    def authorize_preview(self, *, command_name: str, normalized_command: dict[str, Any], principal_context: PrincipalContext | None, request_context: AuthoritativeCanaryRequestContext | None) -> str | None:
         if command_name not in {"apply_work_item_create", "apply_work_item_transition"}:
             raise WorkItemGovernanceError("PILOT_COMMAND_DENIED", "Preview command is outside the Pilot allowlist.")
         with self.ledger.read_connection() as connection:
             row = self._active(connection)
             self._request(row, principal_context, request_context)
             self._reconcile(connection, row)
+            if command_name == "apply_work_item_create":
+                return str(_json(row, "scope_binding_json")["proposed_work_item_id"])
+        return None
 
     def begin_write(
         self,

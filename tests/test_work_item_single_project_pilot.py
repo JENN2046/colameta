@@ -956,6 +956,30 @@ def test_pilot_scope_schema_uses_runtime_attested_core_baseline() -> None:
     assert source_properties["implementation_commit"]["allOf"][1]["not"]["const"] == CORE_BASELINE_COMMIT
 
 
+def test_pilot_create_preview_uses_scope_preallocated_work_item_id(tmp_path: Path) -> None:
+    from runner.work_item_governance.service import WorkItemApplicationService
+
+    proposed_work_item_id = new_stable_id("work_item")
+
+    class ScopedPreviewGuard:
+        def authorize_preview(self, **kwargs: object) -> str:
+            assert kwargs["command_name"] == "apply_work_item_create"
+            return proposed_work_item_id
+
+    service = WorkItemApplicationService(tmp_path, enabled=True, authoritative_transitions=True)
+    service.activation_guard = ScopedPreviewGuard()  # type: ignore[assignment]
+
+    result = service.preview_work_item_create(
+        {
+            "origin": {"kind": "manual", "ref": "pilot-scoped-preview", "snapshot_digest": SHA},
+            "objective": "pilot scoped create",
+        }
+    )
+
+    assert result["proposed_work_item_id"] == proposed_work_item_id
+    assert result["preview"]["generated_ids"] == {"work_item_id": proposed_work_item_id}
+
+
 def test_authorization_binding_contract_has_no_unclassified_fields() -> None:
     required = set(load_all_governance_schemas()["pilot_authorization.v4"]["properties"]["bindings"]["required"])
     dynamic = {

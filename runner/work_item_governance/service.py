@@ -159,15 +159,16 @@ class WorkItemApplicationService:
                 result["activation_lease"] = self.activation_guard.runtime_status()
         return result
 
-    def _activation_preview(self, command_name: str, normalized_command: dict[str, Any]) -> None:
+    def _activation_preview(self, command_name: str, normalized_command: dict[str, Any]) -> str | None:
         if self.activation_guard is None:
-            return
-        self.activation_guard.authorize_preview(
+            return None
+        scoped_work_item_id = self.activation_guard.authorize_preview(
             command_name=command_name,
             normalized_command=normalized_command,
             principal_context=self.principal_context,
             request_context=self.request_context,
         )
+        return None if scoped_work_item_id is None else require_stable_id(scoped_work_item_id, "work_item")
 
     def _activation_begin(
         self,
@@ -378,8 +379,8 @@ class WorkItemApplicationService:
     ) -> dict[str, Any]:
         self._require_enabled()
         normalized = self._normalize_create_command(command, imported=False)
-        self._activation_preview("apply_work_item_create", normalized)
-        work_item_id = new_stable_id("work_item")
+        scoped_work_item_id = self._activation_preview("apply_work_item_create", normalized)
+        work_item_id = scoped_work_item_id or new_stable_id("work_item")
         preview = self.previews.issue(
             "work_item_create",
             normalized,
