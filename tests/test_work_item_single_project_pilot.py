@@ -19,6 +19,7 @@ import pytest
 
 import runner.work_item_governance.pilot_candidate as candidate_module
 import runner.work_item_governance.pilot_bootstrap as bootstrap_module
+import runner.work_item_governance.pilot as pilot_module
 
 from runner.mcp_server import (
     AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
@@ -50,6 +51,7 @@ from runner.work_item_governance.pilot import (
     verify_pilot_frozen_contract_resources,
     initial_execution_slot_usage,
     require_pilot_preflight_conformance_baseline,
+    validate_pilot_durable_source_binding,
     validate_execution_authorization_receipt,
     verify_pilot_event_chain,
 )
@@ -111,6 +113,58 @@ DESCRIPTIVE_NEGATIVE_CATEGORIES = frozenset(
         "time",
     }
 )
+
+
+def test_durable_source_binding_reproduces_candidate_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": "3" * 64,
+        "installed_inventory_sha256": "4" * 64,
+    }
+
+    class Attestation:
+        source_binding = {
+            "core_baseline_commit": pilot_module.CORE_BASELINE_COMMIT,
+            "implementation_commit": expected["implementation_commit"],
+            "implementation_tree": expected["implementation_tree"],
+            "wheel_sha256": expected["wheel_sha256"],
+        }
+        file_manifest_digest = expected["installed_inventory_sha256"]
+
+    observed: list[dict[str, str]] = []
+
+    def reverify(_ledger: object, *, expected_source_binding: dict[str, str]) -> Attestation:
+        observed.append(dict(expected_source_binding))
+        return Attestation()
+
+    monkeypatch.setattr(pilot_module, "reverify_runtime_source_binding", reverify)
+    assert validate_pilot_durable_source_binding(
+        tmp_path,
+        expected_source_binding=expected,
+    ) == expected
+    assert observed == [
+        {
+            "core_baseline_commit": pilot_module.CORE_BASELINE_COMMIT,
+            "implementation_commit": expected["implementation_commit"],
+            "implementation_tree": expected["implementation_tree"],
+            "wheel_sha256": expected["wheel_sha256"],
+        }
+    ]
+
+    Attestation.file_manifest_digest = "5" * 64
+    with pytest.raises(WorkItemGovernanceError) as mismatch:
+        validate_pilot_durable_source_binding(
+            tmp_path,
+            expected_source_binding=expected,
+        )
+    assert mismatch.value.code == "PILOT_DURABLE_SOURCE_BINDING_MISMATCH"
+    assert mismatch.value.details == {
+        "failed_bindings": ["installed_inventory_sha256"]
+    }
 
 
 def _v7_ledger(root: Path) -> SQLiteWorkItemLedger:
@@ -1722,6 +1776,14 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
     import runner.work_item_pilot_conformance as conformance_module
 
     monkeypatch.setattr(conformance_module, "measure_pilot_safety_conformance", lambda **_kwargs: safety)
+    durable_source_checks: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        conformance_module,
+        "validate_pilot_durable_source_binding",
+        lambda _project_root, *, expected_source_binding: durable_source_checks.append(
+            dict(expected_source_binding)
+        ),
+    )
     server = MCPPlanningBridgeServer(
         str(project),
         exposure_profile="authoritative_canary",
@@ -1763,6 +1825,42 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
             port=port,
             ledger_snapshot=ledger_snapshot,
         )
+        def reject_durable_source(
+            _project_root: object,
+            *,
+            expected_source_binding: dict[str, object],
+        ) -> None:
+            del expected_source_binding
+            raise WorkItemGovernanceError(
+                "RUNTIME_SOURCE_EVIDENCE_MISMATCH",
+                "test durable source mismatch",
+            )
+
+        monkeypatch.setattr(
+            conformance_module,
+            "validate_pilot_durable_source_binding",
+            reject_durable_source,
+        )
+        with pytest.raises(WorkItemGovernanceError) as durable_source_mismatch:
+            build_pilot_authentication_conformance_receipt(
+                server=server,
+                endpoint=endpoint,
+                correct_token=token,
+                token_file=token_file,
+                token_binding={
+                    "authoritative_canary_token_file_sha256": token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": token_evidence_digest,
+                },
+                source_binding=receipt["source_binding"],
+                runtime_binding=receipt["runtime_binding"],
+                expected_safety_snapshot=safety,
+                project_root=project,
+                registry_path=tmp_path / "registry.json",
+                stable_promotion_root=tmp_path / "stable",
+                port=port,
+                ledger_snapshot=ledger_snapshot,
+            )
+        assert durable_source_mismatch.value.code == "RUNTIME_SOURCE_EVIDENCE_MISMATCH"
         with pytest.raises(WorkItemGovernanceError) as durable_mismatch:
             build_pilot_authentication_conformance_receipt(
                 server=server,
@@ -1797,6 +1895,7 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
     assert receipt["authentication"]["token_ledger_binding_valid"] is True
     assert receipt["authentication"]["proof_issued_delta"] == 2
     assert receipt["authentication"]["proof_retired_delta"] == 2
+    assert durable_source_checks == [receipt["source_binding"]]
 
 
 def test_preflight_conformance_listener_closes_authority_ordering_without_writes(
@@ -1839,6 +1938,13 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
     import runner.work_item_pilot_conformance as conformance_module
 
     monkeypatch.setattr(conformance_module, "measure_pilot_safety_conformance", lambda **_kwargs: safety)
+    monkeypatch.setattr(
+        conformance_module,
+        "validate_pilot_durable_source_binding",
+        lambda _project_root, *, expected_source_binding: dict(
+            expected_source_binding
+        ),
+    )
     server = MCPPlanningBridgeServer(
         str(project),
         exposure_profile="authoritative_canary",

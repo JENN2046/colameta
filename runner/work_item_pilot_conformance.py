@@ -24,6 +24,7 @@ from runner.work_item_governance.pilot import (
     PILOT_TOOLS,
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
+    validate_pilot_durable_source_binding,
 )
 from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_governance.preview import isoformat_utc, utc_now
@@ -468,6 +469,18 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
             "Pilot Token file, live Token and Ledger binding do not match.",
         )
+    try:
+        validate_pilot_durable_source_binding(
+            ledger_snapshot.project_root,
+            expected_source_binding=source_binding,
+        )
+    except WorkItemGovernanceError:
+        raise
+    except Exception as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_INVALID",
+            "Pilot source binding could not be reproduced from the exact durable Ledger.",
+        ) from exc
     snapshot_method = getattr(server, "_pilot_http_conformance_snapshot", None)
     if not callable(snapshot_method):
         raise WorkItemGovernanceError(

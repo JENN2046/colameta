@@ -32,6 +32,10 @@ from runner.work_item_governance.request_context import (
     _mint_authoritative_request_context,
 )
 from runner.work_item_governance.schema_loader import load_governance_contract, validate_governance_record
+from runner.work_item_governance.source_binding import (
+    CORE_BASELINE_COMMIT,
+    reverify_runtime_source_binding,
+)
 
 
 PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
@@ -99,6 +103,58 @@ def measure_pilot_durable_token_binding(project_root: str | Path) -> dict[str, s
                 )
             binding[key] = str(rows[0]["value"])
     return binding
+
+
+def validate_pilot_durable_source_binding(
+    project_root: str | Path,
+    *,
+    expected_source_binding: dict[str, Any],
+) -> dict[str, str]:
+    """Reproduce the candidate source from the Ledger-sealed paths and evidence.
+
+    The durable metadata is authoritative for the later fresh Preflight.  A
+    conformance receipt must therefore not attest only its caller-supplied
+    source fields: the exact checkout, Wheel, evidence digest, and installed
+    inventory must already reproduce those fields from the same Ledger
+    capability used for conformance.
+    """
+
+    if set(expected_source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_INVALID",
+            "Pilot durable source validation requires the exact source-binding keyset.",
+        )
+    ledger = SQLiteWorkItemLedger(project_root, target_schema_version=7)
+    attestation = reverify_runtime_source_binding(
+        ledger,
+        expected_source_binding={
+            "core_baseline_commit": CORE_BASELINE_COMMIT,
+            "implementation_commit": str(
+                expected_source_binding["implementation_commit"]
+            ),
+            "implementation_tree": str(expected_source_binding["implementation_tree"]),
+            "wheel_sha256": str(expected_source_binding["wheel_sha256"]),
+        },
+    )
+    measured = {
+        "implementation_commit": attestation.source_binding["implementation_commit"],
+        "implementation_tree": attestation.source_binding["implementation_tree"],
+        "wheel_sha256": attestation.source_binding["wheel_sha256"],
+        "installed_inventory_sha256": attestation.file_manifest_digest,
+    }
+    if measured != expected_source_binding:
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_MISMATCH",
+            "Ledger-sealed source artifacts differ from the candidate source binding.",
+            details={
+                "failed_bindings": sorted(
+                    field
+                    for field in PILOT_SOURCE_BINDING_FIELDS
+                    if measured.get(field) != expected_source_binding.get(field)
+                )
+            },
+        )
+    return measured
 
 
 def require_pilot_preflight_conformance_baseline(
