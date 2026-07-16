@@ -24,6 +24,7 @@ from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
     PILOT_FROZEN_CONTRACT_DIGESTS,
     PILOT_SCOPE_MODE,
+    PILOT_SOURCE_BINDING_FIELDS,
     PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
     canonical_path_digest,
@@ -685,7 +686,7 @@ def build_fresh_pilot_preflight_receipt(
     conformance = authentication_conformance_receipt
     if conformance["source_binding"] != {
         field: execution_context[field]
-        for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256")
+        for field in PILOT_SOURCE_BINDING_FIELDS
     }:
         failures.append("authentication:source_binding")
     if conformance["surface"]["visible_tool_set_digest"] != canonical_sha256(list(PILOT_TOOLS)):

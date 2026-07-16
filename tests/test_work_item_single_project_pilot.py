@@ -416,6 +416,11 @@ def _consumed_authority(
     monkeypatch.setattr(authorization_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(authorization_module, "validate_pilot_preflight", lambda value: value)
     monkeypatch.setattr(authorization_module, "validate_pilot_authorization", lambda value, **kwargs: value)
+    monkeypatch.setattr(
+        authorization_module,
+        "validate_pilot_conformance_authorization_source",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(authorization_module, "validate_pilot_authority_chain", lambda *args, **kwargs: None)
     monkeypatch.setattr(pilot_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(pilot_module, "validate_pilot_preflight", lambda value: value)
@@ -2189,6 +2194,11 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     monkeypatch.setattr(module, "validate_pilot_authorization", lambda value, scope_envelope: value)
     monkeypatch.setattr(module, "validate_pilot_scope_envelope", lambda value, **kwargs: value)
     monkeypatch.setattr(module, "validate_pilot_preflight", lambda value: value)
+    monkeypatch.setattr(
+        module,
+        "validate_pilot_conformance_authorization_source",
+        lambda *args, **kwargs: None,
+    )
     def mutate_caller_inputs(*args: object, **kwargs: object) -> None:
         scope["scope"] = "mutated-during-consumption"
         execution["mutated"] = True

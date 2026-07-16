@@ -35,6 +35,12 @@ from runner.work_item_governance.schema_loader import load_governance_contract, 
 
 
 PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
+PILOT_SOURCE_BINDING_FIELDS = (
+    "implementation_commit",
+    "implementation_tree",
+    "wheel_sha256",
+    "installed_inventory_sha256",
+)
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
@@ -534,6 +540,39 @@ def validate_pilot_authorization(
     return authorization
 
 
+def validate_pilot_conformance_authorization_source(
+    authorization: dict[str, Any],
+    *,
+    scope_envelope: dict[str, Any],
+    authentication_conformance_receipt: dict[str, Any],
+) -> None:
+    """Bind measured conformance source directly to the executable authority."""
+
+    validate_governance_record(
+        "pilot_authentication_conformance_receipt.v1",
+        authentication_conformance_receipt,
+    )
+    conformance_source = authentication_conformance_receipt["source_binding"]
+    authorization_source = authorization["source"]
+    scope_source = scope_envelope["source_binding"]
+    errors: list[str] = []
+    for field in PILOT_SOURCE_BINDING_FIELDS:
+        if conformance_source[field] != authorization_source[field]:
+            errors.append(f"conformance_to_authorization:{field}")
+        if conformance_source[field] != scope_source[field]:
+            errors.append(f"conformance_to_scope:{field}")
+    if authorization["bindings"]["authentication_conformance_receipt_digest"] != canonical_sha256(
+        authentication_conformance_receipt
+    ):
+        errors.append("conformance_receipt_digest")
+    if errors:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH",
+            "Pilot authentication conformance source differs from its executable Authorization source.",
+            details={"failed_bindings": sorted(errors)},
+        )
+
+
 def validate_pilot_authority_chain(
     authorization: dict[str, Any],
     *,
@@ -559,6 +598,11 @@ def validate_pilot_authority_chain(
         semantic_validation_receipt,
     )
     validate_pilot_authorization(authorization, scope_envelope=scope_envelope)
+    validate_pilot_conformance_authorization_source(
+        authorization,
+        scope_envelope=scope_envelope,
+        authentication_conformance_receipt=authentication_conformance_receipt,
+    )
     bindings = authorization["bindings"]
     preflight_bindings = preflight_receipt["bindings"]
     source = authorization["source"]
@@ -592,7 +636,7 @@ def validate_pilot_authority_chain(
     if bindings["authentication_conformance_receipt_digest"] != expected["authentication_conformance_receipt_digest"]:
         errors.append("bindings:authentication_conformance_receipt_digest")
     context = preflight_receipt["execution_context"]
-    for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
+    for field in PILOT_SOURCE_BINDING_FIELDS:
         if context[field] != source[field] or context[field] != scope_source[field]:
             errors.append(f"execution_context:{field}")
     project = preflight_receipt["project"]

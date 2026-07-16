@@ -12,6 +12,7 @@ from runner.work_item_governance.activation import canonical_path_digest
 from runner.work_item_governance.canonical import canonical_sha256, sha256_bytes
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
+    PILOT_SOURCE_BINDING_FIELDS,
     validate_execution_authorization_receipt,
     validate_pilot_authorization,
     validate_pilot_scope_envelope,
@@ -98,6 +99,7 @@ def derive_pilot_candidate_records(
     execution_authorization_receipt: Mapping[str, Any],
     scope_envelope: Mapping[str, Any],
     pilot_authorization: Mapping[str, Any],
+    source_binding: Mapping[str, Any],
     paths: PilotCandidatePaths,
     issued_at: str,
     expires_at: str,
@@ -116,6 +118,15 @@ def derive_pilot_candidate_records(
     execution = deepcopy(dict(execution_authorization_receipt))
     scope = deepcopy(dict(scope_envelope))
     authorization = deepcopy(dict(pilot_authorization))
+    if set(source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_SOURCE_BINDING_INVALID",
+            "Pilot candidate generation requires one exact runtime source binding.",
+            details={"required_fields": list(PILOT_SOURCE_BINDING_FIELDS)},
+        )
+    authoritative_source = {
+        field: str(source_binding[field]) for field in PILOT_SOURCE_BINDING_FIELDS
+    }
     window = {
         "issued_at": issued_at,
         "not_before": issued_at,
@@ -153,6 +164,7 @@ def derive_pilot_candidate_records(
         digests["project_root_path_digest"]
     ]
     scope["principal_binding"] = principal
+    scope["source_binding"].update(authoritative_source)
     scope["window"] = deepcopy(window)
 
     objective_digest = canonical_sha256(work_item["objective_ref"])
@@ -193,6 +205,7 @@ def derive_pilot_candidate_records(
         authorized_scope_digest=scope_digest,
     )
     authorization["principal"] = _principal_for_authorization(principal)
+    authorization["source"].update(authoritative_source)
     authorization["target"].update(
         project_id=target["project_id"],
         project_root_path_digest=digests["project_root_path_digest"],

@@ -18,6 +18,7 @@ from runner.work_item_governance.pilot import (
     PILOT_FROZEN_CONTRACT_DIGESTS,
     build_pilot_semantic_validation_receipt,
     validate_pilot_authority_chain,
+    validate_pilot_conformance_authorization_source,
     validate_pilot_authorization,
     validate_pilot_preflight,
     validate_pilot_scope_envelope,
@@ -550,6 +551,11 @@ class PilotAuthorizationDecisionConsumer:
                     "Pilot authorization decision differs from the validated candidate.",
                     details={"mismatched_records": ["pilot_authorization"]},
                 )
+            validate_pilot_conformance_authorization_source(
+                decision,
+                scope_envelope=scope_envelope,
+                authentication_conformance_receipt=authentication_conformance_receipt,
+            )
             validate_pilot_authority_chain(
                 decision,
                 scope_envelope=scope_envelope,
