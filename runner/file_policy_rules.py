@@ -121,6 +121,13 @@ COMMON_TEXT_DOC_NAMES = (
     "**/NOTICE.*",
 )
 
+GOVERNANCE_EVIDENCE_FILES = (
+    "control-plane/registry/reports/*.yaml",
+    "control-plane/registry/reports/**/*.yaml",
+    "control-plane/registry/decisions/*.yaml",
+    "control-plane/registry/decisions/**/*.yaml",
+)
+
 RUNNER_MANAGED_FILES = (
     *_runner_patterns(
         "plan.json",
@@ -438,6 +445,7 @@ def source_allowed_patterns() -> tuple[str, ...]:
         *LEGACY_SOURCE_DIR_ALLOW,
         *RUNNER_MANAGED_FILES,
         *COMMON_TEXT_DOC_NAMES,
+        *GOVERNANCE_EVIDENCE_FILES,
         *WEB_METADATA_FILES,
         *TEXT_STATIC_ASSET_EXTENSIONS,
     )

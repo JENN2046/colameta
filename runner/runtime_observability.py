@@ -82,6 +82,7 @@ def git_checkout_metadata(project_root: str | None) -> dict[str, Any]:
 def get_runtime_version_status(
     project_root: str | None,
     *,
+    runtime_project_root: str | None = None,
     loaded_runtime_head: str | None = None,
     loaded_runtime_branch: str | None = None,
     process_start_time_iso: str | None = None,
@@ -91,12 +92,14 @@ def get_runtime_version_status(
     loaded_head = _clean_head(loaded_runtime_head if loaded_runtime_head is not None else LOADED_RUNTIME_HEAD)
     project = git_checkout_metadata(project_root)
     project_head = _clean_head(project.get("head"))
-    restart_needed, reason = _restart_needed(loaded_head, project_head)
+    runtime_project = git_checkout_metadata(runtime_project_root or project_root)
+    runtime_project_head = _clean_head(runtime_project.get("head"))
+    restart_needed, reason = _restart_needed(loaded_head, runtime_project_head)
     module_verification = verify_loaded_module_sources(loaded_module_fingerprints)
-    installed_package_verification = verify_installed_package_against_project(project_root)
+    installed_package_verification = verify_installed_package_against_project(runtime_project_root or project_root)
     reload_awareness = _reload_awareness(
         loaded_head,
-        project_head,
+        runtime_project_head,
         module_verification,
         installed_package_verification,
     )
@@ -126,6 +129,15 @@ def get_runtime_version_status(
             "head_source": project.get("head_source"),
         },
         "project_checkout_head": project_head,
+        "runtime_project_checkout": {
+            "project_root": runtime_project.get("project_root"),
+            "head": runtime_project_head,
+            "head_available": bool(runtime_project_head),
+            "branch": runtime_project.get("branch"),
+            "git_dir_available": bool(runtime_project.get("git_dir_available")),
+            "head_source": runtime_project.get("head_source"),
+        },
+        "runtime_project_checkout_head": runtime_project_head,
         "restart_needed": restart_needed,
         "restart_needed_state": "unknown" if restart_needed is None else ("needed" if restart_needed else "not_needed"),
         "restart_needed_reason": reason,
