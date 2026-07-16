@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -59,6 +60,9 @@ from runner.work_item_governance.pilot_bootstrap import (
 )
 from runner.work_item_governance.pilot_candidate import (
     write_validated_pilot_candidate_records,
+)
+from runner.work_item_governance.pilot_snapshot import (
+    governed_pilot_conformance_ledger_snapshot,
 )
 from runner.work_item_governance.pilot_authorization import (
     ConsumedPilotAuthorization,
@@ -115,6 +119,167 @@ def _v7_ledger(root: Path) -> SQLiteWorkItemLedger:
     legacy.migrate_to_v6()
     SQLiteWorkItemLedger(root, target_schema_version=6).migrate_to_v7()
     return SQLiteWorkItemLedger(root, target_schema_version=7)
+
+
+def _ledger_physical_state(project: Path) -> list[dict[str, object]]:
+    ledger_dir = project / ".colameta/ledger"
+    directory = ledger_dir.stat()
+    state: list[dict[str, object]] = [
+        {
+            "name": ".",
+            "mode": directory.st_mode,
+            "size": directory.st_size,
+            "mtime_ns": directory.st_mtime_ns,
+            "ctime_ns": directory.st_ctime_ns,
+        }
+    ]
+    for path in sorted(ledger_dir.iterdir(), key=lambda value: value.name):
+        measured = path.stat()
+        state.append(
+            {
+                "name": path.name,
+                "mode": measured.st_mode,
+                "size": measured.st_size,
+                "mtime_ns": measured.st_mtime_ns,
+                "ctime_ns": measured.st_ctime_ns,
+                "sha256": sha256_file(path),
+            }
+        )
+    return state
+
+
+@contextmanager
+def _running_preflight_listener(
+    *,
+    server: MCPPlanningBridgeServer,
+    project: Path,
+    snapshot_parent: Path,
+    token: str,
+    token_file_sha256: str,
+    token_evidence_digest: str,
+    timeout_seconds: float = 10,
+):
+    snapshot_parent.mkdir(mode=0o700)
+    source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=snapshot_parent,
+    ) as ledger_snapshot:
+        listener_errors: list[BaseException] = []
+
+        def serve() -> None:
+            try:
+                server.serve_http(
+                    host="127.0.0.1",
+                    port=0,
+                    auth_token=token,
+                    auth_token_source=AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+                    auth_token_file_sha256=token_file_sha256,
+                    auth_token_evidence_digest=token_evidence_digest,
+                    auth_mode="token",
+                    preflight_conformance=True,
+                    preflight_conformance_timeout_seconds=timeout_seconds,
+                    preflight_conformance_ledger_snapshot=ledger_snapshot,
+                )
+            except BaseException as exc:
+                listener_errors.append(exc)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while (
+                getattr(server, "_httpd", None) is None
+                or not callable(server._token_transport_proof_validator)
+            ):
+                if listener_errors:
+                    raise listener_errors[0]
+                if not thread.is_alive() or time.monotonic() >= deadline:
+                    raise AssertionError("actual Pilot MCP listener failed to start")
+                time.sleep(0.01)
+            port = int(server._httpd.server_address[1])
+            yield ledger_snapshot, f"http://127.0.0.1:{port}", port
+        finally:
+            if getattr(server, "_httpd", None) is not None:
+                server._httpd.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert not listener_errors
+    assert _ledger_physical_state(project) == source_before
+
+
+def test_governed_conformance_snapshot_keeps_os_readonly_source_physically_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    _v7_ledger(project)
+    ledger_dir = project / ".colameta/ledger"
+    for path in ledger_dir.iterdir():
+        path.chmod(0o400)
+    ledger_dir.chmod(0o500)
+    source_before = _ledger_physical_state(project)
+    snapshot_parent = tmp_path / "snapshots"
+    snapshot_parent.mkdir(mode=0o700)
+    import runner.work_item_governance.repository as repository_module
+
+    real_connect = repository_module.sqlite3.connect
+    sqlite_targets: list[str] = []
+
+    def traced_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        sqlite_targets.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(repository_module.sqlite3, "connect", traced_connect)
+    try:
+        with governed_pilot_conformance_ledger_snapshot(
+            project,
+            snapshot_parent=snapshot_parent,
+        ) as snapshot:
+            snapshot.require_bound_to(project)
+            evidence = snapshot.public_evidence()
+            assert evidence["source_sqlite_opened"] is False
+            assert evidence["copy_method"] == (
+                "exclusive-maintenance-lock+O_RDONLY+O_NOFOLLOW+byte-copy"
+            )
+            baseline = require_pilot_preflight_conformance_baseline(snapshot.project_root)
+            assert not any(baseline["zero_fact_baseline"].values())
+            assert _ledger_physical_state(project) == source_before
+        assert _ledger_physical_state(project) == source_before
+        assert list(snapshot_parent.iterdir()) == []
+        assert sqlite_targets
+        source_ledger = str(project / ".colameta/ledger/work-items.sqlite3")
+        assert all(source_ledger not in target for target in sqlite_targets)
+    finally:
+        ledger_dir.chmod(0o700)
+        for path in ledger_dir.iterdir():
+            path.chmod(0o600)
+
+
+def test_governed_conformance_snapshot_rejects_snapshot_byte_tampering(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    _v7_ledger(project)
+    source_before = _ledger_physical_state(project)
+    snapshot_parent = tmp_path / "snapshots"
+    snapshot_parent.mkdir(mode=0o700)
+    with pytest.raises(WorkItemGovernanceError) as tamper_error:
+        with governed_pilot_conformance_ledger_snapshot(
+            project,
+            snapshot_parent=snapshot_parent,
+        ) as snapshot:
+            snapshot_main = snapshot.project_root / ".colameta/ledger/work-items.sqlite3"
+            with snapshot_main.open("r+b") as stream:
+                stream.seek(100)
+                original = stream.read(1)
+                stream.seek(100)
+                stream.write(bytes([original[0] ^ 1]))
+    assert tamper_error.value.code == "PILOT_CONFORMANCE_SNAPSHOT_CHANGED"
+    assert _ledger_physical_state(project) == source_before
+    assert list(snapshot_parent.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -1557,33 +1722,14 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    thread = threading.Thread(
-        target=server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 10,
-        },
-        daemon=True,
-    )
-    thread.start()
-    try:
-        deadline = time.monotonic() + 5
-        while (
-            getattr(server, "_httpd", None) is None
-            or not callable(server._token_transport_proof_validator)
-        ):
-            if not thread.is_alive() or time.monotonic() >= deadline:
-                raise AssertionError("actual Pilot MCP listener failed to start")
-            time.sleep(0.01)
-        port = int(server._httpd.server_address[1])
-        endpoint = f"http://127.0.0.1:{port}"
+    with _running_preflight_listener(
+        server=server,
+        project=project,
+        snapshot_parent=tmp_path / "http-conformance-snapshots",
+        token=token,
+        token_file_sha256=token_file_sha256,
+        token_evidence_digest=token_evidence_digest,
+    ) as (ledger_snapshot, endpoint, port):
         receipt = build_pilot_authentication_conformance_receipt(
             server=server,
             endpoint=endpoint,
@@ -1610,13 +1756,8 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
             registry_path=tmp_path / "registry.json",
             stable_promotion_root=tmp_path / "stable",
             port=port,
+            ledger_snapshot=ledger_snapshot,
         )
-        with sqlite3.connect(ledger.path) as connection:
-            connection.execute(
-                "UPDATE ledger_meta SET value=? WHERE key=?",
-                ("f" * 64, "authoritative_canary_token_evidence_digest"),
-            )
-            connection.commit()
         with pytest.raises(WorkItemGovernanceError) as durable_mismatch:
             build_pilot_authentication_conformance_receipt(
                 server=server,
@@ -1625,7 +1766,7 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
                 token_file=token_file,
                 token_binding={
                     "authoritative_canary_token_file_sha256": token_file_sha256,
-                    "authoritative_canary_token_evidence_digest": token_evidence_digest,
+                    "authoritative_canary_token_evidence_digest": "f" * 64,
                 },
                 source_binding={
                     "implementation_commit": "1" * 40,
@@ -1644,13 +1785,9 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
                 registry_path=tmp_path / "registry.json",
                 stable_promotion_root=tmp_path / "stable",
                 port=port,
+                ledger_snapshot=ledger_snapshot,
             )
         assert durable_mismatch.value.code == "PILOT_AUTHENTICATION_CONFORMANCE_INVALID"
-    finally:
-        if getattr(server, "_httpd", None) is not None:
-            server._httpd.shutdown()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
     assert receipt["result"] == "PASS"
     assert receipt["authentication"]["token_ledger_binding_valid"] is True
     assert receipt["authentication"]["proof_issued_delta"] == 2
@@ -1681,9 +1818,6 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
             ("authoritative_canary_token_evidence_digest", token_evidence_digest, isoformat_utc(utc_now())),
         )
-    baseline = require_pilot_preflight_conformance_baseline(project)
-    assert not any(baseline["zero_fact_baseline"].values())
-
     safety = {
         "network_inventory_digest": SHA,
         "process_inventory_digest": SHA,
@@ -1722,35 +1856,19 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             activation_lease_id="lease_forbidden",
             preflight_conformance=True,
         )
-    thread = threading.Thread(
-        target=server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 10,
-        },
-        daemon=True,
-    )
-    thread.start()
-    try:
-        deadline = time.monotonic() + 5
-        while (
-            getattr(server, "_httpd", None) is None
-            or not callable(server._token_transport_proof_validator)
-        ):
-            if not thread.is_alive() or time.monotonic() >= deadline:
-                raise AssertionError("preflight-only Pilot MCP listener failed to start")
-            time.sleep(0.01)
-        port = int(server._httpd.server_address[1])
-        endpoint = f"http://127.0.0.1:{port}"
-        snapshot = server._pilot_http_conformance_snapshot()
-        assert snapshot["preflight_conformance_only"] is True
+    with _running_preflight_listener(
+        server=server,
+        project=project,
+        snapshot_parent=tmp_path / "ordering-conformance-snapshots",
+        token=token,
+        token_file_sha256=token_file_sha256,
+        token_evidence_digest=token_evidence_digest,
+    ) as (ledger_snapshot, endpoint, port):
+        baseline = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+        assert not any(baseline["zero_fact_baseline"].values())
+        listener_snapshot = server._pilot_http_conformance_snapshot()
+        assert listener_snapshot["preflight_conformance_only"] is True
+        assert listener_snapshot["ledger_snapshot_binding_digest"] == ledger_snapshot.binding_digest
 
         receipt = build_pilot_authentication_conformance_receipt(
             server=server,
@@ -1778,6 +1896,7 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             registry_path=tmp_path / "registry.json",
             stable_promotion_root=tmp_path / "stable",
             port=port,
+            ledger_snapshot=ledger_snapshot,
         )
         assert receipt["result"] == "PASS"
         assert (
@@ -1830,13 +1949,8 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
         assert codes == ["PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"] * 8
         direct = server._call_tool("apply_work_item_create", {"preview_id": "direct-bypass"})
         assert direct["error_code"] == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
-        after = require_pilot_preflight_conformance_baseline(project)
+        after = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
         assert after["zero_fact_baseline"] == baseline["zero_fact_baseline"]
-    finally:
-        if getattr(server, "_httpd", None) is not None:
-            server._httpd.shutdown()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
     assert server._preflight_conformance_only is False
 
     timeout_server = MCPPlanningBridgeServer(
@@ -1844,26 +1958,34 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    timeout_thread = threading.Thread(
-        target=timeout_server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 0.2,
-        },
-        daemon=True,
-    )
-    timeout_thread.start()
-    timeout_thread.join(timeout=3)
-    assert not timeout_thread.is_alive()
+    timeout_parent = tmp_path / "timeout-conformance-snapshots"
+    timeout_parent.mkdir(mode=0o700)
+    timeout_source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=timeout_parent,
+    ) as timeout_snapshot:
+        timeout_thread = threading.Thread(
+            target=timeout_server.serve_http,
+            kwargs={
+                "host": "127.0.0.1",
+                "port": 0,
+                "auth_token": token,
+                "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+                "auth_token_file_sha256": token_file_sha256,
+                "auth_token_evidence_digest": token_evidence_digest,
+                "auth_mode": "token",
+                "preflight_conformance": True,
+                "preflight_conformance_timeout_seconds": 0.2,
+                "preflight_conformance_ledger_snapshot": timeout_snapshot,
+            },
+            daemon=True,
+        )
+        timeout_thread.start()
+        timeout_thread.join(timeout=3)
+        assert not timeout_thread.is_alive()
     assert timeout_server._preflight_conformance_only is False
-    require_pilot_preflight_conformance_baseline(project)
+    assert _ledger_physical_state(project) == timeout_source_before
 
 
 def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero_facts(
@@ -1885,7 +2007,7 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    with pytest.raises(WorkItemGovernanceError) as missing_startup_error:
+    with pytest.raises(PlanningBridgeError, match="requires one governed isolated Ledger snapshot"):
         missing_server.serve_http(
             host="127.0.0.1",
             port=0,
@@ -1896,7 +2018,15 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
             auth_mode="token",
             preflight_conformance=True,
         )
-    assert missing_startup_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+    missing_snapshot_parent = tmp_path / "missing-snapshots"
+    missing_snapshot_parent.mkdir(mode=0o700)
+    with pytest.raises(WorkItemGovernanceError) as missing_snapshot_error:
+        with governed_pilot_conformance_ledger_snapshot(
+            missing,
+            snapshot_parent=missing_snapshot_parent,
+        ):
+            pass
+    assert missing_snapshot_error.value.code == "LEDGER_FILE_MISSING"
     assert not missing_path.exists()
 
     project = tmp_path / "pilot-project"
@@ -1941,20 +2071,29 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
             ),
         )
         connection.commit()
-    with pytest.raises(WorkItemGovernanceError) as baseline_error:
-        require_pilot_preflight_conformance_baseline(project)
-    assert baseline_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
-    assert baseline_error.value.details == {
-        "nonzero_tables": ["work_items"],
-        "foreign_key_violations": 0,
-    }
-    with sqlite3.connect(ledger.path) as connection:
-        counts = {
-            table: int(connection.execute(query).fetchone()[0])
-            for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+    nonzero_parent = tmp_path / "nonzero-snapshots"
+    nonzero_parent.mkdir(mode=0o700)
+    source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=nonzero_parent,
+    ) as nonzero_snapshot:
+        with pytest.raises(WorkItemGovernanceError) as baseline_error:
+            require_pilot_preflight_conformance_baseline(nonzero_snapshot.project_root)
+        assert baseline_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+        assert baseline_error.value.details == {
+            "nonzero_tables": ["work_items"],
+            "foreign_key_violations": 0,
         }
-    assert counts["work_items"] == 1
-    assert sum(counts.values()) == 1
+        snapshot_ledger = SQLiteWorkItemLedger(nonzero_snapshot.project_root, target_schema_version=7)
+        with snapshot_ledger.read_connection() as connection:
+            counts = {
+                table: int(connection.execute(query).fetchone()[0])
+                for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+            }
+        assert counts["work_items"] == 1
+        assert sum(counts.values()) == 1
+    assert _ledger_physical_state(project) == source_before
 
 
 def test_safety_conformance_is_bound_to_measured_host_and_project_snapshot(

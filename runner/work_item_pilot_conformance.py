@@ -25,6 +25,7 @@ from runner.work_item_governance.pilot import (
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.schema_loader import validate_governance_record
 
@@ -415,6 +416,7 @@ def build_pilot_authentication_conformance_receipt(
     registry_path: str | os.PathLike[str],
     stable_promotion_root: str | os.PathLike[str],
     port: int,
+    ledger_snapshot: PilotConformanceLedgerSnapshot,
 ) -> dict[str, Any]:
     """Build a formal receipt only from the zero-fact preflight listener."""
 
@@ -438,8 +440,9 @@ def build_pilot_authentication_conformance_receipt(
         AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
         AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
     }
+    ledger_snapshot.require_bound_to(project_root)
     try:
-        durable_binding = measure_pilot_durable_token_binding(project_root)
+        durable_binding = measure_pilot_durable_token_binding(ledger_snapshot.project_root)
     except WorkItemGovernanceError:
         raise
     except Exception as exc:
@@ -471,7 +474,7 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
             "Pilot conformance requires the actual active ColaMeta MCP listener.",
         )
-    require_pilot_preflight_conformance_baseline(project_root)
+    require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
     try:
         listener_before = snapshot_method()
     except Exception as exc:
@@ -487,6 +490,8 @@ def build_pilot_authentication_conformance_receipt(
         or listener_before.get("token_file_sha256") != token_file_sha256
         or listener_before.get("token_evidence_digest") != token_evidence_digest
         or listener_before.get("preflight_conformance_only") is not True
+        or listener_before.get("ledger_snapshot_binding_digest")
+        != ledger_snapshot.binding_digest
     ):
         raise WorkItemGovernanceError(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
@@ -499,7 +504,8 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
             "Pilot Preflight requires the exact read-only conformance listener mode.",
         )
-    require_pilot_preflight_conformance_baseline(project_root)
+    require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+    ledger_snapshot.require_bound_to(project_root)
     proof_deltas = {
         key: int(listener_after[key]) - int(listener_before[key])
         for key in ("issued_count", "activated_count", "retired_count")
@@ -516,6 +522,8 @@ def build_pilot_authentication_conformance_receipt(
         or http["surface"]["server_binding_digest"] != listener_before["server_binding_digest"]
         or listener_before["listener_instance_nonce"] != listener_after["listener_instance_nonce"]
         or listener_before["server_binding_digest"] != listener_after["server_binding_digest"]
+        or listener_after.get("ledger_snapshot_binding_digest")
+        != ledger_snapshot.binding_digest
         or not request_capability_single_use
     ):
         raise WorkItemGovernanceError(

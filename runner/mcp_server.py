@@ -113,6 +113,7 @@ from runner.work_item_governance.pilot import (
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_mcp_adapter import (
     AUTHORITATIVE_CANARY_MCP_TOOLS,
     WORK_ITEM_APPLY_TOOLS,
@@ -1194,6 +1195,7 @@ class MCPPlanningBridgeServer:
             raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
         self._token_transport_proof_validator = None
         self._preflight_conformance_only = False
+        self._preflight_conformance_ledger_snapshot_binding_digest: str | None = None
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -4622,6 +4624,9 @@ class MCPPlanningBridgeServer:
             raise PlanningBridgeError("Pilot conformance requires the exact active authenticated MCP listener.")
         snapshot = _authenticated_token_listener_conformance_snapshot(self)
         snapshot["preflight_conformance_only"] = bool(self._preflight_conformance_only)
+        snapshot["ledger_snapshot_binding_digest"] = (
+            self._preflight_conformance_ledger_snapshot_binding_digest
+        )
         snapshot["server_binding_digest"] = hashlib.sha256(
             json.dumps(
                 {
@@ -4629,6 +4634,9 @@ class MCPPlanningBridgeServer:
                     "scope_mode": self.work_item_scope_mode,
                     "exposure_profile": self.mcp_exposure_profile,
                     "preflight_conformance_only": bool(self._preflight_conformance_only),
+                    "ledger_snapshot_binding_digest": (
+                        self._preflight_conformance_ledger_snapshot_binding_digest
+                    ),
                     "listener_instance_nonce": snapshot["listener_instance_nonce"],
                 },
                 sort_keys=True,
@@ -4661,6 +4669,7 @@ class MCPPlanningBridgeServer:
         claimed_activation_envelope_path: str | None = None,
         preflight_conformance: bool = False,
         preflight_conformance_timeout_seconds: float = 120.0,
+        preflight_conformance_ledger_snapshot: PilotConformanceLedgerSnapshot | None = None,
     ) -> int:
         server = self
         _debug_counter = 0
@@ -4724,8 +4733,23 @@ class MCPPlanningBridgeServer:
                     raise PlanningBridgeError(
                         "preflight_conformance forbids Activation Lease inputs."
                     )
-                require_pilot_preflight_conformance_baseline(self.project_root)
-                durable_token_binding = measure_pilot_durable_token_binding(self.project_root)
+                if not isinstance(
+                    preflight_conformance_ledger_snapshot,
+                    PilotConformanceLedgerSnapshot,
+                ):
+                    raise PlanningBridgeError(
+                        "preflight_conformance requires one governed isolated Ledger snapshot."
+                    )
+                try:
+                    preflight_conformance_ledger_snapshot.require_bound_to(self.project_root)
+                    snapshot_project_root = preflight_conformance_ledger_snapshot.project_root
+                    require_pilot_preflight_conformance_baseline(snapshot_project_root)
+                    durable_token_binding = measure_pilot_durable_token_binding(snapshot_project_root)
+                    preflight_conformance_ledger_snapshot.require_bound_to(self.project_root)
+                except WorkItemGovernanceError as exc:
+                    raise PlanningBridgeError(
+                        "preflight_conformance isolated Ledger snapshot validation failed."
+                    ) from exc
                 if durable_token_binding != {
                     "authoritative_canary_token_file_sha256": auth_token_file_sha256,
                     "authoritative_canary_token_evidence_digest": auth_token_evidence_digest,
@@ -5557,6 +5581,12 @@ class MCPPlanningBridgeServer:
             raise
         self._httpd = httpd
         self._preflight_conformance_only = preflight_conformance_only
+        self._preflight_conformance_ledger_snapshot_binding_digest = (
+            preflight_conformance_ledger_snapshot.binding_digest
+            if preflight_conformance_only
+            and isinstance(preflight_conformance_ledger_snapshot, PilotConformanceLedgerSnapshot)
+            else None
+        )
         if authoritative_canary and not preflight_conformance_only:
             if activation_control_plane is None or activation_lease_id is None:
                 httpd.server_close()
@@ -5622,6 +5652,7 @@ class MCPPlanningBridgeServer:
             ):
                 self._token_transport_proof_validator = None
             self._preflight_conformance_only = False
+            self._preflight_conformance_ledger_snapshot_binding_digest = None
             if (
                 authoritative_canary
                 and not preflight_conformance_only
