@@ -2777,9 +2777,7 @@ class WorkItemApplicationService:
         elif uri.startswith("file://"):
             path = Path(uri[len("file://") :])
         elif "://" not in uri:
-            candidate = self.project_root / uri
-            if candidate.exists():
-                path = candidate
+            path = self.project_root / uri
         if path is None:
             return
         resolved = path.expanduser().resolve()

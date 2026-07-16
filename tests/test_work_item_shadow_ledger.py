@@ -194,6 +194,65 @@ def test_artifact_digest_mismatch_fails_without_registration(tmp_path: Path) -> 
     assert service.get_work_item(item["work_item_id"])["artifact_refs"] == []
 
 
+def test_missing_relative_artifact_fails_without_registration(tmp_path: Path) -> None:
+    service = WorkItemApplicationService(tmp_path, enabled=True)
+    item = create(service)
+
+    with pytest.raises(WorkItemGovernanceError) as raised:
+        service.register_artifact_reference(
+            {
+                "work_item_id": item["work_item_id"],
+                "task_version": 1,
+                "kind": "report",
+                "uri": "missing/report.txt",
+                "immutable_ref": "report:missing",
+                "digest": "0" * 64,
+                "source_event_key": "artifact:missing",
+            }
+        )
+
+    assert raised.value.code == "ARTIFACT_FILE_MISSING"
+    assert service.get_work_item(item["work_item_id"])["artifact_refs"] == []
+
+
+def test_missing_relative_completion_artifact_fails_without_completion(tmp_path: Path) -> None:
+    service = WorkItemApplicationService(tmp_path, enabled=True)
+    item = create(service)
+    attempt = service.create_execution_attempt(
+        {
+            "work_item_id": item["work_item_id"],
+            "task_version": 1,
+            "source_event_key": "claim:missing-artifact",
+        }
+    )["attempt"]
+
+    with pytest.raises(WorkItemGovernanceError) as raised:
+        service.complete_execution_attempt(
+            {
+                "attempt_id": attempt["attempt_id"],
+                "status": "completed",
+                "source_event_key": "complete:missing-artifact",
+                "artifacts": [
+                    {
+                        "work_item_id": item["work_item_id"],
+                        "task_version": 1,
+                        "attempt_id": attempt["attempt_id"],
+                        "kind": "report",
+                        "uri": "missing/completion-report.txt",
+                        "immutable_ref": "report:completion-missing",
+                        "digest": "0" * 64,
+                        "source_event_key": "artifact:completion-missing",
+                    }
+                ],
+            }
+        )
+
+    assert raised.value.code == "ARTIFACT_FILE_MISSING"
+    current = service.get_work_item(item["work_item_id"])
+    assert current["execution_attempts"][0]["status"] == "claimed"
+    assert current["artifact_refs"] == []
+
+
 def test_completion_idempotency_key_rejects_changed_content(tmp_path: Path) -> None:
     service = WorkItemApplicationService(tmp_path, enabled=True)
     item = create(service)
