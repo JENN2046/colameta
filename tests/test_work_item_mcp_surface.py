@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 from runner.mcp_server import (
@@ -11,6 +12,8 @@ from runner.mcp_server import (
     MCPPlanningBridgeServer,
 )
 from runner.project_registry import ProjectRegistry
+from runner.work_item_governance.ids import new_stable_id
+from runner.work_item_governance.repository import SQLiteWorkItemLedger
 from runner.work_item_principal_adapter import principal_from_auth_context
 
 
@@ -117,6 +120,75 @@ def test_mcp_feature_is_default_off_and_explicit_preview_apply_works_when_enable
         "direct_ledger_write": False,
         "automatic_work_item_creation": False,
     }
+
+
+def test_mcp_read_tools_do_not_create_a_missing_ledger(tmp_path: Path) -> None:
+    settings_dir = tmp_path / ".colameta"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"work_item_governance": {"shadow_ledger_enabled": True, "gate_mode": "shadow"}}),
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    work_item_id = new_stable_id("work_item")
+    attempt_id = new_stable_id("attempt")
+
+    status = server.call_tool_for_agent("get_work_item_governance_status", {})
+    assert status["ok"] is True
+    assert "ledger_schema_version" not in status["data"]
+
+    read_calls = {
+        "get_work_item": {"work_item_id": work_item_id},
+        "list_work_items": {},
+        "get_work_item_timeline": {"work_item_id": work_item_id},
+        "list_outbox_events": {},
+        "get_execution_attempt_dispatch_authority": {
+            "attempt_id": attempt_id,
+            "work_item_id": work_item_id,
+            "task_version": 1,
+        },
+    }
+    for tool_name, arguments in read_calls.items():
+        result = server.call_tool_for_agent(tool_name, arguments)
+        assert result["ok"] is False, tool_name
+        assert result["error_code"] == "LEDGER_FILE_MISSING", tool_name
+
+    assert not (settings_dir / "ledger").exists()
+
+
+def test_mcp_reads_do_not_migrate_an_older_ledger(tmp_path: Path) -> None:
+    ledger = SQLiteWorkItemLedger(tmp_path)
+    ledger.initialize()
+    settings = tmp_path / ".colameta" / "settings.json"
+    settings.write_text(
+        json.dumps({"work_item_governance": {"shadow_ledger_enabled": True, "gate_mode": "shadow"}}),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("PRAGMA user_version=4")
+    ledger_dir = ledger.path.parent
+    before_paths = {
+        path.relative_to(ledger_dir).as_posix()
+        for path in ledger_dir.rglob("*")
+        if path.is_file()
+    }
+    before_database = ledger.path.read_bytes()
+
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    for tool_name in ("get_work_item_governance_status", "list_work_items"):
+        result = server.call_tool_for_agent(tool_name, {})
+        assert result["ok"] is False, tool_name
+        assert result["error_code"] == "LEDGER_SCHEMA_MIGRATION_REQUIRED", tool_name
+
+    after_paths = {
+        path.relative_to(ledger_dir).as_posix()
+        for path in ledger_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert ledger.path.read_bytes() == before_database
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_mcp_commit_scope_does_not_self_grant_work_item_authority() -> None:

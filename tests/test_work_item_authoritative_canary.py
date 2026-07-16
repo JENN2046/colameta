@@ -863,6 +863,7 @@ def test_active_lease_blocks_unguarded_maintenance_commands(tmp_path: Path) -> N
     clean_project = tmp_path / "clean-project"
     clean_project.mkdir()
     clean_service = WorkItemApplicationService(clean_project, enabled=True)
+    clean_service.ledger.initialize()
     clean_generation = clean_service.ledger.database_generation()
     with pytest.raises(WorkItemGovernanceError) as source_error:
         clean_service.restore_ledger(

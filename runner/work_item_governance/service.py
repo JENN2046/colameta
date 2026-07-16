@@ -263,6 +263,8 @@ class WorkItemApplicationService:
                 f"ACTIVATION_LEDGER_{operation.upper()}_DENIED",
                 f"Ledger {operation} is denied while the Authoritative Canary composition is active.",
             )
+        if not self.ledger.path.is_file():
+            return
         with self.ledger.read_connection() as connection:
             lease = self._latest_activation_lease(connection, live_only=True)
         if lease is not None:
@@ -289,6 +291,8 @@ class WorkItemApplicationService:
                 "This internal Work Item write path is unavailable to an Authoritative Canary.",
                 details={"operation": operation},
             )
+        if not self.ledger.path.is_file():
+            return
         with self.ledger.read_connection() as connection:
             lease = self._latest_activation_lease(connection)
         if lease is not None:

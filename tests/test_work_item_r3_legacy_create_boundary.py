@@ -121,8 +121,7 @@ def test_unknown_private_creation_operation_fails_before_write(tmp_path: Path) -
         service._apply_create({}, {}, creation_operation="future_import_alias")
 
     assert exc_info.value.code == "CREATE_OPERATION_UNSUPPORTED"
-    with service.ledger.read_connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
+    assert not service.ledger.path.exists()
 
 
 def test_architecture_keeps_legacy_import_denied_and_private_create_guarded() -> None:

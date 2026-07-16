@@ -705,24 +705,73 @@ class SQLiteWorkItemLedger:
             )
         os.chmod(ledger_dir, 0o700)
 
+    def _assert_existing_storage_path(self) -> None:
+        """Validate the Ledger path without creating or chmodding anything."""
+
+        if not self.project_root.is_dir():
+            raise WorkItemGovernanceError(
+                "PROJECT_ROOT_INVALID",
+                "Project root must be an existing directory.",
+                details={"project_root": str(self.project_root)},
+            )
+        runner_dir = self.project_root / ".colameta"
+        if runner_dir.is_symlink():
+            raise WorkItemGovernanceError(
+                "LEDGER_PATH_UNSAFE",
+                "The .colameta directory must not be a symbolic link.",
+            )
+        ledger_dir = runner_dir / "ledger"
+        if ledger_dir.is_symlink():
+            raise WorkItemGovernanceError("LEDGER_PATH_UNSAFE", "Ledger directory must not be a symbolic link.")
+        if not ledger_dir.is_dir():
+            raise WorkItemGovernanceError(
+                "LEDGER_FILE_MISSING",
+                "Ledger database file does not exist.",
+                details={"path": str(self.path)},
+            )
+        try:
+            ledger_dir.resolve().relative_to(self.project_root)
+        except ValueError as exc:
+            raise WorkItemGovernanceError(
+                "LEDGER_PATH_OUTSIDE_PROJECT",
+                "Ledger path must remain under the project root.",
+            ) from exc
+        if self.path.is_symlink():
+            raise WorkItemGovernanceError(
+                "LEDGER_PATH_UNSAFE",
+                "Ledger database must not be a symbolic link.",
+            )
+
     @contextmanager
     def _maintenance_lock(
         self,
         *,
         exclusive: bool,
         blocking: bool = True,
+        create: bool = True,
     ) -> Iterator[None]:
-        self._ensure_storage_path()
+        if create:
+            self._ensure_storage_path()
+        else:
+            self._assert_existing_storage_path()
         if self.maintenance_lock_path.is_symlink():
             raise WorkItemGovernanceError(
                 "LEDGER_PATH_UNSAFE",
                 "Ledger maintenance lock must not be a symbolic link.",
             )
-        flags = os.O_CREAT | os.O_RDWR
+        flags = os.O_CREAT | os.O_RDWR if create else os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open(self.maintenance_lock_path, flags, 0o600)
-        os.chmod(self.maintenance_lock_path, 0o600)
+        try:
+            descriptor = os.open(self.maintenance_lock_path, flags, 0o600)
+        except FileNotFoundError as exc:
+            raise WorkItemGovernanceError(
+                "LEDGER_MAINTENANCE_LOCK_MISSING",
+                "Ledger reads require the maintenance lock provisioned by explicit bootstrap.",
+                details={"path": str(self.maintenance_lock_path)},
+            ) from exc
+        if create:
+            os.chmod(self.maintenance_lock_path, 0o600)
         operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         if not blocking:
             operation |= fcntl.LOCK_NB
@@ -1375,13 +1424,40 @@ class SQLiteWorkItemLedger:
 
     @contextmanager
     def read_connection(self) -> Iterator[sqlite3.Connection]:
-        with self._maintenance_lock(exclusive=False):
-            self._initialize_unlocked()
+        if not self.path.is_file():
+            raise WorkItemGovernanceError(
+                "LEDGER_FILE_MISSING",
+                "Ledger database file does not exist.",
+                details={"path": str(self.path)},
+            )
+        self._assert_existing_storage_path()
+        with self._connect(readonly=True) as preflight:
+            self._assert_readable_schema_version(
+                int(preflight.execute("PRAGMA user_version").fetchone()[0])
+            )
+        with self._maintenance_lock(exclusive=False, create=False):
             connection = self._connect(readonly=True)
             try:
+                self._assert_readable_schema_version(
+                    int(connection.execute("PRAGMA user_version").fetchone()[0])
+                )
                 yield connection
             finally:
                 connection.close()
+
+    def _assert_readable_schema_version(self, current: int) -> None:
+        if current > CURRENT_LEDGER_SCHEMA_VERSION:
+            raise WorkItemGovernanceError(
+                "LEDGER_SCHEMA_TOO_NEW",
+                "Ledger schema is newer than this ColaMeta build.",
+                details={"current": current, "supported": CURRENT_LEDGER_SCHEMA_VERSION},
+            )
+        if current < self.target_schema_version:
+            raise WorkItemGovernanceError(
+                "LEDGER_SCHEMA_MIGRATION_REQUIRED",
+                "Ledger reads refuse implicit schema migration; run an explicit bootstrap or migration command.",
+                details={"current": current, "required": self.target_schema_version},
+            )
 
     def schema_version(self) -> int:
         with self.read_connection() as connection:
@@ -1642,15 +1718,24 @@ class SQLiteWorkItemLedger:
     def assert_exact_schema_without_migration(self, *, expected_version: int | None = None) -> int:
         """Verify a preflighted Ledger without running a startup migration."""
 
-        with self._maintenance_lock(exclusive=False):
-            if not self.path.is_file():
-                raise WorkItemGovernanceError(
-                    "ACTIVATION_LEDGER_MISSING",
-                    "Authoritative Canary requires its preflighted Ledger.",
-                )
+        if not self.path.is_file():
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_MISSING",
+                "Authoritative Canary requires its preflighted Ledger.",
+            )
+        expected = self.target_schema_version if expected_version is None else expected_version
+        self._assert_existing_storage_path()
+        with self._connect(readonly=True) as preflight:
+            version = int(preflight.execute("PRAGMA user_version").fetchone()[0])
+        if version != expected:
+            raise WorkItemGovernanceError(
+                "ACTIVATION_LEDGER_SCHEMA_MISMATCH",
+                "Authoritative Canary refuses startup migration or schema drift.",
+                details={"expected": expected, "actual": version},
+            )
+        with self._maintenance_lock(exclusive=False, create=False):
             with self._connect(readonly=True) as connection:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        expected = self.target_schema_version if expected_version is None else expected_version
         if version != expected:
             raise WorkItemGovernanceError(
                 "ACTIVATION_LEDGER_SCHEMA_MISMATCH",
@@ -1722,8 +1807,13 @@ class SQLiteWorkItemLedger:
     def integrity_check(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         target = Path(path).expanduser().resolve() if path is not None else self.path
         if path is None:
-            with self._maintenance_lock(exclusive=False):
-                self._initialize_unlocked()
+            if not self.path.is_file():
+                raise WorkItemGovernanceError(
+                    "LEDGER_FILE_MISSING",
+                    "Ledger database file does not exist.",
+                    details={"path": str(self.path)},
+                )
+            with self._maintenance_lock(exclusive=False, create=False):
                 return self._integrity_check_unlocked(target)
         return self._integrity_check_unlocked(target)
 
