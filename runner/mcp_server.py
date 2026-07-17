@@ -4569,7 +4569,12 @@ class MCPPlanningBridgeServer:
                 name,
                 clean,
                 principal_context=current_work_item_principal(),
-                authoritative_canary=authoritative_canary,
+                # The authoritative-canary exposure profile is the transport
+                # boundary for both compositions.  A bounded Pilot must select
+                # only the Pilot service/guard composition; passing both flags
+                # is an explicit fail-closed conflict in the application
+                # service and rejects every otherwise valid Pilot command.
+                authoritative_canary=authoritative_canary and not bounded_pilot,
                 bounded_single_project_pilot=bounded_pilot,
                 authenticated_request_proof=current_authenticated_token_request_proof(),
             )

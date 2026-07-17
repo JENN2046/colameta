@@ -21,6 +21,7 @@ import pytest
 import runner.work_item_governance.pilot_candidate as candidate_module
 import runner.work_item_governance.pilot_bootstrap as bootstrap_module
 import runner.work_item_governance.pilot as pilot_module
+import runner.mcp_server as mcp_server_module
 
 from runner.mcp_server import (
     AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
@@ -1225,6 +1226,49 @@ def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
     assert len(server._visible_tool_names()) == 14
     assert "list_outbox_events" not in server._visible_tool_names()
     assert "manage_git" not in server._visible_tool_names()
+
+
+def test_pilot_mcp_command_selects_only_bounded_pilot_composition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    def execute_stub(
+        project_root: str,
+        name: str,
+        params: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        observed.append(
+            {
+                "project_root": project_root,
+                "name": name,
+                "params": params,
+                **kwargs,
+            }
+        )
+        return {"result": "PASS"}
+
+    monkeypatch.setattr(mcp_server_module, "execute_work_item_mcp_command", execute_stub)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+
+    assert server._tool_work_item_command("get_work_item_governance_status", {}) == {"result": "PASS"}
+    assert observed == [
+        {
+            "project_root": str(tmp_path),
+            "name": "get_work_item_governance_status",
+            "params": {},
+            "principal_context": None,
+            "authoritative_canary": False,
+            "bounded_single_project_pilot": True,
+            "authenticated_request_proof": None,
+        }
+    ]
 
 
 def test_frozen_storage_contract_matches_runtime_ddl() -> None:
