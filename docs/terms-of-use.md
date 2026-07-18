@@ -83,4 +83,3 @@ ColaMeta at any time.
 
 For questions about these terms, use the contact information in
 [ColaMeta Support](support.md).
-

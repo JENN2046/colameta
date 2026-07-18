@@ -25,4 +25,3 @@ Review baseline:
 The reviewer account must be supplied through the OpenAI Platform submission
 portal and tested without MFA, SMS, email confirmation, or private-network
 access. Do not place reviewer credentials in this repository.
-

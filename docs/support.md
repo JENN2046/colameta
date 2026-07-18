@@ -27,4 +27,3 @@ only the minimum information needed to establish a private follow-up channel.
 ColaMeta is provided on a best-effort basis. Response times and service
 availability are not guaranteed. Review or publication through the OpenAI
 plugin directory does not create a separate service-level agreement.
-
