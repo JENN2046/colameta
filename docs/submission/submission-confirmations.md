@@ -14,6 +14,11 @@ Not yet confirmed. Before Dashboard submission, the human reviewer must confirm:
   surface;
 - security/privacy review is complete;
 - app management permissions are verified in the OpenAI Platform Dashboard;
+- support and terms URLs are public and match the publisher identity;
+- reviewer credentials work without MFA, SMS, email confirmation, or
+  private-network access;
+- the selected countries or regions match the publisher's legal, product, and
+  support readiness;
 - submission metadata matches the current MCP server snapshot;
 - no token, cookie, credential, raw provider response, tunnel config, proxy
   config, or raw logs are included in submission evidence.

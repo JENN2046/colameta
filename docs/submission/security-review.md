@@ -15,7 +15,7 @@ Published candidate URL: https://github.com/JENN2046/colameta/blob/main/docs/pri
 Human privacy review is still required before marking `security_review_ready=true`.
 
 ## monitoring
-Stable runtime baseline: `8639e83d6a7a572e1db1be26267aef7737313643`
+Stable runtime baseline: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`
 
 Public remote MCP preflight at that baseline:
 
@@ -31,9 +31,10 @@ Apps connector smoke at that baseline:
 - evidence gap count: 0;
 - stable replacement status: `stable_aligned`.
 
-The submission annotation changes remain an uncommitted release-material candidate.
-After commit and stable/public runtime refresh, the same expected-head-bound checks
-must be rerun before final submission approval.
+The submission annotation changes were committed in
+`9cf53f07378aec0ac33d9792dddec58546fb1d6f`, deployed to the stable/public
+runtime, and verified with the same expected-head-bound checks. Rerun those
+checks if the MCP server or runtime release changes before submission.
 
 ## review_status
 Source review found no normal-profile tool inputs requesting credentials, MFA,
