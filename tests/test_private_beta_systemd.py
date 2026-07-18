@@ -102,6 +102,9 @@ def test_default_services_use_commander_and_advanced_stays_loopback_normal() -> 
 
     assert "Environment=MCP_EXPOSURE_PROFILE=commander" in stable
     assert "Environment=MCP_EXPOSURE_PROFILE=commander" in remote
+    assert "--oauth-scopes mcp:read,mcp:preview --no-register-selected" in remote
+    assert "mcp:commit" not in remote
+    assert "mcp:plan" not in remote
     assert "Environment=MCP_EXPOSURE_PROFILE=normal" in advanced
     assert "--mcp-host 127.0.0.1 --mcp-port 8768" in advanced
     assert "--auth-mode none" in advanced
