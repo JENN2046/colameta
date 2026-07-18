@@ -12,10 +12,12 @@ from runner.work_item_governance.activation import canonical_path_digest
 from runner.work_item_governance.canonical import canonical_sha256, sha256_bytes
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
+    PILOT_SOURCE_BINDING_FIELDS,
     validate_execution_authorization_receipt,
     validate_pilot_authorization,
     validate_pilot_scope_envelope,
 )
+from runner.work_item_governance.source_binding import CORE_BASELINE_COMMIT
 
 
 _RECORD_NAMES = frozenset(
@@ -49,28 +51,16 @@ class PilotCandidatePaths:
         pilot = self.pilot_root
         project = self.project_root
         return {
-            "backup_path_digest": canonical_path_digest(
-                pilot / "backups/pre-activation-generation-1.sqlite3"
-            ),
+            "backup_path_digest": canonical_path_digest(pilot / "backups/pre-activation-generation-1.sqlite3"),
             "cwd_path_digest": canonical_path_digest(project),
             "home_path_digest": canonical_path_digest(pilot / "home"),
-            "ledger_path_digest": canonical_path_digest(
-                project / ".colameta/ledger/work-items.sqlite3"
-            ),
+            "ledger_path_digest": canonical_path_digest(project / ".colameta/ledger/work-items.sqlite3"),
             "pilot_root_path_digest": canonical_path_digest(pilot),
             "project_root_path_digest": canonical_path_digest(project),
-            "registry_path_digest": canonical_path_digest(
-                pilot / "xdg-config/colameta/project-registry.json"
-            ),
-            "runtime_executable_path_digest": canonical_path_digest(
-                pilot / "runtime/bin/python"
-            ),
-            "settings_path_digest": canonical_path_digest(
-                project / ".colameta/settings.json"
-            ),
-            "token_file_path_digest": canonical_path_digest(
-                pilot / "xdg-config/colameta/auth.json"
-            ),
+            "registry_path_digest": canonical_path_digest(pilot / "xdg-config/colameta/project-registry.json"),
+            "runtime_executable_path_digest": canonical_path_digest(pilot / "runtime/bin/python"),
+            "settings_path_digest": canonical_path_digest(project / ".colameta/settings.json"),
+            "token_file_path_digest": canonical_path_digest(pilot / "xdg-config/colameta/auth.json"),
             "xdg_cache_path_digest": canonical_path_digest(pilot / "xdg-cache"),
             "xdg_config_path_digest": canonical_path_digest(pilot / "xdg-config"),
             "xdg_data_path_digest": canonical_path_digest(pilot / "xdg-data"),
@@ -92,16 +82,158 @@ def _principal_for_authorization(principal: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
+def source_binding_from_durable_attestation(
+    source_artifact_attestation_bytes: bytes,
+    *,
+    durable_source_binding: Mapping[str, Any],
+) -> dict[str, str]:
+    """Project the Ledger-sealed attestation identity into candidate authority.
+
+    Path identity is deliberately retained.  A byte-identical Wheel copied to a
+    different path is a different durable source and cannot silently replace
+    the attestation that was sealed into the Ledger.
+    """
+
+    try:
+        attestation = _strict_json_bytes(source_artifact_attestation_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_SOURCE_ATTESTATION_INVALID",
+            "Pilot candidate source attestation bytes are not strict JSON.",
+        ) from exc
+    source = attestation.get("source_binding")
+    required_attestation_fields = {
+        "schema_version",
+        "source_binding",
+        "file_manifest_digest",
+        "artifact_evidence_digest",
+        "checkout_path_digest",
+        "wheel_path_digest",
+        "baseline_object_present",
+        "baseline_is_ancestor",
+        "loaded_modules_required_under_checkout",
+        "verified",
+    }
+    if (
+        set(attestation) != required_attestation_fields
+        or attestation.get("schema_version") != "work_item_runtime_source_attestation.v1"
+        or not isinstance(source, Mapping)
+        or set(source)
+        != {
+            "core_baseline_commit",
+            "implementation_commit",
+            "implementation_tree",
+            "wheel_sha256",
+        }
+        or source.get("core_baseline_commit") != CORE_BASELINE_COMMIT
+        or any(
+            attestation.get(field) is not True
+            for field in (
+                "baseline_object_present",
+                "baseline_is_ancestor",
+                "loaded_modules_required_under_checkout",
+                "verified",
+            )
+        )
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_SOURCE_ATTESTATION_INVALID",
+            "Pilot candidate generation requires a durable runtime source attestation.",
+        )
+    projected = {
+        "implementation_commit": str(source["implementation_commit"]),
+        "implementation_tree": str(source["implementation_tree"]),
+        "wheel_sha256": str(source["wheel_sha256"]),
+        "installed_inventory_sha256": str(attestation.get("file_manifest_digest", "")),
+        "durable_artifact_evidence_digest": str(attestation.get("artifact_evidence_digest", "")),
+        "durable_checkout_path_digest": str(attestation.get("checkout_path_digest", "")),
+        "durable_wheel_path_digest": str(attestation.get("wheel_path_digest", "")),
+    }
+    if set(projected) != set(PILOT_SOURCE_BINDING_FIELDS) or any(
+        len(projected[field]) != (40 if field.startswith("implementation_") else 64)
+        for field in PILOT_SOURCE_BINDING_FIELDS
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_SOURCE_ATTESTATION_INVALID",
+            "Pilot source attestation has incomplete durable identity digests.",
+        )
+    expected = {field: str(durable_source_binding.get(field, "")) for field in PILOT_SOURCE_BINDING_FIELDS}
+    if set(durable_source_binding) != set(PILOT_SOURCE_BINDING_FIELDS) or projected != expected:
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_SOURCE_ATTESTATION_MISMATCH",
+            "Pilot source attestation differs from the Ledger-sealed durable identity.",
+            details={
+                "failed_bindings": sorted(
+                    field for field in PILOT_SOURCE_BINDING_FIELDS if projected.get(field) != expected.get(field)
+                )
+            },
+        )
+    return projected
+
+
+def validate_pilot_candidate_manifest_source(
+    candidate_manifest_bytes: bytes,
+    *,
+    source_artifact_attestation_bytes: bytes,
+    durable_source_binding: Mapping[str, Any],
+) -> str:
+    """Bind exact manifest and attestation bytes to one durable source identity."""
+
+    try:
+        manifest = _strict_json_bytes(candidate_manifest_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_MANIFEST_SOURCE_INVALID",
+            "Pilot candidate manifest bytes are not strict JSON.",
+        ) from exc
+    exact_source = manifest.get("exact_source")
+    if not isinstance(exact_source, Mapping):
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_MANIFEST_SOURCE_INVALID",
+            "Pilot candidate manifest has no exact durable source binding.",
+        )
+    failed = [
+        field
+        for field in PILOT_SOURCE_BINDING_FIELDS
+        if exact_source.get(field) != durable_source_binding.get(field)
+    ]
+    files = manifest.get("files")
+    attestation_entries = (
+        [
+            item
+            for item in files
+            if isinstance(item, Mapping)
+            and item.get("path") == "SOURCE_ARTIFACT_ATTESTATION.json"
+        ]
+        if isinstance(files, list)
+        else []
+    )
+    expected_attestation_sha256 = sha256_bytes(source_artifact_attestation_bytes)
+    if len(attestation_entries) != 1 or attestation_entries[0].get(
+        "sha256"
+    ) != expected_attestation_sha256:
+        failed.append("SOURCE_ARTIFACT_ATTESTATION.json:sha256")
+    if failed:
+        raise WorkItemGovernanceError(
+            "PILOT_CANDIDATE_MANIFEST_SOURCE_MISMATCH",
+            "Pilot candidate manifest differs from its durable source identity.",
+            details={"failed_bindings": sorted(failed)},
+        )
+    return sha256_bytes(candidate_manifest_bytes)
+
+
 def derive_pilot_candidate_records(
     *,
     principal_binding: Mapping[str, Any],
     execution_authorization_receipt: Mapping[str, Any],
     scope_envelope: Mapping[str, Any],
     pilot_authorization: Mapping[str, Any],
+    source_artifact_attestation_bytes: bytes,
+    durable_source_binding: Mapping[str, Any],
+    candidate_manifest_bytes: bytes,
     paths: PilotCandidatePaths,
     issued_at: str,
     expires_at: str,
-    candidate_manifest_sha256: str,
     file_list_root_sha256: str,
     authentication_conformance_receipt_digest: str,
 ) -> dict[str, dict[str, Any]]:
@@ -116,6 +248,15 @@ def derive_pilot_candidate_records(
     execution = deepcopy(dict(execution_authorization_receipt))
     scope = deepcopy(dict(scope_envelope))
     authorization = deepcopy(dict(pilot_authorization))
+    authoritative_source = source_binding_from_durable_attestation(
+        source_artifact_attestation_bytes,
+        durable_source_binding=durable_source_binding,
+    )
+    candidate_manifest_sha256 = validate_pilot_candidate_manifest_source(
+        candidate_manifest_bytes,
+        source_artifact_attestation_bytes=source_artifact_attestation_bytes,
+        durable_source_binding=authoritative_source,
+    )
     window = {
         "issued_at": issued_at,
         "not_before": issued_at,
@@ -149,10 +290,9 @@ def derive_pilot_candidate_records(
         "xdg_state_path_digest",
     ):
         isolation[field] = digests[field]
-    scope["artifact_policy"]["allowed_root_path_digests"] = [
-        digests["project_root_path_digest"]
-    ]
+    scope["artifact_policy"]["allowed_root_path_digests"] = [digests["project_root_path_digest"]]
     scope["principal_binding"] = principal
+    scope["source_binding"].update(authoritative_source)
     scope["window"] = deepcopy(window)
 
     objective_digest = canonical_sha256(work_item["objective_ref"])
@@ -163,18 +303,10 @@ def derive_pilot_candidate_records(
     receipt_scope["project_id"] = target["project_id"]
     receipt_scope["project_snapshot_digest"] = target["project_snapshot_digest"]
     receipt_scope["work_item_id"] = work_item["proposed_work_item_id"]
-    receipt_scope["allowed_read_path_manifest_digest"] = target[
-        "allowed_read_path_manifest_digest"
-    ]
-    receipt_scope["allowed_write_path_manifest_digest"] = target[
-        "allowed_write_path_manifest_digest"
-    ]
-    receipt_scope["protected_path_manifest_digest"] = target[
-        "protected_path_manifest_digest"
-    ]
-    receipt_scope["attempt_slot_schema_sha256"] = execution_scope[
-        "attempt_slot_schema_sha256"
-    ]
+    receipt_scope["allowed_read_path_manifest_digest"] = target["allowed_read_path_manifest_digest"]
+    receipt_scope["allowed_write_path_manifest_digest"] = target["allowed_write_path_manifest_digest"]
+    receipt_scope["protected_path_manifest_digest"] = target["protected_path_manifest_digest"]
+    receipt_scope["attempt_slot_schema_sha256"] = execution_scope["attempt_slot_schema_sha256"]
     receipt_scope["executor_identity"] = execution_scope["executor_identity"]
     for slot in receipt_scope["attempt_slots"]:
         slot["objective_digest"] = objective_digest
@@ -193,6 +325,7 @@ def derive_pilot_candidate_records(
         authorized_scope_digest=scope_digest,
     )
     authorization["principal"] = _principal_for_authorization(principal)
+    authorization["source"].update(authoritative_source)
     authorization["target"].update(
         project_id=target["project_id"],
         project_root_path_digest=digests["project_root_path_digest"],
@@ -208,10 +341,7 @@ def derive_pilot_candidate_records(
 
 
 def canonical_record_bytes(value: Mapping[str, Any]) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2)
-        + "\n"
-    ).encode("utf-8")
+    return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
 def serialize_pilot_candidate_records(
@@ -251,9 +381,7 @@ def validate_final_pilot_candidate_bytes(
             "Pilot candidate bytes require the exact final record set.",
         )
     try:
-        records = {
-            name: _strict_json_bytes(payloads[name]) for name in sorted(payloads)
-        }
+        records = {name: _strict_json_bytes(payloads[name]) for name in sorted(payloads)}
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise WorkItemGovernanceError(
             "PILOT_CANDIDATE_JSON_INVALID",
@@ -298,9 +426,7 @@ def validate_final_pilot_candidate_bytes(
     }
 
 
-def _candidate_validation_receipt(
-    payloads: Mapping[str, bytes], validation: Mapping[str, str]
-) -> dict[str, Any]:
+def _candidate_validation_receipt(payloads: Mapping[str, bytes], validation: Mapping[str, str]) -> dict[str, Any]:
     return {
         "schema_version": "wig_p3_pilot_candidate_validation_receipt.v1",
         "result": "PASS",
@@ -460,12 +586,7 @@ def _read_private_candidate_file(directory_fd: int, name: str) -> bytes:
 
 def _open_candidate_directory_without_symlinks(path: Path) -> int:
     candidate = Path(os.path.abspath(path.expanduser()))
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
     try:
         descriptor = os.open(candidate.anchor, flags)
@@ -499,11 +620,7 @@ def load_validated_pilot_candidate_for_authorization(
     directory_fd = _open_candidate_directory_without_symlinks(candidate)
     try:
         opened = os.fstat(directory_fd)
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or opened.st_uid != os.getuid()
-            or stat.S_IMODE(opened.st_mode) != 0o700
-        ):
+        if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.getuid() or stat.S_IMODE(opened.st_mode) != 0o700:
             raise WorkItemGovernanceError(
                 "PILOT_CANDIDATE_OUTPUT_NOT_PRIVATE",
                 "Pilot candidate authorization requires a stable private candidate directory.",
@@ -514,13 +631,8 @@ def load_validated_pilot_candidate_for_authorization(
                 "PILOT_CANDIDATE_AUTHORIZATION_FILE_SET_MISMATCH",
                 "Pilot candidate authorization requires the exact validated file set.",
             )
-        payloads = {
-            name: _read_private_candidate_file(directory_fd, name)
-            for name in sorted(_RECORD_NAMES)
-        }
-        receipt_bytes = _read_private_candidate_file(
-            directory_fd, _VALIDATION_RECEIPT_NAME
-        )
+        payloads = {name: _read_private_candidate_file(directory_fd, name) for name in sorted(_RECORD_NAMES)}
+        receipt_bytes = _read_private_candidate_file(directory_fd, _VALIDATION_RECEIPT_NAME)
         finished = os.fstat(directory_fd)
         stable_directory_fields = (
             "st_dev",
@@ -531,12 +643,8 @@ def load_validated_pilot_candidate_for_authorization(
             "st_mtime_ns",
             "st_ctime_ns",
         )
-        if (
-            set(os.listdir(directory_fd)) != expected_names
-            or any(
-                getattr(opened, field) != getattr(finished, field)
-                for field in stable_directory_fields
-            )
+        if set(os.listdir(directory_fd)) != expected_names or any(
+            getattr(opened, field) != getattr(finished, field) for field in stable_directory_fields
         ):
             raise WorkItemGovernanceError(
                 "PILOT_CANDIDATE_AUTHORIZATION_FILE_SET_MISMATCH",
@@ -552,9 +660,7 @@ def load_validated_pilot_candidate_for_authorization(
             "Pilot candidate validation receipt does not bind the final bytes.",
         )
     return {
-        "records": {
-            name: _strict_json_bytes(payloads[name]) for name in sorted(payloads)
-        },
+        "records": {name: _strict_json_bytes(payloads[name]) for name in sorted(payloads)},
         "validation_receipt": expected_receipt,
     }
 
@@ -564,6 +670,4 @@ def require_validated_pilot_candidate_for_authorization(
 ) -> dict[str, Any]:
     """Fail closed unless persisted candidate bytes still match a fresh validation."""
 
-    return load_validated_pilot_candidate_for_authorization(candidate_dir)[
-        "validation_receipt"
-    ]
+    return load_validated_pilot_candidate_for_authorization(candidate_dir)["validation_receipt"]

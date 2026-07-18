@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import secrets
 import sqlite3
 import time
@@ -32,13 +33,42 @@ from runner.work_item_governance.request_context import (
     _mint_authoritative_request_context,
 )
 from runner.work_item_governance.schema_loader import load_governance_contract, validate_governance_record
+from runner.work_item_governance.source_binding import (
+    CORE_BASELINE_COMMIT,
+    reverify_runtime_source_binding,
+)
 
 
 PILOT_SCOPE_MODE = "bounded_single_project_pilot.v1"
+PILOT_SOURCE_BINDING_FIELDS = (
+    "implementation_commit",
+    "implementation_tree",
+    "wheel_sha256",
+    "installed_inventory_sha256",
+    "durable_artifact_evidence_digest",
+    "durable_checkout_path_digest",
+    "durable_wheel_path_digest",
+)
+PILOT_EXECUTION_CONTEXT_FIELDS = (
+    *PILOT_SOURCE_BINDING_FIELDS,
+    "python_executable",
+    "cwd",
+    "runtime_binding_digest",
+)
+PILOT_LEDGER_STATE_FIELDS = (
+    "path_digest",
+    "schema_version",
+    "database_generation",
+    "zero_fact_baseline",
+    "integrity_check",
+    "foreign_key_violations",
+    "token_evidence_digest",
+    "source_artifact_evidence_digest",
+)
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "7d7b265e0afe6492a3ef90d366ef9849c522959290f30003f1cd75dac2733b91",
+    "spec_manifest_digest": "ad2abc951d35c6891f4f12b8555f27c6c1722b900cdf380283e6b44e9cf70943",
     "storage_schema_contract_digest": "fbaac247078f8c89869968e8e9aadceb598f53ee1afb137fef36645140ea2ba8",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "80c628c020e78498f4d70964a820f963ca339b52bd84ecbb4c7d5b9e570f4857",
@@ -46,29 +76,122 @@ PILOT_FROZEN_CONTRACT_DIGESTS = {
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "19ab8e804385a2b7783e0bd82ba9213b21fc7ef3138ef59d0c9f4630bf3e9c69",
+    "authentication_conformance_receipt_schema_sha256": "14217124dd175fd0738f400604c0391e2f43133b0bef65b31570adafb6e3de12",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "remediated_spec_manifest_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"],
-    "scope_schema_sha256": "4cc1aa87d04adccff37b7d08289339d764a20f096de7b0100623366835c190c2",
+    "scope_schema_sha256": "a09b789a3cf3b99f1bd55c13a6806eeeb549f008134e57b8972b6cf4c448dfe0",
     "storage_schema_contract_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
-    "activation_lease_schema_sha256": "359b82d7eba0e9c3018cc6c17573aa54dca312d4fe4fcd0af9ec20fce8f77c9c",
+    "activation_lease_schema_sha256": "863ada4aa20f3b60e9e936dfebdc8f106ae22a64ebbb55325b20f12236847b38",
     "lease_event_schema_sha256": "c871099663b640acd7a0b4f3ae9e0ed21c1ff30e8fd180f255bb05062fa63380",
     "fact_reconciliation_contract_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
     "semantic_rules_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
     "semantic_validation_receipt_schema_sha256": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
     "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
-    "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
-    "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
-    "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+    "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "execution_authorization_receipt_schema_sha256"
+    ],
+    "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "authentication_conformance_receipt_schema_sha256"
+    ],
+    "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "expiry_conformance_receipt_schema_sha256"
+    ],
     "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
     "write_path_inventory_sha256": "bcdc4d68fe580166750e32934d2a7c6ff86b48a5b3fc84b19ba1b126fc6ab30f",
-    "preflight_schema_sha256": "b1ef40b640b0218441efaed3da6f2ea01f6a997d60eb78c13cbee288b8f7a7f1",
+    "preflight_schema_sha256": "c8dc10dbc4df3aec36f094cd2b7425963e564988db80e2dbd2d1d63a57cda06a",
     "closeout_schema_sha256": "6ac9888da62d60480419bf137e18679212ecf54fa90b0c6eaf5d89b97c992c4f",
     "negative_test_matrix_sha256": "c32f0c3d735139fb11881dc70d03fc713c8a6a0379550e3dfd11ed76d3a6a2fd",
 }
+
+
+def build_pilot_execution_context(
+    *,
+    source_binding: dict[str, Any],
+    python_executable: str | Path,
+    cwd: str | Path,
+) -> dict[str, Any]:
+    """Build the one runtime identity shared by conformance and execution.
+
+    The two filesystem identities are absolute lexical invocation paths.  They
+    are deliberately not resolved: a venv launcher symlink and its interpreter
+    target must remain distinct caller assertions.
+    """
+
+    if set(source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot execution context requires the exact durable source-binding keyset.",
+        )
+    raw_executable = os.path.expanduser(os.fspath(python_executable))
+    raw_cwd = os.path.expanduser(os.fspath(cwd))
+    if not os.path.isabs(raw_executable) or not os.path.isabs(raw_cwd):
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must be absolute invocation paths.",
+        )
+    executable = Path(os.path.normpath(raw_executable))
+    working_directory = Path(os.path.normpath(raw_cwd))
+    if executable.as_posix() != raw_executable or working_directory.as_posix() != raw_cwd:
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must already be lexically normalized.",
+        )
+    if not executable.is_file() or not working_directory.is_dir():
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot executable and working directory must identify existing filesystem objects.",
+        )
+    context: dict[str, Any] = {
+        **{field: str(source_binding[field]) for field in PILOT_SOURCE_BINDING_FIELDS},
+        "python_executable": executable.as_posix(),
+        "cwd": working_directory.as_posix(),
+    }
+    context["runtime_binding_digest"] = canonical_sha256(context)
+    if tuple(context) != PILOT_EXECUTION_CONTEXT_FIELDS:
+        raise WorkItemGovernanceError(
+            "PILOT_EXECUTION_CONTEXT_INVALID",
+            "Pilot execution context builder produced a noncanonical field order.",
+        )
+    return context
+
+
+def build_pilot_ledger_state(
+    *,
+    path_digest: str,
+    schema_version: int,
+    database_generation: int,
+    zero_fact_baseline: dict[str, int],
+    integrity_check: str,
+    foreign_key_violations: list[Any],
+    token_evidence_digest: str,
+    source_artifact_evidence_digest: str,
+) -> dict[str, Any]:
+    """Build stable Ledger identity without an ephemeral snapshot path.
+
+    The governed snapshot capability proves how the measurement was obtained;
+    it must not make otherwise identical conformance and execution measurements
+    hash differently merely because their disposable directories differ.
+    """
+
+    state: dict[str, Any] = {
+        "path_digest": str(path_digest),
+        "schema_version": int(schema_version),
+        "database_generation": int(database_generation),
+        "zero_fact_baseline": dict(zero_fact_baseline),
+        "integrity_check": str(integrity_check),
+        "foreign_key_violations": [tuple(item) for item in foreign_key_violations],
+        "token_evidence_digest": str(token_evidence_digest),
+        "source_artifact_evidence_digest": str(source_artifact_evidence_digest),
+    }
+    if tuple(state) != PILOT_LEDGER_STATE_FIELDS:
+        raise WorkItemGovernanceError(
+            "PILOT_LEDGER_STATE_INVALID",
+            "Pilot Ledger state requires the exact stable measurement keyset and order.",
+        )
+    return state
 
 
 def measure_pilot_durable_token_binding(project_root: str | Path) -> dict[str, str]:
@@ -93,6 +216,60 @@ def measure_pilot_durable_token_binding(project_root: str | Path) -> dict[str, s
                 )
             binding[key] = str(rows[0]["value"])
     return binding
+
+
+def validate_pilot_durable_source_binding(
+    project_root: str | Path,
+    *,
+    expected_source_binding: dict[str, Any],
+) -> dict[str, str]:
+    """Reproduce the candidate source from the Ledger-sealed paths and evidence.
+
+    The durable metadata is authoritative for the later fresh Preflight.  A
+    conformance receipt must therefore not attest only its caller-supplied
+    source fields: the exact checkout, Wheel, evidence digest, and installed
+    inventory must already reproduce those fields from the same Ledger
+    capability used for conformance.
+    """
+
+    if set(expected_source_binding) != set(PILOT_SOURCE_BINDING_FIELDS):
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_INVALID",
+            "Pilot durable source validation requires the exact source-binding keyset.",
+        )
+    ledger = SQLiteWorkItemLedger(project_root, target_schema_version=7)
+    attestation = reverify_runtime_source_binding(
+        ledger,
+        expected_source_binding={
+            "core_baseline_commit": CORE_BASELINE_COMMIT,
+            "implementation_commit": str(expected_source_binding["implementation_commit"]),
+            "implementation_tree": str(expected_source_binding["implementation_tree"]),
+            "wheel_sha256": str(expected_source_binding["wheel_sha256"]),
+        },
+    )
+    public_evidence = attestation.public_evidence()
+    measured = {
+        "implementation_commit": attestation.source_binding["implementation_commit"],
+        "implementation_tree": attestation.source_binding["implementation_tree"],
+        "wheel_sha256": attestation.source_binding["wheel_sha256"],
+        "installed_inventory_sha256": attestation.file_manifest_digest,
+        "durable_artifact_evidence_digest": public_evidence["artifact_evidence_digest"],
+        "durable_checkout_path_digest": public_evidence["checkout_path_digest"],
+        "durable_wheel_path_digest": public_evidence["wheel_path_digest"],
+    }
+    if measured != expected_source_binding:
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_MISMATCH",
+            "Ledger-sealed source artifacts differ from the candidate source binding.",
+            details={
+                "failed_bindings": sorted(
+                    field
+                    for field in PILOT_SOURCE_BINDING_FIELDS
+                    if measured.get(field) != expected_source_binding.get(field)
+                )
+            },
+        )
+    return measured
 
 
 def require_pilot_preflight_conformance_baseline(
@@ -120,8 +297,7 @@ def require_pilot_preflight_conformance_baseline(
         integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
         counts = {
-            table: int(connection.execute(query).fetchone()[0])
-            for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+            table: int(connection.execute(query).fetchone()[0]) for table, query in PILOT_TABLE_COUNT_QUERIES.items()
         }
     if integrity != "ok" or foreign_keys or any(counts.values()):
         raise WorkItemGovernanceError(
@@ -149,13 +325,19 @@ PILOT_FROZEN_RESOURCE_DIGESTS = {
     "pilot-tool-allowlist.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "pilot-write-command-matrix.v3.json": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
     "execution-attempt-slot.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
-    "execution-authorization-receipt.v2.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
-    "pilot-authentication-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
-    "pilot-expiry-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+    "execution-authorization-receipt.v2.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "execution_authorization_receipt_schema_sha256"
+    ],
+    "pilot-authentication-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "authentication_conformance_receipt_schema_sha256"
+    ],
+    "pilot-expiry-conformance-receipt.v1.schema.json": PILOT_FROZEN_CONTRACT_DIGESTS[
+        "expiry_conformance_receipt_schema_sha256"
+    ],
     "pilot-semantic-validation-receipt.v3.schema.json": "1149bbbf14016e9a910e1605b29a73949b15f4dd6f2d27b235af3403b05b69db",
     "pilot-write-path-inventory.v3.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["write_path_inventory_sha256"],
     "pilot-scope-envelope.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["scope_schema_sha256"],
-    "pilot-authorization.v4.schema.json": "4df85cd005ae005d7fe5b84a999eded308571abd63cb31fd687bc984036e7225",
+    "pilot-authorization.v4.schema.json": "683c6a151443baf89e467b64fca12eaf3db9f551271b2c263cd6a0a472744845",
     "pilot-activation-lease.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["activation_lease_schema_sha256"],
     "pilot-activation-lease-event.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["lease_event_schema_sha256"],
     "pilot-preflight.v4.schema.json": PILOT_AUTHORIZATION_FROZEN_BINDINGS["preflight_schema_sha256"],
@@ -177,6 +359,8 @@ def verify_pilot_frozen_contract_resources() -> None:
             "Packaged Pilot machine contracts differ from the independently frozen bytes.",
             details={"mismatches": mismatches},
         )
+
+
 PILOT_ALLOWED_WRITES = frozenset(
     {
         "apply_work_item_create",
@@ -328,7 +512,9 @@ def _lease_record(row: sqlite3.Row) -> dict[str, Any]:
         "write_matrix_digest": str(row["write_matrix_digest"]),
         "execution_attempt_slot_schema_sha256": str(row["execution_attempt_slot_schema_sha256"]),
         "execution_authorization_receipt_schema_sha256": str(row["execution_authorization_receipt_schema_sha256"]),
-        "authentication_conformance_receipt_schema_sha256": str(row["authentication_conformance_receipt_schema_sha256"]),
+        "authentication_conformance_receipt_schema_sha256": str(
+            row["authentication_conformance_receipt_schema_sha256"]
+        ),
         "expiry_conformance_receipt_schema_sha256": str(row["expiry_conformance_receipt_schema_sha256"]),
         "source_binding": _json(row, "source_binding_json"),
         "runtime_binding": _json(row, "runtime_binding_json"),
@@ -488,7 +674,7 @@ def validate_pilot_authorization(
         errors.append("scope_envelope_digest")
     if bindings["project_snapshot_digest"] != scope_target["project_snapshot_digest"]:
         errors.append("bindings:project_snapshot_digest")
-    for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
+    for field in PILOT_SOURCE_BINDING_FIELDS:
         if source[field] != scope_source[field]:
             errors.append(f"source:{field}")
     if scope_source["storage_schema_contract_digest"] != bindings["storage_schema_contract_sha256"]:
@@ -534,6 +720,39 @@ def validate_pilot_authorization(
     return authorization
 
 
+def validate_pilot_conformance_authorization_source(
+    authorization: dict[str, Any],
+    *,
+    scope_envelope: dict[str, Any],
+    authentication_conformance_receipt: dict[str, Any],
+) -> None:
+    """Bind measured conformance source directly to the executable authority."""
+
+    validate_governance_record(
+        "pilot_authentication_conformance_receipt.v1",
+        authentication_conformance_receipt,
+    )
+    conformance_source = authentication_conformance_receipt["source_binding"]
+    authorization_source = authorization["source"]
+    scope_source = scope_envelope["source_binding"]
+    errors: list[str] = []
+    for field in PILOT_SOURCE_BINDING_FIELDS:
+        if conformance_source[field] != authorization_source[field]:
+            errors.append(f"conformance_to_authorization:{field}")
+        if conformance_source[field] != scope_source[field]:
+            errors.append(f"conformance_to_scope:{field}")
+    if authorization["bindings"]["authentication_conformance_receipt_digest"] != canonical_sha256(
+        authentication_conformance_receipt
+    ):
+        errors.append("conformance_receipt_digest")
+    if errors:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH",
+            "Pilot authentication conformance source differs from its executable Authorization source.",
+            details={"failed_bindings": sorted(errors)},
+        )
+
+
 def validate_pilot_authority_chain(
     authorization: dict[str, Any],
     *,
@@ -559,6 +778,11 @@ def validate_pilot_authority_chain(
         semantic_validation_receipt,
     )
     validate_pilot_authorization(authorization, scope_envelope=scope_envelope)
+    validate_pilot_conformance_authorization_source(
+        authorization,
+        scope_envelope=scope_envelope,
+        authentication_conformance_receipt=authentication_conformance_receipt,
+    )
     bindings = authorization["bindings"]
     preflight_bindings = preflight_receipt["bindings"]
     source = authorization["source"]
@@ -578,7 +802,9 @@ def validate_pilot_authority_chain(
         "execution_attempt_slot_schema_sha256": bindings["execution_attempt_slot_schema_sha256"],
         "execution_authorization_receipt_schema_sha256": bindings["execution_authorization_receipt_schema_sha256"],
         "execution_authorization_receipt_digest": canonical_sha256(execution_authorization_receipt),
-        "authentication_conformance_receipt_schema_sha256": bindings["authentication_conformance_receipt_schema_sha256"],
+        "authentication_conformance_receipt_schema_sha256": bindings[
+            "authentication_conformance_receipt_schema_sha256"
+        ],
         "authentication_conformance_receipt_digest": canonical_sha256(authentication_conformance_receipt),
         "expiry_conformance_receipt_schema_sha256": bindings["expiry_conformance_receipt_schema_sha256"],
     }
@@ -592,7 +818,7 @@ def validate_pilot_authority_chain(
     if bindings["authentication_conformance_receipt_digest"] != expected["authentication_conformance_receipt_digest"]:
         errors.append("bindings:authentication_conformance_receipt_digest")
     context = preflight_receipt["execution_context"]
-    for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256"):
+    for field in PILOT_SOURCE_BINDING_FIELDS:
         if context[field] != source[field] or context[field] != scope_source[field]:
             errors.append(f"execution_context:{field}")
     project = preflight_receipt["project"]
@@ -623,12 +849,23 @@ def validate_pilot_authority_chain(
         authentication_conformance_receipt
     ):
         errors.append("authentication:conformance_receipt_digest")
+    if authentication_conformance_receipt["runtime_binding"]["runtime_binding_digest"] != context.get(
+        "runtime_binding_digest"
+    ):
+        errors.append("authentication:runtime_binding_digest")
     if preflight_receipt["semantic_validation"]["receipt_digest"] != canonical_sha256(semantic_validation_receipt):
         errors.append("semantic_validation:receipt_digest")
-    runtime_context = dict(context)
-    reported_runtime_digest = runtime_context.pop("runtime_binding_digest")
-    if reported_runtime_digest != canonical_sha256(runtime_context):
-        errors.append("execution_context:runtime_binding_digest")
+    try:
+        expected_context = build_pilot_execution_context(
+            source_binding={field: scope_source[field] for field in PILOT_SOURCE_BINDING_FIELDS},
+            python_executable=context["python_executable"],
+            cwd=context["cwd"],
+        )
+    except (KeyError, OSError, WorkItemGovernanceError):
+        errors.append("execution_context:canonical_builder")
+    else:
+        if context != expected_context:
+            errors.append("execution_context:canonical_builder")
     if errors:
         raise WorkItemGovernanceError(
             "PILOT_AUTHORITY_BINDING_MISMATCH",
@@ -694,9 +931,9 @@ def build_pilot_semantic_validation_receipt(
     """Build a schema-valid receipt for the exact frozen rules applicable to one stage."""
 
     rules = load_governance_contract("pilot_semantic_rules.v4")
-    rules_bytes = resources.files("schemas").joinpath(
-        "work_item_governance", "pilot-semantic-rules.v4.json"
-    ).read_bytes()
+    rules_bytes = (
+        resources.files("schemas").joinpath("work_item_governance", "pilot-semantic-rules.v4.json").read_bytes()
+    )
     if hashlib.sha256(rules_bytes).hexdigest() != PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"]:
         raise WorkItemGovernanceError(
             "PILOT_SEMANTIC_RECEIPT_INVALID",
@@ -760,15 +997,15 @@ def _validate_pilot_lease_authority_semantics(
         )
     scope = capability.scope_envelope
     expected_ledger = Path(scope["target_project"]["project_root"]).resolve() / ".colameta/ledger/work-items.sqlite3"
-    if ledger.path.resolve() != expected_ledger or canonical_path_digest(ledger.path) != scope["pilot_isolation"]["ledger_path_digest"]:
+    if (
+        ledger.path.resolve() != expected_ledger
+        or canonical_path_digest(ledger.path) != scope["pilot_isolation"]["ledger_path_digest"]
+    ):
         raise WorkItemGovernanceError(
             "PILOT_LEDGER_PATH_MISMATCH",
             "Pilot Ledger is not the exact target-project Ledger bound by Scope.",
         )
-    if lease["source_binding"] != {
-        key: scope["source_binding"][key]
-        for key in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256")
-    }:
+    if lease["source_binding"] != {key: scope["source_binding"][key] for key in PILOT_SOURCE_BINDING_FIELDS}:
         raise WorkItemGovernanceError(
             "PILOT_PROJECT_SNAPSHOT_MISMATCH",
             "Pilot Lease source binding differs from the authorized Scope.",
@@ -795,7 +1032,9 @@ def _validate_pilot_lease_authority_semantics(
         "objective_digest": scope["work_item_scope"]["objective_digest"],
         "task_version_payload_digests": scope["work_item_scope"]["task_version_payload_digests"],
         "execution_attempt_slot_schema_sha256": scope["execution_scope"]["attempt_slot_schema_sha256"],
-        "execution_authorization_receipt_schema_sha256": scope["execution_scope"]["authorization_receipt_schema_sha256"],
+        "execution_authorization_receipt_schema_sha256": scope["execution_scope"][
+            "authorization_receipt_schema_sha256"
+        ],
         "execution_authorization_receipt_digest": scope["execution_scope"]["authorization_receipt_digest"],
         "artifact_policy_digest": canonical_sha256(scope["artifact_policy"]),
         "protected_path_manifest_digest": scope["target_project"]["protected_path_manifest_digest"],
@@ -918,12 +1157,18 @@ class PilotActivationControlPlane:
             now=self.now(),
         )
         if lease["status"] != "prepared" or lease["state_version"] != 1:
-            raise WorkItemGovernanceError("PILOT_LEASE_INITIAL_STATE_INVALID", "A new Pilot Lease must be prepared at state version 1.")
+            raise WorkItemGovernanceError(
+                "PILOT_LEASE_INITIAL_STATE_INVALID", "A new Pilot Lease must be prepared at state version 1."
+            )
         if lease["scope_binding"]["authorized_work_item_id"] is not None:
-            raise WorkItemGovernanceError("PILOT_WORK_ITEM_PREBIND_DENIED", "Fresh Pilot Leases bind their Work Item atomically after create.")
+            raise WorkItemGovernanceError(
+                "PILOT_WORK_ITEM_PREBIND_DENIED", "Fresh Pilot Leases bind their Work Item atomically after create."
+            )
         usage = lease["usage"]
         if any(int(usage[key]) != 0 for key in PILOT_FACT_KEYS) or int(usage["lease_events"]) != 1:
-            raise WorkItemGovernanceError("PILOT_LEASE_USAGE_NOT_FRESH", "A new Pilot Lease requires zero domain usage and one issuance Event.")
+            raise WorkItemGovernanceError(
+                "PILOT_LEASE_USAGE_NOT_FRESH", "A new Pilot Lease requires zero domain usage and one issuance Event."
+            )
         with self.ledger.write_transaction() as connection:
             session = self.ledger.authorize_activation_control_write(
                 connection, controller=self, controller_binding=self.__repository_control_binding
@@ -948,7 +1193,9 @@ class PilotActivationControlPlane:
                         "storage_schema_contract_digest": lease["storage_schema_contract_digest"],
                         "fact_reconciliation_contract_digest": lease["fact_reconciliation_contract_digest"],
                         "authorization_digest": canonical_sha256(capability.authorization),
-                        "project_snapshot_digest": capability.scope_envelope["target_project"]["project_snapshot_digest"],
+                        "project_snapshot_digest": capability.scope_envelope["target_project"][
+                            "project_snapshot_digest"
+                        ],
                         "runtime_binding_digest": canonical_sha256(lease["runtime_binding"]),
                         "ledger_state_digest": canonical_sha256(nonzero),
                     },
@@ -956,20 +1203,39 @@ class PilotActivationControlPlane:
                 )
                 scope = dict(lease["scope_binding"])
                 values = (
-                    lease["lease_id"], lease["schema_version"], lease["authorization_id"], lease["authorization_digest"],
-                    lease["scope_envelope_digest"], lease["spec_manifest_digest"], lease["storage_schema_contract_digest"],
-                    lease["fact_reconciliation_contract_digest"], lease["semantic_rules_digest"], lease["tool_allowlist_digest"],
-                    lease["write_matrix_digest"], lease["execution_attempt_slot_schema_sha256"],
+                    lease["lease_id"],
+                    lease["schema_version"],
+                    lease["authorization_id"],
+                    lease["authorization_digest"],
+                    lease["scope_envelope_digest"],
+                    lease["spec_manifest_digest"],
+                    lease["storage_schema_contract_digest"],
+                    lease["fact_reconciliation_contract_digest"],
+                    lease["semantic_rules_digest"],
+                    lease["tool_allowlist_digest"],
+                    lease["write_matrix_digest"],
+                    lease["execution_attempt_slot_schema_sha256"],
                     lease["execution_authorization_receipt_schema_sha256"],
                     lease["authentication_conformance_receipt_schema_sha256"],
-                    lease["expiry_conformance_receipt_schema_sha256"], scope["authorized_work_item_id"],
-                    canonical_json(lease["source_binding"]), canonical_json(lease["runtime_binding"]),
-                    canonical_json(lease["principal_binding"]), canonical_json(scope),
-                    lease["window"]["issued_at"], lease["window"]["not_before"], lease["window"]["expires_at"],
-                    lease["window"]["maximum_runtime_seconds"], canonical_json(lease["quotas"]),
-                    canonical_json(usage), canonical_json(lease["policy"]), canonical_json(lease["maintenance"]),
-                    canonical_json(lease["failure_behavior"]), lease["status"], lease["state_version"],
-                    lease["created_at"], lease["updated_at"],
+                    lease["expiry_conformance_receipt_schema_sha256"],
+                    scope["authorized_work_item_id"],
+                    canonical_json(lease["source_binding"]),
+                    canonical_json(lease["runtime_binding"]),
+                    canonical_json(lease["principal_binding"]),
+                    canonical_json(scope),
+                    lease["window"]["issued_at"],
+                    lease["window"]["not_before"],
+                    lease["window"]["expires_at"],
+                    lease["window"]["maximum_runtime_seconds"],
+                    canonical_json(lease["quotas"]),
+                    canonical_json(usage),
+                    canonical_json(lease["policy"]),
+                    canonical_json(lease["maintenance"]),
+                    canonical_json(lease["failure_behavior"]),
+                    lease["status"],
+                    lease["state_version"],
+                    lease["created_at"],
+                    lease["updated_at"],
                 )
                 connection.execute(
                     "INSERT INTO pilot_activation_leases("
@@ -1025,9 +1291,13 @@ class PilotActivationControlPlane:
                 connection, controller=self, controller_binding=self.__repository_control_binding
             )
             try:
-                row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 if row is None or row["status"] != before:
-                    raise WorkItemGovernanceError("PILOT_LEASE_STATE_CONFLICT", "Pilot runtime transition state is stale.")
+                    raise WorkItemGovernanceError(
+                        "PILOT_LEASE_STATE_CONFLICT", "Pilot runtime transition state is stale."
+                    )
                 runtime = _json(row, "runtime_binding_json")
                 runtime["claimed_process_identity"] = process_identity_digest
                 if event_type == "process_claimed":
@@ -1043,11 +1313,25 @@ class PilotActivationControlPlane:
                 now_text = isoformat_utc(self.now())
                 connection.execute(
                     "UPDATE pilot_activation_leases SET runtime_binding_json=?,usage_json=?,status=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
-                    (canonical_json(runtime), canonical_json(usage), after, version, now_text, lease_id, int(row["state_version"])),
+                    (
+                        canonical_json(runtime),
+                        canonical_json(usage),
+                        after,
+                        version,
+                        now_text,
+                        lease_id,
+                        int(row["state_version"]),
+                    ),
                 )
-                current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                current = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 _append_event(
-                    connection, current, event_type=event_type, status_before=before, status_after=after,
+                    connection,
+                    current,
+                    event_type=event_type,
+                    status_before=before,
+                    status_after=after,
                     process_identity_digest=process_identity_digest,
                     listener_attestation_digest=listener_attestation_digest,
                     state_version_before=int(row["state_version"]),
@@ -1066,7 +1350,9 @@ class PilotActivationControlPlane:
         from runner.work_item_governance.activation import process_identity_inputs
 
         if Path(envelope_path).resolve() == Path(claimed_envelope_path).resolve():
-            raise WorkItemGovernanceError("PILOT_CLAIM_PATH_INVALID", "Claim input and consumed output paths must differ.")
+            raise WorkItemGovernanceError(
+                "PILOT_CLAIM_PATH_INVALID", "Claim input and consumed output paths must differ."
+            )
         identity = process_identity_inputs(str(self.ledger.project_root))
         monotonic_claim = time.monotonic_ns()
         with self.ledger.read_connection() as connection:
@@ -1075,7 +1361,9 @@ class PilotActivationControlPlane:
             raise WorkItemGovernanceError("PILOT_ACTIVATION_LEASE_REQUIRED", "Pilot Lease does not exist.")
         runtime = _json(row, "runtime_binding_json")
         if identity["expected_process_identity"] != runtime["expected_process_identity"]:
-            raise WorkItemGovernanceError("PILOT_PROCESS_IDENTITY_MISMATCH", "Runtime process differs from the exact Pilot binding.")
+            raise WorkItemGovernanceError(
+                "PILOT_PROCESS_IDENTITY_MISMATCH", "Runtime process differs from the exact Pilot binding."
+            )
         return self._transition_runtime(
             lease_id,
             event_type="process_claimed",
@@ -1097,7 +1385,9 @@ class PilotActivationControlPlane:
             raise WorkItemGovernanceError("PILOT_LISTENER_BINDING_INVALID", "Pilot listener must use strict loopback.")
         observed = sorted((str(address), int(listener_port)) for address, listener_port in observed_listeners)
         if observed != [(bind_address, port)]:
-            raise WorkItemGovernanceError("PILOT_LISTENER_ATTESTATION_FAILED", "Exactly one Pilot listener must be observed.")
+            raise WorkItemGovernanceError(
+                "PILOT_LISTENER_ATTESTATION_FAILED", "Exactly one Pilot listener must be observed."
+            )
         with self.ledger.read_connection() as connection:
             row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
         runtime = _json(row, "runtime_binding_json")
@@ -1128,9 +1418,13 @@ class PilotActivationControlPlane:
                 connection, controller=self, controller_binding=self.__repository_control_binding
             )
             try:
-                row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 if row is None or row["status"] not in {"prepared", "claimed", "active", "write_frozen"}:
-                    raise WorkItemGovernanceError("PILOT_LEASE_STATE_CONFLICT", "Only a nonterminal Pilot Lease may be revoked.")
+                    raise WorkItemGovernanceError(
+                        "PILOT_LEASE_STATE_CONFLICT", "Only a nonterminal Pilot Lease may be revoked."
+                    )
                 before = str(row["status"])
                 usage = _json(row, "usage_json")
                 usage["lease_events"] = int(usage["lease_events"]) + 1
@@ -1140,10 +1434,16 @@ class PilotActivationControlPlane:
                     "UPDATE pilot_activation_leases SET status='revoked',usage_json=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
                     (canonical_json(usage), version, now_text, lease_id, int(row["state_version"])),
                 )
-                current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                current = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 _append_event(
-                    connection, current, event_type="lease_revoked", status_before=before,
-                    status_after="revoked", rejection_code="PILOT_LEASE_REVOKED",
+                    connection,
+                    current,
+                    event_type="lease_revoked",
+                    status_before=before,
+                    status_after="revoked",
+                    rejection_code="PILOT_LEASE_REVOKED",
                     state_version_before=int(row["state_version"]),
                 )
             finally:
@@ -1167,9 +1467,13 @@ class PilotActivationControlPlane:
                 connection, controller=self, controller_binding=self.__repository_control_binding
             )
             try:
-                row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 if row is None or row["status"] != "active":
-                    raise WorkItemGovernanceError("PILOT_LEASE_STATE_CONFLICT", "Only an active Pilot Lease may freeze writes.")
+                    raise WorkItemGovernanceError(
+                        "PILOT_LEASE_STATE_CONFLICT", "Only an active Pilot Lease may freeze writes."
+                    )
                 usage = _json(row, "usage_json")
                 usage["lease_events"] = int(usage["lease_events"]) + 1
                 version = int(row["state_version"]) + 1
@@ -1178,7 +1482,9 @@ class PilotActivationControlPlane:
                     "UPDATE pilot_activation_leases SET status='write_frozen',usage_json=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
                     (canonical_json(usage), version, now_text, lease_id, int(row["state_version"])),
                 )
-                current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                current = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 _append_event(
                     connection,
                     current,
@@ -1219,9 +1525,13 @@ class PilotActivationControlPlane:
                 connection, controller=self, controller_binding=self.__repository_control_binding
             )
             try:
-                row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 if row is None or row["status"] not in allowed:
-                    raise WorkItemGovernanceError("PILOT_LEASE_STATE_CONFLICT", "Pilot terminal transition is not allowed.")
+                    raise WorkItemGovernanceError(
+                        "PILOT_LEASE_STATE_CONFLICT", "Pilot terminal transition is not allowed."
+                    )
                 before = str(row["status"])
                 usage = _json(row, "usage_json")
                 usage["lease_events"] = int(usage["lease_events"]) + 1
@@ -1231,7 +1541,9 @@ class PilotActivationControlPlane:
                     "UPDATE pilot_activation_leases SET status=?,usage_json=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
                     (status, canonical_json(usage), version, now_text, lease_id, int(row["state_version"])),
                 )
-                current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                current = connection.execute(
+                    "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
                 _append_event(
                     connection,
                     current,
@@ -1290,7 +1602,9 @@ class PilotActivationGuard:
             return False
         return self.__issued_request_contexts.pop(id(request_context), None) is request_context
 
-    def mint_request_context(self, *, proof: Any, principal_context: PrincipalContext | None) -> AuthoritativeCanaryRequestContext:
+    def mint_request_context(
+        self, *, proof: Any, principal_context: PrincipalContext | None
+    ) -> AuthoritativeCanaryRequestContext:
         if (
             type(proof) is not AuthenticatedTokenRequestProof
             or not proof.structurally_valid()
@@ -1316,12 +1630,16 @@ class PilotActivationGuard:
             or proof.token_file_sha256 != bindings.get(AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY)
             or proof.token_evidence_digest != bindings.get(AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY)
         ):
-            raise WorkItemGovernanceError("AUTHENTICATED_REQUEST_PROOF_BINDING_MISMATCH", "Bearer proof differs from the Pilot Token binding.")
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_PROOF_BINDING_MISMATCH", "Bearer proof differs from the Pilot Token binding."
+            )
         runtime = _json(row, "runtime_binding_json")
         config_home = Path(str(__import__("os").environ.get("XDG_CONFIG_HOME") or "")).expanduser().resolve()
         auth_file = config_home / "colameta" / "auth.json"
         if runtime["token_file_path_digest"] != canonical_path_digest(auth_file):
-            raise WorkItemGovernanceError("ACTIVATION_TOKEN_PATH_BINDING_MISMATCH", "Pilot Token path differs from runtime binding.")
+            raise WorkItemGovernanceError(
+                "ACTIVATION_TOKEN_PATH_BINDING_MISMATCH", "Pilot Token path differs from runtime binding."
+            )
         token = require_authoritative_token_file_binding(
             self.ledger, auth_file, expected_evidence_digest=proof.token_evidence_digest
         )
@@ -1337,7 +1655,9 @@ class PilotActivationGuard:
             session_ref=str(principal.session_ref),
         )
         if expected != runtime["request_context_binding_digest"]:
-            raise WorkItemGovernanceError("REQUEST_CONTEXT_BINDING_MISMATCH", "Pilot request-context runtime binding is invalid.")
+            raise WorkItemGovernanceError(
+                "REQUEST_CONTEXT_BINDING_MISMATCH", "Pilot request-context runtime binding is invalid."
+            )
         context = _mint_authoritative_request_context(
             proof=proof,
             lease_id=str(row["lease_id"]),
@@ -1370,7 +1690,9 @@ class PilotActivationGuard:
 
     def _require_active_time_window(self, row: sqlite3.Row) -> None:
         now = self.now().astimezone(timezone.utc)
-        if now < parse_timestamp(str(row["not_before"]), "not_before") or now >= parse_timestamp(str(row["expires_at"]), "expires_at"):
+        if now < parse_timestamp(str(row["not_before"]), "not_before") or now >= parse_timestamp(
+            str(row["expires_at"]), "expires_at"
+        ):
             raise WorkItemGovernanceError("PILOT_LEASE_EXPIRED", "Pilot Lease is outside its authorized UTC window.")
         runtime = _json(row, "runtime_binding_json")
         deadline = runtime.get("monotonic_deadline_ns")
@@ -1380,7 +1702,9 @@ class PilotActivationGuard:
     @staticmethod
     def _principal(row: sqlite3.Row, principal: PrincipalContext | None) -> PrincipalContext:
         if not isinstance(principal, PrincipalContext) or not principal.trusted:
-            raise WorkItemGovernanceError("TRUSTED_PRINCIPAL_REQUIRED", "Pilot authority requires a trusted Principal capability.")
+            raise WorkItemGovernanceError(
+                "TRUSTED_PRINCIPAL_REQUIRED", "Pilot authority requires a trusted Principal capability."
+            )
         binding = _json(row, "principal_binding_json")
         if (
             principal.principal_id != binding["principal_id"]
@@ -1391,7 +1715,9 @@ class PilotActivationGuard:
             raise WorkItemGovernanceError("PILOT_PRINCIPAL_MISMATCH", "Principal differs from the Pilot Lease binding.")
         return principal
 
-    def _request(self, row: sqlite3.Row, principal: PrincipalContext | None, context: AuthoritativeCanaryRequestContext | None) -> PrincipalContext:
+    def _request(
+        self, row: sqlite3.Row, principal: PrincipalContext | None, context: AuthoritativeCanaryRequestContext | None
+    ) -> PrincipalContext:
         trusted = self._principal(row, principal)
         runtime = _json(row, "runtime_binding_json")
         if (
@@ -1399,11 +1725,18 @@ class PilotActivationGuard:
             or not context.active
             or not self._is_issued_request_context(context)
         ):
-            raise WorkItemGovernanceError("AUTHENTICATED_REQUEST_CONTEXT_REQUIRED", "Pilot commands require a live token-authenticated request capability.")
+            raise WorkItemGovernanceError(
+                "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
+                "Pilot commands require a live token-authenticated request capability.",
+            )
         if context.lease_id != row["lease_id"] or context.principal_id != trusted.principal_id:
-            raise WorkItemGovernanceError("PILOT_REQUEST_CONTEXT_MISMATCH", "Request capability differs from the Pilot Lease binding.")
+            raise WorkItemGovernanceError(
+                "PILOT_REQUEST_CONTEXT_MISMATCH", "Request capability differs from the Pilot Lease binding."
+            )
         if context.binding_digest != runtime.get("request_context_binding_digest"):
-            raise WorkItemGovernanceError("PILOT_REQUEST_CONTEXT_MISMATCH", "Request capability digest differs from the Pilot runtime binding.")
+            raise WorkItemGovernanceError(
+                "PILOT_REQUEST_CONTEXT_MISMATCH", "Request capability digest differs from the Pilot runtime binding."
+            )
         return trusted
 
     def authorized_work_item_id(self) -> str | None:
@@ -1413,7 +1746,9 @@ class PilotActivationGuard:
 
     def assert_read_scope(self, work_item_id: str) -> None:
         if self.authorized_work_item_id() != work_item_id:
-            raise WorkItemGovernanceError("PILOT_WORK_ITEM_SCOPE_VIOLATION", "Read is outside the Pilot Work Item scope.")
+            raise WorkItemGovernanceError(
+                "PILOT_WORK_ITEM_SCOPE_VIOLATION", "Read is outside the Pilot Work Item scope."
+            )
 
     def runtime_status(self) -> dict[str, Any]:
         with self.ledger.read_connection() as connection:
@@ -1449,11 +1784,16 @@ class PilotActivationGuard:
             row = self._active(connection)
             usage = _json(row, "usage_json")
             matches = [
-                slot for slot in usage["execution_slots"]
-                if slot["attempt_id"] == attempt_id and int(slot["task_version"]) == task_version and slot["status"] == "bound"
+                slot
+                for slot in usage["execution_slots"]
+                if slot["attempt_id"] == attempt_id
+                and int(slot["task_version"]) == task_version
+                and slot["status"] == "bound"
             ]
             if len(matches) != 1:
-                raise WorkItemGovernanceError("PILOT_ATTEMPT_DISPATCH_DENIED", "Attempt lacks one active Pilot execution Slot.")
+                raise WorkItemGovernanceError(
+                    "PILOT_ATTEMPT_DISPATCH_DENIED", "Attempt lacks one active Pilot execution Slot."
+                )
             attempt = connection.execute(
                 "SELECT * FROM execution_attempts WHERE attempt_id=?", (attempt_id,)
             ).fetchone()
@@ -1482,7 +1822,14 @@ class PilotActivationGuard:
                     "Attempt runtime facts differ from its exact Pilot execution Slot.",
                 )
 
-    def authorize_preview(self, *, command_name: str, normalized_command: dict[str, Any], principal_context: PrincipalContext | None, request_context: AuthoritativeCanaryRequestContext | None) -> str | None:
+    def authorize_preview(
+        self,
+        *,
+        command_name: str,
+        normalized_command: dict[str, Any],
+        principal_context: PrincipalContext | None,
+        request_context: AuthoritativeCanaryRequestContext | None,
+    ) -> str | None:
         if command_name not in {"apply_work_item_create", "apply_work_item_transition"}:
             raise WorkItemGovernanceError("PILOT_COMMAND_DENIED", "Preview command is outside the Pilot allowlist.")
         with self.ledger.read_connection() as connection:
@@ -1531,7 +1878,14 @@ class PilotActivationGuard:
         self.ledger.authorize_activation_domain_write(connection, session=session)
         return session
 
-    def deny_command(self, connection: sqlite3.Connection, *, command_name: str, principal_context: PrincipalContext | None, request_context: AuthoritativeCanaryRequestContext | None) -> None:
+    def deny_command(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        command_name: str,
+        principal_context: PrincipalContext | None,
+        request_context: AuthoritativeCanaryRequestContext | None,
+    ) -> None:
         control = self.ledger.authorize_activation_control_write(
             connection, controller=self, controller_binding=self.__repository_control_binding
         )
@@ -1555,7 +1909,14 @@ class PilotActivationGuard:
             if not self.ledger.activation_control_write_finalized(connection, session=control):
                 self.ledger.finalize_activation_control_write(connection, session=control)
 
-    def _authorize_new(self, session: ActivationWriteSession, *, work_item_id: str | None, fact_delta: dict[str, int], domain_fact_delta: dict[str, int] | None) -> None:
+    def _authorize_new(
+        self,
+        session: ActivationWriteSession,
+        *,
+        work_item_id: str | None,
+        fact_delta: dict[str, int],
+        domain_fact_delta: dict[str, int] | None,
+    ) -> None:
         try:
             self._authorize_new_checked(
                 session,
@@ -1575,16 +1936,27 @@ class PilotActivationGuard:
                 session=session,
             )
 
-    def _authorize_new_checked(self, session: ActivationWriteSession, *, work_item_id: str | None, fact_delta: dict[str, int], domain_fact_delta: dict[str, int] | None) -> None:
+    def _authorize_new_checked(
+        self,
+        session: ActivationWriteSession,
+        *,
+        work_item_id: str | None,
+        fact_delta: dict[str, int],
+        domain_fact_delta: dict[str, int] | None,
+    ) -> None:
         row = session.row
         scope = _json(row, "scope_binding_json")
         bound = row["authorized_work_item_id"]
         if session.command_name == "apply_work_item_create":
             if bound is not None:
-                raise WorkItemGovernanceError("PILOT_SECOND_WORK_ITEM_DENIED", "Pilot Lease already owns its Work Item.")
+                raise WorkItemGovernanceError(
+                    "PILOT_SECOND_WORK_ITEM_DENIED", "Pilot Lease already owns its Work Item."
+                )
             proposed = scope["proposed_work_item_id"]
             if work_item_id is not None and work_item_id != proposed:
-                raise WorkItemGovernanceError("PILOT_WORK_ITEM_SCOPE_VIOLATION", "Create differs from the preallocated Work Item.")
+                raise WorkItemGovernanceError(
+                    "PILOT_WORK_ITEM_SCOPE_VIOLATION", "Create differs from the preallocated Work Item."
+                )
             command = session.normalized_command
             objective = command.get("attributes", {}).get("objective")
             if (
@@ -1598,7 +1970,9 @@ class PilotActivationGuard:
                     "Create command, Origin, objective, or initial Task differs from the Pilot Scope.",
                 )
         elif bound is None or work_item_id != bound:
-            raise WorkItemGovernanceError("PILOT_WORK_ITEM_SCOPE_VIOLATION", "Command is outside the Pilot Work Item scope.")
+            raise WorkItemGovernanceError(
+                "PILOT_WORK_ITEM_SCOPE_VIOLATION", "Command is outside the Pilot Work Item scope."
+            )
         if session.command_name == "add_task_version":
             version = int(session.normalized_command["task_version"])
             payloads = scope["task_version_payload_digests"]
@@ -1622,25 +1996,39 @@ class PilotActivationGuard:
                 self._validate_artifact_policy(artifact)
         actual_delta = dict(domain_fact_delta or {})
         if set(actual_delta) != set(_activation_domain_fact_counts(session.connection)):
-            raise WorkItemGovernanceError("PILOT_FACT_DELTA_INVALID", "Pilot command must declare the complete domain fact delta.")
+            raise WorkItemGovernanceError(
+                "PILOT_FACT_DELTA_INVALID", "Pilot command must declare the complete domain fact delta."
+            )
         usage = _json(row, "usage_json")
         quotas = _json(row, "quotas_json")
         for domain_key, value in actual_delta.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise WorkItemGovernanceError("PILOT_FACT_DELTA_INVALID", "Pilot fact deltas must be non-negative integers.")
+                raise WorkItemGovernanceError(
+                    "PILOT_FACT_DELTA_INVALID", "Pilot fact deltas must be non-negative integers."
+                )
             usage_key = DOMAIN_TO_USAGE[domain_key]
             quota_key = PILOT_FACT_TO_QUOTA[usage_key]
             if int(usage[usage_key]) + value > int(quotas[quota_key]):
-                raise WorkItemGovernanceError("PILOT_QUOTA_EXCEEDED", "Pilot fact quota would be exceeded.", details={"quota": quota_key})
+                raise WorkItemGovernanceError(
+                    "PILOT_QUOTA_EXCEEDED", "Pilot fact quota would be exceeded.", details={"quota": quota_key}
+                )
         if int(usage["lease_events"]) >= int(quotas["maximum_lease_events"]) - 1:
-            raise WorkItemGovernanceError("PILOT_LEASE_EVENT_LIMIT", "Pilot reserves its last Lease Event for closeout.")
+            raise WorkItemGovernanceError(
+                "PILOT_LEASE_EVENT_LIMIT", "Pilot reserves its last Lease Event for closeout."
+            )
         if session.command_name == "create_execution_attempt":
             self._select_attempt_slot(session, usage)
         elif session.command_name == "complete_execution_attempt":
             attempt_id = str(session.normalized_command.get("attempt_id") or "")
-            candidates = [slot for slot in usage["execution_slots"] if slot["attempt_id"] == attempt_id and slot["status"] == "bound"]
+            candidates = [
+                slot
+                for slot in usage["execution_slots"]
+                if slot["attempt_id"] == attempt_id and slot["status"] == "bound"
+            ]
             if len(candidates) != 1:
-                raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_MISMATCH", "Completion does not target one bound execution Slot.")
+                raise WorkItemGovernanceError(
+                    "PILOT_EXECUTION_SLOT_MISMATCH", "Completion does not target one bound execution Slot."
+                )
             session.fixture_slot = {"pilot_execution_slot_id": candidates[0]["slot_id"]}
         session.fact_delta = {key: int(fact_delta.get(key, 0)) for key in fact_delta}
         session.domain_fact_delta = actual_delta
@@ -1683,7 +2071,8 @@ class PilotActivationGuard:
         objective_digest = canonical_sha256(command.get("objective_ref"))
         candidates = sorted(
             (
-                slot for slot in usage["execution_slots"]
+                slot
+                for slot in usage["execution_slots"]
                 if slot["status"] == "available"
                 and int(slot["task_version"]) == task_version
                 and slot["task_version_payload_digest"] == str(task["payload_digest"])
@@ -1692,13 +2081,18 @@ class PilotActivationGuard:
             key=lambda slot: int(slot["ordinal"]),
         )
         if not candidates:
-            raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_MISMATCH", "No authorized execution Slot matches the current Task Version and objective.")
+            raise WorkItemGovernanceError(
+                "PILOT_EXECUTION_SLOT_MISMATCH",
+                "No authorized execution Slot matches the current Task Version and objective.",
+            )
         slot = candidates[0]
         predecessor = slot["retry_of_slot_id"]
         if predecessor is not None:
             prior = next((item for item in usage["execution_slots"] if item["slot_id"] == predecessor), None)
             if prior is None or prior["status"] != "completed":
-                raise WorkItemGovernanceError("PILOT_RETRY_SLOT_PREDECESSOR_INCOMPLETE", "Retry Slot predecessor is not completed.")
+                raise WorkItemGovernanceError(
+                    "PILOT_RETRY_SLOT_PREDECESSOR_INCOMPLETE", "Retry Slot predecessor is not completed."
+                )
         session.fixture_slot = {"pilot_execution_slot_id": slot["slot_id"]}
 
     def _authorize_replay(self, session: ActivationWriteSession, *, work_item_id: str) -> None:
@@ -1715,7 +2109,14 @@ class PilotActivationGuard:
         session._finalized = True
         self._discard_write_session(session)
 
-    def _commit_new(self, session: ActivationWriteSession, *, work_item_id: str, event_type: str, generated_ids: dict[str, list[str]] | None) -> None:
+    def _commit_new(
+        self,
+        session: ActivationWriteSession,
+        *,
+        work_item_id: str,
+        event_type: str,
+        generated_ids: dict[str, list[str]] | None,
+    ) -> None:
         try:
             self._commit_new_checked(
                 session,
@@ -1737,15 +2138,30 @@ class PilotActivationGuard:
                 session=session,
             )
 
-    def _commit_new_checked(self, session: ActivationWriteSession, *, work_item_id: str, event_type: str, generated_ids: dict[str, list[str]] | None) -> None:
+    def _commit_new_checked(
+        self,
+        session: ActivationWriteSession,
+        *,
+        work_item_id: str,
+        event_type: str,
+        generated_ids: dict[str, list[str]] | None,
+    ) -> None:
         if session.fact_delta is None or session.domain_fact_delta is None:
-            raise WorkItemGovernanceError("PILOT_WRITE_NOT_AUTHORIZED", "Pilot write was not transactionally authorized.")
+            raise WorkItemGovernanceError(
+                "PILOT_WRITE_NOT_AUTHORIZED", "Pilot write was not transactionally authorized."
+            )
         connection = session.connection
         actual_counts = _activation_domain_fact_counts(connection)
         actual_delta = {key: int(actual_counts[key]) - int(session.baseline_fact_counts[key]) for key in actual_counts}
         if actual_delta != session.domain_fact_delta:
-            raise WorkItemGovernanceError("PILOT_FACT_RECONCILIATION_FAILED", "Committed facts differ from the transaction declaration.", details={"expected": session.domain_fact_delta, "actual": actual_delta})
-        row = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (session.row["lease_id"],)).fetchone()
+            raise WorkItemGovernanceError(
+                "PILOT_FACT_RECONCILIATION_FAILED",
+                "Committed facts differ from the transaction declaration.",
+                details={"expected": session.domain_fact_delta, "actual": actual_delta},
+            )
+        row = connection.execute(
+            "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (session.row["lease_id"],)
+        ).fetchone()
         if row is None or row["status"] != "active" or int(row["state_version"]) != int(session.row["state_version"]):
             raise WorkItemGovernanceError("PILOT_LEASE_CAS_CONFLICT", "Pilot Lease changed concurrently.")
         usage = _json(row, "usage_json")
@@ -1757,25 +2173,45 @@ class PilotActivationGuard:
         bound = row["authorized_work_item_id"]
         if session.command_name == "apply_work_item_create":
             if work_item_id != scope["proposed_work_item_id"]:
-                raise WorkItemGovernanceError("PILOT_WORK_ITEM_SCOPE_VIOLATION", "Created Work Item differs from the authorized ID.")
+                raise WorkItemGovernanceError(
+                    "PILOT_WORK_ITEM_SCOPE_VIOLATION", "Created Work Item differs from the authorized ID."
+                )
             bound = work_item_id
             scope["authorized_work_item_id"] = work_item_id
         if session.command_name == "create_execution_attempt":
             attempt_ids = (generated_ids or {}).get("attempt_ids", [])
             if len(attempt_ids) != 1:
-                raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_BINDING_INVALID", "Attempt creation must bind exactly one generated Attempt ID.")
+                raise WorkItemGovernanceError(
+                    "PILOT_EXECUTION_SLOT_BINDING_INVALID",
+                    "Attempt creation must bind exactly one generated Attempt ID.",
+                )
             self._update_slot(usage, session.fixture_slot, status="bound", attempt_id=attempt_ids[0])
         elif session.command_name == "complete_execution_attempt":
-            self._update_slot(usage, session.fixture_slot, status="completed", attempt_id=str(session.normalized_command["attempt_id"]))
+            self._update_slot(
+                usage,
+                session.fixture_slot,
+                status="completed",
+                attempt_id=str(session.normalized_command["attempt_id"]),
+            )
         now_text = isoformat_utc(self.now())
         next_version = int(row["state_version"]) + 1
         changed = connection.execute(
             "UPDATE pilot_activation_leases SET authorized_work_item_id=?,scope_binding_json=?,usage_json=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
-            (bound, canonical_json(scope), canonical_json(usage), next_version, now_text, row["lease_id"], int(row["state_version"])),
+            (
+                bound,
+                canonical_json(scope),
+                canonical_json(usage),
+                next_version,
+                now_text,
+                row["lease_id"],
+                int(row["state_version"]),
+            ),
         ).rowcount
         if changed != 1:
             raise WorkItemGovernanceError("PILOT_LEASE_CAS_CONFLICT", "Pilot Lease usage CAS failed.")
-        current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (row["lease_id"],)).fetchone()
+        current = connection.execute(
+            "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (row["lease_id"],)
+        ).fetchone()
         event_fact_delta = {DOMAIN_TO_USAGE[key]: value for key, value in actual_delta.items()}
         event_fact_delta["gate_events_total"] = (
             event_fact_delta["applied_gate_events"] + event_fact_delta["rejected_gate_events"]
@@ -1814,7 +2250,9 @@ class PilotActivationGuard:
         if session is not None:
             connection.execute("ROLLBACK TO SAVEPOINT pilot_domain_write")
             connection.execute("RELEASE SAVEPOINT pilot_domain_write")
-        current = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (row["lease_id"],)).fetchone()
+        current = connection.execute(
+            "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (row["lease_id"],)
+        ).fetchone()
         if current is not None and current["status"] == "active":
             version = int(current["state_version"]) + 1
             now_text = isoformat_utc(self.now())
@@ -1824,7 +2262,9 @@ class PilotActivationGuard:
                 "UPDATE pilot_activation_leases SET status='write_frozen',usage_json=?,state_version=?,updated_at=? WHERE lease_id=? AND state_version=?",
                 (canonical_json(usage), version, now_text, current["lease_id"], int(current["state_version"])),
             )
-            frozen = connection.execute("SELECT * FROM pilot_activation_leases WHERE lease_id=?", (current["lease_id"],)).fetchone()
+            frozen = connection.execute(
+                "SELECT * FROM pilot_activation_leases WHERE lease_id=?", (current["lease_id"],)
+            ).fetchone()
             _append_event(
                 connection,
                 frozen,
@@ -1844,20 +2284,28 @@ class PilotActivationGuard:
             self._discard_write_session(session)
         raise CommitWorkItemRejection(error)
 
-    def _update_slot(self, usage: dict[str, Any], binding: dict[str, Any] | None, *, status: str, attempt_id: str) -> None:
+    def _update_slot(
+        self, usage: dict[str, Any], binding: dict[str, Any] | None, *, status: str, attempt_id: str
+    ) -> None:
         slot_id = None if binding is None else binding.get("pilot_execution_slot_id")
         matches = [slot for slot in usage["execution_slots"] if slot["slot_id"] == slot_id]
         if len(matches) != 1:
-            raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_BINDING_INVALID", "Execution Slot binding is unavailable.")
+            raise WorkItemGovernanceError(
+                "PILOT_EXECUTION_SLOT_BINDING_INVALID", "Execution Slot binding is unavailable."
+            )
         slot = matches[0]
         now_text = isoformat_utc(self.now())
         if status == "bound":
             if slot["status"] != "available":
-                raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_ALREADY_CONSUMED", "Execution Slot was already consumed.")
+                raise WorkItemGovernanceError(
+                    "PILOT_EXECUTION_SLOT_ALREADY_CONSUMED", "Execution Slot was already consumed."
+                )
             slot.update(status="bound", attempt_id=attempt_id, bound_at=now_text)
         else:
             if slot["status"] != "bound" or slot["attempt_id"] != attempt_id:
-                raise WorkItemGovernanceError("PILOT_EXECUTION_SLOT_BINDING_INVALID", "Attempt completion differs from its execution Slot.")
+                raise WorkItemGovernanceError(
+                    "PILOT_EXECUTION_SLOT_BINDING_INVALID", "Attempt completion differs from its execution Slot."
+                )
             slot.update(status="completed", completed_at=now_text)
 
     def _reconcile(self, connection: sqlite3.Connection, row: sqlite3.Row) -> None:
@@ -1869,7 +2317,10 @@ class PilotActivationGuard:
             if int(counts[domain]) != int(usage[usage_key])
         }
         if int(usage["gate_events_total"]) != int(usage["applied_gate_events"]) + int(usage["rejected_gate_events"]):
-            mismatches["gate_events_total"] = {"actual": counts["applied_gate_events"] + counts["rejected_gate_events"], "recorded": usage["gate_events_total"]}
+            mismatches["gate_events_total"] = {
+                "actual": counts["applied_gate_events"] + counts["rejected_gate_events"],
+                "recorded": usage["gate_events_total"],
+            }
         event_count = int(
             connection.execute(
                 "SELECT COUNT(*) FROM pilot_activation_lease_events WHERE lease_id=?",
@@ -1892,7 +2343,9 @@ class PilotActivationGuard:
             if count:
                 mismatches[name] = {"actual": count, "recorded": 0}
         if mismatches:
-            raise WorkItemGovernanceError("PILOT_FACT_RECONCILIATION_FAILED", "Pilot Lease usage differs from Ledger facts.", details=mismatches)
+            raise WorkItemGovernanceError(
+                "PILOT_FACT_RECONCILIATION_FAILED", "Pilot Lease usage differs from Ledger facts.", details=mismatches
+            )
 
 
 def _append_event(
@@ -1918,7 +2371,11 @@ def _append_event(
     ).fetchone()
     sequence = 1 if prior is None else int(prior["sequence"]) + 1
     runtime = _json(row, "runtime_binding_json")
-    before = 0 if state_version_before is None and sequence == 1 else int(state_version_before if state_version_before is not None else row["state_version"] - 1)
+    before = (
+        0
+        if state_version_before is None and sequence == 1
+        else int(state_version_before if state_version_before is not None else row["state_version"] - 1)
+    )
     event = {
         "schema_version": PILOT_EVENT_SCHEMA,
         "lease_event_id": new_stable_id("activation_lease_event"),
@@ -1958,13 +2415,28 @@ def _append_event(
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            event["lease_event_id"], event["schema_version"], event["lease_id"], event["sequence"],
-            event["event_type"], event["status_before"], event["status_after"], event["state_version_before"],
-            event["state_version_after"], event["authorization_digest"], event["authorized_work_item_id"],
-            event["process_identity_digest"], event["listener_attestation_digest"], event["command_name"],
+            event["lease_event_id"],
+            event["schema_version"],
+            event["lease_id"],
+            event["sequence"],
+            event["event_type"],
+            event["status_before"],
+            event["status_after"],
+            event["state_version_before"],
+            event["state_version_after"],
+            event["authorization_digest"],
+            event["authorized_work_item_id"],
+            event["process_identity_digest"],
+            event["listener_attestation_digest"],
+            event["command_name"],
             event["source_event_key"] if event["source_event_key"] is not None else None,
-            event["request_context_digest"], event["principal_digest"], canonical_json(event["fact_delta"]),
-            event["rejection_code"], event["previous_event_digest"], event["event_digest"], canonical_json(event),
+            event["request_context_digest"],
+            event["principal_digest"],
+            canonical_json(event["fact_delta"]),
+            event["rejection_code"],
+            event["previous_event_digest"],
+            event["event_digest"],
+            canonical_json(event),
             event["created_at"],
         ),
     )
@@ -1980,18 +2452,24 @@ def validate_pilot_closeout(closeout: dict[str, Any]) -> dict[str, Any]:
     lease = closeout["lease"]
     ledger = closeout["ledger"]
     if stage == "pre_import" and any(value is not None for value in (ledger, lease, work_item)):
-        raise WorkItemGovernanceError("PILOT_CLOSEOUT_STAGE_CONTRADICTION", "pre_import closeout cannot claim Ledger, Lease, or Work Item facts.")
+        raise WorkItemGovernanceError(
+            "PILOT_CLOSEOUT_STAGE_CONTRADICTION", "pre_import closeout cannot claim Ledger, Lease, or Work Item facts."
+        )
     if stage == "lifecycle_completed":
         state = None if work_item is None else work_item["state"]
         if state not in {"accepted", "cancelled"}:
-            raise WorkItemGovernanceError("PILOT_CLOSEOUT_STAGE_CONTRADICTION", "Completed lifecycle requires accepted or cancelled.")
+            raise WorkItemGovernanceError(
+                "PILOT_CLOSEOUT_STAGE_CONTRADICTION", "Completed lifecycle requires accepted or cancelled."
+            )
         expected = 1 if state == "accepted" else 0
         if int(work_item["acceptance_manifest_count"]) != expected:
-            raise WorkItemGovernanceError("PILOT_CLOSEOUT_STAGE_CONTRADICTION", "Acceptance Manifest count contradicts terminal state.")
-    if closeout["result"] in {"PASS", "PASS_WITH_GAPS"} and (
-        work_item is None or work_item["state"] != "accepted"
-    ):
-        raise WorkItemGovernanceError("PILOT_CLOSEOUT_RESULT_INVALID", "Successful Pilot closeout requires an accepted Work Item.")
+            raise WorkItemGovernanceError(
+                "PILOT_CLOSEOUT_STAGE_CONTRADICTION", "Acceptance Manifest count contradicts terminal state."
+            )
+    if closeout["result"] in {"PASS", "PASS_WITH_GAPS"} and (work_item is None or work_item["state"] != "accepted"):
+        raise WorkItemGovernanceError(
+            "PILOT_CLOSEOUT_RESULT_INVALID", "Successful Pilot closeout requires an accepted Work Item."
+        )
     return closeout
 
 

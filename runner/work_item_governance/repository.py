@@ -791,6 +791,26 @@ class SQLiteWorkItemLedger:
             finally:
                 os.close(descriptor)
 
+    @contextmanager
+    def frozen_storage_boundary(self) -> Iterator[None]:
+        """Freeze an existing Ledger for raw-byte snapshotting without opening SQLite.
+
+        The existing maintenance lock is opened read-only and held exclusively.
+        Repository-owned readers and writers therefore drain before the caller
+        measures or copies bytes, while this boundary itself creates and chmods
+        nothing under the protected Ledger root.
+        """
+
+        self._assert_existing_storage_path()
+        if not self.path.is_file():
+            raise WorkItemGovernanceError(
+                "LEDGER_FILE_MISSING",
+                "Ledger database file does not exist.",
+                details={"path": str(self.path)},
+            )
+        with self._maintenance_lock(exclusive=True, blocking=False, create=False):
+            yield
+
     def _connect(
         self,
         path: Path | None = None,

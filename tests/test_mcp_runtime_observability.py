@@ -4589,6 +4589,7 @@ vm.runInThisContext({json.dumps(widget_script)});
 
         with (
             patch.object(server, "_connector_runtime_local_service_evidence", return_value={"status": "ready"}),
+            patch("runner.mcp_server.loaded_runtime_project_root", return_value="/runtime/colameta"),
             patch("runner.mcp_server.get_runtime_version_status", return_value=runtime_packet) as runtime_status,
             patch("runner.mcp_server.get_connector_runtime_health_status", return_value=connector_packet) as connector_health,
         ):
@@ -4625,7 +4626,11 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert "`get_submission_evidence_auto_draft`" in entries[0]["content"]
         assert "`manage_stage_parallel_worktrees` | `action-dependent`" in entries[0]["content"]
         assert "mcp:unknown" not in entries[0]["content"]
-        runtime_status.assert_called_once_with(str(project), local_service={"status": "ready"})
+        runtime_status.assert_called_once_with(
+            str(project),
+            runtime_project_root="/runtime/colameta",
+            local_service={"status": "ready"},
+        )
         connector_health.assert_called_once_with(runtime_status=runtime_packet, local_service={"status": "ready"})
 
     def test_init_submission_evidence_tool_is_commit_scoped_and_project_routed(self) -> None:

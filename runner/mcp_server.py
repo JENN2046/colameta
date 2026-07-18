@@ -113,6 +113,7 @@ from runner.work_item_governance.pilot import (
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_mcp_adapter import (
     AUTHORITATIVE_CANARY_MCP_TOOLS,
     WORK_ITEM_APPLY_TOOLS,
@@ -181,6 +182,7 @@ MCP_CLIENT_RATE_LIMIT_BURST = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BURST", 4
 MCP_CLIENT_RATE_LIMIT_BUCKETS = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BUCKETS", 2048)
 MCP_TARGET_TOOL_RESULT_CHARS = 60000
 MCP_HARD_TOOL_RESULT_CHARS = 75000
+MCP_MANAGE_FILES_READ_TARGET_CHARS = 24000
 REMOTE_EXTERNAL_OAUTH_POLICY = "remote_public"
 COMMANDER_APP_WIDGET_URI = "ui://colameta/commander/v1.html"
 COMMANDER_APP_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
@@ -1194,6 +1196,7 @@ class MCPPlanningBridgeServer:
             raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
         self._token_transport_proof_validator = None
         self._preflight_conformance_only = False
+        self._preflight_conformance_ledger_snapshot_binding_digest: str | None = None
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -3701,7 +3704,7 @@ class MCPPlanningBridgeServer:
                         },
                         "max_chars": {
                             "type": "integer",
-                            "description": "action=read 可选。最大返回字符数。默认 30000，最大 100000。",
+                            "description": "action=read 可选。最大返回字符数。默认 30000，最大 100000；大结果会返回安全分页续读建议。",
                         },
                         "start_line": {
                             "type": "integer",
@@ -4566,7 +4569,12 @@ class MCPPlanningBridgeServer:
                 name,
                 clean,
                 principal_context=current_work_item_principal(),
-                authoritative_canary=authoritative_canary,
+                # The authoritative-canary exposure profile is the transport
+                # boundary for both compositions.  A bounded Pilot must select
+                # only the Pilot service/guard composition; passing both flags
+                # is an explicit fail-closed conflict in the application
+                # service and rejects every otherwise valid Pilot command.
+                authoritative_canary=authoritative_canary and not bounded_pilot,
                 bounded_single_project_pilot=bounded_pilot,
                 authenticated_request_proof=current_authenticated_token_request_proof(),
             )
@@ -4622,6 +4630,9 @@ class MCPPlanningBridgeServer:
             raise PlanningBridgeError("Pilot conformance requires the exact active authenticated MCP listener.")
         snapshot = _authenticated_token_listener_conformance_snapshot(self)
         snapshot["preflight_conformance_only"] = bool(self._preflight_conformance_only)
+        snapshot["ledger_snapshot_binding_digest"] = (
+            self._preflight_conformance_ledger_snapshot_binding_digest
+        )
         snapshot["server_binding_digest"] = hashlib.sha256(
             json.dumps(
                 {
@@ -4629,6 +4640,9 @@ class MCPPlanningBridgeServer:
                     "scope_mode": self.work_item_scope_mode,
                     "exposure_profile": self.mcp_exposure_profile,
                     "preflight_conformance_only": bool(self._preflight_conformance_only),
+                    "ledger_snapshot_binding_digest": (
+                        self._preflight_conformance_ledger_snapshot_binding_digest
+                    ),
                     "listener_instance_nonce": snapshot["listener_instance_nonce"],
                 },
                 sort_keys=True,
@@ -4661,6 +4675,7 @@ class MCPPlanningBridgeServer:
         claimed_activation_envelope_path: str | None = None,
         preflight_conformance: bool = False,
         preflight_conformance_timeout_seconds: float = 120.0,
+        preflight_conformance_ledger_snapshot: PilotConformanceLedgerSnapshot | None = None,
     ) -> int:
         server = self
         _debug_counter = 0
@@ -4724,8 +4739,23 @@ class MCPPlanningBridgeServer:
                     raise PlanningBridgeError(
                         "preflight_conformance forbids Activation Lease inputs."
                     )
-                require_pilot_preflight_conformance_baseline(self.project_root)
-                durable_token_binding = measure_pilot_durable_token_binding(self.project_root)
+                if not isinstance(
+                    preflight_conformance_ledger_snapshot,
+                    PilotConformanceLedgerSnapshot,
+                ):
+                    raise PlanningBridgeError(
+                        "preflight_conformance requires one governed isolated Ledger snapshot."
+                    )
+                try:
+                    preflight_conformance_ledger_snapshot.require_bound_to(self.project_root)
+                    snapshot_project_root = preflight_conformance_ledger_snapshot.project_root
+                    require_pilot_preflight_conformance_baseline(snapshot_project_root)
+                    durable_token_binding = measure_pilot_durable_token_binding(snapshot_project_root)
+                    preflight_conformance_ledger_snapshot.require_bound_to(self.project_root)
+                except WorkItemGovernanceError as exc:
+                    raise PlanningBridgeError(
+                        "preflight_conformance isolated Ledger snapshot validation failed."
+                    ) from exc
                 if durable_token_binding != {
                     "authoritative_canary_token_file_sha256": auth_token_file_sha256,
                     "authoritative_canary_token_evidence_digest": auth_token_evidence_digest,
@@ -5557,6 +5587,12 @@ class MCPPlanningBridgeServer:
             raise
         self._httpd = httpd
         self._preflight_conformance_only = preflight_conformance_only
+        self._preflight_conformance_ledger_snapshot_binding_digest = (
+            preflight_conformance_ledger_snapshot.binding_digest
+            if preflight_conformance_only
+            and isinstance(preflight_conformance_ledger_snapshot, PilotConformanceLedgerSnapshot)
+            else None
+        )
         if authoritative_canary and not preflight_conformance_only:
             if activation_control_plane is None or activation_lease_id is None:
                 httpd.server_close()
@@ -5622,6 +5658,7 @@ class MCPPlanningBridgeServer:
             ):
                 self._token_transport_proof_validator = None
             self._preflight_conformance_only = False
+            self._preflight_conformance_ledger_snapshot_binding_digest = None
             if (
                 authoritative_canary
                 and not preflight_conformance_only
@@ -8241,11 +8278,18 @@ class MCPPlanningBridgeServer:
         # The Commander widget consumes structuredContent directly. Keep its
         # manifest intact up to the existing hard response ceiling; generic
         # tools retain the lower packaging target.
-        target_chars = (
-            MCP_HARD_TOOL_RESULT_CHARS
-            if tool_name == "render_commander_app"
-            else MCP_TARGET_TOOL_RESULT_CHARS
+        action_name = safe_params.get("action")
+        is_manage_files_read = (
+            tool_name == "manage_files"
+            and isinstance(action_name, str)
+            and action_name.strip().lower() == "read"
         )
+        if tool_name == "render_commander_app":
+            target_chars = MCP_HARD_TOOL_RESULT_CHARS
+        elif is_manage_files_read:
+            target_chars = MCP_MANAGE_FILES_READ_TARGET_CHARS
+        else:
+            target_chars = MCP_TARGET_TOOL_RESULT_CHARS
         if self._json_char_count(structured_tool_result) <= target_chars:
             if is_error:
                 err_msg = str(structured_tool_result.get("message") or "unknown error")
@@ -8274,7 +8318,7 @@ class MCPPlanningBridgeServer:
                 "message": "结果内容较大，已返回摘要与续读建议。",
                 "summary": {
                     "result_char_estimate": self._json_char_count(structured_tool_result),
-                    "target_tool_result_chars": MCP_TARGET_TOOL_RESULT_CHARS,
+                    "target_tool_result_chars": target_chars,
                     "hard_tool_result_chars": MCP_HARD_TOOL_RESULT_CHARS,
                     "data_key_count": len(data.keys()) if isinstance(data, dict) else 0,
                     "data_keys": data_keys,
@@ -8302,7 +8346,7 @@ class MCPPlanningBridgeServer:
                 "message": "结果内容较大，已返回最小续读提示。",
                 "summary": {
                     "result_char_estimate": self._json_char_count(structured_tool_result),
-                    "target_tool_result_chars": MCP_TARGET_TOOL_RESULT_CHARS,
+                    "target_tool_result_chars": target_chars,
                     "hard_tool_result_chars": MCP_HARD_TOOL_RESULT_CHARS,
                 },
                 "omitted_fields": ["data"],
@@ -8973,10 +9017,20 @@ class MCPPlanningBridgeServer:
             target_file = params.get("file") if isinstance(params.get("file"), str) else ""
             suggestions = []
             if target_file:
+                read_arguments: dict[str, Any] = {
+                    "action": "read",
+                    "file": target_file,
+                    "start_line": 1,
+                    "end_line": 200,
+                    "max_chars": 20000,
+                }
+                project_name = params.get("project_name")
+                if isinstance(project_name, str) and project_name.strip():
+                    read_arguments["project_name"] = project_name.strip()
                 suggestions.append(
                     {
                         "tool": "manage_files",
-                        "arguments": {"action": "read", "file": target_file, "start_line": 1, "end_line": 200, "max_chars": 20000},
+                        "arguments": read_arguments,
                         "reason": "按行范围读取源码。",
                     }
                 )
@@ -9783,7 +9837,7 @@ class MCPPlanningBridgeServer:
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
         control_plane = self._connector_external_evidence_param(params, "control_plane")
         local_service = self._connector_runtime_local_service_evidence(project_root)
-        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         connector_health = get_connector_runtime_health_status(
             runtime_status=runtime_status,
             local_service=local_service,
@@ -10901,7 +10955,7 @@ class MCPPlanningBridgeServer:
         project_name = self._project_name_for_context(project_root, project_record, params)
         selected_keys = self._selected_auto_submission_evidence_keys(params.get("selected_keys"))
         local_service = self._connector_runtime_local_service_evidence(project_root)
-        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         connector_health = get_connector_runtime_health_status(
             runtime_status=runtime_status,
             local_service=local_service,
@@ -11245,7 +11299,7 @@ class MCPPlanningBridgeServer:
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
         control_plane = self._connector_external_evidence_param(params, "control_plane")
         local_service = self._connector_runtime_local_service_evidence(project_root)
-        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         connector_health = get_connector_runtime_health_status(
             runtime_status=runtime_status,
             local_service=local_service,
@@ -11309,7 +11363,7 @@ class MCPPlanningBridgeServer:
     def _tool_get_stable_replacement_cadence(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
         local_service = self._connector_runtime_local_service_evidence(project_root)
-        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         return self._stable_replacement_hint(project_root, runtime_status)
 
     def _commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -11317,7 +11371,7 @@ class MCPPlanningBridgeServer:
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
         control_plane = self._connector_external_evidence_param(params, "control_plane")
         local_service = self._connector_runtime_local_service_evidence(project_root)
-        runtime_status = get_runtime_version_status(project_root, local_service=local_service)
+        runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         connector_health = get_connector_runtime_health_status(
             runtime_status=runtime_status,
             local_service=local_service,
@@ -11953,10 +12007,28 @@ class MCPPlanningBridgeServer:
 
     def _tool_get_runtime_version_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
-        return get_runtime_version_status(
+        return self._runtime_version_status_for_project(
             project_root,
             local_service=self._connector_runtime_local_service_evidence(project_root),
         )
+
+    def _runtime_version_status_for_project(
+        self,
+        project_root: str,
+        *,
+        local_service: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        runtime_project_root = loaded_runtime_project_root() or self.project_root
+        status = get_runtime_version_status(
+            project_root,
+            runtime_project_root=runtime_project_root,
+            local_service=local_service,
+        )
+        requested_project = git_checkout_metadata(project_root)
+        status["runtime_project_root"] = runtime_project_root
+        status["requested_project_checkout"] = requested_project
+        status["requested_project_checkout_head"] = requested_project.get("head")
+        return status
 
     def _tool_get_connector_runtime_health_status(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, _ = self._resolve_read_only_project_context(params)
@@ -11964,7 +12036,7 @@ class MCPPlanningBridgeServer:
         control_plane = self._connector_external_evidence_param(params, "control_plane")
         local_service = self._connector_runtime_local_service_evidence(project_root)
         return get_connector_runtime_health_status(
-            runtime_status=get_runtime_version_status(project_root, local_service=local_service),
+            runtime_status=self._runtime_version_status_for_project(project_root, local_service=local_service),
             local_service=local_service,
             tunnel_client=tunnel_client,
             control_plane=control_plane,

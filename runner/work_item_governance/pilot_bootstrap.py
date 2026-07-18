@@ -24,11 +24,15 @@ from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
     PILOT_FROZEN_CONTRACT_DIGESTS,
     PILOT_SCOPE_MODE,
+    PILOT_SOURCE_BINDING_FIELDS,
     PILOT_TABLE_COUNT_QUERIES,
     PILOT_TOOLS,
+    build_pilot_execution_context,
+    build_pilot_ledger_state,
     canonical_path_digest,
     validate_pilot_preflight,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_governance.schema_loader import validate_governance_record
 from runner.work_item_governance.source_binding import (
     SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY,
@@ -79,7 +83,9 @@ class PilotBootstrapPaths:
     backup_path: Path
 
     def resolved(self) -> PilotBootstrapPaths:
-        return PilotBootstrapPaths(**{field: Path(getattr(self, field)).expanduser().resolve() for field in self.__dataclass_fields__})
+        return PilotBootstrapPaths(
+            **{field: Path(getattr(self, field)).expanduser().resolve() for field in self.__dataclass_fields__}
+        )
 
 
 def _assert_private_path(root: Path, path: Path, field: str) -> None:
@@ -149,13 +155,7 @@ def _assert_port_available(port: int) -> None:
 def _canonical_relative_manifest_path(value: str) -> str:
     lexical = PurePosixPath(value)
     canonical = lexical.as_posix()
-    if (
-        not lexical.parts
-        or lexical.is_absolute()
-        or ".." in lexical.parts
-        or "\\" in value
-        or canonical != value
-    ):
+    if not lexical.parts or lexical.is_absolute() or ".." in lexical.parts or "\\" in value or canonical != value:
         raise WorkItemGovernanceError(
             "PILOT_PROJECT_SNAPSHOT_MISMATCH",
             "Path manifest entries must be canonical relative POSIX paths.",
@@ -199,7 +199,9 @@ def _measure_path_manifests(
                     )
                 relative = item
             if not isinstance(relative, str) or not relative or relative in seen:
-                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique.")
+                raise WorkItemGovernanceError(
+                    "PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest entries must be unique."
+                )
             relative = _canonical_relative_manifest_path(relative)
             candidate = project_root / relative
             try:
@@ -210,7 +212,9 @@ def _measure_path_manifests(
                     "Path manifest entry escapes the target project.",
                 ) from exc
             if candidate.is_symlink():
-                raise WorkItemGovernanceError("PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest symlinks are forbidden.")
+                raise WorkItemGovernanceError(
+                    "PILOT_PROJECT_SNAPSHOT_MISMATCH", "Path manifest symlinks are forbidden."
+                )
             seen.add(relative)
             if kind == "protected":
                 if not candidate.is_file() or sha256_file(candidate) != item["sha256"]:
@@ -226,27 +230,176 @@ def _measure_path_manifests(
     return measured
 
 
-def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> bool:
+def _private_evidence_metadata_valid(observed: os.stat_result, *, kind: str) -> bool:
+    expected_kind = stat.S_ISDIR if kind == "directory" else stat.S_ISREG
+    return bool(
+        expected_kind(observed.st_mode)
+        and observed.st_uid == os.getuid()
+        and not stat.S_IMODE(observed.st_mode) & 0o077
+    )
+
+
+def _stable_evidence_metadata(before: os.stat_result, after: os.stat_result) -> bool:
+    stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_size", "st_mtime_ns", "st_ctime_ns")
+    return all(getattr(before, field) == getattr(after, field) for field in stable_fields)
+
+
+def _private_evidence_file_clean(
+    *,
+    directory_descriptor: int,
+    name: str,
+    observed: os.stat_result,
+    token_bytes: bytes,
+    scan_payload: bool,
+) -> bool:
+    """Read one governed evidence file relative to an already-bound directory."""
+
+    if (
+        not _private_evidence_metadata_valid(observed, kind="file")
+        or (scan_payload and observed.st_size > 16 * 1024 * 1024)
+    ):
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+    except OSError:
+        return False
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not _private_evidence_metadata_valid(before, kind="file")
+            or (before.st_dev, before.st_ino) != (observed.st_dev, observed.st_ino)
+            or (scan_payload and before.st_size > 16 * 1024 * 1024)
+        ):
+            return False
+        payload = bytearray() if scan_payload else None
+        if payload is not None:
+            while chunk := os.read(descriptor, 1024 * 1024):
+                payload.extend(chunk)
+        after = os.fstat(descriptor)
+        if not _stable_evidence_metadata(before, after):
+            return False
+        return payload is None or token_bytes not in payload
+    finally:
+        os.close(descriptor)
+
+
+def _token_absent_from_evidence_directory(
+    *,
+    directory_descriptor: int,
+    relative_parts: tuple[str, ...],
+    excluded: set[tuple[str, ...]],
+    token_bytes: bytes,
+) -> bool:
+    """Recursively scan from a no-follow directory capability, never a child path."""
+
+    try:
+        before = os.fstat(directory_descriptor)
+        names = sorted(os.listdir(directory_descriptor), key=lambda item: os.fsencode(item))
+    except OSError:
+        return False
+    if not _private_evidence_metadata_valid(before, kind="directory"):
+        return False
+    for name in names:
+        relative = (*relative_parts, name)
+        try:
+            observed = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except OSError:
+            return False
+        if stat.S_ISDIR(observed.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                child_descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+            except OSError:
+                return False
+            try:
+                child_before = os.fstat(child_descriptor)
+                if (
+                    not _private_evidence_metadata_valid(child_before, kind="directory")
+                    or (child_before.st_dev, child_before.st_ino) != (observed.st_dev, observed.st_ino)
+                    or not _token_absent_from_evidence_directory(
+                        directory_descriptor=child_descriptor,
+                        relative_parts=relative,
+                        excluded=excluded,
+                        token_bytes=token_bytes,
+                    )
+                    or not _stable_evidence_metadata(child_before, os.fstat(child_descriptor))
+                ):
+                    return False
+            finally:
+                os.close(child_descriptor)
+        elif stat.S_ISREG(observed.st_mode):
+            if not _private_evidence_file_clean(
+                directory_descriptor=directory_descriptor,
+                name=name,
+                observed=observed,
+                token_bytes=token_bytes,
+                scan_payload=relative not in excluded,
+            ):
+                return False
+        else:
+            return False
+    try:
+        after_names = sorted(os.listdir(directory_descriptor), key=lambda item: os.fsencode(item))
+        after = os.fstat(directory_descriptor)
+    except OSError:
+        return False
+    return names == after_names and _stable_evidence_metadata(before, after)
+
+
+def _token_absent_from_evidence_root(
+    *, root: Path, excluded: set[tuple[str, ...]], token_bytes: bytes
+) -> bool:
+    """Bind and scan one explicit private evidence root as a directory capability."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(root, flags)
+    except OSError:
+        return False
+    try:
+        before = os.fstat(descriptor)
+        if not _private_evidence_metadata_valid(before, kind="directory"):
+            return False
+        if not _token_absent_from_evidence_directory(
+            directory_descriptor=descriptor,
+            relative_parts=(),
+            excluded=excluded,
+            token_bytes=token_bytes,
+        ):
+            return False
+        after = os.fstat(descriptor)
+        try:
+            rebound = os.stat(root, follow_symlinks=False)
+        except OSError:
+            return False
+        return (
+            _stable_evidence_metadata(before, after)
+            and stat.S_ISDIR(rebound.st_mode)
+            and (after.st_dev, after.st_ino) == (rebound.st_dev, rebound.st_ino)
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _token_absent_from_private_evidence(paths: PilotBootstrapPaths, token: str) -> dict[str, bool]:
+    """Measure governed bundle and log roots without traversing runtime/build trees."""
+
     token_bytes = token.encode("utf-8")
-    excluded = {
-        paths.token_file.resolve(),
-        paths.backup_path.resolve(),
-        (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve(),
+    roots = {
+        "bundle": (
+            (paths.backup_path.parent, {(paths.backup_path.name,)}),
+            (paths.xdg_data_home, set()),
+        ),
+        "logs": ((paths.xdg_state_home, set()),),
     }
-    for candidate in paths.pilot_root.rglob("*"):
-        if candidate.is_symlink():
-            return False
-        if not candidate.is_file() or candidate.resolve() in excluded:
-            continue
-        ledger = (paths.project_root / ".colameta/ledger/work-items.sqlite3").resolve()
-        exact_sidecars = {Path(f"{ledger}-wal"), Path(f"{ledger}-shm")}
-        if candidate.resolve() in exact_sidecars:
-            continue
-        if candidate.stat().st_size > 16 * 1024 * 1024:
-            return False
-        if token_bytes in candidate.read_bytes():
-            return False
-    return True
+    return {
+        category: all(
+            _token_absent_from_evidence_root(root=root, excluded=excluded, token_bytes=token_bytes)
+            for root, excluded in boundaries
+        )
+        for category, boundaries in roots.items()
+    }
 
 
 def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
@@ -254,9 +407,11 @@ def _measure_restricted_surface(conformance: dict[str, Any]) -> dict[str, Any]:
 
     names = PILOT_TOOLS
     evidence = conformance["surface"]
-    exact = len(names) == len(set(names)) and conformance["result"] == "PASS" and evidence[
-        "visible_tool_set_digest"
-    ] == canonical_sha256(list(names))
+    exact = (
+        len(names) == len(set(names))
+        and conformance["result"] == "PASS"
+        and evidence["visible_tool_set_digest"] == canonical_sha256(list(names))
+    )
     return {
         "exposure_profile": "authoritative_canary",
         "scope_mode": PILOT_SCOPE_MODE,
@@ -379,7 +534,9 @@ def bootstrap_fresh_pilot_ledger(
             for table in PILOT_ZERO_FACT_TABLES
         }
     if any(zero.values()):
-        raise WorkItemGovernanceError("PILOT_ZERO_FACT_BASELINE_FAILED", "Fresh Pilot Ledger contains domain or Lease facts.")
+        raise WorkItemGovernanceError(
+            "PILOT_ZERO_FACT_BASELINE_FAILED", "Fresh Pilot Ledger contains domain or Lease facts."
+        )
     backup = ledger.backup_to(value.backup_path)
     backup_sha256 = sha256_file(value.backup_path)
     backup_record = {
@@ -389,9 +546,7 @@ def bootstrap_fresh_pilot_ledger(
         "database_generation": backup["database_generation"],
         "schema_version": backup["schema_version"],
         "integrity_check": (
-            backup["integrity_check"][0]
-            if isinstance(backup["integrity_check"], list)
-            else backup["integrity_check"]
+            backup["integrity_check"][0] if isinstance(backup["integrity_check"], list) else backup["integrity_check"]
         ),
         "foreign_key_violations": backup["foreign_key_violations"],
         "mode": format(stat.S_IMODE(value.backup_path.stat().st_mode), "04o"),
@@ -414,6 +569,9 @@ def bootstrap_fresh_pilot_ledger(
         "source_binding": {
             **source_attestation.source_binding,
             "installed_inventory_sha256": source_attestation.file_manifest_digest,
+            "durable_artifact_evidence_digest": source_attestation.evidence_digest,
+            "durable_checkout_path_digest": source_attestation.public_evidence()["checkout_path_digest"],
+            "durable_wheel_path_digest": source_attestation.public_evidence()["wheel_path_digest"],
         },
         "source_artifact_evidence_digest": source_attestation.evidence_digest,
         "surface": {
@@ -449,13 +607,12 @@ def build_fresh_pilot_preflight_receipt(
     wheel_artifact: Path,
     principal_binding: dict[str, Any],
     project_path_manifests: dict[str, Any],
+    ledger_snapshot: PilotConformanceLedgerSnapshot,
 ) -> dict[str, Any]:
     """Measure and build a v4 Preflight; callers supply identities, never PASS flags."""
 
     value = validate_pilot_bootstrap_paths(paths)
-    if bootstrap_receipt.get("database_generation") != bootstrap_receipt.get("backup", {}).get(
-        "database_generation"
-    ):
+    if bootstrap_receipt.get("database_generation") != bootstrap_receipt.get("backup", {}).get("database_generation"):
         raise WorkItemGovernanceError(
             "PILOT_BACKUP_GENERATION_MISMATCH",
             "Fresh Pilot Preflight requires a generation-bound Backup.",
@@ -478,21 +635,25 @@ def build_fresh_pilot_preflight_receipt(
         authentication_conformance_receipt
     ):
         failures.append("authentication:authorization_receipt_digest")
-    actual_executable = str(Path(sys.executable).resolve())
-    actual_cwd = str(Path.cwd().resolve())
+    ledger_snapshot.require_bound_to(value.project_root)
     source_attestation = verify_runtime_source_artifacts(
         checkout_root=source_checkout,
         wheel_artifact=wheel_artifact,
     )
-    measured_context = {
-        "implementation_commit": source_attestation.source_binding["implementation_commit"],
-        "implementation_tree": source_attestation.source_binding["implementation_tree"],
-        "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
-        "installed_inventory_sha256": source_attestation.file_manifest_digest,
-        "python_executable": actual_executable,
-        "cwd": actual_cwd,
-    }
-    measured_context["runtime_binding_digest"] = canonical_sha256(measured_context)
+    source_public_evidence = source_attestation.public_evidence()
+    measured_context = build_pilot_execution_context(
+        source_binding={
+            "implementation_commit": source_attestation.source_binding["implementation_commit"],
+            "implementation_tree": source_attestation.source_binding["implementation_tree"],
+            "wheel_sha256": source_attestation.source_binding["wheel_sha256"],
+            "installed_inventory_sha256": source_attestation.file_manifest_digest,
+            "durable_artifact_evidence_digest": source_public_evidence["artifact_evidence_digest"],
+            "durable_checkout_path_digest": source_public_evidence["checkout_path_digest"],
+            "durable_wheel_path_digest": source_public_evidence["wheel_path_digest"],
+        },
+        python_executable=sys.executable,
+        cwd=Path.cwd(),
+    )
     if execution_context != measured_context:
         failures.append("execution_context:measured_runtime_artifacts")
     expected_environment = {
@@ -613,7 +774,8 @@ def build_fresh_pilot_preflight_receipt(
     }
     if project != measured_project:
         failures.append("project:measured_snapshot")
-    ledger = SQLiteWorkItemLedger(value.project_root, target_schema_version=7)
+    ledger_snapshot.require_bound_to(value.project_root)
+    ledger = SQLiteWorkItemLedger(ledger_snapshot.project_root, target_schema_version=7)
     if ledger.schema_version() != 7:
         failures.append("ledger:schema_version")
     if ledger.database_generation() != bootstrap_receipt["database_generation"]:
@@ -679,27 +841,26 @@ def build_fresh_pilot_preflight_receipt(
     }
     if ledger_metadata != expected_source_metadata:
         failures.append("ledger:token_or_source_artifact_binding")
-    private_evidence_clean = bool(token) and _token_absent_from_private_evidence(value, token)
-    if not private_evidence_clean:
+    private_evidence = (
+        _token_absent_from_private_evidence(value, token) if token else {"bundle": False, "logs": False}
+    )
+    if not all(private_evidence.values()):
         failures.append("authentication:token_in_private_evidence")
     conformance = authentication_conformance_receipt
-    if conformance["source_binding"] != {
-        field: execution_context[field]
-        for field in ("implementation_commit", "implementation_tree", "wheel_sha256", "installed_inventory_sha256")
-    }:
+    if conformance["source_binding"] != {field: execution_context[field] for field in PILOT_SOURCE_BINDING_FIELDS}:
         failures.append("authentication:source_binding")
     if conformance["surface"]["visible_tool_set_digest"] != canonical_sha256(list(PILOT_TOOLS)):
         failures.append("authentication:surface")
-    ledger_state = {
-        "path_digest": canonical_path_digest(ledger.path),
-        "schema_version": ledger.schema_version(),
-        "database_generation": ledger.database_generation(),
-        "zero_fact_baseline": actual_zero,
-        "integrity_check": integrity,
-        "foreign_key_violations": [tuple(row) for row in foreign_keys],
-        "token_evidence_digest": expected_token_evidence,
-        "source_artifact_evidence_digest": source_attestation.evidence_digest,
-    }
+    ledger_state = build_pilot_ledger_state(
+        path_digest=ledger_snapshot.source_ledger_path_digest,
+        schema_version=ledger.schema_version(),
+        database_generation=ledger.database_generation(),
+        zero_fact_baseline=actual_zero,
+        integrity_check=integrity,
+        foreign_key_violations=foreign_keys,
+        token_evidence_digest=expected_token_evidence,
+        source_artifact_evidence_digest=source_attestation.evidence_digest,
+    )
     expected_conformance_runtime = {
         "runtime_binding_digest": measured_context["runtime_binding_digest"],
         "scope_envelope_digest": bindings["scope_envelope_digest"],
@@ -756,10 +917,11 @@ def build_fresh_pilot_preflight_receipt(
             "Pilot Preflight refused caller claims that do not match fresh local measurements.",
             details={"failed_measurements": sorted(set(failures))},
         )
+    ledger_snapshot.require_bound_to(value.project_root)
     observed = utc_now()
-    decision_matches = canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings[
-        "authorization_digest"
-    ]
+    decision_matches = (
+        canonical_sha256(json.loads(decision.read_text(encoding="utf-8"))) == bindings["authorization_digest"]
+    )
     authentication = {
         "caller_auth_mode": "token",
         "principal_authenticated_by": "local_session",
@@ -770,8 +932,8 @@ def build_fresh_pilot_preflight_receipt(
         "token_ledger_binding_valid": ledger_metadata == expected_source_metadata,  # nosec B105
         "token_absent_from_cmdline": token_absent_from_cmdline,  # nosec B105
         "token_absent_from_environment": token_absent_from_environment,  # nosec B105
-        "token_absent_from_bundle": private_evidence_clean,  # nosec B105
-        "token_absent_from_logs": private_evidence_clean,  # nosec B105
+        "token_absent_from_bundle": private_evidence["bundle"],  # nosec B105
+        "token_absent_from_logs": private_evidence["logs"],  # nosec B105
         "authentication_conformance_receipt_digest": canonical_sha256(conformance),
         "principal_binding_digest": canonical_sha256(principal_binding),
     }

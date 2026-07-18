@@ -21,10 +21,15 @@ from runner.work_item_governance.activation import (
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot import (
     PILOT_SCOPE_MODE,
+    PILOT_SOURCE_BINDING_FIELDS,
     PILOT_TOOLS,
+    build_pilot_execution_context,
+    build_pilot_ledger_state,
     measure_pilot_durable_token_binding,
     require_pilot_preflight_conformance_baseline,
+    validate_pilot_durable_source_binding,
 )
+from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_governance.preview import isoformat_utc, utc_now
 from runner.work_item_governance.schema_loader import validate_governance_record
 
@@ -409,16 +414,38 @@ def build_pilot_authentication_conformance_receipt(
     token_file: str | os.PathLike[str],
     token_binding: dict[str, str],
     source_binding: dict[str, Any],
+    execution_context: dict[str, Any],
     runtime_binding: dict[str, Any],
     expected_safety_snapshot: dict[str, Any],
     project_root: str | os.PathLike[str],
     registry_path: str | os.PathLike[str],
     stable_promotion_root: str | os.PathLike[str],
     port: int,
+    ledger_snapshot: PilotConformanceLedgerSnapshot,
 ) -> dict[str, Any]:
     """Build a formal receipt only from the zero-fact preflight listener."""
 
     validate_authoritative_bearer_token(correct_token)
+    try:
+        expected_execution_context = build_pilot_execution_context(
+            source_binding={field: source_binding[field] for field in PILOT_SOURCE_BINDING_FIELDS},
+            python_executable=execution_context["python_executable"],
+            cwd=execution_context["cwd"],
+        )
+    except (KeyError, OSError, WorkItemGovernanceError) as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication conformance requires the canonical execution context.",
+        ) from exc
+    if (
+        execution_context != expected_execution_context
+        or runtime_binding.get("runtime_binding_digest")
+        != expected_execution_context["runtime_binding_digest"]
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication runtime binding differs from the canonical execution context.",
+        )
     auth_path = Path(token_file).expanduser().resolve()
     try:
         token_payload = json.loads(auth_path.read_text(encoding="utf-8"))
@@ -438,8 +465,9 @@ def build_pilot_authentication_conformance_receipt(
         AUTHORITATIVE_TOKEN_FILE_SHA256_META_KEY,
         AUTHORITATIVE_TOKEN_EVIDENCE_DIGEST_META_KEY,
     }
+    ledger_snapshot.require_bound_to(project_root)
     try:
-        durable_binding = measure_pilot_durable_token_binding(project_root)
+        durable_binding = measure_pilot_durable_token_binding(ledger_snapshot.project_root)
     except WorkItemGovernanceError:
         raise
     except Exception as exc:
@@ -465,13 +493,50 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
             "Pilot Token file, live Token and Ledger binding do not match.",
         )
+    try:
+        validate_pilot_durable_source_binding(
+            ledger_snapshot.project_root,
+            expected_source_binding=source_binding,
+        )
+    except WorkItemGovernanceError:
+        raise
+    except Exception as exc:
+        raise WorkItemGovernanceError(
+            "PILOT_DURABLE_SOURCE_BINDING_INVALID",
+            "Pilot source binding could not be reproduced from the exact durable Ledger.",
+        ) from exc
+    baseline = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+    ledger_state = build_pilot_ledger_state(
+        path_digest=ledger_snapshot.source_ledger_path_digest,
+        schema_version=baseline["schema_version"],
+        database_generation=baseline["database_generation"],
+        zero_fact_baseline=baseline["zero_fact_baseline"],
+        integrity_check=baseline["integrity_check"],
+        foreign_key_violations=baseline["foreign_key_violations"],
+        token_evidence_digest=token_evidence_digest,
+        source_artifact_evidence_digest=source_binding["durable_artifact_evidence_digest"],
+    )
+    if (
+        set(runtime_binding)
+        != {
+            "runtime_binding_digest",
+            "scope_envelope_digest",
+            "ledger_state_digest",
+            "token_file_path_digest",
+        }
+        or runtime_binding["ledger_state_digest"] != canonical_sha256(ledger_state)
+    ):
+        raise WorkItemGovernanceError(
+            "PILOT_AUTHENTICATION_CONFORMANCE_INVALID",
+            "Pilot authentication Ledger binding differs from the canonical governed-snapshot measurement.",
+        )
     snapshot_method = getattr(server, "_pilot_http_conformance_snapshot", None)
     if not callable(snapshot_method):
         raise WorkItemGovernanceError(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
             "Pilot conformance requires the actual active ColaMeta MCP listener.",
         )
-    require_pilot_preflight_conformance_baseline(project_root)
+    require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
     try:
         listener_before = snapshot_method()
     except Exception as exc:
@@ -487,6 +552,8 @@ def build_pilot_authentication_conformance_receipt(
         or listener_before.get("token_file_sha256") != token_file_sha256
         or listener_before.get("token_evidence_digest") != token_evidence_digest
         or listener_before.get("preflight_conformance_only") is not True
+        or listener_before.get("ledger_snapshot_binding_digest")
+        != ledger_snapshot.binding_digest
     ):
         raise WorkItemGovernanceError(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
@@ -499,7 +566,8 @@ def build_pilot_authentication_conformance_receipt(
             "PILOT_TRANSPORT_CONFORMANCE_INVALID",
             "Pilot Preflight requires the exact read-only conformance listener mode.",
         )
-    require_pilot_preflight_conformance_baseline(project_root)
+    require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+    ledger_snapshot.require_bound_to(project_root)
     proof_deltas = {
         key: int(listener_after[key]) - int(listener_before[key])
         for key in ("issued_count", "activated_count", "retired_count")
@@ -516,6 +584,8 @@ def build_pilot_authentication_conformance_receipt(
         or http["surface"]["server_binding_digest"] != listener_before["server_binding_digest"]
         or listener_before["listener_instance_nonce"] != listener_after["listener_instance_nonce"]
         or listener_before["server_binding_digest"] != listener_after["server_binding_digest"]
+        or listener_after.get("ledger_snapshot_binding_digest")
+        != ledger_snapshot.binding_digest
         or not request_capability_single_use
     ):
         raise WorkItemGovernanceError(

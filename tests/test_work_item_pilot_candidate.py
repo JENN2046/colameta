@@ -7,11 +7,16 @@ from pathlib import Path
 import pytest
 
 import runner.work_item_governance.pilot_candidate as candidate_module
+import runner.work_item_governance.pilot as pilot_module
+import runner.work_item_governance.pilot_authorization as authorization_module
 from runner.work_item_governance.activation import canonical_path_digest
 from runner.work_item_governance.canonical import canonical_sha256
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.pilot_authorization import (
     PilotAuthorizationDecisionConsumer,
+)
+from runner.work_item_governance.pilot import (
+    validate_pilot_conformance_authorization_source,
 )
 from runner.work_item_governance.pilot_candidate import (
     PilotCandidatePaths,
@@ -25,6 +30,52 @@ from runner.work_item_governance.pilot_candidate import (
 
 SHA = "a" * 64
 CONFORMANCE_SHA = "9" * 64
+SOURCE_BINDING = {
+    "implementation_commit": "1" * 40,
+    "implementation_tree": "2" * 40,
+    "wheel_sha256": "3" * 64,
+    "installed_inventory_sha256": "4" * 64,
+    "durable_artifact_evidence_digest": "5" * 64,
+    "durable_checkout_path_digest": "6" * 64,
+    "durable_wheel_path_digest": "7" * 64,
+}
+SOURCE_ATTESTATION = {
+    "schema_version": "work_item_runtime_source_attestation.v1",
+    "source_binding": {
+        "core_baseline_commit": pilot_module.CORE_BASELINE_COMMIT,
+        "implementation_commit": SOURCE_BINDING["implementation_commit"],
+        "implementation_tree": SOURCE_BINDING["implementation_tree"],
+        "wheel_sha256": SOURCE_BINDING["wheel_sha256"],
+    },
+    "file_manifest_digest": SOURCE_BINDING["installed_inventory_sha256"],
+    "artifact_evidence_digest": SOURCE_BINDING["durable_artifact_evidence_digest"],
+    "checkout_path_digest": SOURCE_BINDING["durable_checkout_path_digest"],
+    "wheel_path_digest": SOURCE_BINDING["durable_wheel_path_digest"],
+    "baseline_object_present": True,
+    "baseline_is_ancestor": True,
+    "loaded_modules_required_under_checkout": True,
+    "verified": True,
+}
+SOURCE_ATTESTATION_BYTES = (
+    json.dumps(SOURCE_ATTESTATION, sort_keys=True, separators=(",", ":")) + "\n"
+).encode()
+
+
+def _candidate_manifest_bytes(
+    *,
+    source_binding: dict[str, str] = SOURCE_BINDING,
+    source_attestation_bytes: bytes = SOURCE_ATTESTATION_BYTES,
+) -> bytes:
+    manifest = {
+        "exact_source": dict(source_binding),
+        "files": [
+            {
+                "path": "SOURCE_ARTIFACT_ATTESTATION.json",
+                "sha256": hashlib.sha256(source_attestation_bytes).hexdigest(),
+            }
+        ],
+    }
+    return (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 def _records(tmp_path: Path) -> tuple[dict[str, object], ...]:
@@ -55,6 +106,15 @@ def _records(tmp_path: Path) -> tuple[dict[str, object], ...]:
         },
     }
     scope = {
+        "source_binding": {
+            "implementation_commit": "stale",
+            "implementation_tree": "stale",
+            "wheel_sha256": SHA,
+            "installed_inventory_sha256": SHA,
+            "durable_artifact_evidence_digest": SHA,
+            "durable_checkout_path_digest": SHA,
+            "durable_wheel_path_digest": SHA,
+        },
         "target_project": {
             "project_id": "project-id",
             "project_root": "/stale",
@@ -84,16 +144,27 @@ def _records(tmp_path: Path) -> tuple[dict[str, object], ...]:
         "principal": {},
         "target": {},
         "window": {},
+        "source": {
+            "implementation_commit": "stale",
+            "implementation_tree": "stale",
+            "wheel_sha256": SHA,
+            "installed_inventory_sha256": SHA,
+            "durable_artifact_evidence_digest": SHA,
+            "durable_checkout_path_digest": SHA,
+            "durable_wheel_path_digest": SHA,
+        },
     }
     derived = derive_pilot_candidate_records(
         principal_binding=principal,
         execution_authorization_receipt=execution,
         scope_envelope=scope,
         pilot_authorization=authorization,
+        source_artifact_attestation_bytes=SOURCE_ATTESTATION_BYTES,
+        durable_source_binding=SOURCE_BINDING,
+        candidate_manifest_bytes=_candidate_manifest_bytes(),
         paths=paths,
         issued_at="2026-07-16T00:00:00Z",
         expires_at="2026-07-16T04:00:00Z",
-        candidate_manifest_sha256="1" * 64,
         file_list_root_sha256="2" * 64,
         authentication_conformance_receipt_digest=CONFORMANCE_SHA,
     )
@@ -108,9 +179,7 @@ def test_candidate_paths_use_production_canonical_path_digest(tmp_path: Path) ->
     digests = paths.path_digests()
     assert digests["pilot_root_path_digest"] == canonical_path_digest(paths.pilot_root)
     assert digests["project_root_path_digest"] == canonical_path_digest(paths.project_root)
-    assert digests["project_root_path_digest"] != hashlib.sha256(
-        str(paths.project_root).encode()
-    ).hexdigest()
+    assert digests["project_root_path_digest"] != hashlib.sha256(str(paths.project_root).encode()).hexdigest()
 
 
 def test_generator_recomputes_all_mutable_cross_bindings(tmp_path: Path) -> None:
@@ -123,22 +192,171 @@ def test_generator_recomputes_all_mutable_cross_bindings(tmp_path: Path) -> None
     scope_digest = canonical_sha256(scope)
 
     assert scope["target_project"]["project_root"] == str(paths.project_root)
-    assert scope["target_project"]["project_root_path_digest"] == canonical_path_digest(
-        paths.project_root
-    )
-    assert scope["pilot_isolation"]["pilot_root_path_digest"] == canonical_path_digest(
-        paths.pilot_root
-    )
+    assert scope["target_project"]["project_root_path_digest"] == canonical_path_digest(paths.project_root)
+    assert scope["pilot_isolation"]["pilot_root_path_digest"] == canonical_path_digest(paths.pilot_root)
     assert scope["work_item_scope"]["objective_digest"] == objective_digest
     assert execution["scope"]["attempt_slots"][0]["objective_digest"] == objective_digest
     assert scope["execution_scope"]["authorization_receipt_digest"] == execution_digest
     assert authorization["bindings"]["execution_authorization_receipt_digest"] == execution_digest
-    assert (
-        authorization["bindings"]["authentication_conformance_receipt_digest"]
-        == CONFORMANCE_SHA
-    )
+    assert authorization["bindings"]["authentication_conformance_receipt_digest"] == CONFORMANCE_SHA
     assert authorization["bindings"]["authorized_scope_digest"] == scope_digest
     assert authorization["bindings"]["scope_envelope_sha256"] == scope_digest
+    assert {field: scope["source_binding"][field] for field in SOURCE_BINDING} == SOURCE_BINDING
+    assert authorization["source"] == SOURCE_BINDING
+
+
+def test_generator_requires_one_authoritative_source_attestation(tmp_path: Path) -> None:
+    principal, execution, scope, authorization, paths, _ = _records(tmp_path)
+    with pytest.raises(WorkItemGovernanceError) as error:
+        derive_pilot_candidate_records(
+            principal_binding=principal,
+            execution_authorization_receipt=execution,
+            scope_envelope=scope,
+            pilot_authorization=authorization,
+            source_artifact_attestation_bytes=(
+                json.dumps({**SOURCE_ATTESTATION, "wheel_path_digest": ""}) + "\n"
+            ).encode(),
+            durable_source_binding=SOURCE_BINDING,
+            candidate_manifest_bytes=_candidate_manifest_bytes(),
+            paths=paths,
+            issued_at="2026-07-16T00:00:00Z",
+            expires_at="2026-07-16T04:00:00Z",
+            file_list_root_sha256="2" * 64,
+            authentication_conformance_receipt_digest=CONFORMANCE_SHA,
+        )
+    assert error.value.code == "PILOT_CANDIDATE_SOURCE_ATTESTATION_INVALID"
+
+
+def test_generator_rejects_copied_wheel_attestation_identity(tmp_path: Path) -> None:
+    principal, execution, scope, authorization, paths, _ = _records(tmp_path)
+    copied_wheel_attestation = {
+        **SOURCE_ATTESTATION,
+        "wheel_path_digest": "8" * 64,
+    }
+    copied_wheel_attestation_bytes = (
+        json.dumps(copied_wheel_attestation, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode()
+    with pytest.raises(WorkItemGovernanceError) as error:
+        derive_pilot_candidate_records(
+            principal_binding=principal,
+            execution_authorization_receipt=execution,
+            scope_envelope=scope,
+            pilot_authorization=authorization,
+            source_artifact_attestation_bytes=copied_wheel_attestation_bytes,
+            durable_source_binding=SOURCE_BINDING,
+            candidate_manifest_bytes=_candidate_manifest_bytes(
+                source_attestation_bytes=copied_wheel_attestation_bytes
+            ),
+            paths=paths,
+            issued_at="2026-07-16T00:00:00Z",
+            expires_at="2026-07-16T04:00:00Z",
+            file_list_root_sha256="2" * 64,
+            authentication_conformance_receipt_digest=CONFORMANCE_SHA,
+        )
+    assert error.value.code == "PILOT_CANDIDATE_SOURCE_ATTESTATION_MISMATCH"
+    assert error.value.details == {"failed_bindings": ["durable_wheel_path_digest"]}
+
+
+def test_conformance_source_must_match_authorization_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, _, records = _records(tmp_path)
+    authorization = records["PILOT_AUTHORIZATION_TEMPLATE.json"]
+    scope = records["scope-envelope.json"]
+    receipt = {"source_binding": dict(SOURCE_BINDING)}
+    authorization["bindings"]["authentication_conformance_receipt_digest"] = canonical_sha256(receipt)
+    monkeypatch.setattr(pilot_module, "validate_governance_record", lambda *args: None)
+
+    validate_pilot_conformance_authorization_source(
+        authorization,
+        scope_envelope=scope,
+        authentication_conformance_receipt=receipt,
+    )
+    receipt["source_binding"]["implementation_commit"] = "5" * 40
+    with pytest.raises(WorkItemGovernanceError) as error:
+        validate_pilot_conformance_authorization_source(
+            authorization,
+            scope_envelope=scope,
+            authentication_conformance_receipt=receipt,
+        )
+    assert error.value.code == "PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH"
+    assert error.value.details["failed_bindings"] == [
+        "conformance_receipt_digest",
+        "conformance_to_authorization:implementation_commit",
+        "conformance_to_scope:implementation_commit",
+    ]
+
+
+def test_conformance_rejects_different_durable_wheel_path_with_same_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, _, records = _records(tmp_path)
+    authorization = records["PILOT_AUTHORIZATION_TEMPLATE.json"]
+    scope = records["scope-envelope.json"]
+    receipt = {"source_binding": dict(SOURCE_BINDING)}
+    receipt["source_binding"]["durable_wheel_path_digest"] = "8" * 64
+    authorization["bindings"]["authentication_conformance_receipt_digest"] = canonical_sha256(receipt)
+    monkeypatch.setattr(pilot_module, "validate_governance_record", lambda *args: None)
+
+    with pytest.raises(WorkItemGovernanceError) as error:
+        validate_pilot_conformance_authorization_source(
+            authorization,
+            scope_envelope=scope,
+            authentication_conformance_receipt=receipt,
+        )
+    assert error.value.code == "PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH"
+    assert error.value.details["failed_bindings"] == [
+        "conformance_to_authorization:durable_wheel_path_digest",
+        "conformance_to_scope:durable_wheel_path_digest",
+    ]
+
+
+def test_authorization_consumer_cross_checks_conformance_source_before_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, _, records = _records(tmp_path)
+    for name in (
+        "validate_execution_authorization_receipt",
+        "validate_pilot_scope_envelope",
+        "validate_pilot_authorization",
+    ):
+        monkeypatch.setattr(candidate_module, name, lambda *args, **kwargs: None)
+    candidate_dir = tmp_path / "candidate"
+    write_validated_pilot_candidate_records(candidate_dir, records)
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(records["PILOT_AUTHORIZATION_TEMPLATE.json"]), encoding="utf-8")
+    decision_path.chmod(0o600)
+
+    def reject_source(*args: object, **kwargs: object) -> None:
+        raise WorkItemGovernanceError("PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH", "rejected")
+
+    monkeypatch.setattr(
+        authorization_module,
+        "validate_pilot_conformance_authorization_source",
+        reject_source,
+    )
+    consumer = PilotAuthorizationDecisionConsumer(
+        candidate_dir=candidate_dir,
+        decision_path=decision_path,
+        tombstone_path=tmp_path / "decision.tombstone.json",
+        ledger=object(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(WorkItemGovernanceError) as error:
+        consumer.consume(
+            scope_envelope=records["scope-envelope.json"],
+            execution_authorization_receipt=records["execution-authorization-receipt.json"],
+            preflight_receipt={},
+            authentication_conformance_receipt={},
+            preflight_semantic_validation_receipt={},
+            expected_authorization_digest=canonical_sha256(records["PILOT_AUTHORIZATION_TEMPLATE.json"]),
+        )
+    assert error.value.code == "PILOT_AUTHENTICATION_SOURCE_BINDING_MISMATCH"
+    assert decision_path.is_file()
+    assert not consumer.tombstone_path.exists()
 
 
 def test_final_byte_validator_checks_exact_serialized_records(
@@ -354,15 +572,11 @@ def test_unvalidated_candidate_cannot_enter_authorization_or_consumption(
     with pytest.raises(WorkItemGovernanceError) as consumption_error:
         consumer.consume(
             scope_envelope=records["scope-envelope.json"],
-            execution_authorization_receipt=records[
-                "execution-authorization-receipt.json"
-            ],
+            execution_authorization_receipt=records["execution-authorization-receipt.json"],
             preflight_receipt={},
             authentication_conformance_receipt={},
             preflight_semantic_validation_receipt={},
-            expected_authorization_digest=canonical_sha256(
-                records["PILOT_AUTHORIZATION_TEMPLATE.json"]
-            ),
+            expected_authorization_digest=canonical_sha256(records["PILOT_AUTHORIZATION_TEMPLATE.json"]),
         )
     assert consumption_error.value.code == expected_code
     assert decision_path.is_file()
@@ -395,9 +609,7 @@ def test_validated_candidate_must_match_every_authorization_input(
     candidate_dir = tmp_path / "candidate"
     write_validated_pilot_candidate_records(candidate_dir, records)
     scope = json.loads(json.dumps(records["scope-envelope.json"]))
-    execution = json.loads(
-        json.dumps(records["execution-authorization-receipt.json"])
-    )
+    execution = json.loads(json.dumps(records["execution-authorization-receipt.json"]))
     decision = json.loads(json.dumps(records["PILOT_AUTHORIZATION_TEMPLATE.json"]))
     if mismatch == "scope":
         scope["target_project"]["project_id"] = "different-project"
@@ -422,9 +634,7 @@ def test_validated_candidate_must_match_every_authorization_input(
             preflight_receipt={},
             authentication_conformance_receipt={},
             preflight_semantic_validation_receipt={},
-            expected_authorization_digest=canonical_sha256(
-                records["PILOT_AUTHORIZATION_TEMPLATE.json"]
-            ),
+            expected_authorization_digest=canonical_sha256(records["PILOT_AUTHORIZATION_TEMPLATE.json"]),
         )
     assert error.value.code == "PILOT_AUTHORIZATION_CANDIDATE_MISMATCH"
     assert decision_path.exists()
@@ -454,9 +664,7 @@ def test_authorization_paths_reject_decision_and_tombstone_symlinks(
     candidate_dir = tmp_path / "candidate"
     write_validated_pilot_candidate_records(candidate_dir, records)
     decision_target = tmp_path / "decision-target.json"
-    decision_target.write_text(
-        json.dumps(records["PILOT_AUTHORIZATION_TEMPLATE.json"]), encoding="utf-8"
-    )
+    decision_target.write_text(json.dumps(records["PILOT_AUTHORIZATION_TEMPLATE.json"]), encoding="utf-8")
     decision_target.chmod(0o600)
     decision_link = tmp_path / "decision.json"
     decision_link.symlink_to(decision_target)
@@ -470,15 +678,11 @@ def test_authorization_paths_reject_decision_and_tombstone_symlinks(
     with pytest.raises(WorkItemGovernanceError) as decision_error:
         consumer.consume(
             scope_envelope=records["scope-envelope.json"],
-            execution_authorization_receipt=records[
-                "execution-authorization-receipt.json"
-            ],
+            execution_authorization_receipt=records["execution-authorization-receipt.json"],
             preflight_receipt={},
             authentication_conformance_receipt={},
             preflight_semantic_validation_receipt={},
-            expected_authorization_digest=canonical_sha256(
-                records["PILOT_AUTHORIZATION_TEMPLATE.json"]
-            ),
+            expected_authorization_digest=canonical_sha256(records["PILOT_AUTHORIZATION_TEMPLATE.json"]),
         )
     assert decision_error.value.code == "PILOT_AUTHORIZATION_FILE_UNTRUSTED"
     assert decision_link.is_symlink()
@@ -487,23 +691,22 @@ def test_authorization_paths_reject_decision_and_tombstone_symlinks(
 
     decision_link.unlink()
     authorization = records["PILOT_AUTHORIZATION_TEMPLATE.json"]
-    duplicate_decision = "{" + ",".join(
-        [
-            '"bindings":{}',
-            *(
-                json.dumps(key) + ":" + json.dumps(value)
-                for key, value in authorization.items()
-            ),
-        ]
-    ) + "}"
+    duplicate_decision = (
+        "{"
+        + ",".join(
+            [
+                '"bindings":{}',
+                *(json.dumps(key) + ":" + json.dumps(value) for key, value in authorization.items()),
+            ]
+        )
+        + "}"
+    )
     decision_link.write_text(duplicate_decision, encoding="utf-8")
     decision_link.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as duplicate_error:
         consumer.consume(
             scope_envelope=records["scope-envelope.json"],
-            execution_authorization_receipt=records[
-                "execution-authorization-receipt.json"
-            ],
+            execution_authorization_receipt=records["execution-authorization-receipt.json"],
             preflight_receipt={},
             authentication_conformance_receipt={},
             preflight_semantic_validation_receipt={},
@@ -511,9 +714,7 @@ def test_authorization_paths_reject_decision_and_tombstone_symlinks(
         )
     assert duplicate_error.value.code == "PILOT_AUTHORIZATION_FILE_INVALID"
 
-    decision_link.write_text(
-        json.dumps(authorization), encoding="utf-8"
-    )
+    decision_link.write_text(json.dumps(authorization), encoding="utf-8")
     decision_link.chmod(0o600)
     tombstone_target = tmp_path / "tombstone-target.json"
     tombstone_target.write_text("sentinel", encoding="utf-8")
@@ -521,15 +722,11 @@ def test_authorization_paths_reject_decision_and_tombstone_symlinks(
     with pytest.raises(WorkItemGovernanceError) as tombstone_error:
         consumer.consume(
             scope_envelope=records["scope-envelope.json"],
-            execution_authorization_receipt=records[
-                "execution-authorization-receipt.json"
-            ],
+            execution_authorization_receipt=records["execution-authorization-receipt.json"],
             preflight_receipt={},
             authentication_conformance_receipt={},
             preflight_semantic_validation_receipt={},
-            expected_authorization_digest=canonical_sha256(
-                records["PILOT_AUTHORIZATION_TEMPLATE.json"]
-            ),
+            expected_authorization_digest=canonical_sha256(records["PILOT_AUTHORIZATION_TEMPLATE.json"]),
         )
     assert tombstone_error.value.code == "PILOT_AUTHORIZATION_PATH_INVALID"
     assert decision_link.is_file()

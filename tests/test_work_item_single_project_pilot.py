@@ -10,7 +10,9 @@ import sys
 import threading
 import time
 import urllib.request
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +20,8 @@ import pytest
 
 import runner.work_item_governance.pilot_candidate as candidate_module
 import runner.work_item_governance.pilot_bootstrap as bootstrap_module
+import runner.work_item_governance.pilot as pilot_module
+import runner.mcp_server as mcp_server_module
 
 from runner.mcp_server import (
     AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
@@ -45,10 +49,13 @@ from runner.work_item_governance.pilot import (
     PilotActivationControlPlane,
     PilotActivationGuard,
     build_pilot_semantic_validation_receipt,
+    build_pilot_execution_context,
+    build_pilot_ledger_state,
     canonical_path_digest,
     verify_pilot_frozen_contract_resources,
     initial_execution_slot_usage,
     require_pilot_preflight_conformance_baseline,
+    validate_pilot_durable_source_binding,
     validate_execution_authorization_receipt,
     verify_pilot_event_chain,
 )
@@ -59,6 +66,9 @@ from runner.work_item_governance.pilot_bootstrap import (
 )
 from runner.work_item_governance.pilot_candidate import (
     write_validated_pilot_candidate_records,
+)
+from runner.work_item_governance.pilot_snapshot import (
+    governed_pilot_conformance_ledger_snapshot,
 )
 from runner.work_item_governance.pilot_authorization import (
     ConsumedPilotAuthorization,
@@ -109,12 +119,285 @@ DESCRIPTIVE_NEGATIVE_CATEGORIES = frozenset(
 )
 
 
+def test_execution_context_distinguishes_venv_launcher_from_resolved_interpreter(tmp_path: Path) -> None:
+    interpreter_target = Path(sys.executable).resolve()
+    interpreter_link = tmp_path / "runtime/bin/python"
+    interpreter_link.parent.mkdir(parents=True)
+    interpreter_link.symlink_to(interpreter_target)
+    working_directory = tmp_path / "target"
+    working_directory.mkdir()
+    working_directory_link = tmp_path / "target-link"
+    working_directory_link.symlink_to(working_directory, target_is_directory=True)
+    source_binding = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": "3" * 64,
+        "installed_inventory_sha256": "4" * 64,
+        "durable_artifact_evidence_digest": "5" * 64,
+        "durable_checkout_path_digest": "6" * 64,
+        "durable_wheel_path_digest": "7" * 64,
+    }
+
+    linked_context = build_pilot_execution_context(
+        source_binding=source_binding,
+        python_executable=interpreter_link,
+        cwd=working_directory_link,
+    )
+    resolved_context = build_pilot_execution_context(
+        source_binding=source_binding,
+        python_executable=interpreter_target,
+        cwd=working_directory,
+    )
+
+    assert linked_context["python_executable"] == interpreter_link.as_posix()
+    assert resolved_context["python_executable"] == interpreter_target.as_posix()
+    assert linked_context["cwd"] == working_directory_link.as_posix()
+    assert resolved_context["cwd"] == working_directory.as_posix()
+    assert linked_context["runtime_binding_digest"] != resolved_context["runtime_binding_digest"]
+
+
+def test_durable_source_binding_reproduces_candidate_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": "3" * 64,
+        "installed_inventory_sha256": "4" * 64,
+        "durable_artifact_evidence_digest": "5" * 64,
+        "durable_checkout_path_digest": "6" * 64,
+        "durable_wheel_path_digest": "7" * 64,
+    }
+
+    class Attestation:
+        source_binding = {
+            "core_baseline_commit": pilot_module.CORE_BASELINE_COMMIT,
+            "implementation_commit": expected["implementation_commit"],
+            "implementation_tree": expected["implementation_tree"],
+            "wheel_sha256": expected["wheel_sha256"],
+        }
+        file_manifest_digest = expected["installed_inventory_sha256"]
+
+        @staticmethod
+        def public_evidence() -> dict[str, str]:
+            return {
+                "artifact_evidence_digest": expected["durable_artifact_evidence_digest"],
+                "checkout_path_digest": expected["durable_checkout_path_digest"],
+                "wheel_path_digest": expected["durable_wheel_path_digest"],
+            }
+
+    observed: list[dict[str, str]] = []
+
+    def reverify(_ledger: object, *, expected_source_binding: dict[str, str]) -> Attestation:
+        observed.append(dict(expected_source_binding))
+        return Attestation()
+
+    monkeypatch.setattr(pilot_module, "reverify_runtime_source_binding", reverify)
+    assert (
+        validate_pilot_durable_source_binding(
+            tmp_path,
+            expected_source_binding=expected,
+        )
+        == expected
+    )
+    assert observed == [
+        {
+            "core_baseline_commit": pilot_module.CORE_BASELINE_COMMIT,
+            "implementation_commit": expected["implementation_commit"],
+            "implementation_tree": expected["implementation_tree"],
+            "wheel_sha256": expected["wheel_sha256"],
+        }
+    ]
+
+    Attestation.file_manifest_digest = "5" * 64
+    with pytest.raises(WorkItemGovernanceError) as mismatch:
+        validate_pilot_durable_source_binding(
+            tmp_path,
+            expected_source_binding=expected,
+        )
+    assert mismatch.value.code == "PILOT_DURABLE_SOURCE_BINDING_MISMATCH"
+    assert mismatch.value.details == {"failed_bindings": ["installed_inventory_sha256"]}
+
+    Attestation.file_manifest_digest = expected["installed_inventory_sha256"]
+    original_public_evidence = Attestation.public_evidence
+    Attestation.public_evidence = staticmethod(
+        lambda: {
+            **original_public_evidence(),
+            "wheel_path_digest": "8" * 64,
+        }
+    )
+    with pytest.raises(WorkItemGovernanceError) as path_mismatch:
+        validate_pilot_durable_source_binding(
+            tmp_path,
+            expected_source_binding=expected,
+        )
+    assert path_mismatch.value.code == "PILOT_DURABLE_SOURCE_BINDING_MISMATCH"
+    assert path_mismatch.value.details == {"failed_bindings": ["durable_wheel_path_digest"]}
+
+
 def _v7_ledger(root: Path) -> SQLiteWorkItemLedger:
     legacy = SQLiteWorkItemLedger(root)
     legacy.initialize()
     legacy.migrate_to_v6()
     SQLiteWorkItemLedger(root, target_schema_version=6).migrate_to_v7()
     return SQLiteWorkItemLedger(root, target_schema_version=7)
+
+
+def _ledger_physical_state(project: Path) -> list[dict[str, object]]:
+    ledger_dir = project / ".colameta/ledger"
+    directory = ledger_dir.stat()
+    state: list[dict[str, object]] = [
+        {
+            "name": ".",
+            "mode": directory.st_mode,
+            "size": directory.st_size,
+            "mtime_ns": directory.st_mtime_ns,
+            "ctime_ns": directory.st_ctime_ns,
+        }
+    ]
+    for path in sorted(ledger_dir.iterdir(), key=lambda value: value.name):
+        measured = path.stat()
+        state.append(
+            {
+                "name": path.name,
+                "mode": measured.st_mode,
+                "size": measured.st_size,
+                "mtime_ns": measured.st_mtime_ns,
+                "ctime_ns": measured.st_ctime_ns,
+                "sha256": sha256_file(path),
+            }
+        )
+    return state
+
+
+@contextmanager
+def _running_preflight_listener(
+    *,
+    server: MCPPlanningBridgeServer,
+    project: Path,
+    snapshot_parent: Path,
+    token: str,
+    token_file_sha256: str,
+    token_evidence_digest: str,
+    timeout_seconds: float = 10,
+):
+    snapshot_parent.mkdir(mode=0o700)
+    source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=snapshot_parent,
+    ) as ledger_snapshot:
+        listener_errors: list[BaseException] = []
+
+        def serve() -> None:
+            try:
+                server.serve_http(
+                    host="127.0.0.1",
+                    port=0,
+                    auth_token=token,
+                    auth_token_source=AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+                    auth_token_file_sha256=token_file_sha256,
+                    auth_token_evidence_digest=token_evidence_digest,
+                    auth_mode="token",
+                    preflight_conformance=True,
+                    preflight_conformance_timeout_seconds=timeout_seconds,
+                    preflight_conformance_ledger_snapshot=ledger_snapshot,
+                )
+            except BaseException as exc:
+                listener_errors.append(exc)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while getattr(server, "_httpd", None) is None or not callable(server._token_transport_proof_validator):
+                if listener_errors:
+                    raise listener_errors[0]
+                if not thread.is_alive() or time.monotonic() >= deadline:
+                    raise AssertionError("actual Pilot MCP listener failed to start")
+                time.sleep(0.01)
+            port = int(server._httpd.server_address[1])
+            yield ledger_snapshot, f"http://127.0.0.1:{port}", port
+        finally:
+            if getattr(server, "_httpd", None) is not None:
+                server._httpd.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert not listener_errors
+    assert _ledger_physical_state(project) == source_before
+
+
+def test_governed_conformance_snapshot_keeps_os_readonly_source_physically_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    _v7_ledger(project)
+    ledger_dir = project / ".colameta/ledger"
+    for path in ledger_dir.iterdir():
+        path.chmod(0o400)
+    ledger_dir.chmod(0o500)
+    source_before = _ledger_physical_state(project)
+    snapshot_parent = tmp_path / "snapshots"
+    snapshot_parent.mkdir(mode=0o700)
+    import runner.work_item_governance.repository as repository_module
+
+    real_connect = repository_module.sqlite3.connect
+    sqlite_targets: list[str] = []
+
+    def traced_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        sqlite_targets.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(repository_module.sqlite3, "connect", traced_connect)
+    try:
+        with governed_pilot_conformance_ledger_snapshot(
+            project,
+            snapshot_parent=snapshot_parent,
+        ) as snapshot:
+            snapshot.require_bound_to(project)
+            evidence = snapshot.public_evidence()
+            assert evidence["source_sqlite_opened"] is False
+            assert evidence["copy_method"] == ("exclusive-maintenance-lock+O_RDONLY+O_NOFOLLOW+byte-copy")
+            baseline = require_pilot_preflight_conformance_baseline(snapshot.project_root)
+            assert not any(baseline["zero_fact_baseline"].values())
+            assert _ledger_physical_state(project) == source_before
+        assert _ledger_physical_state(project) == source_before
+        assert list(snapshot_parent.iterdir()) == []
+        assert sqlite_targets
+        source_ledger = str(project / ".colameta/ledger/work-items.sqlite3")
+        assert all(source_ledger not in target for target in sqlite_targets)
+    finally:
+        ledger_dir.chmod(0o700)
+        for path in ledger_dir.iterdir():
+            path.chmod(0o600)
+
+
+def test_governed_conformance_snapshot_rejects_snapshot_byte_tampering(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "pilot-project"
+    project.mkdir()
+    _v7_ledger(project)
+    source_before = _ledger_physical_state(project)
+    snapshot_parent = tmp_path / "snapshots"
+    snapshot_parent.mkdir(mode=0o700)
+    with pytest.raises(WorkItemGovernanceError) as tamper_error:
+        with governed_pilot_conformance_ledger_snapshot(
+            project,
+            snapshot_parent=snapshot_parent,
+        ) as snapshot:
+            snapshot_main = snapshot.project_root / ".colameta/ledger/work-items.sqlite3"
+            with snapshot_main.open("r+b") as stream:
+                stream.seek(100)
+                original = stream.read(1)
+                stream.seek(100)
+                stream.write(bytes([original[0] ^ 1]))
+    assert tamper_error.value.code == "PILOT_CONFORMANCE_SNAPSHOT_CHANGED"
+    assert _ledger_physical_state(project) == source_before
+    assert list(snapshot_parent.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -230,7 +513,9 @@ def _consumed_authority(
         },
         "execution_scope": {
             "attempt_slot_schema_sha256": lease["scope_binding"]["execution_attempt_slot_schema_sha256"],
-            "authorization_receipt_schema_sha256": lease["scope_binding"]["execution_authorization_receipt_schema_sha256"],
+            "authorization_receipt_schema_sha256": lease["scope_binding"][
+                "execution_authorization_receipt_schema_sha256"
+            ],
             "authorization_receipt_digest": lease["scope_binding"]["execution_authorization_receipt_digest"],
         },
         "artifact_policy": artifact_policy,
@@ -245,12 +530,21 @@ def _consumed_authority(
         "valid_until": lease["runtime_binding"]["preflight_valid_until"],
         "isolation": {"pilot_root": str(root.resolve()), "token_file_path": str((root / "auth.json").resolve())},
         "project": {"project_root": str(root.resolve())},
-        "ledger": {"schema_version": 7, "database_generation": generation, "path_digest": canonical_path_digest(ledger.path)},
+        "ledger": {
+            "schema_version": 7,
+            "database_generation": generation,
+            "path_digest": canonical_path_digest(ledger.path),
+        },
         "backup": {"database_generation": generation, "receipt_digest": SHA, "sha256": SHA},
     }
     monkeypatch.setattr(authorization_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(authorization_module, "validate_pilot_preflight", lambda value: value)
     monkeypatch.setattr(authorization_module, "validate_pilot_authorization", lambda value, **kwargs: value)
+    monkeypatch.setattr(
+        authorization_module,
+        "validate_pilot_conformance_authorization_source",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(authorization_module, "validate_pilot_authority_chain", lambda *args, **kwargs: None)
     monkeypatch.setattr(pilot_module, "validate_pilot_scope_envelope", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(pilot_module, "validate_pilot_preflight", lambda value: value)
@@ -412,6 +706,9 @@ def _lease(work_item_id: str) -> dict[str, object]:
             "implementation_tree": "2" * 40,
             "wheel_sha256": SHA,
             "installed_inventory_sha256": SHA,
+            "durable_artifact_evidence_digest": SHA,
+            "durable_checkout_path_digest": SHA,
+            "durable_wheel_path_digest": SHA,
         },
         "runtime_binding": {
             "instance_id": "pilot-instance",
@@ -519,9 +816,9 @@ def test_schema_v6_is_explicit_and_preserves_v5_tables(tmp_path: Path) -> None:
     assert legacy.schema_version() == 5
     with sqlite3.connect(legacy.path) as connection:
         before = {
-            name: connection.execute(
-                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)
-            ).fetchone()[0]
+            name: connection.execute("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)).fetchone()[
+                0
+            ]
             for name in ("activation_leases", "activation_lease_events")
         }
     legacy.migrate_to_v6()
@@ -529,9 +826,9 @@ def test_schema_v6_is_explicit_and_preserves_v5_tables(tmp_path: Path) -> None:
     assert pilot.schema_version() == 6
     with sqlite3.connect(pilot.path) as connection:
         after = {
-            name: connection.execute(
-                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)
-            ).fetchone()[0]
+            name: connection.execute("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)).fetchone()[
+                0
+            ]
             for name in before
         }
         assert after == before
@@ -568,9 +865,10 @@ def test_schema_v6_rejects_nonterminal_legacy_lease(tmp_path: Path) -> None:
     assert error.value.code == "PILOT_MIGRATION_LEGACY_LEASE_NONTERMINAL"
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'").fetchone()[0]
+            == 0
+        )
 
 
 def test_schema_v6_failure_rolls_back_all_schema_and_version_state(tmp_path: Path) -> None:
@@ -592,9 +890,10 @@ def test_schema_v6_failure_rolls_back_all_schema_and_version_state(tmp_path: Pat
     with sqlite3.connect(legacy.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute("SELECT value FROM ledger_meta WHERE key='schema_version'").fetchone()[0] == "5"
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'").fetchone()[0]
+            == 0
+        )
 
 
 def test_schema_v6_postcondition_failure_rolls_back_version_and_ddl(
@@ -621,9 +920,10 @@ def test_schema_v6_postcondition_failure_rolls_back_version_and_ddl(
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute("SELECT value FROM ledger_meta WHERE key='schema_version'").fetchone()[0] == "5"
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_activation_leases'").fetchone()[0]
+            == 0
+        )
 
 
 def test_generic_initialize_cannot_implicitly_cross_v5_to_v6(tmp_path: Path) -> None:
@@ -678,9 +978,12 @@ def test_schema_v7_migration_rejects_inconsistent_schema_metadata_atomically(
     assert error.value.code == "PILOT_AUTHORITY_MIGRATION_SOURCE_VERSION_INVALID"
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_authorization_facts'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM sqlite_schema WHERE name='pilot_authorization_facts'").fetchone()[
+                0
+            ]
+            == 0
+        )
 
 
 def test_multi_version_execution_receipt_and_retry_rules() -> None:
@@ -700,7 +1003,9 @@ def test_multi_version_execution_receipt_and_retry_rules() -> None:
 def test_pilot_control_plane_issues_append_only_v4_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ledger = _v7_ledger(tmp_path)
     lease = _lease(new_stable_id("work_item"))
-    PilotActivationControlPlane(ledger).prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
+    PilotActivationControlPlane(ledger).prepare_lease(
+        lease, authority=_consumed_authority(monkeypatch, tmp_path, lease)
+    )
     with ledger.read_connection() as connection:
         row = connection.execute("SELECT * FROM pilot_activation_leases").fetchone()
         event = connection.execute("SELECT * FROM pilot_activation_lease_events").fetchone()
@@ -843,7 +1148,9 @@ def test_pilot_runtime_status_fails_closed_after_utc_or_monotonic_expiry(
 def test_v6_raw_repository_write_and_maintenance_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ledger = _v7_ledger(tmp_path)
     lease = _lease(new_stable_id("work_item"))
-    PilotActivationControlPlane(ledger).prepare_lease(lease, authority=_consumed_authority(monkeypatch, tmp_path, lease))
+    PilotActivationControlPlane(ledger).prepare_lease(
+        lease, authority=_consumed_authority(monkeypatch, tmp_path, lease)
+    )
     with pytest.raises(WorkItemGovernanceError) as error:
         with ledger.write_transaction() as connection:
             connection.execute("INSERT INTO ledger_meta(key,value,updated_at) VALUES('raw','x','2026-01-01T00:00:00Z')")
@@ -921,11 +1228,52 @@ def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
     assert "manage_git" not in server._visible_tool_names()
 
 
+def test_pilot_mcp_command_selects_only_bounded_pilot_composition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    def execute_stub(
+        project_root: str,
+        name: str,
+        params: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        observed.append(
+            {
+                "project_root": project_root,
+                "name": name,
+                "params": params,
+                **kwargs,
+            }
+        )
+        return {"result": "PASS"}
+
+    monkeypatch.setattr(mcp_server_module, "execute_work_item_mcp_command", execute_stub)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="authoritative_canary",
+        work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+
+    assert server._tool_work_item_command("get_work_item_governance_status", {}) == {"result": "PASS"}
+    assert observed == [
+        {
+            "project_root": str(tmp_path),
+            "name": "get_work_item_governance_status",
+            "params": {},
+            "principal_context": None,
+            "authoritative_canary": False,
+            "bounded_single_project_pilot": True,
+            "authenticated_request_proof": None,
+        }
+    ]
+
+
 def test_frozen_storage_contract_matches_runtime_ddl() -> None:
     verify_pilot_frozen_contract_resources()
-    assert PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"] == canonical_sha256(
-        PILOT_FROZEN_RESOURCE_DIGESTS
-    )
+    assert PILOT_FROZEN_CONTRACT_DIGESTS["spec_manifest_digest"] == canonical_sha256(PILOT_FROZEN_RESOURCE_DIGESTS)
     contract = load_governance_contract("pilot_storage_schema_v6.v2")
     assert contract["migration"]["from_schema_version"] == 5
     assert contract["migration"]["to_schema_version"] == 6
@@ -1013,7 +1361,9 @@ def test_semantic_receipt_uses_exact_applicable_rules_and_rejects_nonapplicable_
         build_pilot_semantic_validation_receipt(
             stage="lease_prepare",
             input_bindings=bindings,
-            failed_rules=[{"rule_id": "ART-001", "error_code": "PILOT_ARTIFACT_POLICY_VIOLATION", "evidence_digest": SHA}],
+            failed_rules=[
+                {"rule_id": "ART-001", "error_code": "PILOT_ARTIFACT_POLICY_VIOLATION", "evidence_digest": SHA}
+            ],
         )
     assert error.value.code == "PILOT_SEMANTIC_RECEIPT_INVALID"
 
@@ -1037,7 +1387,9 @@ def test_every_frozen_negative_scenario_has_executable_semantic_or_boundary_mapp
                 "candidate_manifest_sha256": SHA,
                 "scope_envelope_digest": SHA,
                 "storage_schema_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["storage_schema_contract_digest"],
-                "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS["fact_reconciliation_contract_digest"],
+                "fact_reconciliation_contract_digest": PILOT_FROZEN_CONTRACT_DIGESTS[
+                    "fact_reconciliation_contract_digest"
+                ],
                 "authorization_digest": SHA,
                 "project_snapshot_digest": SHA,
                 "runtime_binding_digest": SHA,
@@ -1063,9 +1415,7 @@ def test_every_frozen_negative_scenario_has_executable_semantic_or_boundary_mapp
     if case["category"] == "surface":
         assert len(PILOT_TOOLS) == 14
     elif case["category"] == "maintenance":
-        assert set(PILOT_DENIED_WRITES).issuperset(
-            {"create_delivery_receipt", "record_outbox_delivery_result"}
-        )
+        assert set(PILOT_DENIED_WRITES).issuperset({"create_delivery_receipt", "record_outbox_delivery_result"})
     elif case["category"] in {"storage", "generation"}:
         storage = load_governance_contract("pilot_storage_schema_v6.v2")
         assert storage["migration"]["from_schema_version"] == 5
@@ -1159,6 +1509,13 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         def require_trusted() -> None:
             return None
 
+        def public_evidence(self) -> dict[str, object]:
+            return {
+                "artifact_evidence_digest": self.evidence_digest,
+                "checkout_path_digest": canonical_sha256({"resolved_posix_path": self.checkout_root.as_posix()}),
+                "wheel_path_digest": canonical_sha256({"resolved_posix_path": self.wheel_artifact.as_posix()}),
+            }
+
     attestation = FakeAttestation()
     monkeypatch.setattr(bootstrap_module, "verify_runtime_source_artifacts", lambda **_kwargs: attestation)
     receipt = bootstrap_fresh_pilot_ledger(
@@ -1192,13 +1549,15 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         "implementation_tree": tree,
         "wheel_sha256": attestation.source_binding["wheel_sha256"],
         "installed_inventory_sha256": attestation.file_manifest_digest,
+        "durable_artifact_evidence_digest": attestation.evidence_digest,
+        "durable_checkout_path_digest": attestation.public_evidence()["checkout_path_digest"],
+        "durable_wheel_path_digest": attestation.public_evidence()["wheel_path_digest"],
     }
-    execution_context = {
-        **source_binding,
-        "python_executable": str(Path(sys.executable).resolve()),
-        "cwd": str(project.resolve()),
-    }
-    execution_context["runtime_binding_digest"] = canonical_sha256(execution_context)
+    execution_context = build_pilot_execution_context(
+        source_binding=source_binding,
+        python_executable=sys.executable,
+        cwd=project,
+    )
     snapshot_record = {
         "project_id": "pilot-project",
         "project_root_path_digest": canonical_path_digest(project),
@@ -1228,16 +1587,16 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         "ledger_not_staged": True,
         "root_override_disabled": True,
     }
-    ledger_state = {
-        "path_digest": receipt["ledger_path_digest"],
-        "schema_version": 7,
-        "database_generation": receipt["database_generation"],
-        "zero_fact_baseline": receipt["zero_fact_baseline"],
-        "integrity_check": "ok",
-        "foreign_key_violations": [],
-        "token_evidence_digest": receipt["token_evidence_digest"],
-        "source_artifact_evidence_digest": attestation.evidence_digest,
-    }
+    ledger_state = build_pilot_ledger_state(
+        path_digest=receipt["ledger_path_digest"],
+        schema_version=7,
+        database_generation=receipt["database_generation"],
+        zero_fact_baseline=receipt["zero_fact_baseline"],
+        integrity_check="ok",
+        foreign_key_violations=[],
+        token_evidence_digest=receipt["token_evidence_digest"],
+        source_artifact_evidence_digest=attestation.evidence_digest,
+    )
     authorization_digest = canonical_sha256({})
     bindings = {
         "authorization_digest": authorization_digest,
@@ -1249,10 +1608,16 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         "semantic_rules_digest": PILOT_FROZEN_CONTRACT_DIGESTS["semantic_rules_digest"],
         "project_snapshot_digest": measured_project["snapshot_digest"],
         "execution_attempt_slot_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_attempt_slot_schema_sha256"],
-        "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["execution_authorization_receipt_schema_sha256"],
+        "execution_authorization_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+            "execution_authorization_receipt_schema_sha256"
+        ],
         "execution_authorization_receipt_digest": SHA,
-        "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["authentication_conformance_receipt_schema_sha256"],
-        "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["expiry_conformance_receipt_schema_sha256"],
+        "authentication_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+            "authentication_conformance_receipt_schema_sha256"
+        ],
+        "expiry_conformance_receipt_schema_sha256": PILOT_FROZEN_CONTRACT_DIGESTS[
+            "expiry_conformance_receipt_schema_sha256"
+        ],
     }
     principal_binding = {"principal_id": "pilot-reviewer", "session_ref": "pilot-session", "permissions": ["pilot"]}
     authentication_receipt = {
@@ -1348,6 +1713,16 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
         "XDG_DATA_HOME": paths.xdg_data_home,
     }.items():
         monkeypatch.setenv(name, str(path))
+    runtime_bin = root / "runtime/bin"
+    runtime_bin.mkdir(parents=True, mode=0o700)
+    (runtime_bin / "python").symlink_to(Path(sys.executable).resolve())
+    snapshot_parent = root / "preflight-snapshots"
+    snapshot_parent.mkdir(mode=0o700)
+    snapshot_manager = governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=snapshot_parent,
+    )
+    ledger_snapshot = snapshot_manager.__enter__()
     preflight_kwargs = dict(
         bootstrap_receipt=receipt,
         paths=paths,
@@ -1366,15 +1741,73 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
             "allowed_read": read_manifest,
             "allowed_write": write_manifest,
         },
+        ledger_snapshot=ledger_snapshot,
     )
+    import runner.work_item_governance.repository as repository_module
+
+    real_connect = repository_module.sqlite3.connect
+    sqlite_targets: list[str] = []
+
+    def traced_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        sqlite_targets.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(repository_module.sqlite3, "connect", traced_connect)
     preflight = build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert preflight["result"] == "PASS"
     assert preflight["ledger"]["path"] == receipt["ledger_path"]
     assert preflight["authentication"]["principal_binding_digest"] == canonical_sha256(principal_binding)
+    assert preflight["execution_context"] == execution_context
+    assert ledger_snapshot.public_evidence()["source_sqlite_opened"] is False
+    assert sqlite_targets
+    assert all(str(Path(receipt["ledger_path"])) not in target for target in sqlite_targets)
+    assert any(str(ledger_snapshot.project_root) in target for target in sqlite_targets)
+    mismatched_snapshot = replace(ledger_snapshot, source_project_root=root / "wrong-project")
+    with pytest.raises(WorkItemGovernanceError) as snapshot_error:
+        build_fresh_pilot_preflight_receipt(
+            **{**preflight_kwargs, "ledger_snapshot": mismatched_snapshot}
+        )
+    assert snapshot_error.value.code == "PILOT_CONFORMANCE_SNAPSHOT_INVALID"
     forged_context = {**execution_context, "runtime_binding_digest": SHA}
     with pytest.raises(WorkItemGovernanceError) as runtime_error:
         build_fresh_pilot_preflight_receipt(**{**preflight_kwargs, "execution_context": forged_context})
     assert runtime_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    legacy_context = {
+        **execution_context,
+        "runtime_dependency_attestation_digest": SHA,
+    }
+    with pytest.raises(WorkItemGovernanceError) as legacy_context_error:
+        build_fresh_pilot_preflight_receipt(
+            **{**preflight_kwargs, "execution_context": legacy_context}
+        )
+    assert legacy_context_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    executable_link = root / "legacy-runtime-python"
+    executable_link.symlink_to(Path(sys.executable).resolve())
+    unresolved_context = dict(execution_context)
+    unresolved_context["python_executable"] = executable_link.absolute().as_posix()
+    unresolved_context["runtime_binding_digest"] = canonical_sha256(
+        {key: value for key, value in unresolved_context.items() if key != "runtime_binding_digest"}
+    )
+    with pytest.raises(WorkItemGovernanceError) as path_context_error:
+        build_fresh_pilot_preflight_receipt(
+            **{**preflight_kwargs, "execution_context": unresolved_context}
+        )
+    assert path_context_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    mismatched_conformance = json.loads(json.dumps(authentication_receipt))
+    mismatched_conformance["runtime_binding"]["runtime_binding_digest"] = SHA
+    mismatched_conformance_bindings = {
+        **bindings,
+        "authentication_conformance_receipt_digest": canonical_sha256(mismatched_conformance),
+    }
+    with pytest.raises(WorkItemGovernanceError) as receipt_context_error:
+        build_fresh_pilot_preflight_receipt(
+            **{
+                **preflight_kwargs,
+                "authentication_conformance_receipt": mismatched_conformance,
+                "bindings": mismatched_conformance_bindings,
+            }
+        )
+    assert receipt_context_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     forged_project = {**measured_project, "snapshot_digest": SHA}
     with pytest.raises(WorkItemGovernanceError) as project_error:
         build_fresh_pilot_preflight_receipt(**{**preflight_kwargs, "project": forged_project})
@@ -1382,25 +1815,95 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
     leaked_token = json.loads(paths.token_file.read_text(encoding="utf-8"))["auth_token"]
     leaked_evidence = root / "evidence/leaked-token.txt"
     leaked_evidence.write_text(leaked_token, encoding="utf-8")
+    leaked_evidence.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as token_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert token_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     leaked_evidence.unlink()
+    leaked_log = paths.xdg_state_home / "pilot.log"
+    leaked_log.write_text(leaked_token, encoding="utf-8")
+    leaked_log.chmod(0o600)
+    with pytest.raises(WorkItemGovernanceError) as log_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert log_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_log.unlink()
+    leaked_data = paths.xdg_data_home / "closeout.json"
+    leaked_data.write_text(leaked_token, encoding="utf-8")
+    leaked_data.chmod(0o600)
+    with pytest.raises(WorkItemGovernanceError) as bundle_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert bundle_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    leaked_data.unlink()
+    public_evidence = root / "evidence/public.txt"
+    public_evidence.write_text("secret-free", encoding="utf-8")
+    public_evidence.chmod(0o644)
+    with pytest.raises(WorkItemGovernanceError) as evidence_mode_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert evidence_mode_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    public_evidence.unlink()
     oversized_evidence = root / "evidence/oversized-token.log"
     with oversized_evidence.open("wb") as handle:
         handle.truncate(16 * 1024 * 1024 + 1)
         handle.seek(0)
         handle.write(leaked_token.encode("utf-8"))
+    oversized_evidence.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as oversized_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert oversized_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     oversized_evidence.unlink()
     suffix_bypass = root / "evidence/token-leak-wal"
     suffix_bypass.write_text(leaked_token, encoding="utf-8")
+    suffix_bypass.chmod(0o600)
     with pytest.raises(WorkItemGovernanceError) as suffix_error:
         build_fresh_pilot_preflight_receipt(**preflight_kwargs)
     assert suffix_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     suffix_bypass.unlink()
+    outside_evidence = tmp_path / "outside-evidence"
+    outside_evidence.mkdir(mode=0o700)
+    outside_payload = outside_evidence / "credential.log"
+    outside_payload.write_text(leaked_token, encoding="utf-8")
+    outside_payload.chmod(0o600)
+    symlink_escape = root / "evidence/escaped-evidence"
+    symlink_escape.symlink_to(outside_evidence, target_is_directory=True)
+    with pytest.raises(WorkItemGovernanceError) as symlink_error:
+        build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+    assert symlink_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+    symlink_escape.unlink()
+    race_directory = root / "evidence/race"
+    race_directory.mkdir(mode=0o700)
+    race_payload = race_directory / "safe.txt"
+    race_payload.write_text("secret-free", encoding="utf-8")
+    race_payload.chmod(0o600)
+    displaced_directory = root / "evidence/race-original"
+    original_open = os.open
+    swapped = False
+
+    def swap_directory_before_open(
+        path: str | bytes | int,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "race" and dir_fd is not None and not swapped:
+            swapped = True
+            race_directory.rename(displaced_directory)
+            race_directory.symlink_to(outside_evidence, target_is_directory=True)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    try:
+        with monkeypatch.context() as race_patch:
+            race_patch.setattr(bootstrap_module.os, "open", swap_directory_before_open)
+            with pytest.raises(WorkItemGovernanceError) as directory_race_error:
+                build_fresh_pilot_preflight_receipt(**preflight_kwargs)
+        assert directory_race_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
+        assert swapped is True
+    finally:
+        if race_directory.is_symlink():
+            race_directory.unlink()
+        if displaced_directory.exists():
+            displaced_directory.rename(race_directory)
     incomplete_surface = json.loads(json.dumps(authentication_receipt))
     incomplete_surface["surface"].pop("hidden_tool_error_code")
     with pytest.raises(WorkItemGovernanceError):
@@ -1425,6 +1928,8 @@ def test_fresh_pilot_bootstrap_is_shadow_zero_fact_and_generation_bound(
     assert measured_error.value.code == "PILOT_PREFLIGHT_MEASUREMENT_FAILED"
     assert before == {str(path): path.read_bytes() for path in protected_files}
     monkeypatch.setenv("HOME", str(paths.home))
+    snapshot_manager.__exit__(None, None, None)
+    assert list(snapshot_parent.iterdir()) == []
     with pytest.raises(WorkItemGovernanceError) as error:
         bootstrap_fresh_pilot_ledger(
             paths=paths,
@@ -1464,6 +1969,9 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
             "implementation_tree": "2" * 40,
             "wheel_sha256": SHA,
             "installed_inventory_sha256": SHA,
+            "durable_artifact_evidence_digest": SHA,
+            "durable_checkout_path_digest": SHA,
+            "durable_wheel_path_digest": SHA,
         },
         "runtime_binding": {
             "runtime_binding_digest": SHA,
@@ -1552,72 +2060,55 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
     import runner.work_item_pilot_conformance as conformance_module
 
     monkeypatch.setattr(conformance_module, "measure_pilot_safety_conformance", lambda **_kwargs: safety)
+    durable_source_checks: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        conformance_module,
+        "validate_pilot_durable_source_binding",
+        lambda _project_root, *, expected_source_binding: durable_source_checks.append(dict(expected_source_binding)),
+    )
     server = MCPPlanningBridgeServer(
         str(project),
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    thread = threading.Thread(
-        target=server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 10,
-        },
-        daemon=True,
+    conformance_source_binding = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": SHA,
+        "installed_inventory_sha256": SHA,
+        "durable_artifact_evidence_digest": SHA,
+        "durable_checkout_path_digest": SHA,
+        "durable_wheel_path_digest": SHA,
+    }
+    conformance_execution_context = build_pilot_execution_context(
+        source_binding=conformance_source_binding,
+        python_executable=sys.executable,
+        cwd=project,
     )
-    thread.start()
-    try:
-        deadline = time.monotonic() + 5
-        while (
-            getattr(server, "_httpd", None) is None
-            or not callable(server._token_transport_proof_validator)
-        ):
-            if not thread.is_alive() or time.monotonic() >= deadline:
-                raise AssertionError("actual Pilot MCP listener failed to start")
-            time.sleep(0.01)
-        port = int(server._httpd.server_address[1])
-        endpoint = f"http://127.0.0.1:{port}"
-        receipt = build_pilot_authentication_conformance_receipt(
-            server=server,
-            endpoint=endpoint,
-            correct_token=token,
-            token_file=token_file,
-            token_binding={
-                "authoritative_canary_token_file_sha256": token_file_sha256,
-                "authoritative_canary_token_evidence_digest": token_evidence_digest,
-            },
-            source_binding={
-                "implementation_commit": "1" * 40,
-                "implementation_tree": "2" * 40,
-                "wheel_sha256": SHA,
-                "installed_inventory_sha256": SHA,
-            },
-            runtime_binding={
-                "runtime_binding_digest": SHA,
-                "scope_envelope_digest": SHA,
-                "ledger_state_digest": SHA,
-                "token_file_path_digest": canonical_path_digest(token_file),
-            },
-            expected_safety_snapshot=safety,
-            project_root=project,
-            registry_path=tmp_path / "registry.json",
-            stable_promotion_root=tmp_path / "stable",
-            port=port,
+    with _running_preflight_listener(
+        server=server,
+        project=project,
+        snapshot_parent=tmp_path / "http-conformance-snapshots",
+        token=token,
+        token_file_sha256=token_file_sha256,
+        token_evidence_digest=token_evidence_digest,
+    ) as (ledger_snapshot, endpoint, port):
+        conformance_baseline = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+        conformance_ledger_state = build_pilot_ledger_state(
+            path_digest=ledger_snapshot.source_ledger_path_digest,
+            schema_version=conformance_baseline["schema_version"],
+            database_generation=conformance_baseline["database_generation"],
+            zero_fact_baseline=conformance_baseline["zero_fact_baseline"],
+            integrity_check=conformance_baseline["integrity_check"],
+            foreign_key_violations=conformance_baseline["foreign_key_violations"],
+            token_evidence_digest=token_evidence_digest,
+            source_artifact_evidence_digest=conformance_source_binding["durable_artifact_evidence_digest"],
         )
-        with sqlite3.connect(ledger.path) as connection:
-            connection.execute(
-                "UPDATE ledger_meta SET value=? WHERE key=?",
-                ("f" * 64, "authoritative_canary_token_evidence_digest"),
-            )
-            connection.commit()
-        with pytest.raises(WorkItemGovernanceError) as durable_mismatch:
+        legacy_execution_context = {
+            **conformance_execution_context,
+            "runtime_dependency_attestation_digest": SHA,
+        }
+        with pytest.raises(WorkItemGovernanceError) as noncanonical_context:
             build_pilot_authentication_conformance_receipt(
                 server=server,
                 endpoint=endpoint,
@@ -1627,16 +2118,12 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
                     "authoritative_canary_token_file_sha256": token_file_sha256,
                     "authoritative_canary_token_evidence_digest": token_evidence_digest,
                 },
-                source_binding={
-                    "implementation_commit": "1" * 40,
-                    "implementation_tree": "2" * 40,
-                    "wheel_sha256": SHA,
-                    "installed_inventory_sha256": SHA,
-                },
+                source_binding=conformance_source_binding,
+                execution_context=legacy_execution_context,
                 runtime_binding={
-                    "runtime_binding_digest": SHA,
+                    "runtime_binding_digest": conformance_execution_context["runtime_binding_digest"],
                     "scope_envelope_digest": SHA,
-                    "ledger_state_digest": SHA,
+                    "ledger_state_digest": canonical_sha256(conformance_ledger_state),
                     "token_file_path_digest": canonical_path_digest(token_file),
                 },
                 expected_safety_snapshot=safety,
@@ -1644,17 +2131,102 @@ def test_http_authentication_conformance_is_measured_from_loopback_responses(
                 registry_path=tmp_path / "registry.json",
                 stable_promotion_root=tmp_path / "stable",
                 port=port,
+                ledger_snapshot=ledger_snapshot,
+            )
+        assert noncanonical_context.value.code == "PILOT_AUTHENTICATION_CONFORMANCE_INVALID"
+        receipt = build_pilot_authentication_conformance_receipt(
+            server=server,
+            endpoint=endpoint,
+            correct_token=token,
+            token_file=token_file,
+            token_binding={
+                "authoritative_canary_token_file_sha256": token_file_sha256,
+                "authoritative_canary_token_evidence_digest": token_evidence_digest,
+            },
+            source_binding=conformance_source_binding,
+            execution_context=conformance_execution_context,
+            runtime_binding={
+                "runtime_binding_digest": conformance_execution_context["runtime_binding_digest"],
+                "scope_envelope_digest": SHA,
+                "ledger_state_digest": canonical_sha256(conformance_ledger_state),
+                "token_file_path_digest": canonical_path_digest(token_file),
+            },
+            expected_safety_snapshot=safety,
+            project_root=project,
+            registry_path=tmp_path / "registry.json",
+            stable_promotion_root=tmp_path / "stable",
+            port=port,
+            ledger_snapshot=ledger_snapshot,
+        )
+
+        def reject_durable_source(
+            _project_root: object,
+            *,
+            expected_source_binding: dict[str, object],
+        ) -> None:
+            del expected_source_binding
+            raise WorkItemGovernanceError(
+                "RUNTIME_SOURCE_EVIDENCE_MISMATCH",
+                "test durable source mismatch",
+            )
+
+        monkeypatch.setattr(
+            conformance_module,
+            "validate_pilot_durable_source_binding",
+            reject_durable_source,
+        )
+        with pytest.raises(WorkItemGovernanceError) as durable_source_mismatch:
+            build_pilot_authentication_conformance_receipt(
+                server=server,
+                endpoint=endpoint,
+                correct_token=token,
+                token_file=token_file,
+                token_binding={
+                    "authoritative_canary_token_file_sha256": token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": token_evidence_digest,
+                },
+                source_binding=receipt["source_binding"],
+                execution_context=conformance_execution_context,
+                runtime_binding=receipt["runtime_binding"],
+                expected_safety_snapshot=safety,
+                project_root=project,
+                registry_path=tmp_path / "registry.json",
+                stable_promotion_root=tmp_path / "stable",
+                port=port,
+                ledger_snapshot=ledger_snapshot,
+            )
+        assert durable_source_mismatch.value.code == "RUNTIME_SOURCE_EVIDENCE_MISMATCH"
+        with pytest.raises(WorkItemGovernanceError) as durable_mismatch:
+            build_pilot_authentication_conformance_receipt(
+                server=server,
+                endpoint=endpoint,
+                correct_token=token,
+                token_file=token_file,
+                token_binding={
+                    "authoritative_canary_token_file_sha256": token_file_sha256,
+                    "authoritative_canary_token_evidence_digest": "f" * 64,
+                },
+                source_binding=conformance_source_binding,
+                execution_context=conformance_execution_context,
+                runtime_binding={
+                    "runtime_binding_digest": conformance_execution_context["runtime_binding_digest"],
+                    "scope_envelope_digest": SHA,
+                    "ledger_state_digest": canonical_sha256(conformance_ledger_state),
+                    "token_file_path_digest": canonical_path_digest(token_file),
+                },
+                expected_safety_snapshot=safety,
+                project_root=project,
+                registry_path=tmp_path / "registry.json",
+                stable_promotion_root=tmp_path / "stable",
+                port=port,
+                ledger_snapshot=ledger_snapshot,
             )
         assert durable_mismatch.value.code == "PILOT_AUTHENTICATION_CONFORMANCE_INVALID"
-    finally:
-        if getattr(server, "_httpd", None) is not None:
-            server._httpd.shutdown()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
     assert receipt["result"] == "PASS"
     assert receipt["authentication"]["token_ledger_binding_valid"] is True
     assert receipt["authentication"]["proof_issued_delta"] == 2
     assert receipt["authentication"]["proof_retired_delta"] == 2
+    assert durable_source_checks == [receipt["source_binding"]]
 
 
 def test_preflight_conformance_listener_closes_authority_ordering_without_writes(
@@ -1681,9 +2253,6 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             "INSERT INTO ledger_meta(key,value,updated_at) VALUES(?,?,?)",
             ("authoritative_canary_token_evidence_digest", token_evidence_digest, isoformat_utc(utc_now())),
         )
-    baseline = require_pilot_preflight_conformance_baseline(project)
-    assert not any(baseline["zero_fact_baseline"].values())
-
     safety = {
         "network_inventory_digest": SHA,
         "process_inventory_digest": SHA,
@@ -1700,6 +2269,11 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
     import runner.work_item_pilot_conformance as conformance_module
 
     monkeypatch.setattr(conformance_module, "measure_pilot_safety_conformance", lambda **_kwargs: safety)
+    monkeypatch.setattr(
+        conformance_module,
+        "validate_pilot_durable_source_binding",
+        lambda _project_root, *, expected_source_binding: dict(expected_source_binding),
+    )
     server = MCPPlanningBridgeServer(
         str(project),
         exposure_profile="authoritative_canary",
@@ -1709,6 +2283,20 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
         str(project),
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
+    )
+    ordering_source_binding = {
+        "implementation_commit": "1" * 40,
+        "implementation_tree": "2" * 40,
+        "wheel_sha256": SHA,
+        "installed_inventory_sha256": SHA,
+        "durable_artifact_evidence_digest": SHA,
+        "durable_checkout_path_digest": SHA,
+        "durable_wheel_path_digest": SHA,
+    }
+    ordering_execution_context = build_pilot_execution_context(
+        source_binding=ordering_source_binding,
+        python_executable=sys.executable,
+        cwd=project,
     )
     with pytest.raises(PlanningBridgeError, match="forbids Activation Lease inputs"):
         rejected_lease_server.serve_http(
@@ -1722,35 +2310,29 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             activation_lease_id="lease_forbidden",
             preflight_conformance=True,
         )
-    thread = threading.Thread(
-        target=server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 10,
-        },
-        daemon=True,
-    )
-    thread.start()
-    try:
-        deadline = time.monotonic() + 5
-        while (
-            getattr(server, "_httpd", None) is None
-            or not callable(server._token_transport_proof_validator)
-        ):
-            if not thread.is_alive() or time.monotonic() >= deadline:
-                raise AssertionError("preflight-only Pilot MCP listener failed to start")
-            time.sleep(0.01)
-        port = int(server._httpd.server_address[1])
-        endpoint = f"http://127.0.0.1:{port}"
-        snapshot = server._pilot_http_conformance_snapshot()
-        assert snapshot["preflight_conformance_only"] is True
+    with _running_preflight_listener(
+        server=server,
+        project=project,
+        snapshot_parent=tmp_path / "ordering-conformance-snapshots",
+        token=token,
+        token_file_sha256=token_file_sha256,
+        token_evidence_digest=token_evidence_digest,
+    ) as (ledger_snapshot, endpoint, port):
+        baseline = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
+        assert not any(baseline["zero_fact_baseline"].values())
+        listener_snapshot = server._pilot_http_conformance_snapshot()
+        assert listener_snapshot["preflight_conformance_only"] is True
+        assert listener_snapshot["ledger_snapshot_binding_digest"] == ledger_snapshot.binding_digest
+        ordering_ledger_state = build_pilot_ledger_state(
+            path_digest=ledger_snapshot.source_ledger_path_digest,
+            schema_version=baseline["schema_version"],
+            database_generation=baseline["database_generation"],
+            zero_fact_baseline=baseline["zero_fact_baseline"],
+            integrity_check=baseline["integrity_check"],
+            foreign_key_violations=baseline["foreign_key_violations"],
+            token_evidence_digest=token_evidence_digest,
+            source_artifact_evidence_digest=ordering_source_binding["durable_artifact_evidence_digest"],
+        )
 
         receipt = build_pilot_authentication_conformance_receipt(
             server=server,
@@ -1761,16 +2343,12 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
                 "authoritative_canary_token_file_sha256": token_file_sha256,
                 "authoritative_canary_token_evidence_digest": token_evidence_digest,
             },
-            source_binding={
-                "implementation_commit": "1" * 40,
-                "implementation_tree": "2" * 40,
-                "wheel_sha256": SHA,
-                "installed_inventory_sha256": SHA,
-            },
+            source_binding=ordering_source_binding,
+            execution_context=ordering_execution_context,
             runtime_binding={
-                "runtime_binding_digest": SHA,
+                "runtime_binding_digest": ordering_execution_context["runtime_binding_digest"],
                 "scope_envelope_digest": SHA,
-                "ledger_state_digest": SHA,
+                "ledger_state_digest": canonical_sha256(ordering_ledger_state),
                 "token_file_path_digest": canonical_path_digest(token_file),
             },
             expected_safety_snapshot=safety,
@@ -1778,12 +2356,10 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
             registry_path=tmp_path / "registry.json",
             stable_promotion_root=tmp_path / "stable",
             port=port,
+            ledger_snapshot=ledger_snapshot,
         )
         assert receipt["result"] == "PASS"
-        assert (
-            receipt["surface"]["authenticated_tool_call_error_code"]
-            == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
-        )
+        assert receipt["surface"]["authenticated_tool_call_error_code"] == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
 
         original_call_tool = server._call_tool
         monkeypatch.setattr(
@@ -1830,13 +2406,8 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
         assert codes == ["PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"] * 8
         direct = server._call_tool("apply_work_item_create", {"preview_id": "direct-bypass"})
         assert direct["error_code"] == "PREFLIGHT_CONFORMANCE_TOOL_CALL_DENIED"
-        after = require_pilot_preflight_conformance_baseline(project)
+        after = require_pilot_preflight_conformance_baseline(ledger_snapshot.project_root)
         assert after["zero_fact_baseline"] == baseline["zero_fact_baseline"]
-    finally:
-        if getattr(server, "_httpd", None) is not None:
-            server._httpd.shutdown()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
     assert server._preflight_conformance_only is False
 
     timeout_server = MCPPlanningBridgeServer(
@@ -1844,26 +2415,34 @@ def test_preflight_conformance_listener_closes_authority_ordering_without_writes
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    timeout_thread = threading.Thread(
-        target=timeout_server.serve_http,
-        kwargs={
-            "host": "127.0.0.1",
-            "port": 0,
-            "auth_token": token,
-            "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
-            "auth_token_file_sha256": token_file_sha256,
-            "auth_token_evidence_digest": token_evidence_digest,
-            "auth_mode": "token",
-            "preflight_conformance": True,
-            "preflight_conformance_timeout_seconds": 0.2,
-        },
-        daemon=True,
-    )
-    timeout_thread.start()
-    timeout_thread.join(timeout=3)
-    assert not timeout_thread.is_alive()
+    timeout_parent = tmp_path / "timeout-conformance-snapshots"
+    timeout_parent.mkdir(mode=0o700)
+    timeout_source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=timeout_parent,
+    ) as timeout_snapshot:
+        timeout_thread = threading.Thread(
+            target=timeout_server.serve_http,
+            kwargs={
+                "host": "127.0.0.1",
+                "port": 0,
+                "auth_token": token,
+                "auth_token_source": AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE,
+                "auth_token_file_sha256": token_file_sha256,
+                "auth_token_evidence_digest": token_evidence_digest,
+                "auth_mode": "token",
+                "preflight_conformance": True,
+                "preflight_conformance_timeout_seconds": 0.2,
+                "preflight_conformance_ledger_snapshot": timeout_snapshot,
+            },
+            daemon=True,
+        )
+        timeout_thread.start()
+        timeout_thread.join(timeout=3)
+        assert not timeout_thread.is_alive()
     assert timeout_server._preflight_conformance_only is False
-    require_pilot_preflight_conformance_baseline(project)
+    assert _ledger_physical_state(project) == timeout_source_before
 
 
 def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero_facts(
@@ -1885,7 +2464,7 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
         exposure_profile="authoritative_canary",
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
-    with pytest.raises(WorkItemGovernanceError) as missing_startup_error:
+    with pytest.raises(PlanningBridgeError, match="requires one governed isolated Ledger snapshot"):
         missing_server.serve_http(
             host="127.0.0.1",
             port=0,
@@ -1896,7 +2475,15 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
             auth_mode="token",
             preflight_conformance=True,
         )
-    assert missing_startup_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+    missing_snapshot_parent = tmp_path / "missing-snapshots"
+    missing_snapshot_parent.mkdir(mode=0o700)
+    with pytest.raises(WorkItemGovernanceError) as missing_snapshot_error:
+        with governed_pilot_conformance_ledger_snapshot(
+            missing,
+            snapshot_parent=missing_snapshot_parent,
+        ):
+            pass
+    assert missing_snapshot_error.value.code == "LEDGER_FILE_MISSING"
     assert not missing_path.exists()
 
     project = tmp_path / "pilot-project"
@@ -1911,8 +2498,8 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
         server.serve_http(preflight_conformance=True, preflight_conformance_timeout_seconds=121)
 
     now = isoformat_utc(utc_now())
-    with sqlite3.connect(ledger.path) as connection:
-        connection.execute(
+    with sqlite3.connect(ledger.path) as source_connection:
+        source_connection.execute(
             """
             INSERT INTO work_items(
                 work_item_id,schema_version,state,state_version,origin_kind,origin_ref,
@@ -1940,21 +2527,31 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
                 now,
             ),
         )
-        connection.commit()
-    with pytest.raises(WorkItemGovernanceError) as baseline_error:
-        require_pilot_preflight_conformance_baseline(project)
-    assert baseline_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
-    assert baseline_error.value.details == {
-        "nonzero_tables": ["work_items"],
-        "foreign_key_violations": 0,
-    }
-    with sqlite3.connect(ledger.path) as connection:
-        counts = {
-            table: int(connection.execute(query).fetchone()[0])
-            for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+        source_connection.commit()
+    source_connection.close()
+    nonzero_parent = tmp_path / "nonzero-snapshots"
+    nonzero_parent.mkdir(mode=0o700)
+    source_before = _ledger_physical_state(project)
+    with governed_pilot_conformance_ledger_snapshot(
+        project,
+        snapshot_parent=nonzero_parent,
+    ) as nonzero_snapshot:
+        with pytest.raises(WorkItemGovernanceError) as baseline_error:
+            require_pilot_preflight_conformance_baseline(nonzero_snapshot.project_root)
+        assert baseline_error.value.code == "PILOT_PREFLIGHT_CONFORMANCE_BASELINE_INVALID"
+        assert baseline_error.value.details == {
+            "nonzero_tables": ["work_items"],
+            "foreign_key_violations": 0,
         }
-    assert counts["work_items"] == 1
-    assert sum(counts.values()) == 1
+        snapshot_ledger = SQLiteWorkItemLedger(nonzero_snapshot.project_root, target_schema_version=7)
+        with snapshot_ledger.read_connection() as connection:
+            counts = {
+                table: int(connection.execute(query).fetchone()[0])
+                for table, query in PILOT_TABLE_COUNT_QUERIES.items()
+            }
+        assert counts["work_items"] == 1
+        assert sum(counts.values()) == 1
+    assert _ledger_physical_state(project) == source_before
 
 
 def test_safety_conformance_is_bound_to_measured_host_and_project_snapshot(
@@ -2050,6 +2647,12 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     monkeypatch.setattr(module, "validate_pilot_authorization", lambda value, scope_envelope: value)
     monkeypatch.setattr(module, "validate_pilot_scope_envelope", lambda value, **kwargs: value)
     monkeypatch.setattr(module, "validate_pilot_preflight", lambda value: value)
+    monkeypatch.setattr(
+        module,
+        "validate_pilot_conformance_authorization_source",
+        lambda *args, **kwargs: None,
+    )
+
     def mutate_caller_inputs(*args: object, **kwargs: object) -> None:
         scope["scope"] = "mutated-during-consumption"
         execution["mutated"] = True
@@ -2104,9 +2707,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert changed_decision.value.code == "PILOT_AUTHORIZATION_FILE_UNTRUSTED"
     assert not tombstone_path.exists()
     with ledger.read_connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM pilot_authorization_facts"
-        ).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM pilot_authorization_facts").fetchone()[0] == 0
 
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     decision_path.chmod(0o600)
@@ -2139,9 +2740,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert decision_path.is_file()
     assert not tombstone_path.exists()
     with ledger.read_connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM pilot_authorization_facts"
-        ).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM pilot_authorization_facts").fetchone()[0] == 0
 
     monkeypatch.setattr(
         module,
@@ -2169,9 +2768,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert not tombstone_path.exists()
     assert not tombstone_path.with_suffix(".json.tmp").exists()
     with ledger.read_connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM pilot_authorization_facts"
-        ).fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM pilot_authorization_facts").fetchone()[0] == 1
 
     monkeypatch.setattr(module.os, "replace", replace)
     scope["scope"] = "test"
@@ -2207,9 +2804,7 @@ def test_one_shot_authorization_is_atomically_tombstoned(
     assert tombstone_path.is_file()
     assert tombstone_path.stat().st_mode & 0o077 == 0
     with ledger.read_connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM pilot_authorization_facts"
-        ).fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM pilot_authorization_facts").fetchone()[0] == 1
     with pytest.raises(WorkItemGovernanceError) as error:
         consumer.consume(
             scope_envelope=tombstone.scope_envelope,
@@ -2251,9 +2846,7 @@ def test_persisted_authority_detects_mutation_reflection_and_one_shot_replay(
     with pytest.raises(WorkItemGovernanceError) as candidate_receipt_mutated:
         require_consumed_pilot_authorization(other)
     assert candidate_receipt_mutated.value.code == "PILOT_AUTHORIZATION_CAPABILITY_INVALID"
-    object.__setattr__(
-        other, "_candidate_validation_receipt_json", original_candidate_receipt
-    )
+    object.__setattr__(other, "_candidate_validation_receipt_json", original_candidate_receipt)
     object.__setattr__(other, "_authorization_json", "{}")
     with pytest.raises(WorkItemGovernanceError) as mutated:
         require_consumed_pilot_authorization(other)
