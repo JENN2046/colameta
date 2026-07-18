@@ -480,31 +480,48 @@ def _systemd_service_check(
     service_name: str,
     command_runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
 ) -> dict[str, Any]:
-    result = command_runner(
-        ["systemctl", "--user", "show", service_name, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"]
-    )
-    properties = _parse_systemd_properties(result.stdout)
-    pid = properties.get("MainPID")
-    active = properties.get("ActiveState")
-    sub = properties.get("SubState")
-    if result.returncode != 0 or active != "active" or sub != "running":
-        return _check(
-            BLOCKED,
-            "SYSTEMD_SERVICE_NOT_RUNNING",
-            f"{service_name} is not active/running.",
-            service_name=service_name,
-            active_state=active,
-            sub_state=sub,
-            main_pid=pid,
+    attempts: list[dict[str, Any]] = []
+    for manager_scope, prefix in (
+        ("system", ["systemctl"]),
+        ("user", ["systemctl", "--user"]),
+    ):
+        result = command_runner(
+            [*prefix, "show", service_name, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"]
         )
+        properties = _parse_systemd_properties(result.stdout)
+        pid = properties.get("MainPID")
+        active = properties.get("ActiveState")
+        sub = properties.get("SubState")
+        attempts.append(
+            {
+                "manager_scope": manager_scope,
+                "active_state": active,
+                "sub_state": sub,
+                "main_pid": pid,
+            }
+        )
+        if result.returncode == 0 and active == "active" and sub == "running":
+            return _check(
+                READY,
+                "SYSTEMD_SERVICE_RUNNING",
+                f"{service_name} is active/running.",
+                service_name=service_name,
+                service_manager_scope=manager_scope,
+                active_state=active,
+                sub_state=sub,
+                main_pid=pid,
+            )
+    last = attempts[-1]
     return _check(
-        READY,
-        "SYSTEMD_SERVICE_RUNNING",
-        f"{service_name} is active/running.",
+        BLOCKED,
+        "SYSTEMD_SERVICE_NOT_RUNNING",
+        f"{service_name} is not active/running in the system or user manager.",
         service_name=service_name,
-        active_state=active,
-        sub_state=sub,
-        main_pid=pid,
+        service_manager_scope="none",
+        active_state=last["active_state"],
+        sub_state=last["sub_state"],
+        main_pid=last["main_pid"],
+        checked_manager_scopes=[attempt["manager_scope"] for attempt in attempts],
     )
 
 
