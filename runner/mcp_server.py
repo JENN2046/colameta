@@ -7943,7 +7943,7 @@ class MCPPlanningBridgeServer:
             scopes.update({"mcp:read", "mcp:preview", "mcp:commit"})
         scopes.intersection_update(VALID_MCP_SCOPES)
         oauth_provider = auth_context.get("oauth_provider")
-        configured_scopes = getattr(oauth_provider, "scopes", ())
+        configured_scopes = getattr(oauth_provider, "scopes", None)
         if isinstance(configured_scopes, (list, tuple, set)):
             scopes.intersection_update(
                 scope for scope in configured_scopes if isinstance(scope, str)

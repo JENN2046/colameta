@@ -52,6 +52,23 @@ def test_oauth_tool_security_schemes_respect_configured_scope_allowlist(tmp_path
     assert tools["run_mcp_workflow"]["securitySchemes"] == expected
 
 
+def test_builtin_oauth_without_scope_attribute_publishes_policy_scopes(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+
+    response = server._handle_jsonrpc_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        auth_context={
+            "mode": "oauth",
+            "oauth_provider": SimpleNamespace(),
+            "token": {},
+        },
+    )
+    tools = {tool["name"]: tool for tool in response["result"]["tools"]}
+
+    expected = [{"type": "oauth2", "scopes": ["mcp:read"]}]
+    assert tools["list_registered_projects"]["securitySchemes"] == expected
+
+
 def test_non_oauth_tool_list_does_not_claim_oauth_security(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
