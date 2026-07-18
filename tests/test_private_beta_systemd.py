@@ -57,6 +57,10 @@ def test_local_health_failure_has_rate_limited_recovery() -> None:
     assert "http://127.0.0.1:8766/mcp" in health
     assert "http://127.0.0.1:8767/healthz" in health
     assert "http://127.0.0.1:8768/mcp" in health
+    assert (
+        "After=colameta-stable.service colameta-mcp-remote.service "
+        "colameta-mcp-advanced.service"
+    ) in health
     assert "OnFailure=colameta-stack-recover.service" in health
     assert "StartLimitIntervalSec=5min" in recovery
     assert "StartLimitBurst=3" in recovery
