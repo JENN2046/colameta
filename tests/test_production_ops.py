@@ -528,6 +528,31 @@ class ProductionOpsTests(unittest.TestCase):
         assert packet["checks"]["stable_service"]["status"] == "ready"
         assert packet["checks"]["stable_service"]["main_pid"] == "123"
 
+    def test_system_manager_service_is_preferred_for_private_beta_stack(self) -> None:
+        from runner.production_ops import build_production_ops_packet
+
+        base_runner = FakeCommandRunner()
+
+        def system_service_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["systemctl", "show"]:
+                return completed(args, "ActiveState=active\nSubState=running\nMainPID=456\n")
+            return base_runner(args)
+
+        packet = build_production_ops_packet(
+            str(self.project),
+            expected_head=HEAD,
+            stable_runtime_dir=str(self.stable),
+            backup_dir=str(self.backups),
+            connector_smoke={"status": "ready", "last_observed_at": "2026-07-07T00:00:00Z"},
+            command_runner=system_service_runner,
+            preflight_runner=ready_preflight,
+            now=NOW,
+        )
+
+        assert packet["status"] == "ready"
+        assert packet["checks"]["stable_service"]["service_manager_scope"] == "system"
+        assert packet["checks"]["stable_service"]["main_pid"] == "456"
+
     def test_stable_inactive_is_blocked(self) -> None:
         from runner.production_ops import build_production_ops_packet
 
