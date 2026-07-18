@@ -7855,7 +7855,10 @@ class MCPPlanningBridgeServer:
             if method in ("ping", "health"):
                 return self._result(req_id, {"ok": True, "tool": method, "data": {"status": "ok"}})
             if method in ("list_tools", "tools/list"):
-                return self._result(req_id, {"tools": self._tool_defs_payload()})
+                return self._result(
+                    req_id,
+                    {"tools": self._tool_defs_payload(auth_context=auth_context)},
+                )
             if method in ("list_resources", "resources/list"):
                 if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
                     return self._result(req_id, {"resources": []})
@@ -7916,7 +7919,44 @@ class MCPPlanningBridgeServer:
                 self._tool_error("internal", "INTERNAL_ERROR", "服务器内部错误。", {"message": str(e)}),
             )
 
-    def _tool_defs_payload(self) -> list[dict[str, Any]]:
+    def _tool_oauth_scopes(
+        self,
+        tool_name: str,
+        auth_context: MCPAuthContext,
+    ) -> list[str]:
+        if not isinstance(auth_context, dict):
+            return []
+        auth_mode = auth_context.get("mode")
+        if auth_mode not in {"oauth", "external-oauth"}:
+            return []
+        policy = MCP_TOOL_POLICIES.get(tool_name)
+        if policy is None:
+            return []
+        scopes: set[str] = set()
+        if policy.static_scope is not None:
+            scopes.add(policy.static_scope)
+        if isinstance(policy.action_scopes, dict):
+            scopes.update(policy.action_scopes.values())
+        if policy.default_scope is not None:
+            scopes.add(policy.default_scope)
+        if policy.selector in {"manage_files", "run_mcp_workflow"}:
+            scopes.update({"mcp:read", "mcp:preview", "mcp:commit"})
+        scopes.intersection_update(VALID_MCP_SCOPES)
+        oauth_provider = auth_context.get("oauth_provider")
+        configured_scopes = getattr(oauth_provider, "scopes", ())
+        if isinstance(configured_scopes, (list, tuple, set)):
+            scopes.intersection_update(
+                scope for scope in configured_scopes if isinstance(scope, str)
+            )
+        if auth_mode == "external-oauth":
+            scopes.difference_update(REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES)
+        return sorted(scopes)
+
+    def _tool_defs_payload(
+        self,
+        *,
+        auth_context: MCPAuthContext = None,
+    ) -> list[dict[str, Any]]:
         exposed_tool_defs = self._filter_tools_by_exposure_profile(self.tool_defs)
         payload: list[dict[str, Any]] = []
         for tool in exposed_tool_defs:
@@ -7931,8 +7971,14 @@ class MCPPlanningBridgeServer:
                 item["title"] = tool.title
             if isinstance(tool.annotations, dict):
                 item["annotations"] = copy.deepcopy(tool.annotations)
-            if isinstance(tool.meta, dict):
-                item["_meta"] = copy.deepcopy(tool.meta)
+            meta = copy.deepcopy(tool.meta) if isinstance(tool.meta, dict) else {}
+            oauth_scopes = self._tool_oauth_scopes(tool.name, auth_context)
+            if oauth_scopes:
+                security_schemes = [{"type": "oauth2", "scopes": oauth_scopes}]
+                item["securitySchemes"] = copy.deepcopy(security_schemes)
+                meta["securitySchemes"] = copy.deepcopy(security_schemes)
+            if meta:
+                item["_meta"] = meta
             payload.append(item)
         return payload
 
@@ -9410,12 +9456,12 @@ class MCPPlanningBridgeServer:
         policy_error = self._tool_policy_error(name, params)
         if policy_error is not None:
             return policy_error
-        scope_error = self._oauth_scope_error(name, params, auth_context)
-        if scope_error is not None:
-            return scope_error
         remote_policy_error = self._external_oauth_remote_policy_error(name, params, auth_context)
         if remote_policy_error is not None:
             return remote_policy_error
+        scope_error = self._oauth_scope_error(name, params, auth_context)
+        if scope_error is not None:
+            return scope_error
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
@@ -9520,15 +9566,55 @@ class MCPPlanningBridgeServer:
         token_payload = auth_context.get("token")
         validate_scope = getattr(oauth_provider, "validate_scope", None)
         if not callable(validate_scope) or not isinstance(token_payload, dict):
-            return self._tool_error(name, "UNAUTHORIZED", "OAuth token is invalid.")
+            error = self._tool_error(name, "UNAUTHORIZED", "OAuth token is invalid.")
+            return self._with_oauth_authenticate_challenge(
+                error,
+                oauth_provider=oauth_provider,
+                error="invalid_token",
+                error_description="The OAuth access token is invalid.",
+            )
         required_scope = self._required_scope_for_tool(name, params)
         if validate_scope(token_payload, required_scope):
             return None
-        return self._tool_error(
+        error = self._tool_error(
             name,
             "INSUFFICIENT_SCOPE",
             "OAuth token scope is insufficient for this tool.",
+            {"required_scope": required_scope},
         )
+        return self._with_oauth_authenticate_challenge(
+            error,
+            oauth_provider=oauth_provider,
+            required_scope=required_scope,
+            error="insufficient_scope",
+            error_description="The OAuth access token is missing the required scope.",
+        )
+
+    def _with_oauth_authenticate_challenge(
+        self,
+        tool_error: dict[str, Any],
+        *,
+        oauth_provider: object,
+        error: str,
+        error_description: str,
+        required_scope: str | None = None,
+    ) -> dict[str, Any]:
+        metadata_url_builder = getattr(oauth_provider, "protected_resource_metadata_url", None)
+        if not callable(metadata_url_builder):
+            return tool_error
+        metadata_url = metadata_url_builder()
+        if not isinstance(metadata_url, str) or not metadata_url.startswith("https://"):
+            return tool_error
+        fields = [
+            f'resource_metadata="{metadata_url}"',
+            f'error="{error}"',
+            f'error_description="{error_description}"',
+        ]
+        if isinstance(required_scope, str) and required_scope in VALID_MCP_SCOPES:
+            fields.insert(1, f'scope="{required_scope}"')
+        enriched = dict(tool_error)
+        enriched["_meta"] = {"mcp/www_authenticate": [f"Bearer {', '.join(fields)}"]}
+        return enriched
 
     def _external_oauth_remote_policy_error(
         self,
