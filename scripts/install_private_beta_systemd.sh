@@ -11,6 +11,7 @@ units=(
   colameta-private-beta.target
   colameta-stable.service
   colameta-mcp-remote.service
+  colameta-mcp-advanced.service
   cloudflared-colameta-mcp-prod.service
   colameta-tunnel-client.service
   colameta-local-healthcheck.service
@@ -49,6 +50,7 @@ sudo systemctl daemon-reload
 sudo systemctl disable \
   colameta-stable.service \
   colameta-mcp-remote.service \
+  colameta-mcp-advanced.service \
   cloudflared-colameta-mcp-prod.service \
   colameta-tunnel-client.service \
   colameta-local-healthcheck.timer \

@@ -1,8 +1,8 @@
 [Unit]
-Description=ColaMeta public OAuth MCP origin
+Description=ColaMeta advanced local MCP catalog
 Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
-After=network-online.target colameta-stable.service
-Wants=network-online.target colameta-stable.service
+After=network-online.target
+Wants=network-online.target
 PartOf=colameta-private-beta.target
 StartLimitIntervalSec=60s
 StartLimitBurst=5
@@ -16,10 +16,10 @@ WorkingDirectory=/home/jenn/tools/colameta
 Environment=HOME=/home/jenn
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
-Environment=MCP_EXPOSURE_PROFILE=commander
+Environment=MCP_EXPOSURE_PROFILE=normal
 Environment=PATH=/home/jenn/.local/bin:/home/jenn/.nvm/versions/node/v22.23.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
-ExecStart=/home/jenn/tools/colameta/.venv/bin/colameta serve /home/jenn/src/colameta-dev --no-web --mcp-host 127.0.0.1 --mcp-port 8767 --auth-mode external-oauth --public-base-url https://colameta-mcp.skmt617.top --oauth-issuer https://dev-2n3z8xing6eekyok.us.auth0.com/ --oauth-jwks-url https://dev-2n3z8xing6eekyok.us.auth0.com/.well-known/jwks.json --oauth-audience https://colameta-mcp.skmt617.top/mcp --oauth-scopes mcp:read,mcp:preview,mcp:commit,mcp:plan --no-register-selected
-ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8767/healthz
+ExecStart=/home/jenn/tools/colameta/.venv/bin/colameta serve /home/jenn/src/colameta-dev --no-web --mcp-host 127.0.0.1 --mcp-port 8768 --auth-mode none --no-register-selected
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8768/mcp
 Restart=always
 RestartSec=3s
 TimeoutStartSec=60s

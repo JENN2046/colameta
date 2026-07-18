@@ -4,10 +4,12 @@ The private Beta stack uses system-level units because the WSL instance does
 not provide a persistent per-user systemd manager. The stack has one ownership
 boundary:
 
-- `colameta-stable.service`: local Web on `127.0.0.1:8801` and local MCP on
-  `127.0.0.1:8766`;
+- `colameta-stable.service`: local Web on `127.0.0.1:8801` and the focused
+  six-tool Commander MCP on `127.0.0.1:8766`;
 - `colameta-mcp-remote.service`: external-OAuth MCP origin on
-  `127.0.0.1:8767`;
+  `127.0.0.1:8767`, also using the six-tool Commander profile;
+- `colameta-mcp-advanced.service`: loopback-only advanced MCP on
+  `127.0.0.1:8768`, retaining the complete 82-tool normal profile;
 - `cloudflared-colameta-mcp-prod.service`: public tunnel, ordered after the
   OAuth origin without stop propagation during an origin restart;
 - `colameta-tunnel-client.service`: managed tunnel used by the existing
@@ -47,7 +49,7 @@ The installer backs up replaced unit files below
 `/home/jenn/tools/colameta-systemd-backups/` and does not start or stop the
 stack. It disables child-unit boot symlinks and enables only
 `colameta-private-beta.target`, so the target remains the single startup
-owner. Stop any manually launched processes on ports 8801, 8766 and 8767
+owner. Stop any manually launched processes on ports 8801, 8766, 8767 and 8768
 before the first activation.
 
 ## Operate
@@ -59,12 +61,13 @@ sudo systemctl stop colameta-private-beta.target
 sudo systemctl list-timers 'colameta-*'
 sudo journalctl --namespace=colameta -u colameta-stable.service
 sudo journalctl --namespace=colameta -u colameta-mcp-remote.service
+sudo journalctl --namespace=colameta -u colameta-mcp-advanced.service
 sudo journalctl --namespace=colameta -u cloudflared-colameta-mcp-prod.service
 sudo journalctl --namespace=colameta -u colameta-tunnel-client.service
 ```
 
 `systemctl stop colameta-private-beta.target` propagates a graceful stop to all
-four long-running services. Explicitly stopping the target does not trigger
+five long-running services. Explicitly stopping the target does not trigger
 `Restart=always`; systemd restarts a service only when its process exits while
 the unit is expected to remain active.
 
@@ -79,6 +82,7 @@ copies the tunnel profile, API key, or connector credentials.
 curl --fail http://127.0.0.1:8801/
 curl --fail http://127.0.0.1:8766/mcp
 curl --fail http://127.0.0.1:8767/healthz
+curl --fail http://127.0.0.1:8768/mcp
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 /home/jenn/tools/colameta/.venv/bin/python \
@@ -86,6 +90,15 @@ curl --fail http://127.0.0.1:8080/readyz
   https://colameta-mcp.skmt617.top \
   --expected-head "$(git -C /home/jenn/src/colameta-dev rev-parse HEAD)"
 ```
+
+The default connector and public OAuth endpoint expose these six high-level
+tools: `list_registered_projects`, `render_commander_app`,
+`analyze_project_state`, `run_mcp_workflow`, `manage_validation_run`, and
+`manage_git`. Calls to any hidden tool are rejected by the active exposure
+profile, including calls made from a stale connector cache. Operators who need
+the complete 82-tool catalog can connect a local advanced client to
+`http://127.0.0.1:8768/mcp`; that endpoint is not bound to a public interface or
+forwarded by either tunnel.
 
 For a controlled restart test, record the current `MainPID`, send `SIGTERM` to
 that exact service PID, and verify that systemd assigns a different running
