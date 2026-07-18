@@ -1,8 +1,8 @@
 [Unit]
 Description=ColaMeta private Beta service stack
 Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
-Wants=network-online.target colameta-stable.service colameta-mcp-remote.service cloudflared-colameta-mcp-prod.service colameta-tunnel-client.service colameta-local-healthcheck.timer colameta-public-healthcheck.timer colameta-managed-tunnel-healthcheck.timer
-After=network-online.target colameta-stable.service colameta-mcp-remote.service cloudflared-colameta-mcp-prod.service colameta-tunnel-client.service
+Wants=network-online.target colameta-stable.service colameta-mcp-remote.service colameta-mcp-advanced.service cloudflared-colameta-mcp-prod.service colameta-tunnel-client.service colameta-local-healthcheck.timer colameta-public-healthcheck.timer colameta-managed-tunnel-healthcheck.timer
+After=network-online.target colameta-stable.service colameta-mcp-remote.service colameta-mcp-advanced.service cloudflared-colameta-mcp-prod.service colameta-tunnel-client.service
 
 [Install]
 WantedBy=multi-user.target

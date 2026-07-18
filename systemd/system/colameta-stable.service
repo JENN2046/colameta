@@ -16,6 +16,7 @@ WorkingDirectory=/home/jenn/tools/colameta
 Environment=HOME=/home/jenn
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
+Environment=MCP_EXPOSURE_PROFILE=commander
 Environment=PATH=/home/jenn/.local/bin:/home/jenn/.nvm/versions/node/v22.23.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
 ExecStart=/home/jenn/tools/colameta/.venv/bin/python /home/jenn/tools/colameta/.venv/lib/python3.12/site-packages/scripts/runner_cli.py serve /home/jenn/src/colameta-dev --web-host 127.0.0.1 --web-port 8801 --mcp-host 127.0.0.1 --mcp-port 8766 --auth-mode none --service-child
 ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8801/

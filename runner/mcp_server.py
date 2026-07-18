@@ -164,6 +164,7 @@ def _env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
 
 
 MCP_EXPOSURE_PROFILE_ENV = "MCP_EXPOSURE_PROFILE"
+MCP_EXPOSURE_PROFILE_COMMANDER = "commander"
 MCP_EXPOSURE_PROFILE_NORMAL = "normal"
 MCP_EXPOSURE_PROFILE_MAINTAINER = "maintainer"
 MCP_EXPOSURE_PROFILE_LEGACY = "legacy"
@@ -189,11 +190,12 @@ COMMANDER_APP_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
 COMMANDER_APP_MANIFEST_VERSION = "colameta_commander_app.v1"
 COMMANDER_APP_TITLE = "ColaMeta Commander"
 COMMANDER_APP_SERVER_INSTRUCTIONS = (
-    "ColaMeta Commander is a read-only ChatGPT App surface for local ColaMeta service facts. "
-    "Start with list_registered_projects, get_agent_consumer_contract, get_service_entry_profile, "
-    "get_agent_operator_flow_packet, then render_commander_app with a registered project_name and profile_id. "
-    "Treat manifest, runtime, connector, "
-    "profile, and preview outputs as evidence only; they do not authorize executor run, commit, push, "
+    "ColaMeta Commander is the focused ChatGPT App surface for ColaMeta project work. "
+    "Start with list_registered_projects, then use render_commander_app or analyze_project_state with a "
+    "registered project_name. Use run_mcp_workflow for planning and controlled changes, "
+    "manage_validation_run for validation, and manage_git for reviewed Git operations. "
+    "The complete catalog remains available only on the loopback advanced-mode endpoint. "
+    "Treat status and preview outputs as evidence only; they do not authorize executor run, commit, push, "
     "stable service replacement, ReviewDecision, GateEvent, or Delivery accepted."
 )
 
@@ -201,6 +203,15 @@ REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES: dict[str, str] = {
     "mcp:commit": "REMOTE_MCP_COMMIT_DENIED",
     "mcp:plan": "REMOTE_MCP_PLAN_DENIED",
 }
+
+COMMANDER_EXPOSED_TOOLS = (
+    "list_registered_projects",
+    "render_commander_app",
+    "analyze_project_state",
+    "run_mcp_workflow",
+    "manage_validation_run",
+    "manage_git",
+)
 
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
@@ -287,6 +298,7 @@ LEGACY_EXTRA_TOOLS = (
 )
 
 _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
+    MCP_EXPOSURE_PROFILE_COMMANDER: COMMANDER_EXPOSED_TOOLS,
     MCP_EXPOSURE_PROFILE_NORMAL: NORMAL_EXPOSED_TOOLS,
     MCP_EXPOSURE_PROFILE_MAINTAINER: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS,
     MCP_EXPOSURE_PROFILE_LEGACY: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS + LEGACY_EXTRA_TOOLS,
@@ -8301,7 +8313,11 @@ class MCPPlanningBridgeServer:
 
     def _filter_tools_by_exposure_profile(self, tools: list[MCPToolDef]) -> list[MCPToolDef]:
         allowed = self._get_exposed_tool_names(self.mcp_exposure_profile)
-        return [tool for tool in tools if tool.name in allowed]
+        filtered = [tool for tool in tools if tool.name in allowed]
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER:
+            position = {name: index for index, name in enumerate(COMMANDER_EXPOSED_TOOLS)}
+            filtered.sort(key=lambda tool: position[tool.name])
+        return filtered
 
     def _visible_tool_names(self) -> list[str]:
         return [tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs)]
@@ -9332,7 +9348,11 @@ class MCPPlanningBridgeServer:
                 "apply_plan_patch is intentionally not exposed over MCP. Runner applies pending patches locally via Web Console or CLI.",
             )
         if (
-            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+            self.mcp_exposure_profile
+            in {
+                MCP_EXPOSURE_PROFILE_COMMANDER,
+                MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY,
+            }
             and name not in self._get_exposed_tool_names(self.mcp_exposure_profile)
         ):
             return self._tool_error(

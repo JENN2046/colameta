@@ -11,6 +11,7 @@ Group=jenn
 ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8801/
 ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8766/mcp
 ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8767/healthz
+ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8768/mcp
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
