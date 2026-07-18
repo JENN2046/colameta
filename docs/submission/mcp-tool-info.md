@@ -1,75 +1,62 @@
 # MCP Tool Information Evidence
 
 ## tool_inventory
-Project name: colameta-self-dev
-MCP exposure profile: normal
-Visible tool count: 57
 
-| Tool | Scope | Title |
-|---|---|---|
-| `list_registered_projects` | `mcp:read` | (untitled) |
-| `get_agent_consumer_contract` | `mcp:read` | (untitled) |
-| `get_service_entry_profile` | `mcp:read` | (untitled) |
-| `get_agent_operator_flow_packet` | `mcp:read` | Get Agent Operator Flow Packet |
-| `get_web_gpt_service_entrypoint` | `mcp:read` | (untitled) |
-| `get_commander_app_manifest` | `mcp:read` | Get Commander App Manifest |
-| `get_product_readiness_status` | `mcp:read` | Get Product Readiness Status |
-| `get_chatgpt_app_readiness` | `mcp:read` | Get ChatGPT App Readiness |
-| `get_full_loop_authority_status` | `mcp:read` | Get Full Loop Authority Status |
-| `get_product_console_map` | `mcp:read` | Get Product Console Map |
-| `get_release_submission_readiness` | `mcp:read` | Get Release Submission Readiness |
-| `get_submission_evidence_fill_preview` | `mcp:read` | Get Submission Evidence Fill Preview |
-| `get_submission_evidence_auto_draft` | `mcp:read` | Get Submission Evidence Auto Draft |
-| `manage_submission_evidence_revision` | `action-dependent` | Manage Submission Evidence Revision |
-| `init_submission_evidence` | `mcp:commit` | Initialize Submission Evidence |
-| `fill_submission_evidence_files` | `mcp:commit` | Fill Submission Evidence Files |
-| `mark_submission_evidence_ready_fields` | `mcp:commit` | Mark Submission Evidence Ready Fields |
-| `record_product_console_action_result` | `mcp:commit` | Record Product Console Action Result |
-| `render_commander_app` | `mcp:read` | Render Commander App |
-| `get_apps_connector_smoke_packet` | `mcp:read` | Get Apps Connector Smoke Packet |
-| `get_stable_replacement_cadence` | `mcp:read` | Get Stable Replacement Cadence |
-| `get_stable_promotion_readiness` | `mcp:read` | Get Stable Promotion Readiness |
-| `manage_stable_promotion_evidence` | action-scoped | Manage Stable Promotion Evidence |
-| `get_stage_parallel_plan_preview` | `mcp:read` | Get Stage Parallel Plan Preview |
-| `get_stage_parallel_run_preview` | `mcp:read` | Get Stage Parallel Run Preview |
-| `get_stage_parallel_worktree_assignment_preview` | `mcp:read` | Get Stage Parallel Worktree Assignment Preview |
-| `get_stage_parallel_next_action_packet` | `mcp:read` | Get Stage Parallel Next Action Packet |
-| `get_stage_parallel_executor_group_preview` | `mcp:read` | Get Stage Parallel Executor Group Preview |
-| `get_stage_parallel_executor_results_packet` | `mcp:read` | Get Stage Parallel Executor Results Packet |
-| `get_stage_parallel_group_status` | `mcp:read` | Get Stage Parallel Group Status |
-| `get_stage_parallel_merge_preview` | `mcp:read` | Get Stage Parallel Merge Preview |
-| `get_stage_parallel_closeout_packet` | `mcp:read` | Get Stage Parallel Closeout Packet |
-| `manage_stage_parallel_worktrees` | `action-dependent` | Manage Stage Parallel Worktrees |
-| `manage_stage_parallel_shard_inputs` | `action-dependent` | Manage Stage Parallel Shard Inputs |
-| `manage_stage_parallel_executor_group` | `action-dependent` | Manage Stage Parallel Executor Group |
-| `manage_stage_parallel_executor_runs` | `action-dependent` | Manage Stage Parallel Executor Runs |
-| `manage_stage_parallel_merges` | `action-dependent` | Manage Stage Parallel Merges |
-| `get_runtime_version_status` | `mcp:read` | (untitled) |
-| `get_connector_runtime_health_status` | `mcp:read` | (untitled) |
-| `get_plan_standards_report` | `mcp:read` | (untitled) |
-| `get_runner_execution_standards` | `mcp:read` | (untitled) |
-| `manage_git` | `action-dependent` | (untitled) |
-| `manage_runner_plan` | `action-dependent` | (untitled) |
-| `manage_project_memory` | `action-dependent` | (untitled) |
-| `manage_workflow_run` | `mcp:read` | (untitled) |
-| `manage_plan_version` | `action-dependent` | (untitled) |
-| `manage_project_docs` | `action-dependent` | (untitled) |
-| `manage_prompt_file` | `action-dependent` | (untitled) |
-| `manage_files` | `action-dependent` | (untitled) |
-| `list_executor_run_reports` | `mcp:read` | (untitled) |
-| `get_executor_run_report` | `mcp:read` | (untitled) |
-| `inspect_executor_activity` | `mcp:read` | (untitled) |
-| `analyze_project_state` | `mcp:read` | (untitled) |
-| `run_mcp_workflow` | `action-dependent` | (untitled) |
-| `manage_executor_config` | `action-dependent` | (untitled) |
-| `manage_executor_workflow` | `action-dependent` | (untitled) |
-| `manage_validation_run` | `action-dependent` | (untitled) |
+- Project: `colameta-self-dev`
+- MCP exposure profile: `normal`
+- Visible tool count: 82
+- Submission inventory: `chatgpt-app-submission.json`
+- Submission inventory SHA-256:
+  `35879d78190404893ad9fb6c2796e2a23e49ef4b39222492b8a7b09080cb643d`
+
+The submission JSON contains every normal-profile tool in runtime order. Each
+entry records the three mandatory ChatGPT Apps hints and one-sentence
+justifications. The inventory covers project discovery, Commander/readiness,
+release evidence, runtime and connector health, stage-parallel workflows, Git,
+plans, docs, files, executor and validation workflows, and Work Item lifecycle
+commands.
 
 ## scope_map
-Tools marked `mcp:read` are evidence-only reads. Tools marked `mcp:preview` prepare bounded previews. Tools marked `mcp:commit` require explicit operator authorization and are not invoked by this evidence draft. Tools marked `action-dependent` choose read, preview, or commit scope from their explicit action/workflow arguments.
+
+- `mcp:read`: strictly reads or computes project-scoped evidence.
+- `mcp:preview`: creates a bounded preview but does not apply the proposed action.
+- `mcp:commit`: performs an explicit, permission-scoped local mutation or run.
+- `mcp:plan`: reserved plan authority; denied by the current remote public policy.
+
+Action-dependent tools select their scope from an explicit action or phase. The
+normal-profile annotation audit classified:
+
+- strictly read-only tools as `readOnlyHint=true`;
+- local write, overwrite, delete, or executor tools as `readOnlyHint=false`;
+- `manage_git` as `openWorldHint=true` because it can interact with Git remotes;
+- overwrite/delete/restore/revert tools as `destructiveHint=true`;
+- fixed validation execution as non-read-only but non-destructive.
 
 ## side_effects
-This evidence draft is generated by a read-only MCP tool. It does not start executors, run validation, write files, commit, push, replace stable service, create OpenAI App drafts, submit review, publish, or read tokens/cookies/raw logs.
+
+The generated submission file does not execute tools. Mutating tools retain their
+existing preview/apply, confirmation, scope, and project-routing guards. The
+remote public service policy continues to deny commit and plan scopes unless its
+service configuration explicitly permits them.
 
 ## safety_boundaries
-Submission creation remains separated behind `fill_submission_evidence_files` with `mcp:commit` scope. Replacing explicitly unfinished, manifest-bound Markdown uses `manage_submission_evidence_revision`: preview is digest-bound and apply is commit-scoped, rechecks the evidence and manifest baselines, and keeps the ready field false. Ready-field changes remain separated behind `mark_submission_evidence_ready_fields` with `mcp:commit` scope and `review_confirmation=human_reviewed`. Ready fields remain false until a human reviewer confirms final evidence.
+
+Source inspection found no normal-profile input fields that solicit passwords,
+API keys, OAuth secrets, MFA codes, payment data, government identifiers,
+biometrics, or health data. All 82 tools declare an `outputSchema`.
+
+Commander widget CSP uses empty `connectDomains`, `resourceDomains`,
+`connect_domains`, and `resource_domains` lists because the widget does not load
+external resources. No token, cookie, private browser state, tunnel credential,
+provider secret, raw log, request ID, stack trace, or local filesystem path is
+included in `chatgpt-app-submission.json`.
+
+## verification
+
+- Required annotations present: 82/82.
+- Output schemas present: 82/82.
+- Positive submission tests: 5.
+- Negative submission tests: 3.
+- Full project tests: 1467 passed, 2 skipped, 55 subtests passed.
+
+Human review is still required before `mcp_tool_info_ready=true`.
