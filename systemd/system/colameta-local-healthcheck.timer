@@ -1,0 +1,15 @@
+[Unit]
+Description=Run ColaMeta local endpoint health checks
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+PartOf=colameta-private-beta.target
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=colameta-local-healthcheck.service
+
+[Install]
+WantedBy=timers.target

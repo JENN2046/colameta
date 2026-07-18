@@ -1,0 +1,25 @@
+[Unit]
+Description=Recover the ColaMeta private Beta service stack
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+After=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl try-restart colameta-private-beta.target
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+LogNamespace=colameta

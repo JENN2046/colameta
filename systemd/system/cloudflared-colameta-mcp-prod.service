@@ -1,0 +1,46 @@
+[Unit]
+Description=Cloudflare Tunnel for ColaMeta public OAuth MCP
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+After=network-online.target colameta-mcp-remote.service
+Wants=network-online.target colameta-mcp-remote.service
+PartOf=colameta-private-beta.target
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+ConditionFileIsExecutable=/home/jenn/.local/bin/cloudflared
+ConditionPathExists=/home/jenn/.config/colameta/cloudflared/colameta-mcp-prod.yml
+
+[Service]
+Type=simple
+User=jenn
+Group=jenn
+Environment=HOME=/home/jenn
+ExecStart=/home/jenn/.local/bin/cloudflared tunnel --protocol http2 --retries 20 --config /home/jenn/.config/colameta/cloudflared/colameta-mcp-prod.yml run colameta-mcp-prod
+Restart=always
+RestartSec=10s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+TasksMax=256
+LimitNOFILE=8192
+BindReadOnlyPaths=/home/jenn/.config/colameta/cloudflared/edge-hosts:/etc/hosts
+LogNamespace=colameta
+
+[Install]
+WantedBy=multi-user.target
