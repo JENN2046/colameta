@@ -1,20 +1,35 @@
 # Screenshot Evidence
 
 ## asset_paths
-Candidate screenshot asset: `assets/screenshots/web-console-overview.png`
+
+Current product-experience screenshots:
+
+- `docs/submission/assets/product-audit-20260718/08-post-smoke-sync.png`
+- `docs/submission/assets/product-audit-20260718/02-operator-inbox.png`
+- `docs/submission/assets/product-audit-20260718/03-release-evidence.png`
+- `docs/submission/assets/product-audit-20260718/04b-evidence-editor-focused.png`
+- `docs/submission/assets/product-audit-20260718/06-mobile-evidence-panel.png`
+- `docs/submission/assets/product-audit-20260718/07-mobile-evidence-editor-focused.png`
 
 ## viewport_or_device
-Captured Web Console overview screenshot, 3192 x 1558 PNG, RGBA.
+Desktop captures: 1440 x 1000 and 1418 x 902 PNG.
+
+Narrow/mobile captures: 390 x 844 PNG.
 
 ## captions
-Candidate caption: ColaMeta Web Console overview showing project status,
-execution report context, todo list, and project-management controls.
+1. ColaMeta Web Console overview showing stable runtime health, product completion,
+   and the recorded Apps connector smoke result.
+2. Operator Inbox showing read-only and gated follow-up actions.
+3. Release evidence list showing review-required reasons and file bindings.
+4. Digest-bound release evidence editor with separate preview and apply controls.
+5. Narrow viewport evidence list and editor reflow.
 
 ## review_notes
-This screenshot is an existing tracked product screenshot and is useful as
-draft visual evidence for the project-operation-console experience.
+These screenshots were captured from the stable Web Console at commit
+`8639e83d6a7a572e1db1be26267aef7737313643` in a new temporary browser profile.
+They were inspected for blank, loading, cropped, and incorrect states.
 
-It is not a final ChatGPT Apps Commander screenshot. A human reviewer still
-needs to capture and approve final ChatGPT Apps screenshots from the real Apps
-surface, including mobile or narrow viewport coverage if required, before
-`screenshots_ready=true`.
+The full review is recorded in
+`docs/submission/product-experience-audit-20260718.md`. A human reviewer still
+needs to approve which images and captions should be uploaded in the final App
+submission form before `screenshots_ready=true`.

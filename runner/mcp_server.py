@@ -737,6 +737,71 @@ class MCPToolDef:
     meta: dict[str, Any] | None = None
 
 
+_CHATGPT_SUBMISSION_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
+    **{
+        name: {
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        }
+        for name in (
+            "list_registered_projects",
+            "get_agent_consumer_contract",
+            "get_service_entry_profile",
+            "get_web_gpt_service_entrypoint",
+            "get_stable_promotion_readiness",
+            "get_runtime_version_status",
+            "get_connector_runtime_health_status",
+            "get_plan_standards_report",
+            "get_runner_execution_standards",
+            "manage_workflow_run",
+            "list_executor_run_reports",
+            "get_executor_run_report",
+            "inspect_executor_activity",
+            "analyze_project_state",
+        )
+    },
+    "manage_git": {
+        "readOnlyHint": False,
+        "openWorldHint": True,
+        "destructiveHint": True,
+    },
+    **{
+        name: {
+            "readOnlyHint": False,
+            "openWorldHint": False,
+            "destructiveHint": True,
+        }
+        for name in (
+            "manage_runner_plan",
+            "manage_project_memory",
+            "manage_plan_version",
+            "manage_project_docs",
+            "manage_prompt_file",
+            "manage_files",
+            "run_mcp_workflow",
+            "manage_executor_config",
+            "manage_executor_workflow",
+        )
+    },
+    "manage_validation_run": {
+        "readOnlyHint": False,
+        "openWorldHint": False,
+        "destructiveHint": False,
+    },
+}
+
+
+def _apply_chatgpt_submission_tool_annotations(tool_defs: list[MCPToolDef]) -> None:
+    for tool in tool_defs:
+        explicit = _CHATGPT_SUBMISSION_TOOL_ANNOTATIONS.get(tool.name)
+        if explicit is None:
+            continue
+        annotations = dict(tool.annotations or {})
+        annotations.update(explicit)
+        tool.annotations = annotations
+
+
 VALID_MCP_SCOPES = frozenset({"mcp:read", "mcp:preview", "mcp:commit", "mcp:plan"})
 
 
@@ -4512,6 +4577,7 @@ class MCPPlanningBridgeServer:
             ),
         ]
         self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
+        _apply_chatgpt_submission_tool_annotations(self.tool_defs)
         if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             if self.work_item_scope_mode != PILOT_SCOPE_MODE:
                 validate_runtime_policy_contracts()

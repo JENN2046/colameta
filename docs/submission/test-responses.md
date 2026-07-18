@@ -4,10 +4,14 @@
 T001
 
 ## observed_result
-`list_registered_projects` returned `ok=true` with `project_count=1`; the first project name was `colameta-self-dev`.
+The real ChatGPT Apps connector smoke returned `ok=true` with
+`project_count=5`; the registered-project result included
+`colameta-self-dev`.
 
 ## evidence_link_or_notes
-Observed through a local MCPPlanningBridgeServer instance with a temporary registry containing only `/home/jenn/src/colameta-dev`. No token, cookie, raw log, provider response, or private registry file was read.
+Observed through the real connector surface against the stable/public baseline
+`8639e83d6a7a572e1db1be26267aef7737313643`. No token, cookie, raw log,
+provider secret, or private registry file is reproduced in this evidence.
 
 ## review_status
 Draft evidence only. Human reviewer must rerun from the final ChatGPT Apps connector surface before marking `test_prompts_ready` or `test_responses_ready` true.
@@ -40,13 +44,22 @@ Draft evidence only. Current blocked status is expected and must not be treated 
 T004
 
 ## observed_result
-`get_release_submission_readiness` returned `ok=true`, `source=release_submission_readiness`, `read_only=true`, `ready=false`, `status=blocked`, and blocker codes `PRODUCT_READINESS_NOT_READY` and `PUBLIC_MCP_ENDPOINT_NOT_READY`. Evidence counts after this test evidence fill were `ready=0`, `filled_not_marked_ready=5`, `placeholder=5`, `not_started=0`.
+The earlier readiness response was `ready=false` and `status=blocked`. Since
+that capture, expected-head-bound public MCP preflight and the real Apps
+connector smoke both passed at baseline
+`8639e83d6a7a572e1db1be26267aef7737313643`; connector evidence gaps were 0
+and stable replacement status was `stable_aligned`.
 
 ## evidence_link_or_notes
-The readiness packet preserves the public endpoint and product readiness blockers and keeps submission evidence unready until human review.
+The old `PUBLIC_MCP_ENDPOINT_NOT_READY` observation is superseded by the later
+baseline preflight. Submission evidence remains unready because the generated
+metadata, security review, screenshots, test responses, and Dashboard form have
+not received final human approval.
 
 ## review_status
-Draft evidence only. This test should be rerun after stable/public endpoint readiness is restored.
+Draft evidence only. Rerun this tool from a fresh connector session after the
+annotation candidate is committed and the stable/public runtime is refreshed;
+do not mark readiness from the superseded response.
 
 ## prompt_id
 T005

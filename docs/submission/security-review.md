@@ -15,10 +15,28 @@ Published candidate URL: https://github.com/JENN2046/colameta/blob/main/docs/pri
 Human privacy review is still required before marking `security_review_ready=true`.
 
 ## monitoring
-Runtime reload awareness: installed_package_project_checkout_dirty
-Reload needed for verification: true
-Connector overall status: local_runtime_observed_external_connector_unverified
-Operator closeout status: local_service_attention_needed
+Stable runtime baseline: `8639e83d6a7a572e1db1be26267aef7737313643`
+
+Public remote MCP preflight at that baseline:
+
+- expected and loaded runtime heads matched;
+- `runtime_loaded_code_stale=false`;
+- `reload_needed_for_verification=false`;
+- health, MCP, and protected-resource metadata endpoints returned expected status.
+
+Apps connector smoke at that baseline:
+
+- connector runtime health: `healthy`;
+- operator closeout: `connector_closeout_ready`;
+- evidence gap count: 0;
+- stable replacement status: `stable_aligned`.
+
+The submission annotation changes remain an uncommitted release-material candidate.
+After commit and stable/public runtime refresh, the same expected-head-bound checks
+must be rerun before final submission approval.
 
 ## review_status
-Human security/privacy review is still required before marking `security_review_ready=true`.
+Source review found no normal-profile tool inputs requesting credentials, MFA,
+payment, government-ID, biometric, or health data. Commander widget CSP contains
+no external connect or resource domains. Human security/privacy review is still
+required before marking `security_review_ready=true`.
