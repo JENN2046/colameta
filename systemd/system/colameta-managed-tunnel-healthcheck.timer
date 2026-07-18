@@ -1,0 +1,15 @@
+[Unit]
+Description=Run ColaMeta managed tunnel health checks
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+PartOf=colameta-private-beta.target
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=colameta-managed-tunnel-healthcheck.service
+
+[Install]
+WantedBy=timers.target

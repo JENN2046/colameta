@@ -1,0 +1,50 @@
+[Unit]
+Description=ColaMeta managed tunnel for ChatGPT Apps
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+After=network-online.target colameta-stable.service
+Wants=network-online.target colameta-stable.service
+PartOf=colameta-private-beta.target
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+ConditionFileIsExecutable=/home/jenn/tools/tunnel-client/bin/tunnel-client
+ConditionFileIsExecutable=/home/jenn/tools/colameta/scripts/colameta_tunnel_client_service.sh
+
+[Service]
+Type=simple
+User=jenn
+Group=jenn
+WorkingDirectory=/home/jenn/tools/colameta
+Environment=HOME=/home/jenn
+Environment=COLAMETA_PROJECT_ROOT=/home/jenn/src/colameta-dev
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/home/jenn/tools/colameta/scripts/colameta_tunnel_client_service.sh check
+ExecStart=/home/jenn/tools/colameta/scripts/colameta_tunnel_client_service.sh start
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8080/healthz
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8080/readyz
+Restart=always
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+TasksMax=256
+LimitNOFILE=8192
+LogNamespace=colameta
+
+[Install]
+WantedBy=multi-user.target
