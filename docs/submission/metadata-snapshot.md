@@ -24,8 +24,8 @@ Current desktop and narrow product screenshots are recorded in
 `docs/submission/product-experience-audit-20260718.md`.
 
 ## runtime_snapshot
-Stable/public verified baseline head: 8639e83d6a7a572e1db1be26267aef7737313643
-Loaded runtime head at preflight: 8639e83d6a7a572e1db1be26267aef7737313643
+Stable/public verified baseline head: 9cf53f07378aec0ac33d9792dddec58546fb1d6f
+Loaded runtime head at preflight: 9cf53f07378aec0ac33d9792dddec58546fb1d6f
 Runtime stale at preflight: false
 Reload needed for verification at preflight: false
 

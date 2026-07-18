@@ -10,7 +10,7 @@ The real ChatGPT Apps connector smoke returned `ok=true` with
 
 ## evidence_link_or_notes
 Observed through the real connector surface against the stable/public baseline
-`8639e83d6a7a572e1db1be26267aef7737313643`. No token, cookie, raw log,
+`9cf53f07378aec0ac33d9792dddec58546fb1d6f`. No token, cookie, raw log,
 provider secret, or private registry file is reproduced in this evidence.
 
 ## review_status
@@ -47,7 +47,7 @@ T004
 The earlier readiness response was `ready=false` and `status=blocked`. Since
 that capture, expected-head-bound public MCP preflight and the real Apps
 connector smoke both passed at baseline
-`8639e83d6a7a572e1db1be26267aef7737313643`; connector evidence gaps were 0
+`9cf53f07378aec0ac33d9792dddec58546fb1d6f`; connector evidence gaps were 0
 and stable replacement status was `stable_aligned`.
 
 ## evidence_link_or_notes

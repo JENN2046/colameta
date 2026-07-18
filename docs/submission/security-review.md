@@ -15,7 +15,7 @@ Published candidate URL: https://github.com/JENN2046/colameta/blob/main/docs/pri
 Human privacy review is still required before marking `security_review_ready=true`.
 
 ## monitoring
-Stable runtime baseline: `8639e83d6a7a572e1db1be26267aef7737313643`
+Stable runtime baseline: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`
 
 Public remote MCP preflight at that baseline:
 
