@@ -2498,8 +2498,8 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
         server.serve_http(preflight_conformance=True, preflight_conformance_timeout_seconds=121)
 
     now = isoformat_utc(utc_now())
-    with sqlite3.connect(ledger.path) as connection:
-        connection.execute(
+    with sqlite3.connect(ledger.path) as source_connection:
+        source_connection.execute(
             """
             INSERT INTO work_items(
                 work_item_id,schema_version,state,state_version,origin_kind,origin_ref,
@@ -2527,7 +2527,8 @@ def test_preflight_conformance_fails_closed_on_profile_lease_timeout_and_nonzero
                 now,
             ),
         )
-        connection.commit()
+        source_connection.commit()
+    source_connection.close()
     nonzero_parent = tmp_path / "nonzero-snapshots"
     nonzero_parent.mkdir(mode=0o700)
     source_before = _ledger_physical_state(project)
