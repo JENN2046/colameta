@@ -57,9 +57,9 @@ metadata, security review, screenshots, test responses, and Dashboard form have
 not received final human approval.
 
 ## review_status
-Draft evidence only. Rerun this tool from a fresh connector session after the
-annotation candidate is committed and the stable/public runtime is refreshed;
-do not mark readiness from the superseded response.
+Draft evidence only. Rerun this tool from a fresh connector session immediately
+before Dashboard submission; do not mark readiness from the superseded
+response.
 
 ## prompt_id
 T005

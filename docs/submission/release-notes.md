@@ -15,12 +15,17 @@ This submission provides:
 - desktop and narrow-viewport product evidence; and
 - privacy, security, support, and terms documentation.
 
-Review baseline:
+Runtime verification baseline:
 
-- release commit: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`;
+- deployed MCP code commit: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`;
 - MCP endpoint: `https://colameta-mcp.skmt617.top/mcp`;
 - submission inventory SHA-256:
   `35879d78190404893ad9fb6c2796e2a23e49ef4b39222492b8a7b09080cb643d`.
+
+The support, terms, and release-note documents are submission materials added
+after that deployed code baseline. The final Dashboard review must use the
+versions published from `main` that contain this file; it must not treat
+`9cf53f0` as the source commit for those documents.
 
 The reviewer account must be supplied through the OpenAI Platform submission
 portal and tested without MFA, SMS, email confirmation, or private-network
