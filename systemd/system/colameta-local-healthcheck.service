@@ -1,7 +1,7 @@
 [Unit]
 Description=Check ColaMeta local private Beta endpoints
 Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
-After=colameta-stable.service colameta-mcp-remote.service
+After=colameta-stable.service colameta-mcp-remote.service colameta-mcp-advanced.service
 OnFailure=colameta-stack-recover.service
 
 [Service]
