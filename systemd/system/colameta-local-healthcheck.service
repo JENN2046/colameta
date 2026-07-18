@@ -1,0 +1,29 @@
+[Unit]
+Description=Check ColaMeta local private Beta endpoints
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+After=colameta-stable.service colameta-mcp-remote.service
+OnFailure=colameta-stack-recover.service
+
+[Service]
+Type=oneshot
+User=jenn
+Group=jenn
+ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8801/
+ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8766/mcp
+ExecStart=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:8767/healthz
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+LogNamespace=colameta

@@ -1,0 +1,49 @@
+[Unit]
+Description=ColaMeta stable local Web and MCP service
+Documentation=file:/home/jenn/src/colameta-dev/docs/private-beta-systemd.md
+After=network-online.target
+Wants=network-online.target
+PartOf=colameta-private-beta.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+ConditionPathExists=/home/jenn/tools/colameta/.venv/lib/python3.12/site-packages/scripts/runner_cli.py
+
+[Service]
+Type=simple
+User=jenn
+Group=jenn
+WorkingDirectory=/home/jenn/tools/colameta
+Environment=HOME=/home/jenn
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/jenn/.local/bin:/home/jenn/.nvm/versions/node/v22.23.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+ExecStart=/home/jenn/tools/colameta/.venv/bin/python /home/jenn/tools/colameta/.venv/lib/python3.12/site-packages/scripts/runner_cli.py serve /home/jenn/src/colameta-dev --web-host 127.0.0.1 --web-port 8801 --mcp-host 127.0.0.1 --mcp-port 8766 --auth-mode none --service-child
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8801/
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8766/mcp
+Restart=always
+RestartSec=3s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+KillMode=mixed
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+TasksMax=512
+LimitNOFILE=8192
+LogNamespace=colameta
+
+[Install]
+WantedBy=multi-user.target
