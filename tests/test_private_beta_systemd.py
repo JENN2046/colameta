@@ -16,8 +16,10 @@ def test_private_beta_target_owns_the_complete_stack() -> None:
     assert "colameta-stable.service" in target
     assert "colameta-mcp-remote.service" in target
     assert "cloudflared-colameta-mcp-prod.service" in target
+    assert "colameta-tunnel-client.service" in target
     assert "colameta-local-healthcheck.timer" in target
     assert "colameta-public-healthcheck.timer" in target
+    assert "colameta-managed-tunnel-healthcheck.timer" in target
     assert "WantedBy=multi-user.target" in target
 
 
@@ -26,6 +28,7 @@ def test_long_running_services_have_restart_stop_and_log_boundaries() -> None:
         "colameta-stable.service",
         "colameta-mcp-remote.service",
         "cloudflared-colameta-mcp-prod.service",
+        "colameta-tunnel-client.service",
     ):
         unit = _read(name)
         assert "Restart=always" in unit
@@ -64,6 +67,27 @@ def test_public_health_reports_without_automatic_recovery() -> None:
     assert "OnFailure=" not in health
 
 
+def test_managed_tunnel_health_reports_without_restarting_the_stack() -> None:
+    health = _read("colameta-managed-tunnel-healthcheck.service")
+
+    assert "http://127.0.0.1:8080/healthz" in health
+    assert "http://127.0.0.1:8080/readyz" in health
+    assert "OnFailure=" not in health
+
+
+def test_managed_tunnel_uses_existing_safe_launcher_and_bounded_logs() -> None:
+    unit = _read("colameta-tunnel-client.service")
+    logrotate = Path("systemd/logrotate/colameta-tunnel-client").read_text(
+        encoding="utf-8"
+    )
+
+    assert "colameta_tunnel_client_service.sh check" in unit
+    assert "colameta_tunnel_client_service.sh start" in unit
+    assert "Restart=always" in unit
+    assert "rotate 14" in logrotate
+    assert "maxsize 10M" in logrotate
+
+
 def test_journal_namespace_has_bounded_rotation() -> None:
     config = _read("journald-colameta.conf")
 
@@ -80,4 +104,7 @@ def test_installer_keeps_the_target_as_the_only_boot_owner() -> None:
 
     assert "systemctl disable" in installer
     assert "cloudflared-colameta-mcp-prod.service" in installer
+    assert "colameta-tunnel-client.service" in installer
+    assert '"$backup_dir/logrotate-colameta-tunnel-client"' in installer
+    assert "/etc/logrotate.d/colameta-tunnel-client" in installer
     assert "systemctl enable colameta-private-beta.target" in installer

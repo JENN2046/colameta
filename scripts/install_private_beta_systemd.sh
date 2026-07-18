@@ -12,10 +12,13 @@ units=(
   colameta-stable.service
   colameta-mcp-remote.service
   cloudflared-colameta-mcp-prod.service
+  colameta-tunnel-client.service
   colameta-local-healthcheck.service
   colameta-local-healthcheck.timer
   colameta-public-healthcheck.service
   colameta-public-healthcheck.timer
+  colameta-managed-tunnel-healthcheck.service
+  colameta-managed-tunnel-healthcheck.timer
   colameta-stack-recover.service
 )
 
@@ -32,14 +35,25 @@ sudo install -d -m 0755 -o root -g root /etc/systemd/journald@colameta.conf.d
 sudo install -m 0644 -o root -g root \
   "$unit_source/journald-colameta.conf" \
   /etc/systemd/journald@colameta.conf.d/limits.conf
+if [[ -e /etc/logrotate.d/colameta-tunnel-client ]]; then
+  sudo cp --preserve=mode,timestamps \
+    /etc/logrotate.d/colameta-tunnel-client \
+    "$backup_dir/logrotate-colameta-tunnel-client"
+  sudo chown jenn:jenn "$backup_dir/logrotate-colameta-tunnel-client"
+fi
+sudo install -m 0644 -o root -g root \
+  "$repo_root/systemd/logrotate/colameta-tunnel-client" \
+  /etc/logrotate.d/colameta-tunnel-client
 
 sudo systemctl daemon-reload
 sudo systemctl disable \
   colameta-stable.service \
   colameta-mcp-remote.service \
   cloudflared-colameta-mcp-prod.service \
+  colameta-tunnel-client.service \
   colameta-local-healthcheck.timer \
   colameta-public-healthcheck.timer \
+  colameta-managed-tunnel-healthcheck.timer \
   >/dev/null 2>&1 || true
 sudo systemctl enable colameta-private-beta.target
 

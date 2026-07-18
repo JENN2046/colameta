@@ -10,10 +10,16 @@ boundary:
   `127.0.0.1:8767`;
 - `cloudflared-colameta-mcp-prod.service`: public tunnel, ordered after the
   OAuth origin without stop propagation during an origin restart;
+- `colameta-tunnel-client.service`: managed tunnel used by the existing
+  ChatGPT Apps connector, ordered after the local MCP service;
 - `colameta-local-healthcheck.timer`: one-minute local endpoint checks with a
-  rate-limited stack recovery on failure; and
+  rate-limited stack recovery on failure;
 - `colameta-public-healthcheck.timer`: five-minute public HTTPS checks that
-  report failures without restarting the stack for transient internet errors.
+  report failures without restarting the stack for transient internet errors;
+  and
+- `colameta-managed-tunnel-healthcheck.timer`: five-minute managed-tunnel
+  health and control-plane readiness checks that report without restarting the
+  healthy local or public stack.
 
 All long-running services use `Restart=always`, bounded start limits, explicit
 stop signals and 30-second stop timeouts. They log to the `colameta` journal
@@ -54,12 +60,18 @@ sudo systemctl list-timers 'colameta-*'
 sudo journalctl --namespace=colameta -u colameta-stable.service
 sudo journalctl --namespace=colameta -u colameta-mcp-remote.service
 sudo journalctl --namespace=colameta -u cloudflared-colameta-mcp-prod.service
+sudo journalctl --namespace=colameta -u colameta-tunnel-client.service
 ```
 
 `systemctl stop colameta-private-beta.target` propagates a graceful stop to all
-three long-running services. Explicitly stopping the target does not trigger
+four long-running services. Explicitly stopping the target does not trigger
 `Restart=always`; systemd restarts a service only when its process exits while
 the unit is expected to remain active.
+
+The managed tunnel writes its own bounded diagnostic file at
+`/home/jenn/.local/state/colameta/tunnel-client.log`. The installer adds a
+daily/10 MiB logrotate policy with 14 compressed rotations. It never prints or
+copies the tunnel profile, API key, or connector credentials.
 
 ## Verify
 
@@ -67,6 +79,8 @@ the unit is expected to remain active.
 curl --fail http://127.0.0.1:8801/
 curl --fail http://127.0.0.1:8766/mcp
 curl --fail http://127.0.0.1:8767/healthz
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
 /home/jenn/tools/colameta/.venv/bin/python \
   /home/jenn/tools/colameta/scripts/remote_https_mcp_preflight.py \
   https://colameta-mcp.skmt617.top \
@@ -77,10 +91,17 @@ For a controlled restart test, record the current `MainPID`, send `SIGTERM` to
 that exact service PID, and verify that systemd assigns a different running
 `MainPID`. Do not kill by process-name pattern.
 
+## ChatGPT Apps connector smoke
+After the local and public health checks pass, call `list_registered_projects` through the existing ChatGPT Apps connector and confirm it includes `colameta-self-dev`. Then call `analyze_project_state(project_name="colameta-self-dev")` and confirm the returned Git HEAD matches the deployed checkout. If the Apps call reports an internal tunnel 404 while ports 8766 and 8080 are healthy, check `colameta-tunnel-client.service`; do not read tokens, cookies, connector configuration, or raw logs.
+
+
 ## Roll back
 
 Stop and disable the target, copy the newest backed-up units from
 `/home/jenn/tools/colameta-systemd-backups/<timestamp>/` into
 `/etc/systemd/system/`, remove only newly introduced ColaMeta units, then run
-`sudo systemctl daemon-reload`. The stable source/package backup remains
+`sudo systemctl daemon-reload`. Restore
+`logrotate-colameta-tunnel-client` from the same backup directory to
+`/etc/logrotate.d/colameta-tunnel-client`, or remove the installed logrotate
+file when the backup is absent. The stable source/package backup remains
 separate from systemd configuration backups.

@@ -4416,6 +4416,57 @@ class WorkflowOrchestrator:
         has_heading = bool(params.get("heading"))
         has_new_content = bool(params.get("new_content"))
         has_section_heading = bool(params.get("section_heading"))
+        has_section_content = bool(params.get("section_content"))
+
+        if has_file and has_section_heading and has_section_content:
+            preview_params = {
+                "file": params.get("file"),
+                "section_heading": params.get("section_heading"),
+                "section_content": params.get("section_content"),
+                "after_heading": params.get("after_heading"),
+                "reason": params.get("reason"),
+            }
+            preview_result = self.project_docs.handle(
+                "append_section_preview", preview_params
+            )
+            steps.append(self._step(
+                "auto_preview", "manage_project_docs", "append_section_preview",
+                preview_result, STEP_RISK_PREVIEW,
+            ))
+            preview_ids = self._extract_preview_ids(preview_result)
+            next_actions = []
+            if preview_ids:
+                next_actions.append({
+                    "action": "docs_update.apply",
+                    "label": "应用文档更新",
+                    "tool": "run_mcp_workflow",
+                    "params": {
+                        "workflow": "docs_update",
+                        "phase": "apply",
+                        "preview_id": preview_ids[0],
+                    },
+                    "risk_level": "write",
+                    "requires_confirmation": True,
+                })
+            return self._auto_preview_result(
+                selected_workflow="docs_update",
+                selection_reason=(
+                    "goal mentions docs; has file+section_heading+section_content "
+                    "for append_section_preview"
+                ),
+                confidence=0.9,
+                stop_reason=_STOP_NEEDS_DOCS_APPLY_CONFIRMATION,
+                steps=steps,
+                preview_ids=preview_ids,
+                next_actions=next_actions,
+                status=(
+                    "preview_ready"
+                    if preview_ids
+                    else ("failed" if not preview_result.get("ok") else "succeeded")
+                ),
+                requires_confirmation=bool(preview_ids),
+                result=preview_result,
+            )
 
         if has_file and has_heading and has_new_content:
             preview_params = {
@@ -4455,13 +4506,18 @@ class WorkflowOrchestrator:
 
         return self._auto_preview_result(
             selected_workflow="docs_update",
-            selection_reason="goal mentions docs but lacks specific file/heading/new_content",
+            selection_reason=(
+                "goal mentions docs but lacks file plus either "
+                "heading/new_content or section_heading/section_content"
+            ),
             confidence=0.6,
             stop_reason=_STOP_NEEDS_MORE_INPUT,
             steps=steps,
             status="needs_input",
             requires_confirmation=False,
-            blockers=["goal 涉及文档操作，但缺少具体 file/heading/new_content 参数"],
+            blockers=[
+                "goal 涉及文档操作，但缺少 file 与对应的 section 更新或追加参数"
+            ],
             result={"index": index_result.get("doc_index") if isinstance(index_result, dict) else None},
         )
 

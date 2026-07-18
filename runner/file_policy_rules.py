@@ -265,6 +265,8 @@ LEGACY_COMMIT_DIR_ALLOW = (
     "runner/**/*",
     "schemas/*",
     "schemas/**/*",
+    "systemd/*",
+    "systemd/**/*",
     "Sources/*",
     "Sources/**/*",
     "Resources/*",
