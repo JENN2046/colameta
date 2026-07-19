@@ -206,6 +206,7 @@ REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES: dict[str, str] = {
 
 COMMANDER_EXPOSED_TOOLS = (
     "list_registered_projects",
+    "get_apps_connector_smoke_packet",
     "render_commander_app",
     "analyze_project_state",
     "run_mcp_workflow",
