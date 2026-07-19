@@ -48,7 +48,7 @@ These references support review but are not imported into the Master candidate:
 ```yaml
 current_reality_snapshot:
   path: docs/taskbooks/CURRENT_REALITY_SNAPSHOT_20260719.md
-  raw_sha256: 1b37f7e1c35830e16296232aafc93fa58cb01a4b4a470e19418924b24fb7da6d
+  raw_sha256: eb8100f9cc84d392118c3097eff65338525de3a72524de8c067340fcc3a2c6cf
 seven_tool_submission_candidate:
   path: chatgpt-app-submission.json
   source_commit: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
@@ -56,6 +56,10 @@ seven_tool_submission_candidate:
 stable_soak_receipt:
   path: docs/connector-tunnel-closeout-receipts/read-only-soak-ad170ce-20260719.md
   loaded_stable_target: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
+stable_replacement_receipt:
+  path: docs/stable-replacement-receipts/stable-replacement-b6c864c-20260719.md
+  loaded_stable_target: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
+  raw_sha256: 2d2d0f0e53aa523c2bb177c19ad9ecede3c9940e09f3c5ed6a93b62a71f73213
 ```
 
 ## Authorization Boundary

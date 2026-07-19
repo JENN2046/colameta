@@ -24,8 +24,8 @@ Current desktop and narrow product screenshots are recorded in
 `docs/submission/product-experience-audit-20260718.md`.
 
 ## runtime_snapshot
-Stable/public verified baseline head: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
-Loaded runtime head at preflight: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
+Stable/public verified baseline head: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
+Loaded runtime target at preflight: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
 Runtime stale at preflight: false
 Reload needed for verification at preflight: false
 
@@ -47,12 +47,10 @@ candidate generated from source commit
 Initial release notes: `docs/submission/release-notes.md`
 
 This metadata snapshot is bound to the deployed runtime release
-`ad170ced2bd576215bcda0ea1078dd6d6f41cf9f`. The final human review must
-compare the candidate import file against the exact loaded Commander descriptors
-and verify that the Dashboard tool scan and form match the chosen deployed
-release. The current loaded `ad170ce` workflow descriptor says Stage 3–6 while
-the `b6c864c` candidate says Stage 0–6. This snapshot does not authorize another
-stable replacement.
+`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. The live Commander comparison
+confirmed seven tools, complete annotations/output schemas, and Stage 0–6
+wording. The final human review must still verify the Dashboard form and app
+metadata. This snapshot does not authorize another stable replacement.
 
 ## reviewer
 Human reviewer must confirm final Dashboard metadata, URLs, logo, screenshots, and policy text before marking `metadata_snapshot_reviewed=true`.

@@ -33,6 +33,8 @@ private_beta_pr: 174
 private_beta_pr_state: merged
 commander_profile_fix_commit: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
 stable_replacement_receipt_commit: 7cdfd732d170188fc4b282ad809cbc95d1902612
+stage_0_6_pr: 175
+stage_0_6_merge_commit: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
 stage_0_6_anchor_implementation_commit: 8550a5f
 runner_reconciliation_plan_commit: 02d7ec9
 ```
@@ -45,7 +47,7 @@ existing local exact-toolchain environment rather than the Commander change.
 ## Stable And Public Private Beta Reality
 
 ```yaml
-stable_runtime_head: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
+stable_runtime_head: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
 public_mcp_exposure_profile: commander
 public_visible_tool_count: 7
 remote_project: colameta-self-dev
@@ -68,9 +70,10 @@ The seven public tools are:
 
 The loopback advanced endpoint remains a separate 82-tool normal profile. The
 checked-in `chatgpt-app-submission.json` is now a seven-tool candidate generated
-from source commit `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. It is not a
-submission-readiness grant and is not proof that the loaded `ad170ce` stable
-descriptor has advanced from Stage 3–6 to Stage 0–6.
+from source commit `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. The separately
+authorized stable replacement loaded that exact target, and the post-restart
+descriptor scan confirmed Stage 0–6. The JSON remains a candidate rather than a
+submission-readiness grant.
 
 ## Master And Stage Anchor Reality
 
@@ -99,8 +102,10 @@ canonical_receipt_generation: deferred_not_generated
 canonical_payload_hash_finalization: deferred_not_finalized
 ```
 
-No Master candidate was written. This is the intended P2 stopping point until a
-complete candidate and exact hash can be presented for separate confirmation.
+A zero-diff exact-hash candidate was later prepared at
+`docs/taskbooks/MASTER_EXACT_HASH_CANDIDATE_20260719.md`. It reaffirms the
+existing raw hash because current runtime facts remain outside the Master
+governance boundary; it does not authorize Master or registry mutation.
 
 ## Runner Lineage Reconciliation
 
@@ -150,8 +155,8 @@ ReviewDecision, emit a GateEvent, commit, push, or replace stable service.
 2. Prepare a separate Master revision/hash preview if current-reality facts must
    change the durable Master contract. Do not mutate Master without exact-hash
    confirmation.
-3. Human-review the seven-tool ChatGPT App candidate and compare it with an
-   exact live descriptor scan for the chosen deployed target.
-4. Start a new stable replacement only with a new explicit target authorization.
+3. Human-review the seven-tool ChatGPT App candidate; the exact live descriptor
+   comparison for deployed target `b6c864c` is complete.
+4. Any later stable replacement requires a new explicit target authorization.
 5. Continue the Private Beta soak beyond the completed bounded initial sample
    before any actual submission decision.

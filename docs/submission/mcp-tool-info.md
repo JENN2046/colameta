@@ -22,10 +22,10 @@ The public Commander surface contains exactly these tools, in runtime order:
 
 The checked-in submission JSON now contains exactly this seven-tool Commander
 inventory, five positive tests, and three negative tests. It is a candidate
-generated from `b6c864c`, not a submission-readiness grant. The currently loaded
-stable `ad170ce` descriptor still describes the Stage 3–6 thin loop, while this
-candidate describes Stage 0–6, so an exact live tool scan and human review remain
-required after any separately authorized target alignment.
+generated from `b6c864c`, not a submission-readiness grant. The stable/public
+runtime was separately replaced with exact target `b6c864c`; its live tool scan
+now describes Stage 0–6 and matches the candidate's seven-tool boundary. Human
+submission review remains separate.
 
 ## scope_map
 
@@ -62,7 +62,7 @@ Commander widget CSP uses empty `connectDomains`, `resourceDomains`,
 external resources. No token, cookie, private browser state, tunnel credential,
 provider secret, raw log, request ID, stack trace, or local filesystem path is
 required by the seven public tools. The candidate JSON must not be used as proof
-that the currently loaded stable service already contains `b6c864c`.
+of submission approval or app-management authorization.
 
 ## verification
 
@@ -70,7 +70,8 @@ that the currently loaded stable service already contains `b6c864c`.
 - Output schemas present on the live Commander surface: 7/7.
 - Positive submission tests: 5.
 - Negative submission tests: 3.
-- Candidate JSON matches the source Commander annotations: pending branch validation.
+- Candidate JSON matches the source Commander annotations: validated.
+- Live stable Commander descriptor comparison: exact seven tools, all required
+  annotations/output schemas, Stage 0–6 wording present.
 
-Human review and an exact live descriptor comparison are still required before
-`mcp_tool_info_ready=true`.
+Human review is still required before `mcp_tool_info_ready=true`.
