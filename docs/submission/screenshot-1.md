@@ -33,3 +33,10 @@ The full review is recorded in
 `docs/submission/product-experience-audit-20260718.md`. A human reviewer still
 needs to approve which images and captions should be uploaded in the final App
 submission form before `screenshots_ready=true`.
+
+These captures predate deployed target
+`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. The 2026-07-19 review had no
+approved Browser surface and did not recapture the current UI, so these images
+must not be represented as current-version screenshots. Screenshots are
+optional for an app with UI, but any uploaded screenshots should be freshly
+captured from the submitted version and checked on desktop and mobile.

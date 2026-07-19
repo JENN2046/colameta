@@ -1,32 +1,38 @@
 # Initial Plugin Submission Release Notes
 
-ColaMeta is being submitted as an MCP-backed ChatGPT plugin for the first time.
-It helps authorized operators inspect AI engineering project health, review
-plans and evidence, run bounded validations and executor workflows, and manage
-Git and release-readiness tasks through permission-scoped tools.
+ColaMeta is being prepared as an MCP-backed ChatGPT app inside a plugin. It
+helps authorized operators discover registered AI engineering projects, inspect
+runtime and connector health, open a project-scoped Commander, prepare a
+read-only Stage 0–6 governed-loop preview, review bounded validation, and inspect
+Git readiness through permission-scoped tools.
 
-This submission provides:
+This submission candidate provides:
 
 - a production HTTPS MCP endpoint using external OAuth;
-- 82 normal-profile tools with complete input and output schemas;
-- explicit `readOnlyHint`, `openWorldHint`, and `destructiveHint` annotations
-  with behavior-specific justifications for every tool;
+- an exact seven-tool public Commander profile;
+- explicit `readOnlyHint`, `openWorldHint`, and `destructiveHint` annotations;
+- an `outputSchema` for every public tool;
 - five positive and three negative reviewer test cases;
-- desktop and narrow-viewport product evidence; and
+- a widget with an empty external-resource CSP; and
 - privacy, security, support, and terms documentation.
 
 Runtime verification baseline:
 
-- deployed MCP code commit: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`;
+- deployed MCP source target:
+  `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`;
 - MCP endpoint: `https://colameta-mcp.skmt617.top/mcp`;
 - submission inventory SHA-256:
-  `35879d78190404893ad9fb6c2796e2a23e49ef4b39222492b8a7b09080cb643d`.
+  `05877797d7d4115a909f64d024c2b933d089fed27b7a0791fec3412ff3e41296`;
+- public preflight: passed with zero failures;
+- connector smoke: healthy, ready, and zero evidence gaps.
 
-The support, terms, and release-note documents are submission materials added
-after that deployed code baseline. The final Dashboard review must use the
-versions published from `main` that contain this file; it must not treat
-`9cf53f0` as the source commit for those documents.
+The public Commander tools are `list_registered_projects`,
+`get_apps_connector_smoke_packet`, `render_commander_app`,
+`analyze_project_state`, `run_mcp_workflow`, `manage_validation_run`, and
+`manage_git`. The separate loopback advanced profile is not part of this
+submission inventory.
 
-The reviewer account must be supplied through the OpenAI Platform submission
-portal and tested without MFA, SMS, email confirmation, or private-network
-access. Do not place reviewer credentials in this repository.
+The final operator must scan the live endpoint in the plugin submission portal,
+verify the imported metadata, rerun the five positive cases in ChatGPT web and
+mobile, and complete the organization, permissions, reviewer-account, country,
+and confirmation checks. This file does not submit or publish the plugin.

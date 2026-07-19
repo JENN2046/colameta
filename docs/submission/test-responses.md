@@ -1,74 +1,52 @@
 # Test Responses Evidence
 
-## prompt_id
-T001
+## T001 — Project discovery
 
-## observed_result
-The real ChatGPT Apps connector smoke returned `ok=true` with
-`project_count=5`; the registered-project result included
-`colameta-self-dev`.
+The post-replacement stable MCP call returned `ok=true` and found
+`colameta-self-dev` with `available=true` and `runner_managed=true`.
 
-## evidence_link_or_notes
-Observed through the real connector surface against the stable/public baseline
-`9cf53f07378aec0ac33d9792dddec58546fb1d6f`. No token, cookie, raw log,
-provider secret, or private registry file is reproduced in this evidence.
+Review status: local stable-origin verification passed. A final authenticated
+ChatGPT web/mobile rerun is pending.
 
-## review_status
-Draft evidence only. Human reviewer must rerun from the final ChatGPT Apps connector surface before marking `test_prompts_ready` or `test_responses_ready` true.
+## T002 — Connector smoke
 
-## prompt_id
-T002
+Repeated read-only samples returned `ok=true`, `apps_status=ready`,
+`overall_status=healthy`, `operator_status=connector_closeout_ready`, and zero
+evidence gaps. Inputs contained sanitized health status only.
 
-## observed_result
-`get_commander_app_manifest` returned `ok=true`, `read_only=true`, `project_name=colameta-self-dev`, 23 initial reads, 24 read actions, and a `release_submission_evidence` Commander panel section.
+Review status: local stable-origin verification passed. A final authenticated
+ChatGPT web/mobile rerun is pending.
 
-## evidence_link_or_notes
-This proves the Commander manifest exposes the release evidence workflow in the read-only app surface. It does not prove rendered visual screenshots or mobile layout quality.
+## T003 — Commander and project analysis
 
-## review_status
-Draft evidence only. Human reviewer must verify the rendered ChatGPT Apps panel before marking screenshots or metadata ready.
+`render_commander_app` and `analyze_project_state` returned `ok=true`,
+`read_only=true`, and `side_effects=false` for `colameta-self-dev`.
 
-## prompt_id
-T003
+Review status: tool behavior passed. A current ChatGPT UI capture and web/mobile
+interaction check are pending.
 
-## observed_result
-`get_product_console_map` returned `ok=true`, `source=product_console_map`, `read_only=true`, `status=blocked`, and a release evidence summary with `complete_count=0` of `total_count=10`.
+## T004 — Stage 0–6 governed-loop preview
 
-## evidence_link_or_notes
-The Product Console correctly reports blocked state instead of overstating readiness while evidence remains unreviewed.
+The stable tool returned `status=succeeded`, `changed_files=[]`, and a result
+whose thin-loop stages include the Stage 0–2 anchors before the Stage 3–6 path.
+The result reports `read_only=true` and `side_effects=false`.
 
-## review_status
-Draft evidence only. Current blocked status is expected and must not be treated as release approval.
+Review status: local stable-origin behavior passed. A final authenticated
+ChatGPT web/mobile rerun is pending.
 
-## prompt_id
-T004
+## T005 — Validation and Git readiness
 
-## observed_result
-The earlier readiness response was `ready=false` and `status=blocked`. Since
-that capture, expected-head-bound public MCP preflight and the real Apps
-connector smoke both passed at baseline
-`9cf53f07378aec0ac33d9792dddec58546fb1d6f`; connector evidence gaps were 0
-and stable replacement status was `stable_aligned`.
+This case was not executed during the read-only soak because preview and Git
+readiness paths can create local workflow records. Source policy and regression
+tests verify that validation execution, commit, and push remain separately
+gated.
 
-## evidence_link_or_notes
-The old `PUBLIC_MCP_ENDPOINT_NOT_READY` observation is superseded by the later
-baseline preflight. Submission evidence remains unready because the generated
-metadata, security review, screenshots, test responses, and Dashboard form have
-not received final human approval.
+Review status: expected behavior is defined, but the real ChatGPT web/mobile
+reviewer run is still required.
 
-## review_status
-Draft evidence only. Rerun this tool from a fresh connector session immediately
-before Dashboard submission; do not mark readiness from the superseded
-response.
+## Overall boundary
 
-## prompt_id
-T005
-
-## observed_result
-`get_submission_evidence_auto_draft` returned `ok=true`, `source=submission_evidence_auto_draft`, `read_only=true`, `status=draft_ready`, `generated_keys=["mcp_tool_info"]`, and a copyable `fill_submission_evidence_files` tool call with `mark_ready=false`.
-
-## evidence_link_or_notes
-This proves the auto-draft path keeps generation separate from write and ready-state authority.
-
-## review_status
-Draft evidence only. Generated evidence must be reviewed and edited before any ready field is marked true.
+No test in this evidence submitted or published the app, exposed credentials,
+ran an executor, committed, pushed, or replaced stable. `test_prompts_ready` and
+`test_responses_ready` must remain false until all five cases pass in ChatGPT web
+and mobile against the final scanned draft.

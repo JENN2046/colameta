@@ -53,4 +53,11 @@ wording. The final human review must still verify the Dashboard form and app
 metadata. This snapshot does not authorize another stable replacement.
 
 ## reviewer
-Human reviewer must confirm final Dashboard metadata, URLs, logo, screenshots, and policy text before marking `metadata_snapshot_reviewed=true`.
+Repository metadata, public URLs, the logo candidate, and the live seven-tool
+descriptor were reviewed on 2026-07-19. The authenticated Dashboard, stored
+Scan Tools snapshot, organization verification, permissions, data residency,
+and current-version screenshots were not available in this session. See
+`docs/submission/dashboard-review-20260719.md`.
+
+`metadata_snapshot_reviewed` must remain false until the Dashboard operator
+completes those checks.

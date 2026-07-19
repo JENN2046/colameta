@@ -1,43 +1,64 @@
 # Security And Privacy Review Evidence
 
-## least_privilege
-The Commander and release-evidence draft paths are read-only. Write tools remain separate and require `mcp:commit` scope. Remote/public MCP policy denies commit/plan scopes unless explicitly authorized by the configured service policy.
+## Reviewed surface
 
-## consent
-The generated submission evidence payload is a preview only. Operators must review and replace any draft text before calling `fill_submission_evidence_files`. The preview keeps `mark_ready=false` by default.
+The public Commander profile exposes seven tools at stable target
+`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. Remote policy permits read and
+preview scopes while denying commit and plan scopes. All seven tools declare the
+three required annotations and an `outputSchema`.
 
-## redaction
-This draft is built from sanitized service facts: tool names, scopes, runtime freshness, and connector summary statuses. It does not read token values, cookies, browser login state, provider config, raw logs, tunnel-client config, or proxy config.
+## Confirmed strengths
 
-## privacy_policy
-Privacy policy draft: docs/privacy-policy.md
-Published candidate URL: https://github.com/JENN2046/colameta/blob/main/docs/privacy-policy.md
-Human privacy review is still required before marking `security_review_ready=true`.
+- No public input schema asks for credentials, MFA codes, payment data,
+  government identifiers, biometrics, or health data.
+- Connector evidence inputs accept only sanitized status, reason, source, and
+  observation-time fields.
+- The Commander widget declares empty external connect and resource domains.
+- Commit, push, validation execution, executor execution, and destructive Git
+  actions remain separately gated.
+- Public preflight and repeated connector smoke passed at the exact stable
+  target with zero connector evidence gaps.
 
-## monitoring
-Stable runtime baseline: `9cf53f07378aec0ac33d9792dddec58546fb1d6f`
+## Data-minimization finding
 
-Public remote MCP preflight at that baseline:
+Read-only response review found more local operational detail than a public app
+reviewer is likely to need:
 
-- expected and loaded runtime heads matched;
-- `runtime_loaded_code_stale=false`;
-- `reload_needed_for_verification=false`;
-- health, MCP, and protected-resource metadata endpoints returned expected status.
+- `list_registered_projects` returns project identifiers, local project roots,
+  and update/selection timestamps;
+- `render_commander_app` can include project roots, stable paths, process IDs,
+  recent commit identifiers/subjects, and evidence paths;
+- `analyze_project_state` can include project roots and ignored-runtime file
+  names.
 
-Apps connector smoke at that baseline:
+No credential value was observed, and the privacy policy already discloses
+project names and local project paths. Nevertheless, OpenAI's submission
+guidance recommends returning only fields strictly necessary for the user
+request and removing unnecessary internal identifiers, timestamps, telemetry,
+and local implementation details rather than merely documenting them.
 
-- connector runtime health: `healthy`;
-- operator closeout: `connector_closeout_ready`;
-- evidence gap count: 0;
-- stable replacement status: `stable_aligned`.
+Recommended next action: add a public Commander response projection that omits
+unnecessary local paths, process IDs, internal IDs/timestamps, and runtime file
+names, while retaining the minimum project selection, health, and safe-next-step
+facts. Re-run all five reviewer cases after that source change and stable
+deployment.
 
-The submission annotation changes were committed in
-`9cf53f07378aec0ac33d9792dddec58546fb1d6f`, deployed to the stable/public
-runtime, and verified with the same expected-head-bound checks. Rerun those
-checks if the MCP server or runtime release changes before submission.
+## Policies and URLs
 
-## review_status
-Source review found no normal-profile tool inputs requesting credentials, MFA,
-payment, government-ID, biometric, or health data. Commander widget CSP contains
-no external connect or resource domains. Human security/privacy review is still
-required before marking `security_review_ready=true`.
+- Privacy policy: `https://github.com/JENN2046/colameta/blob/main/docs/privacy-policy.md`
+- Support: `https://github.com/JENN2046/colameta/blob/main/docs/support.md`
+- Terms: `https://github.com/JENN2046/colameta/blob/main/docs/terms-of-use.md`
+
+All three URLs returned HTTP 200 during review. The final Dashboard operator
+must still confirm publisher identity, organization data residency, app
+permissions, reviewer credentials, countries/regions, and the actual scanned
+metadata snapshot.
+
+## Review status
+
+`security_review_ready` remains false. Annotation, CSP, credential-input, and
+runtime-health checks passed; the response data-minimization finding requires a
+source decision before public submission.
+
+Official submission guidance reviewed:
+`https://developers.openai.com/apps-sdk/deploy/submission/`.

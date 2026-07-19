@@ -1,7 +1,7 @@
 {
   "schema_version": "chatgpt_app_submission_materials.v1",
   "app_name": "ColaMeta",
-  "app_description": "Project console for local AI engineering workflows.",
+  "app_description": "ColaMeta helps users inspect registered AI engineering projects, review runtime and connector health, prepare bounded workflows, run controlled validation, and manage Git through preview-gated MCP tools.",
   "company_url": "https://github.com/JENN2046/colameta",
   "privacy_policy_url": "https://github.com/JENN2046/colameta/blob/main/docs/privacy-policy.md",
   "logo_ready": false,

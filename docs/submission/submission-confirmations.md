@@ -8,8 +8,9 @@ Not yet confirmed. Before Dashboard submission, the human reviewer must confirm:
 
 - stable/public MCP endpoint readiness is green;
 - ChatGPT Apps connector smoke succeeds from the real external connector;
-- logo and screenshots are final;
-- localized listing text and screenshots are final;
+- logo is final, and either screenshots are omitted or current-version
+  screenshots and captions are final;
+- localized listing text is final, and any localized screenshots are current;
 - test prompts and test responses have been rerun from the real ChatGPT Apps
   surface;
 - security/privacy review is complete;
@@ -20,6 +21,8 @@ Not yet confirmed. Before Dashboard submission, the human reviewer must confirm:
 - the selected countries or regions match the publisher's legal, product, and
   support readiness;
 - submission metadata matches the current MCP server snapshot;
+- public tool responses have been minimized to fields necessary for the
+  user-facing workflow;
 - no token, cookie, credential, raw provider response, tunnel config, proxy
   config, or raw logs are included in submission evidence.
 
@@ -30,3 +33,9 @@ accepted.
 
 `submission_confirmations_ready` must remain false until the human reviewer
 checks the final Dashboard form and explicitly approves submission.
+
+The 2026-07-19 preflight confirmed the stable/public endpoint, seven-tool
+metadata, public URLs, and connector smoke. It did not confirm Dashboard
+identity, app permissions, data residency, reviewer credentials, web/mobile test
+results, or the response data-minimization finding recorded in
+`docs/submission/security-review.md`.

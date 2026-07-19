@@ -1,64 +1,61 @@
 # Test Prompts Evidence
 
-## prompt_id
-T001
+These prompts mirror the five positive cases in
+`chatgpt-app-submission.json`. Tool names below are the exact public Commander
+tool names loaded at `b6c864c`.
 
-## prompt_text
-List the registered ColaMeta projects available to the ChatGPT App connector.
+## T001 — Project discovery
 
-## workflow_covered
-Project discovery and project-name routing bootstrap.
+Prompt: List my registered ColaMeta projects.
 
-## expected_tool_calls
-`list_registered_projects` with empty arguments. Expected behavior: read-only project list response that includes `colameta-self-dev` without requiring a project selection side effect.
+Expected tool: `list_registered_projects`.
 
-## prompt_id
-T002
+Expected behavior: return registered-project identity and availability facts so
+the user can select a project safely, without changing project state.
 
-## prompt_text
-Open the ColaMeta Commander manifest for `colameta-self-dev` and show the safe read actions and release evidence panel.
+## T002 — Connector smoke
 
-## workflow_covered
-Commander manifest, Apps panel routing, release evidence section exposure, and read-only action inventory.
+Prompt: Check the Apps connector smoke status for `colameta-self-dev`.
 
-## expected_tool_calls
-`get_commander_app_manifest` with `project_name=colameta-self-dev`. Expected behavior: read-only manifest with initial reads, read actions, and `release_submission_evidence` in the Commander panel sections.
+Expected tool: `get_apps_connector_smoke_packet`.
 
-## prompt_id
-T003
+Expected behavior: return sanitized connector reachability, runtime provenance,
+evidence gaps, and closeout status without exposing credentials or raw logs.
 
-## prompt_text
-Show the Product Console map for `colameta-self-dev`, including release submission evidence progress.
+## T003 — Commander and project analysis
 
-## workflow_covered
-Product Console summary, release submission evidence bundle, and blocked readiness surface.
+Prompt: Open ColaMeta Commander for `colameta-self-dev` and summarize the
+project's current state.
 
-## expected_tool_calls
-`get_product_console_map` with `project_name=colameta-self-dev`. Expected behavior: read-only `product_console_map` response with release evidence progress and current blocker summary.
+Expected tools: `render_commander_app`, then `analyze_project_state`.
 
-## prompt_id
-T004
+Expected behavior: render the project-scoped Commander and summarize current
+Git, Runner, plan, executor, and evidence facts with safe next actions.
 
-## prompt_text
-Check release submission readiness for `colameta-self-dev` and list the current blockers and evidence counts.
+## T004 — Stage 0–6 governed-loop preview
 
-## workflow_covered
-Release submission readiness aggregation, product/public endpoint blockers, and submission evidence progress accounting.
+Prompt: Prepare a Stage 0–6 thin governed loop preview for
+`colameta-self-dev`, but do not apply changes or run an executor.
 
-## expected_tool_calls
-`get_release_submission_readiness` with `project_name=colameta-self-dev`. Expected behavior: read-only readiness packet that remains blocked while product/public endpoint evidence is not ready.
+Expected tool: `run_mcp_workflow` with
+`workflow=thin_governed_loop_preview` and `phase=preview`.
 
-## prompt_id
-T005
+Expected behavior: return read-only Stage 0–6 evidence, no changed files, and no
+Delivery State, ReviewDecision, GateEvent, executor, commit, push, or stable
+replacement action.
 
-## prompt_text
-Generate a reviewable auto draft for MCP tool information evidence without writing files or marking ready fields.
+## T005 — Validation and Git readiness
 
-## workflow_covered
-Submission evidence auto-draft generation and write-boundary separation.
+Prompt: Preview current-version validation for `colameta-self-dev`, then show
+Git commit readiness without committing or pushing.
 
-## expected_tool_calls
-`get_submission_evidence_auto_draft` with `project_name=colameta-self-dev` and `selected_keys=["mcp_tool_info"]`. Expected behavior: read-only `draft_ready` response with a copyable `fill_submission_evidence_files` call where `mark_ready=false`.
+Expected tools: `manage_validation_run`, then `manage_git`.
 
-## review_notes
-These prompts cover read-only project routing, Commander surface metadata, Product Console readiness, release submission readiness, and submission evidence draft generation. They do not cover mobile UI screenshots, destructive/commit flows, public endpoint preflight, or manual Dashboard submission.
+Expected behavior: return a bounded validation preview and Git readiness
+evidence while stopping before validation execution, commit, or push.
+
+## Review boundary
+
+These cases must be rerun in both ChatGPT web and mobile before submission.
+Repository and local-MCP checks do not substitute for that Dashboard reviewer
+run.
