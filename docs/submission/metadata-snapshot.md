@@ -2,7 +2,7 @@
 
 ## app_metadata
 App name: ColaMeta
-Description: Project console for local AI engineering workflows.
+Description: ColaMeta helps users inspect registered AI engineering projects, review runtime and connector health, prepare bounded workflows, run controlled validation, and manage Git through preview-gated MCP tools.
 Project name: colameta-self-dev
 Service mode: true
 MCP exposure profile: commander
@@ -41,16 +41,20 @@ Visible tool count: 7
 Required annotation coverage: 7/7
 Output schema coverage: 7/7
 Submission import file: `chatgpt-app-submission.json` is a seven-tool Commander
-candidate generated from source commit
-`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`, with SHA-256
+candidate with SHA-256
 `05877797d7d4115a909f64d024c2b933d089fed27b7a0791fec3412ff3e41296`.
+Tool names, descriptions, annotations, schemas, CSP, and server instructions are
+unchanged by response-minimization candidate
+`fcfab88b5feed0cdf669905b085775c39f8ca621`.
 Initial release notes: `docs/submission/release-notes.md`
 
 This metadata snapshot is bound to the deployed runtime release
 `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. The live Commander comparison
 confirmed seven tools, complete annotations/output schemas, and Stage 0–6
 wording. The final human review must still verify the Dashboard form and app
-metadata. This snapshot does not authorize another stable replacement.
+metadata. Candidate `fcfab88b5feed0cdf669905b085775c39f8ca621` is the next
+exact stable target proposed for response minimization, but this snapshot does
+not authorize that replacement.
 
 ## reviewer
 Repository metadata, public URLs, the logo candidate, and the live seven-tool

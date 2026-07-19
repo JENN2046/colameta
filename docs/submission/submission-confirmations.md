@@ -37,5 +37,6 @@ checks the final Dashboard form and explicitly approves submission.
 The 2026-07-19 preflight confirmed the stable/public endpoint, seven-tool
 metadata, public URLs, and connector smoke. It did not confirm Dashboard
 identity, app permissions, data residency, reviewer credentials, web/mobile test
-results, or the response data-minimization finding recorded in
+results, or a live deployment of response-minimization candidate
+`fcfab88b5feed0cdf669905b085775c39f8ca621` recorded in
 `docs/submission/security-review.md`.

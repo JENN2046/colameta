@@ -19,7 +19,7 @@ three required annotations and an `outputSchema`.
 - Public preflight and repeated connector smoke passed at the exact stable
   target with zero connector evidence gaps.
 
-## Data-minimization finding
+## Data-minimization finding and candidate resolution
 
 Read-only response review found more local operational detail than a public app
 reviewer is likely to need:
@@ -37,11 +37,22 @@ guidance recommends returning only fields strictly necessary for the user
 request and removing unnecessary internal identifiers, timestamps, telemetry,
 and local implementation details rather than merely documenting them.
 
-Recommended next action: add a public Commander response projection that omits
-unnecessary local paths, process IDs, internal IDs/timestamps, and runtime file
-names, while retaining the minimum project selection, health, and safe-next-step
-facts. Re-run all five reviewer cases after that source change and stable
-deployment.
+Exact source candidate
+`fcfab88b5feed0cdf669905b085775c39f8ca621` implements
+`commander_public_minimal.v1` at the Commander exposure boundary. It removes
+unnecessary local paths, process IDs, record IDs, timestamps, raw logs, evidence
+paths, compact-view commit/file diagnostics, and nested actions for tools outside
+the seven-tool profile. It preserves project selection, health decisions,
+safe-next-step facts, operational preview/run identifiers, Git-relative files,
+and Git commit identifiers when those fields are required by the requested
+tool's job.
+
+The candidate does not move removed diagnostics into widget `_meta`. Unit tests
+cover all seven tools, MCP and REST envelopes, path redaction, hidden-action
+filtering, and normal-profile compatibility. It has not replaced stable target
+`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`; live connector and Dashboard
+review must therefore continue to treat the original finding as deployed until
+an explicitly authorized stable replacement is completed.
 
 ## Policies and URLs
 
@@ -56,9 +67,10 @@ metadata snapshot.
 
 ## Review status
 
-`security_review_ready` remains false. Annotation, CSP, credential-input, and
-runtime-health checks passed; the response data-minimization finding requires a
-source decision before public submission.
+`security_review_ready` remains false. Annotation, CSP, credential-input,
+runtime-health, and candidate source checks passed. The data-minimization fix
+still requires exact-target stable deployment plus live ChatGPT web/mobile and
+Dashboard review before public submission.
 
 Official submission guidance reviewed:
 `https://developers.openai.com/apps-sdk/deploy/submission/`.

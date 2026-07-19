@@ -26,6 +26,18 @@ Runtime verification baseline:
 - public preflight: passed with zero failures;
 - connector smoke: healthy, ready, and zero evidence gaps.
 
+Next exact stable candidate:
+
+- `fcfab88b5feed0cdf669905b085775c39f8ca621` adds
+  `commander_public_minimal.v1` response projection for the same seven tools;
+- it removes unnecessary paths, process/record identifiers, timestamps, logs,
+  and hidden-tool actions from public results while preserving required
+  preview/run and Git workflow fields;
+- it does not change the seven tool descriptors or the submission import hash;
+  and
+- it is not deployed or authorized for stable replacement by these release
+  notes.
+
 The public Commander tools are `list_registered_projects`,
 `get_apps_connector_smoke_packet`, `render_commander_app`,
 `analyze_project_state`, `run_mcp_workflow`, `manage_validation_run`, and
