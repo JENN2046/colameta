@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "ColaMeta",
     "subtitle": "Manage AI project workflows",
-    "description": "ColaMeta helps teams inspect AI engineering project health, review plans and evidence, run bounded validations and executor workflows, and manage Git and release-readiness tasks through permission-scoped MCP tools.",
+    "description": "ColaMeta helps users inspect registered AI engineering projects, review runtime and connector health, prepare bounded workflows, run controlled validation, and manage Git through preview-gated MCP tools.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -15,225 +15,9 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves or computes list registered projects results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_agent_consumer_contract": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get agent consumer contract results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_service_entry_profile": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get service entry profile results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_agent_operator_flow_packet": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get agent operator flow packet results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_web_gpt_service_entrypoint": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get web gpt service entrypoint results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_commander_app_manifest": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get commander app manifest results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_product_readiness_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get product readiness status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_chatgpt_app_readiness": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get chatgpt app readiness results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_full_loop_authority_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get full loop authority status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_product_console_map": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get product console map results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_release_submission_readiness": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get release submission readiness results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_submission_evidence_fill_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get submission evidence fill preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_submission_evidence_auto_draft": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get submission evidence auto draft results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_submission_evidence_revision": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage submission evidence revision actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage submission evidence revision actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "init_submission_evidence": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit init submission evidence actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "fill_submission_evidence_files": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit fill submission evidence files actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "mark_submission_evidence_ready_fields": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit mark submission evidence ready fields actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "record_product_console_action_result": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit record product console action result actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "render_commander_app": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes render commander app results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "Reads the local project registry and availability facts without creating, updating, deleting, or executing project state.",
+        "open_world_justification": "Does not publish content, contact third-party systems, or modify anything outside the private ColaMeta registry.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible action."
       }
     },
     "get_apps_connector_smoke_packet": {
@@ -243,393 +27,21 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves or computes get apps connector smoke packet results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "Computes a connector smoke and closeout packet from registered-project facts and sanitized evidence without changing state.",
+        "open_world_justification": "Does not contact or mutate public systems; supplied tunnel and control-plane fields are sanitized evidence inputs only.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible action."
       }
     },
-    "get_stable_replacement_cadence": {
+    "render_commander_app": {
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves or computes get stable replacement cadence results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stable_promotion_readiness": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stable promotion readiness results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stable_promotion_evidence": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stable promotion evidence actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_plan_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel plan preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_run_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel run preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_worktree_assignment_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel worktree assignment preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_next_action_packet": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel next action packet results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_executor_group_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel executor group preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_executor_results_packet": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel executor results packet results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_group_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel group status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_merge_preview": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel merge preview results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_stage_parallel_closeout_packet": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get stage parallel closeout packet results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stage_parallel_worktrees": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stage parallel worktrees actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stage_parallel_shard_inputs": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stage parallel shard inputs actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stage_parallel_executor_group": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stage parallel executor group actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stage_parallel_executor_runs": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stage parallel executor runs actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_stage_parallel_merges": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage stage parallel merges actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_runtime_version_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get runtime version status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_connector_runtime_health_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get connector runtime health status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_plan_standards_report": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get plan standards report results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_runner_execution_standards": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get runner execution standards results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_git": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": true,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage git actions, so it is not strictly read-only.",
-        "open_world_justification": "Can push, fetch, or pull through configured Git remotes and therefore interacts with an external repository.",
-        "destructive_justification": "Supports manage git actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_runner_plan": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage runner plan actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage runner plan actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_project_memory": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage project memory actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage project memory actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_workflow_run": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes manage workflow run results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "manage_plan_version": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage plan version actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage plan version actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_project_docs": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage project docs actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage project docs actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_prompt_file": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage prompt file actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage prompt file actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_files": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage files actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage files actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "list_executor_run_reports": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes list executor run reports results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_executor_run_report": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get executor run report results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "inspect_executor_activity": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes inspect executor activity results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "Returns the project-scoped Commander manifest and widget binding without applying any workflow or Git action.",
+        "open_world_justification": "Does not publish content or call external resources, and the Commander widget declares an empty external-resource CSP.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible action."
       }
     },
     "analyze_project_state": {
@@ -639,9 +51,9 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves or computes analyze project state results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "Aggregates registered-project Git, Runner, plan, executor, and report facts through the public project route without changing project files or workflow records.",
+        "open_world_justification": "Does not publish content, send messages, or mutate any third-party system.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible action."
       }
     },
     "run_mcp_workflow": {
@@ -651,33 +63,9 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit run mcp workflow actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports run mcp workflow actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_executor_config": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage executor config actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage executor config actions that can overwrite, delete, restore, revert, or replace existing project-local state."
-      }
-    },
-    "manage_executor_workflow": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage executor workflow actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Supports manage executor workflow actions that can overwrite, delete, restore, revert, or replace existing project-local state."
+        "read_only_justification": "Can apply stored previews, run an executor, update project-local artifacts, or create a local Git commit, so it is not strictly read-only.",
+        "open_world_justification": "Has no public publishing, messaging, or Git-remote action; controlled mutations remain inside the selected private project.",
+        "destructive_justification": "Includes controlled restore, revert, overwrite, and executor-run paths that can materially change project state."
       }
     },
     "manage_validation_run": {
@@ -687,309 +75,21 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit manage validation run actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "The run action executes fixed local validation commands and writes project-local run records, so the tool is not strictly read-only.",
+        "open_world_justification": "Does not publish content, send messages, or mutate third-party systems; validation is confined to the selected private project.",
+        "destructive_justification": "Uses fixed validation command vectors and does not delete, overwrite, revoke access, or perform an irreversible external action."
       }
     },
-    "get_work_item_governance_status": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get work item governance status results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_work_item": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get work item results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "list_work_items": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes list work items results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_work_item_timeline": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get work item timeline results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "list_outbox_events": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes list outbox events results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "get_execution_attempt_dispatch_authority": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Only retrieves or computes get execution attempt dispatch authority results and does not create, update, delete, or execute project state.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "preview_work_item_create": {
+    "manage_git": {
       "annotations": {
         "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
+        "openWorldHint": true,
+        "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit preview work item create actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "preview_legacy_work_item_import": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit preview legacy work item import actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "preview_work_item_transition": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit preview work item transition actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "apply_work_item_create": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit apply work item create actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "apply_legacy_work_item_import": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit apply legacy work item import actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "add_task_version": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit add task version actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "create_execution_attempt": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit create execution attempt actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "bind_historical_execution_attempt": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit bind historical execution attempt actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "complete_execution_attempt": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit complete execution attempt actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "register_artifact_reference": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit register artifact reference actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "record_review_decision": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit record review decision actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "apply_work_item_transition": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit apply work item transition actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "apply_blocker": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit apply blocker actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "clear_blocker": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit clear blocker actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "create_delivery_receipt": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit create delivery receipt actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "retry_delivery": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit retry delivery actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "acknowledge_delivery": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit acknowledge delivery actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "record_outbox_delivery_result": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit record outbox delivery result actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
-      }
-    },
-    "recover_outbox_event": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Can change project-local state through the explicit recover outbox event actions, so it is not strictly read-only.",
-        "open_world_justification": "Does not publish public content or mutate third-party systems; any effects remain within the user's private ColaMeta project or runtime.",
-        "destructive_justification": "Does not delete, overwrite, revoke access, or perform an irreversible external action."
+        "read_only_justification": "Can create commits, pull or push remote changes, restore files, and revert commits after the required preview and confirmation gates.",
+        "open_world_justification": "Push and pull actions can interact with a configured Git remote outside the private local project boundary.",
+        "destructive_justification": "Restore and revert actions can overwrite working-tree content or reverse committed changes."
       }
     }
   },
@@ -999,15 +99,7 @@
       "user_prompt": "List my registered ColaMeta projects.",
       "file_attachment_urls": null,
       "tools_triggered": "list_registered_projects",
-      "expected_output": "Returns the registered projects and enough identity information to select one safely.",
-      "expected_output_url": null
-    },
-    {
-      "description": "Open the project Commander surface.",
-      "user_prompt": "Open the ColaMeta Commander for colameta-self-dev and show its safe next actions.",
-      "file_attachment_urls": null,
-      "tools_triggered": "render_commander_app",
-      "expected_output": "Renders the project-scoped Commander with health, workflow, and authorization-boundary information.",
+      "expected_output": "Returns registered projects and enough identity and availability information to select one safely.",
       "expected_output_url": null
     },
     {
@@ -1015,23 +107,31 @@
       "user_prompt": "Check the Apps connector smoke status for colameta-self-dev.",
       "file_attachment_urls": null,
       "tools_triggered": "get_apps_connector_smoke_packet",
-      "expected_output": "Returns connector reachability, runtime provenance, evidence gaps, and the closeout decision.",
+      "expected_output": "Returns connector reachability, runtime provenance, evidence gaps, and the closeout decision without exposing credentials.",
       "expected_output_url": null
     },
     {
-      "description": "Review release and submission readiness.",
-      "user_prompt": "Show release submission readiness and remaining evidence for colameta-self-dev.",
+      "description": "Open the project Commander and analyze current facts.",
+      "user_prompt": "Open ColaMeta Commander for colameta-self-dev and summarize the project's current state.",
       "file_attachment_urls": null,
-      "tools_triggered": "get_release_submission_readiness",
-      "expected_output": "Returns current readiness, evidence progress, blockers, and the next safe review action.",
+      "tools_triggered": "render_commander_app, analyze_project_state",
+      "expected_output": "Renders the project-scoped Commander and reports current Git, Runner, plan, executor, and evidence facts with safe next actions.",
       "expected_output_url": null
     },
     {
-      "description": "Preview a bounded validation without running it.",
-      "user_prompt": "Prepare a current-version validation preview for colameta-self-dev, but do not run it.",
+      "description": "Prepare a bounded governed-loop preview.",
+      "user_prompt": "Prepare a Stage 0-6 thin governed loop preview for colameta-self-dev, but do not apply changes or run an executor.",
       "file_attachment_urls": null,
-      "tools_triggered": "manage_validation_run",
-      "expected_output": "Returns a bounded validation preview with fixed commands and a preview identifier, without execution.",
+      "tools_triggered": "run_mcp_workflow",
+      "expected_output": "Returns a read-only governed-loop preview and stops at the explicit apply, executor, commit, push, and delivery-authority boundaries.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Review validation and Git readiness without applying either action.",
+      "user_prompt": "Preview current-version validation for colameta-self-dev, then show Git commit readiness without committing or pushing.",
+      "file_attachment_urls": null,
+      "tools_triggered": "manage_validation_run, manage_git",
+      "expected_output": "Returns a bounded validation preview and Git readiness evidence without running validation, committing, or pushing.",
       "expected_output_url": null
     }
   ],
@@ -1045,11 +145,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Do not trigger for unsupported public messaging.",
-      "user_prompt": "Post an announcement to my social media accounts.",
+      "description": "Do not perform stable replacement or production service operations.",
+      "user_prompt": "Replace my stable ColaMeta service with this development commit and restart production.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because it does not publish social posts or public messages.",
+      "expected_output": "The app should not be invoked to perform stable replacement because the seven-tool submission surface has no deployment or service-restart tool.",
       "expected_output_url": null
     },
     {

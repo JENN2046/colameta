@@ -40,16 +40,19 @@ Evidence gap count: 0
 Visible tool count: 7
 Required annotation coverage: 7/7
 Output schema coverage: 7/7
-Submission import file: `chatgpt-app-submission.json` is still the legacy
-82-tool normal-profile snapshot and must not be submitted as the current public
-Commander inventory.
+Submission import file: `chatgpt-app-submission.json` is a seven-tool Commander
+candidate generated from source commit
+`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`, with SHA-256
+`05877797d7d4115a909f64d024c2b933d089fed27b7a0791fec3412ff3e41296`.
 Initial release notes: `docs/submission/release-notes.md`
 
 This metadata snapshot is bound to the deployed runtime release
 `ad170ced2bd576215bcda0ea1078dd6d6f41cf9f`. The final human review must
-regenerate the submission import file from the exact seven-tool Commander
-surface and verify that the Dashboard tool scan and form still match that
-deployed release. This snapshot does not authorize another stable replacement.
+compare the candidate import file against the exact loaded Commander descriptors
+and verify that the Dashboard tool scan and form match the chosen deployed
+release. The current loaded `ad170ce` workflow descriptor says Stage 3–6 while
+the `b6c864c` candidate says Stage 0–6. This snapshot does not authorize another
+stable replacement.
 
 ## reviewer
 Human reviewer must confirm final Dashboard metadata, URLs, logo, screenshots, and policy text before marking `metadata_snapshot_reviewed=true`.

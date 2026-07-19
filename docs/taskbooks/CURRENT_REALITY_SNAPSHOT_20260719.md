@@ -67,8 +67,10 @@ The seven public tools are:
 7. `manage_git`
 
 The loopback advanced endpoint remains a separate 82-tool normal profile. The
-checked-in `chatgpt-app-submission.json` is still an 82-tool legacy snapshot and
-is not a current public Commander submission artifact.
+checked-in `chatgpt-app-submission.json` is now a seven-tool candidate generated
+from source commit `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. It is not a
+submission-readiness grant and is not proof that the loaded `ad170ce` stable
+descriptor has advanced from Stage 3–6 to Stage 0–6.
 
 ## Master And Stage Anchor Reality
 
@@ -148,6 +150,8 @@ ReviewDecision, emit a GateEvent, commit, push, or replace stable service.
 2. Prepare a separate Master revision/hash preview if current-reality facts must
    change the durable Master contract. Do not mutate Master without exact-hash
    confirmation.
-3. Regenerate and human-review a seven-tool ChatGPT App submission artifact.
+3. Human-review the seven-tool ChatGPT App candidate and compare it with an
+   exact live descriptor scan for the chosen deployed target.
 4. Start a new stable replacement only with a new explicit target authorization.
-5. Run the planned Private Beta soak before any actual submission decision.
+5. Continue the Private Beta soak beyond the completed bounded initial sample
+   before any actual submission decision.

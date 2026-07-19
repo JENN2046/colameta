@@ -5,9 +5,10 @@
 - Project: `colameta-self-dev`
 - Public MCP exposure profile: `commander`
 - Public visible tool count: 7
-- Legacy normal-profile inventory: `chatgpt-app-submission.json`
-- Legacy inventory SHA-256:
-  `35879d78190404893ad9fb6c2796e2a23e49ef4b39222492b8a7b09080cb643d`
+- Seven-tool candidate artifact: `chatgpt-app-submission.json`
+- Candidate source commit: `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`
+- Candidate artifact SHA-256:
+  `05877797d7d4115a909f64d024c2b933d089fed27b7a0791fec3412ff3e41296`
 
 The public Commander surface contains exactly these tools, in runtime order:
 
@@ -19,10 +20,12 @@ The public Commander surface contains exactly these tools, in runtime order:
 6. `manage_validation_run`
 7. `manage_git`
 
-The checked-in submission JSON predates this constrained public profile and
-still contains the complete 82-tool normal inventory. It is retained as legacy
-evidence only. A fresh seven-tool import artifact must be generated and reviewed
-before submission readiness can be marked true.
+The checked-in submission JSON now contains exactly this seven-tool Commander
+inventory, five positive tests, and three negative tests. It is a candidate
+generated from `b6c864c`, not a submission-readiness grant. The currently loaded
+stable `ad170ce` descriptor still describes the Stage 3–6 thin loop, while this
+candidate describes Stage 0–6, so an exact live tool scan and human review remain
+required after any separately authorized target alignment.
 
 ## scope_map
 
@@ -58,8 +61,8 @@ Commander widget CSP uses empty `connectDomains`, `resourceDomains`,
 `connect_domains`, and `resource_domains` lists because the widget does not load
 external resources. No token, cookie, private browser state, tunnel credential,
 provider secret, raw log, request ID, stack trace, or local filesystem path is
-required by the seven public tools. The legacy submission JSON must not be used
-as proof of the current public surface.
+required by the seven public tools. The candidate JSON must not be used as proof
+that the currently loaded stable service already contains `b6c864c`.
 
 ## verification
 
@@ -67,7 +70,7 @@ as proof of the current public surface.
 - Output schemas present on the live Commander surface: 7/7.
 - Positive submission tests: 5.
 - Negative submission tests: 3.
-- Fresh pull-request CI: Python 3.10-3.14 and quality gates passed.
+- Candidate JSON matches the source Commander annotations: pending branch validation.
 
-Human review and regeneration of the seven-tool submission JSON are still
-required before `mcp_tool_info_ready=true`.
+Human review and an exact live descriptor comparison are still required before
+`mcp_tool_info_ready=true`.
