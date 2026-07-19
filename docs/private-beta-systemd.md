@@ -5,9 +5,9 @@ not provide a persistent per-user systemd manager. The stack has one ownership
 boundary:
 
 - `colameta-stable.service`: local Web on `127.0.0.1:8801` and the focused
-  six-tool Commander MCP on `127.0.0.1:8766`;
+  seven-tool Commander MCP on `127.0.0.1:8766`;
 - `colameta-mcp-remote.service`: external-OAuth MCP origin on
-  `127.0.0.1:8767`, also using the six-tool Commander profile;
+  `127.0.0.1:8767`, also using the seven-tool Commander profile;
 - `colameta-mcp-advanced.service`: loopback-only advanced MCP on
   `127.0.0.1:8768`, retaining the complete 82-tool normal profile;
 - `cloudflared-colameta-mcp-prod.service`: public tunnel, ordered after the
@@ -91,12 +91,14 @@ curl --fail http://127.0.0.1:8080/readyz
   --expected-head "$(git -C /home/jenn/src/colameta-dev rev-parse HEAD)"
 ```
 
-The default connector and public OAuth endpoint expose these six high-level
-tools: `list_registered_projects`, `render_commander_app`,
-`analyze_project_state`, `run_mcp_workflow`, `manage_validation_run`, and
-`manage_git`. Calls to any hidden tool are rejected by the active exposure
-profile, including calls made from a stale connector cache. Operators who need
-the complete 82-tool catalog can connect a local advanced client to
+The default connector and public OAuth endpoint expose these seven high-level
+tools: `list_registered_projects`, `get_apps_connector_smoke_packet`,
+`render_commander_app`, `analyze_project_state`, `run_mcp_workflow`,
+`manage_validation_run`, and `manage_git`. The connector smoke packet is
+read-only (`mcp:read`); it does not authorize executor runs, Git writes, or
+stable replacement. Calls to any hidden tool are rejected by the active
+exposure profile, including calls made from a stale connector cache. Operators
+who need the complete 82-tool catalog can connect a local advanced client to
 `http://127.0.0.1:8768/mcp`; that endpoint is not bound to a public interface or
 forwarded by either tunnel.
 

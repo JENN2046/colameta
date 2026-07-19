@@ -7,15 +7,26 @@ from runner.mcp_server import (
 )
 
 
-def test_commander_profile_exposes_exact_six_high_level_tools(tmp_path) -> None:
+def test_commander_profile_exposes_exact_seven_high_level_tools(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
     assert tuple(server._visible_tool_names()) == COMMANDER_EXPOSED_TOOLS
-    assert len(server._visible_tool_names()) == 6
+    assert len(server._visible_tool_names()) == 7
+    assert "list_registered_projects" in server._visible_tool_names()
+    assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
     assert all(
         tool.output_schema and tool.annotations
         for tool in server._filter_tools_by_exposure_profile(server.tool_defs)
     )
+
+
+def test_commander_profile_allows_cached_read_only_smoke_tool(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+
+    result = server._call_tool("get_apps_connector_smoke_packet", {})
+
+    assert result["ok"] is True
+    assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
 
 
 def test_commander_profile_denies_hidden_tools_even_if_client_cached_them(tmp_path) -> None:

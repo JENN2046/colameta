@@ -26,6 +26,8 @@ def test_external_oauth_tools_publish_chatgpt_security_scheme_mirrors(tmp_path) 
     )
 
     read_scheme = [{"type": "oauth2", "scopes": ["mcp:read"]}]
+    assert tools["list_registered_projects"]["securitySchemes"] == read_scheme
+    assert tools["get_apps_connector_smoke_packet"]["securitySchemes"] == read_scheme
     assert tools["analyze_project_state"]["securitySchemes"] == read_scheme
     assert tools["analyze_project_state"]["_meta"]["securitySchemes"] == read_scheme
 
