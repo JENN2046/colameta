@@ -32,6 +32,10 @@ class ExternalOAuthProvider:
     """Resource-server side verifier for JWT access tokens issued by an external IdP."""
 
     def __init__(self, config: ExternalOAuthConfig):
+        if jwt is None or PyJWKClient is None:
+            raise RuntimeError(
+                "External OAuth requires PyJWT with crypto support; install the declared project dependencies."
+            )
         self.public_base_url = config.public_base_url.rstrip("/")
         self.resource = f"{self.public_base_url}/mcp"
         self.issuer = config.issuer.strip()
@@ -40,7 +44,7 @@ class ExternalOAuthProvider:
         self.scopes = _normalize_sequence(config.scopes, DEFAULT_SCOPES)
         self.algorithms = _normalize_sequence(config.algorithms, DEFAULT_JWT_ALGORITHMS)
         self.token_leeway_seconds = max(int(config.token_leeway_seconds), 0)
-        self._jwks_client = PyJWKClient(self.jwks_url) if PyJWKClient is not None else None
+        self._jwks_client = PyJWKClient(self.jwks_url)
 
     def protected_resource_metadata(self) -> dict[str, Any]:
         return {

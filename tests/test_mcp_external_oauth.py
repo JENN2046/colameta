@@ -4,10 +4,12 @@ import json
 import time
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt import PyJWKClient
 from jwt.algorithms import RSAAlgorithm
 
+import runner.mcp_external_oauth as external_oauth
 from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
 
 
@@ -63,6 +65,20 @@ def _token(private_key: object, **overrides: object) -> str:
     for key in remove if isinstance(remove, tuple) else ():
         payload.pop(str(key), None)
     return jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": KEY_ID})
+
+
+def test_external_oauth_fails_fast_when_jwt_dependency_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(external_oauth, "jwt", None)
+    monkeypatch.setattr(external_oauth, "PyJWKClient", None)
+
+    with pytest.raises(RuntimeError, match="PyJWT with crypto support"):
+        ExternalOAuthProvider(
+            ExternalOAuthConfig(
+                public_base_url=PUBLIC_BASE_URL,
+                issuer=ISSUER,
+                jwks_url=JWKS_URL,
+            )
+        )
 
 
 def test_external_oauth_validates_jwks_issuer_audience_and_scope(monkeypatch) -> None:
