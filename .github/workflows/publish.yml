@@ -4,9 +4,13 @@ on:
   push:
     tags:
       - "v*"
+      # Private Beta tags are rollback markers, not public package releases.
+      - "!v*-private-beta.*"
 
 jobs:
   build-and-publish:
+    # The existing PyPI project trusts the upstream publisher, not forks.
+    if: github.repository == 'riccilnl/colameta'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
