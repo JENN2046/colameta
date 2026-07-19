@@ -3,7 +3,7 @@
 ## Reviewed surface
 
 The public Commander profile exposes seven tools at stable target
-`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. Remote policy permits read and
+`fcfab88b5feed0cdf669905b085775c39f8ca621`. Remote policy permits read and
 preview scopes while denying commit and plan scopes. All seven tools declare the
 three required annotations and an `outputSchema`.
 
@@ -47,12 +47,15 @@ safe-next-step facts, operational preview/run identifiers, Git-relative files,
 and Git commit identifiers when those fields are required by the requested
 tool's job.
 
-The candidate does not move removed diagnostics into widget `_meta`. Unit tests
+The deployed implementation does not move removed diagnostics into widget
+`_meta`. Unit tests
 cover all seven tools, MCP and REST envelopes, path redaction, hidden-action
-filtering, and normal-profile compatibility. It has not replaced stable target
-`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`; live connector and Dashboard
-review must therefore continue to treat the original finding as deployed until
-an explicitly authorized stable replacement is completed.
+filtering, and normal-profile compatibility. The implementation has replaced
+prior stable target `b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`; the exact
+`fcfab88` stable replacement and service restart are complete. Live response
+scans found no forbidden internal diagnostic keys, absolute local paths, or
+hidden-tool references. Dashboard Scan Tools and ChatGPT web/mobile review
+remain pending.
 
 ## Policies and URLs
 
@@ -68,9 +71,9 @@ metadata snapshot.
 ## Review status
 
 `security_review_ready` remains false. Annotation, CSP, credential-input,
-runtime-health, and candidate source checks passed. The data-minimization fix
-still requires exact-target stable deployment plus live ChatGPT web/mobile and
-Dashboard review before public submission.
+runtime-health, exact stable deployment, and live response-minimization checks
+passed. Authenticated Dashboard Scan Tools plus live ChatGPT web/mobile review
+remain required before public submission.
 
 Official submission guidance reviewed:
 `https://developers.openai.com/apps-sdk/deploy/submission/`.

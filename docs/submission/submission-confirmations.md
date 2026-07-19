@@ -34,9 +34,10 @@ accepted.
 `submission_confirmations_ready` must remain false until the human reviewer
 checks the final Dashboard form and explicitly approves submission.
 
-The 2026-07-19 preflight confirmed the stable/public endpoint, seven-tool
-metadata, public URLs, and connector smoke. It did not confirm Dashboard
-identity, app permissions, data residency, reviewer credentials, web/mobile test
-results, or a live deployment of response-minimization candidate
-`fcfab88b5feed0cdf669905b085775c39f8ca621` recorded in
-`docs/submission/security-review.md`.
+The 2026-07-19 post-deployment review confirmed the stable/public endpoint at
+`fcfab88b5feed0cdf669905b085775c39f8ca621`, seven-tool server metadata, public
+response minimization, public URLs, and connector calls available through the
+current cached inventory. It did not confirm Dashboard identity, app
+permissions, data residency, reviewer credentials, final Scan Tools inventory,
+or ChatGPT web/mobile test results. See
+`docs/submission/dashboard-rereview-fcfab88-20260719.md`.

@@ -24,8 +24,8 @@ Current desktop and narrow product screenshots are recorded in
 `docs/submission/product-experience-audit-20260718.md`.
 
 ## runtime_snapshot
-Stable/public verified baseline head: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
-Loaded runtime target at preflight: b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29
+Stable/public verified baseline head: fcfab88b5feed0cdf669905b085775c39f8ca621
+Loaded runtime target at preflight: fcfab88b5feed0cdf669905b085775c39f8ca621
 Runtime stale at preflight: false
 Reload needed for verification at preflight: false
 
@@ -48,20 +48,20 @@ unchanged by response-minimization candidate
 `fcfab88b5feed0cdf669905b085775c39f8ca621`.
 Initial release notes: `docs/submission/release-notes.md`
 
-This metadata snapshot is bound to the deployed runtime release
-`b6c864c4319ceaa0afc56f4bc2b2ae96998c5f29`. The live Commander comparison
-confirmed seven tools, complete annotations/output schemas, and Stage 0–6
-wording. The final human review must still verify the Dashboard form and app
-metadata. Candidate `fcfab88b5feed0cdf669905b085775c39f8ca621` is the next
-exact stable target proposed for response minimization, but this snapshot does
-not authorize that replacement.
+This metadata snapshot is bound to deployed runtime
+`fcfab88b5feed0cdf669905b085775c39f8ca621`. The live Commander comparison
+confirmed seven tools, complete annotations/output schemas, Stage 0–6 wording,
+and minimized public responses without forbidden diagnostics or absolute local
+paths. The final human review must still verify the authenticated Dashboard
+form and stored Scan Tools snapshot.
 
 ## reviewer
-Repository metadata, public URLs, the logo candidate, and the live seven-tool
-descriptor were reviewed on 2026-07-19. The authenticated Dashboard, stored
-Scan Tools snapshot, organization verification, permissions, data residency,
-and current-version screenshots were not available in this session. See
-`docs/submission/dashboard-review-20260719.md`.
+Repository metadata, public URLs, the logo candidate, the deployed stable
+runtime, and the live seven-tool descriptor were reviewed on 2026-07-19. The
+authenticated Dashboard, stored Scan Tools snapshot, organization verification,
+permissions, data residency, and current-version screenshots were not available
+in this session. See
+`docs/submission/dashboard-rereview-fcfab88-20260719.md`.
 
 `metadata_snapshot_reviewed` must remain false until the Dashboard operator
 completes those checks.
