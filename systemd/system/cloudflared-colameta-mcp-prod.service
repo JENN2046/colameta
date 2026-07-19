@@ -14,7 +14,7 @@ Type=simple
 User=jenn
 Group=jenn
 Environment=HOME=/home/jenn
-ExecStart=/home/jenn/.local/bin/cloudflared tunnel --protocol http2 --retries 20 --config /home/jenn/.config/colameta/cloudflared/colameta-mcp-prod.yml run colameta-mcp-prod
+ExecStart=/home/jenn/.local/bin/cloudflared tunnel --protocol quic --retries 20 --config /home/jenn/.config/colameta/cloudflared/colameta-mcp-prod.yml run colameta-mcp-prod
 Restart=always
 RestartSec=10s
 TimeoutStartSec=60s

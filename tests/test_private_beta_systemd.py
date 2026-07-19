@@ -47,6 +47,8 @@ def test_cloudflared_is_ordered_without_stop_propagation_from_origin() -> None:
     assert "After=network-online.target colameta-mcp-remote.service" in unit
     assert "Wants=network-online.target colameta-mcp-remote.service" in unit
     assert "Requires=colameta-mcp-remote.service" not in unit
+    assert "--protocol quic" in unit
+    assert "--protocol http2" not in unit
 
 
 def test_local_health_failure_has_rate_limited_recovery() -> None:
