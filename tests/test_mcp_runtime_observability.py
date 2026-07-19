@@ -5142,6 +5142,15 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert data["result"]["read_only"] is True
         assert data["result"]["side_effects"] is False
         assert data["result"]["thin_loop"]["thin_loop_status"] == "thin_governed_loop_passed"
+        assert data["result"]["thin_loop"]["stage_results"]["stage_00_baseline"]["baseline_anchor"] == (
+            "baseline_anchor_ready"
+        )
+        assert data["result"]["thin_loop"]["stage_results"]["stage_01_master_anchor"]["master_registry"] == (
+            "master_anchor_verified"
+        )
+        assert data["result"]["thin_loop"]["stage_results"]["stage_02_stage_taskbook"]["stage_registry"] == (
+            "stage_anchor_verified"
+        )
         assert data["result"]["forbidden_authority_outputs"]["delivery_state_accepted"] is False
 
     def test_service_mode_missing_project_name_gives_operator_hint(self) -> None:

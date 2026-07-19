@@ -4039,7 +4039,7 @@ class MCPPlanningBridgeServer:
                     "在 apply/commit/executor-run 边界停止。推荐 ChatGPT 首选入口。"
                     "prompt_to_plan（v1.84.58）：串联 prompt 文件保存、plan insert preview、plan patch apply，"
                     "停在 executor preflight/run_once_preview 边界。"
-                    "thin_governed_loop_preview：Stage 3-6 薄治理闭环只读预览，"
+                    "thin_governed_loop_preview：Stage 0-6 薄治理闭环只读预览，"
                     "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
@@ -4062,7 +4062,7 @@ class MCPPlanningBridgeServer:
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
                                 "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 3-6 只读薄治理闭环预览。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。",
                         },
                         "phase": {
                             "type": "string",

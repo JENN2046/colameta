@@ -3191,7 +3191,7 @@ class WorkflowOrchestrator:
         from runner.thin_governed_loop import (
             THIN_LOOP_FAILED_CLOSED,
             THIN_LOOP_PASSED,
-            run_stage_3_6_thin_governed_loop,
+            run_stage_0_6_thin_governed_loop,
         )
 
         phase = str(params.get("phase") or "preview").strip().lower()
@@ -3231,6 +3231,9 @@ class WorkflowOrchestrator:
             thin_loop = {
                 "thin_loop_status": THIN_LOOP_FAILED_CLOSED,
                 "thin_loop_path": [
+                    "repository_runtime_baseline",
+                    "master_taskbook_anchor",
+                    "stage_taskbook_registry",
                     "external_taskbook_import",
                     "execution_envelope",
                     "local_execution_receipt",
@@ -3254,7 +3257,7 @@ class WorkflowOrchestrator:
                 warnings=[warning],
             )
 
-        thin_loop = run_stage_3_6_thin_governed_loop(inputs)
+        thin_loop = run_stage_0_6_thin_governed_loop(inputs)
         passed = thin_loop.get("thin_loop_status") == THIN_LOOP_PASSED
         blocker_messages = [
             self._thin_loop_blocker_text(blocker)
@@ -3273,6 +3276,9 @@ class WorkflowOrchestrator:
         thin_loop = {
             "thin_loop_status": "thin_governed_loop_input_template_ready",
             "thin_loop_path": [
+                "repository_runtime_baseline",
+                "master_taskbook_anchor",
+                "stage_taskbook_registry",
                 "external_taskbook_import",
                 "execution_envelope",
                 "local_execution_receipt",
@@ -3309,6 +3315,9 @@ class WorkflowOrchestrator:
         thin_loop = {
             "thin_loop_status": "thin_governed_loop_input_draft_ready",
             "thin_loop_path": [
+                "repository_runtime_baseline",
+                "master_taskbook_anchor",
+                "stage_taskbook_registry",
                 "external_taskbook_import",
                 "execution_envelope",
                 "local_execution_receipt",

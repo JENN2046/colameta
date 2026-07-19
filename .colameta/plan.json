@@ -1720,6 +1720,72 @@
       "execution": {
         "provider": "codex"
       }
+    },
+    {
+      "version": "v1.18",
+      "name": "Runner Lineage Reconciliation And Stage 0-6 Reality Snapshot V1",
+      "description": "Reconcile the already-landed v1.16 and v1.17 connector work back into Runner lineage with exact local Git bindings, record a current non-authoritative reality snapshot, and verify the complete read-only Stage 0-6 thin governed loop without rewriting historical freeze evidence.",
+      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.18.md",
+      "enabled": true,
+      "context_files": [
+        ".colameta/plan.json",
+        "docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md",
+        "docs/connector-runtime-health-observability.md",
+        "docs/stable-replacement-receipts/stable-replacement-ad170ce-20260719.md"
+      ],
+      "allowed_files": [
+        "docs/taskbooks/CURRENT_REALITY_SNAPSHOT_20260719.md",
+        "runner/thin_governed_loop.py",
+        "runner/core_orchestrator.py",
+        "runner/mcp_server.py",
+        "runner/web_console_v2_assets.py",
+        "tests/test_thin_governed_loop.py",
+        "tests/test_mcp_runtime_observability.py",
+        "docs/submission/metadata-snapshot.md",
+        "docs/submission/mcp-tool-info.md"
+      ],
+      "forbidden_files": [
+        "PROJECT_MASTER_TASKBOOK.md",
+        "PROJECT_MASTER_TASKBOOK.zh-CN.md",
+        ".env",
+        ".env.*",
+        "**/.env",
+        "**/*secret*",
+        "**/*token*",
+        "**/*credential*"
+      ],
+      "acceptance_commands": [
+        {
+          "command": ".venv/bin/python -m pytest tests/test_state_lineage_reconciliation.py tests/test_thin_governed_loop.py tests/test_mcp_runtime_observability.py -q",
+          "timeout_seconds": 900,
+          "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python -m compileall runner/thin_governed_loop.py runner/core_orchestrator.py runner/mcp_server.py",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "v1.16 and v1.17 are bound to exact existing commits with subjects and evidence references.",
+        "The complete Stage 0-6 preview fails closed on Master or Stage registry mismatch.",
+        "No historical freeze packet, Master Taskbook, ReviewDecision, GateEvent, or Delivery State is mutated."
+      ],
+      "out_of_scope": [
+        "Master Taskbook revision or hash rebinding",
+        "historical evidence rewrite",
+        "stable service replacement or restart",
+        "ChatGPT App submission",
+        "release, tag, package publication, or deployment"
+      ],
+      "execution": {
+        "provider": "codex"
+      }
     }
   ]
 }
