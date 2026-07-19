@@ -214,6 +214,81 @@ COMMANDER_EXPOSED_TOOLS = (
     "manage_git",
 )
 
+COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION = "commander_public_minimal.v1"
+_COMMANDER_PUBLIC_COMPACT_TOOLS = {
+    "list_registered_projects",
+    "get_apps_connector_smoke_packet",
+    "render_commander_app",
+    "analyze_project_state",
+}
+_COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS = {
+    "audit_id",
+    "delegated_tool",
+    "evidence_path",
+    "evidence_paths",
+    "evidence_refs",
+    "event_id",
+    "loaded_source_root",
+    "log",
+    "log_path",
+    "logs",
+    "operator_confirmation_ref",
+    "pid",
+    "ppid",
+    "project_id",
+    "project_identity",
+    "project_root",
+    "raw_log",
+    "raw_logs",
+    "record_id",
+    "registry_path",
+    "report_id",
+    "request_id",
+    "runtime_dir",
+    "runtime_project_root",
+    "session_id",
+    "settings_path",
+    "source_root",
+    "stable_runtime_dir",
+    "stderr",
+    "stdout",
+    "trace_id",
+    "workflow_id",
+    "workflow_record_warning",
+    "workspace_root",
+}
+_COMMANDER_PUBLIC_COMPACT_OMIT_KEYS = {
+    "action_fingerprint",
+    "action_id",
+    "action_key",
+    "accepted_commit",
+    "accepted_commit_subject",
+    "candidate_head",
+    "changed_files",
+    "commit",
+    "commit_subject",
+    "commits",
+    "files",
+    "head",
+    "ignored_files",
+    "item_id",
+    "loaded_runtime_head",
+    "recent_commits",
+    "repo_overview",
+    "reports",
+    "runtime_files",
+    "stable_head",
+    "stable_replacement_hint",
+    "unreconciled_direct_versions",
+}
+_COMMANDER_PUBLIC_POSIX_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:/])/(?:home|Users|tmp|var|opt|srv|mnt|workspace|private)/[^\s,;\]\[(){}<>\"']+"
+)
+_COMMANDER_PUBLIC_WINDOWS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\(?:Users|Temp|ProgramData|workspace)\\)[^\s,;\]\[(){}<>\"']+",
+    re.IGNORECASE,
+)
+
 NORMAL_EXPOSED_TOOLS = (
     "list_registered_projects",
     "get_agent_consumer_contract",
@@ -8366,6 +8441,172 @@ class MCPPlanningBridgeServer:
             filtered.sort(key=lambda tool: position[tool.name])
         return filtered
 
+    def _commander_public_string(self, value: str) -> str:
+        redacted = value
+        if self.project_root:
+            redacted = redacted.replace(self.project_root, "<project>")
+        redacted = _COMMANDER_PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+        return _COMMANDER_PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
+
+    @staticmethod
+    def _commander_public_value_has_absolute_path(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(
+                value.startswith("/")
+                or re.match(r"^[A-Za-z]:\\", value)
+                or _COMMANDER_PUBLIC_POSIX_PATH_RE.search(value)
+                or _COMMANDER_PUBLIC_WINDOWS_PATH_RE.search(value)
+            )
+        if isinstance(value, list):
+            return any(
+                MCPPlanningBridgeServer._commander_public_value_has_absolute_path(item)
+                for item in value
+            )
+        if isinstance(value, dict):
+            return any(
+                MCPPlanningBridgeServer._commander_public_value_has_absolute_path(item)
+                for item in value.values()
+            )
+        return False
+
+    def _commander_public_omit_key(self, key: str, value: Any, *, compact: bool) -> bool:
+        normalized = key.strip().lower()
+        if normalized in _COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS:
+            return True
+        if normalized.endswith(("_at", "_time")) or "timestamp" in normalized:
+            return True
+        if normalized in {"duration", "duration_ms", "elapsed", "elapsed_ms"}:
+            return True
+        if "latency" in normalized:
+            return True
+        if normalized.endswith(("_root", "_dir")):
+            return True
+        if normalized.endswith("_path"):
+            return compact or self._commander_public_value_has_absolute_path(value)
+        if compact:
+            if normalized in _COMMANDER_PUBLIC_COMPACT_OMIT_KEYS:
+                return True
+            if normalized.endswith(
+                ("_head", "_commit", "_commit_subject", "_file", "_files")
+            ):
+                return True
+        return False
+
+    def _commander_public_sanitize(self, value: Any, *, compact: bool) -> Any:
+        if isinstance(value, dict):
+            referenced_tool = value.get("tool")
+            if (
+                isinstance(referenced_tool, str)
+                and referenced_tool
+                and referenced_tool not in COMMANDER_EXPOSED_TOOLS
+            ):
+                return None
+            sanitized: dict[str, Any] = {}
+            for key, nested in value.items():
+                clean_key = str(key)
+                if self._commander_public_omit_key(clean_key, nested, compact=compact):
+                    continue
+                clean_value = self._commander_public_sanitize(nested, compact=compact)
+                if clean_value is not None:
+                    sanitized[clean_key] = clean_value
+            return sanitized
+        if isinstance(value, list):
+            sanitized_items: list[Any] = []
+            for item in value:
+                clean_item = self._commander_public_sanitize(item, compact=compact)
+                if clean_item is not None:
+                    sanitized_items.append(clean_item)
+            return sanitized_items
+        if isinstance(value, str):
+            return self._commander_public_string(value)
+        return copy.deepcopy(value)
+
+    def _commander_public_project_list(self, data: dict[str, Any]) -> dict[str, Any]:
+        projects = data.get("projects")
+        projected: list[dict[str, Any]] = []
+        if isinstance(projects, list):
+            for item in projects:
+                if not isinstance(item, dict):
+                    continue
+                project: dict[str, Any] = {}
+                for key in (
+                    "project_name",
+                    "display_name",
+                    "project_mode",
+                    "available",
+                    "runner_managed",
+                ):
+                    value = item.get(key)
+                    if value is not None:
+                        project[key] = copy.deepcopy(value)
+                if project.get("project_name"):
+                    projected.append(project)
+        return {
+            "ok": data.get("ok") is not False,
+            "project_count": len(projected),
+            "projects": projected,
+        }
+
+    def _commander_public_project_smoke(self, data: dict[str, Any]) -> dict[str, Any]:
+        projected = self._commander_public_sanitize(data, compact=True)
+        if not isinstance(projected, dict):
+            return {}
+        runtime = data.get("runtime")
+        if isinstance(runtime, dict):
+            stale = runtime.get("runtime_loaded_code_stale")
+            reload_needed = runtime.get("reload_needed_for_verification")
+            projected["runtime"] = {
+                "runtime_aligned": stale is False and reload_needed is False,
+                "runtime_loaded_code_stale": stale if isinstance(stale, bool) else None,
+                "reload_needed_for_verification": (
+                    reload_needed if isinstance(reload_needed, bool) else None
+                ),
+                "reload_awareness_reason": runtime.get("reload_awareness_reason"),
+            }
+        return projected
+
+    def _commander_public_project_tool_result(
+        self,
+        tool_result: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
+            return tool_result
+        if not isinstance(tool_result, dict):
+            return tool_result
+        tool_name = str(tool_result.get("tool") or "")
+        if tool_name not in COMMANDER_EXPOSED_TOOLS:
+            sanitized_root: dict[str, Any] = {}
+            for key, value in tool_result.items():
+                if self._commander_public_omit_key(str(key), value, compact=False):
+                    continue
+                clean_value = self._commander_public_sanitize(value, compact=False)
+                if clean_value is not None:
+                    sanitized_root[str(key)] = clean_value
+            return sanitized_root
+
+        projected = copy.deepcopy(tool_result)
+        data = projected.get("data")
+        if isinstance(data, dict):
+            if tool_name == "list_registered_projects":
+                projected["data"] = self._commander_public_project_list(data)
+            elif tool_name == "get_apps_connector_smoke_packet":
+                projected["data"] = self._commander_public_project_smoke(data)
+            else:
+                compact = tool_name in _COMMANDER_PUBLIC_COMPACT_TOOLS
+                clean_data = self._commander_public_sanitize(data, compact=compact)
+                if isinstance(clean_data, dict):
+                    project_name = params.get("project_name") if isinstance(params, dict) else None
+                    if (
+                        isinstance(project_name, str)
+                        and project_name.strip()
+                        and "project_name" not in clean_data
+                    ):
+                        clean_data["project_name"] = project_name.strip()
+                    projected["data"] = clean_data
+        clean_result = self._commander_public_sanitize(projected, compact=False)
+        return clean_result if isinstance(clean_result, dict) else projected
+
     def _visible_tool_names(self) -> list[str]:
         return [tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs)]
 
@@ -8400,6 +8641,7 @@ class MCPPlanningBridgeServer:
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        tool_result = self._commander_public_project_tool_result(tool_result, params)
         structured_tool_result, mcp_meta = self._split_mcp_tool_result_meta(tool_result)
         safe_params = params if isinstance(params, dict) else {}
         is_error = not bool(structured_tool_result.get("ok"))
@@ -9280,6 +9522,7 @@ class MCPPlanningBridgeServer:
         tool_result: dict[str, Any],
     ) -> dict[str, Any]:
         try:
+            tool_result = self._commander_public_project_tool_result(tool_result, params)
             sanitized_tool_result = self._actions_sanitize_tool_result(tool_result)
             response_chars = self._json_char_count(sanitized_tool_result)
             if response_chars <= ACTIONS_TARGET_RESPONSE_CHARS:
@@ -9476,7 +9719,7 @@ class MCPPlanningBridgeServer:
                 clean_data = dict(data)
                 result["_meta"] = copy.deepcopy(clean_data.pop("_meta"))
                 result["data"] = clean_data
-            return result
+            return self._commander_public_project_tool_result(result, params)
         except MCPToolInputError as e:
             self._stop_authoritative_canary_if_inactive()
             return self._tool_error(name, e.error_code, e.message, e.details)
