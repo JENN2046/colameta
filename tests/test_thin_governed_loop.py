@@ -6,15 +6,75 @@ from pathlib import Path
 from unittest.mock import patch
 
 from runner.core_orchestrator import WorkflowOrchestrator
+from runner.master_taskbook_registry import MasterTaskbookRegistryError
 from runner.thin_governed_loop import (
+    BASELINE_ANCHOR_READY,
+    MASTER_ANCHOR_VERIFIED,
+    STAGE_ANCHOR_VERIFIED,
     THIN_LOOP_FAILED_CLOSED,
     THIN_LOOP_PASSED,
     example_stage_3_6_inputs,
+    run_stage_0_6_thin_governed_loop,
     run_stage_3_6_thin_governed_loop,
+    verify_stage_0_2_governance_anchors,
 )
 
 
 class ThinGovernedLoopTests(unittest.TestCase):
+    def test_stage_0_2_anchors_verify_repository_master_and_stage_bindings(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+
+        result = verify_stage_0_2_governance_anchors(project_root)
+
+        assert result["anchor_status"] == THIN_LOOP_PASSED
+        assert result["blockers"] == []
+        assert result["read_only"] is True
+        assert result["side_effects"] is False
+        assert result["stage_results"]["stage_00_baseline"]["baseline_anchor"] == BASELINE_ANCHOR_READY
+        assert result["stage_results"]["stage_01_master_anchor"]["master_registry"] == MASTER_ANCHOR_VERIFIED
+        assert result["stage_results"]["stage_02_stage_taskbook"]["stage_registry"] == STAGE_ANCHOR_VERIFIED
+        assert result["stage_results"]["stage_02_stage_taskbook"]["registered_stage_ids"] == [
+            "stage_02_stage_taskbook_management"
+        ]
+
+    def test_stage_0_6_thin_loop_connects_hash_bound_anchors_to_review_intake(self) -> None:
+        result = run_stage_0_6_thin_governed_loop(example_stage_3_6_inputs())
+
+        assert result["thin_loop_status"] == THIN_LOOP_PASSED
+        assert result["blockers"] == []
+        assert result["thin_loop_path"] == [
+            "repository_runtime_baseline",
+            "master_taskbook_anchor",
+            "stage_taskbook_registry",
+            "external_taskbook_import",
+            "execution_envelope",
+            "local_execution_receipt",
+            "reviewer_handoff_package",
+            "review_feedback_intake",
+        ]
+        assert result["stage_results"]["stage_01_master_anchor"]["master_registry"] == MASTER_ANCHOR_VERIFIED
+        assert result["stage_results"]["stage_06_feedback_intake"]["feedback_classification"] == (
+            "review_feedback_classification_ready"
+        )
+        assert result["governance_anchors"]["read_only"] is True
+        assert result["governance_anchors"]["side_effects"] is False
+        assert result["delivery_state_accepted"] is False
+        assert result["review_decision_created"] is False
+        assert result["gate_event_emitted"] is False
+        assert result["executor_dispatch_authorized"] is False
+
+    def test_stage_0_6_thin_loop_fails_closed_on_master_anchor_error(self) -> None:
+        error = MasterTaskbookRegistryError("MASTER_HASH_MISMATCH", "redacted")
+        with patch("runner.thin_governed_loop.load_master_taskbook_registry", side_effect=error):
+            result = run_stage_0_6_thin_governed_loop(example_stage_3_6_inputs())
+
+        assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        assert any(item["code"] == "stage_01_master_anchor_invalid" for item in result["blockers"])
+        assert result["stage_results"]["stage_01_master_anchor"]["master_registry"] == "blocked"
+        assert result["delivery_state_accepted"] is False
+        assert result["review_decision_created"] is False
+        assert result["gate_event_emitted"] is False
+
     def test_stage_3_6_thin_loop_connects_import_to_feedback_without_authority(self) -> None:
         result = run_stage_3_6_thin_governed_loop(example_stage_3_6_inputs())
 
@@ -92,6 +152,15 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.result["side_effects"] is False
         assert output.result["input_mode"] == "example"
         assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert output.result["thin_loop"]["stage_results"]["stage_00_baseline"]["baseline_anchor"] == (
+            BASELINE_ANCHOR_READY
+        )
+        assert output.result["thin_loop"]["stage_results"]["stage_01_master_anchor"]["master_registry"] == (
+            MASTER_ANCHOR_VERIFIED
+        )
+        assert output.result["thin_loop"]["stage_results"]["stage_02_stage_taskbook"]["stage_registry"] == (
+            STAGE_ANCHOR_VERIFIED
+        )
         assert output.result["forbidden_authority_outputs"] == {
             "delivery_state_accepted": False,
             "review_decision_created": False,

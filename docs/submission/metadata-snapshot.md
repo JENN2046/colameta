@@ -5,7 +5,7 @@ App name: ColaMeta
 Description: Project console for local AI engineering workflows.
 Project name: colameta-self-dev
 Service mode: true
-MCP exposure profile: normal
+MCP exposure profile: commander
 Category: DEVELOPER_TOOLS
 Subtitle: Manage AI project workflows
 
@@ -24,8 +24,8 @@ Current desktop and narrow product screenshots are recorded in
 `docs/submission/product-experience-audit-20260718.md`.
 
 ## runtime_snapshot
-Stable/public verified baseline head: 9cf53f07378aec0ac33d9792dddec58546fb1d6f
-Loaded runtime head at preflight: 9cf53f07378aec0ac33d9792dddec58546fb1d6f
+Stable/public verified baseline head: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
+Loaded runtime head at preflight: ad170ced2bd576215bcda0ea1078dd6d6f41cf9f
 Runtime stale at preflight: false
 Reload needed for verification at preflight: false
 
@@ -37,15 +37,19 @@ Operator closeout: connector_closeout_ready
 Evidence gap count: 0
 
 ## tool_metadata
-Visible tool count: 82
-Required annotation coverage: 82/82
-Output schema coverage: 82/82
-Submission import file: `chatgpt-app-submission.json`
+Visible tool count: 7
+Required annotation coverage: 7/7
+Output schema coverage: 7/7
+Submission import file: `chatgpt-app-submission.json` is still the legacy
+82-tool normal-profile snapshot and must not be submitted as the current public
+Commander inventory.
 Initial release notes: `docs/submission/release-notes.md`
 
 This metadata snapshot is bound to the deployed runtime release
-`9cf53f07378aec0ac33d9792dddec58546fb1d6f`. The final human review must verify
-that the Dashboard tool scan and form still match that deployed release.
+`ad170ced2bd576215bcda0ea1078dd6d6f41cf9f`. The final human review must
+regenerate the submission import file from the exact seven-tool Commander
+surface and verify that the Dashboard tool scan and form still match that
+deployed release. This snapshot does not authorize another stable replacement.
 
 ## reviewer
 Human reviewer must confirm final Dashboard metadata, URLs, logo, screenshots, and policy text before marking `metadata_snapshot_reviewed=true`.

@@ -1520,7 +1520,7 @@ function renderThinGovernedLoopPreview(data) {{
   }};
   const inputModeText = inputModeLabels[inputMode] || inputMode;
   let h = `<div class="card summary-card thin-loop-preview-card ${{cardClass}}">`;
-  h += `<div class="card-title">Stage 3-6 薄治理闭环观察</div>`;
+  h += `<div class="card-title">Stage 0-6 薄治理闭环观察</div>`;
   h += `<div class="summary-title">${{esc(statusText)}}</div>`;
   h += `<div class="badge-row">`;
   h += `<span class="badge ${{badgeCls}}">${{esc(statusLabel)}}</span>`;

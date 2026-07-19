@@ -29,6 +29,10 @@ from runner.external_taskbook_validator import (
     validate_external_taskbook_claim,
 )
 from runner.local_execution_receipt import RECEIPT_CHECK_PASSED, validate_local_execution_receipt
+from runner.master_taskbook_registry import (
+    MasterTaskbookRegistryError,
+    load_master_taskbook_registry,
+)
 from runner.review_decision_adapter import ADAPTER_STATUS_ADAPTED, adapt_review_decision_value
 from runner.review_feedback_classification import CLASSIFICATION_READY, classify_review_feedback
 from runner.review_feedback_preview import PREVIEW_AVAILABLE as FEEDBACK_PREVIEW_AVAILABLE, build_review_feedback_preview
@@ -40,13 +44,121 @@ from runner.taskbook_import_adoption_preview import (
 )
 from runner.taskbook_import_preview import PREVIEW_READY as IMPORT_PREVIEW_READY, render_taskbook_import_preview
 from runner.taskbook_version_candidate_mapping import MAPPING_READY, map_preview_to_version_candidate
+from runner.stage_taskbook_registry import (
+    StageTaskbookRegistryError,
+    load_stage_taskbook_registry,
+)
 
 
 THIN_LOOP_PASSED = "thin_governed_loop_passed"
 THIN_LOOP_FAILED_CLOSED = "thin_governed_loop_failed_closed"
+BASELINE_ANCHOR_READY = "baseline_anchor_ready"
+MASTER_ANCHOR_VERIFIED = "master_anchor_verified"
+STAGE_ANCHOR_VERIFIED = "stage_anchor_verified"
 MASTER_TASKBOOK_HASH = "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
 STAGE_04_TASKBOOK_HASH = "05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41"
 STAGE_06_TASKBOOK_HASH = "c83c979d447a4ec645d380b6c1dc206730d12d5d644c08582b3cfd04f3e0009d"
+
+_STAGE_0_REQUIRED_ANCHORS = (
+    "PROJECT_MASTER_TASKBOOK.md",
+    ".colameta/taskbooks/master_taskbook_registry.json",
+    ".colameta/taskbooks/stage_taskbook_registry.json",
+)
+
+
+def verify_stage_0_2_governance_anchors(project_root: str | Path) -> dict[str, Any]:
+    """Verify the repository, Master, and Stage registry anchors without writes."""
+    root = Path(project_root).expanduser().resolve()
+    missing = [relative for relative in _STAGE_0_REQUIRED_ANCHORS if not (root / relative).is_file()]
+    blockers: list[dict[str, Any]] = []
+    if not root.is_dir():
+        blockers.append({"code": "stage_00_project_root_missing", "stage": "stage_00_baseline"})
+    if missing:
+        blockers.append(
+            {
+                "code": "stage_00_required_anchor_missing",
+                "stage": "stage_00_baseline",
+                "missing_relative_paths": missing,
+            }
+        )
+
+    master_result: dict[str, Any] | None = None
+    try:
+        master_result = load_master_taskbook_registry(root)
+    except MasterTaskbookRegistryError as exc:
+        blockers.append(
+            {
+                "code": "stage_01_master_anchor_invalid",
+                "stage": "stage_01_master_anchor",
+                "anchor_error_code": exc.error_code,
+            }
+        )
+    except OSError:
+        blockers.append(
+            {
+                "code": "stage_01_master_anchor_unreadable",
+                "stage": "stage_01_master_anchor",
+            }
+        )
+
+    master_hash = str((master_result or {}).get("master_actual_sha256") or "")
+    if master_result is not None and master_hash != MASTER_TASKBOOK_HASH:
+        blockers.append(
+            {
+                "code": "stage_01_master_anchor_constant_mismatch",
+                "stage": "stage_01_master_anchor",
+                "expected_hash": MASTER_TASKBOOK_HASH,
+                "actual_hash": master_hash,
+            }
+        )
+
+    stage_result: dict[str, Any] | None = None
+    try:
+        stage_result = load_stage_taskbook_registry(root)
+    except StageTaskbookRegistryError as exc:
+        blockers.append(
+            {
+                "code": "stage_02_stage_anchor_invalid",
+                "stage": "stage_02_stage_taskbook",
+                "anchor_error_code": exc.error_code,
+            }
+        )
+    except OSError:
+        blockers.append(
+            {
+                "code": "stage_02_stage_anchor_unreadable",
+                "stage": "stage_02_stage_taskbook",
+            }
+        )
+
+    baseline_blocked = any(item.get("stage") == "stage_00_baseline" for item in blockers)
+    master_blocked = any(item.get("stage") == "stage_01_master_anchor" for item in blockers)
+    stage_blocked = any(item.get("stage") == "stage_02_stage_taskbook" for item in blockers)
+    return {
+        "anchor_status": THIN_LOOP_FAILED_CLOSED if blockers else THIN_LOOP_PASSED,
+        "stage_results": {
+            "stage_00_baseline": {
+                "baseline_anchor": "blocked" if baseline_blocked else BASELINE_ANCHOR_READY,
+                "required_anchor_files": list(_STAGE_0_REQUIRED_ANCHORS),
+                "missing_anchor_files": missing,
+            },
+            "stage_01_master_anchor": {
+                "master_registry": "blocked" if master_blocked else MASTER_ANCHOR_VERIFIED,
+                "master_hash": master_hash or None,
+                "master_review_status": (
+                    ((master_result or {}).get("record") or {}).get("master_review_status")
+                ),
+            },
+            "stage_02_stage_taskbook": {
+                "stage_registry": "blocked" if stage_blocked else STAGE_ANCHOR_VERIFIED,
+                "registered_stage_count": (stage_result or {}).get("record_count", 0),
+                "registered_stage_ids": (stage_result or {}).get("stage_ids", []),
+            },
+        },
+        "blockers": blockers,
+        "read_only": True,
+        "side_effects": False,
+    }
 
 
 def example_stage_3_6_inputs() -> dict[str, Any]:
@@ -329,6 +441,39 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
         "gate_event_emitted": False,
         "executor_dispatch_authorized": False,
     }
+
+
+def run_stage_0_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the complete Stage 0-6 proof while preserving preview-only authority."""
+    values = inputs or example_stage_3_6_inputs()
+    anchors = verify_stage_0_2_governance_anchors(values.get("project_root") or Path.cwd())
+    downstream = run_stage_3_6_thin_governed_loop(values)
+    blockers = [*anchors["blockers"], *downstream["blockers"]]
+    stage_results = {
+        **anchors["stage_results"],
+        **downstream["stage_results"],
+    }
+    result = dict(downstream)
+    result.update(
+        {
+            "thin_loop_status": THIN_LOOP_PASSED if not blockers else THIN_LOOP_FAILED_CLOSED,
+            "thin_loop_path": [
+                "repository_runtime_baseline",
+                "master_taskbook_anchor",
+                "stage_taskbook_registry",
+                *downstream["thin_loop_path"],
+            ],
+            "stage_results": stage_results,
+            "blockers": blockers,
+            "governance_anchors": {
+                "read_only": anchors["read_only"],
+                "side_effects": anchors["side_effects"],
+                "master_taskbook_hash": anchors["stage_results"]["stage_01_master_anchor"]["master_hash"],
+                "registered_stage_ids": anchors["stage_results"]["stage_02_stage_taskbook"]["registered_stage_ids"],
+            },
+        }
+    )
+    return result
 
 
 def _loop_blockers(stage_results: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
