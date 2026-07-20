@@ -85,6 +85,14 @@ class ExternalOAuthProvider:
     def validate_scope(self, token_payload: dict[str, Any], required_scope: str) -> bool:
         return required_scope in self.scopes and required_scope in _extract_scopes(token_payload)
 
+    def validate_scopes(self, token_payload: dict[str, Any], required_scopes: object) -> bool:
+        if not isinstance(required_scopes, (list, tuple, set)):
+            return False
+        return all(
+            isinstance(scope, str) and self.validate_scope(token_payload, scope)
+            for scope in required_scopes
+        )
+
     def _accepts_audience_or_resource(self, payload: dict[str, Any]) -> bool:
         expected_audience = self.audience or self.resource
         if _claim_contains(payload.get("aud"), expected_audience):

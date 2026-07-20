@@ -390,6 +390,10 @@ class MCPProjectPatchManager:
                 return {"ok": False, "error_code": "PROJECT_MISMATCH", "message": "preview 与当前项目不匹配。"}
             if ec == "PREVIEW_EXPIRED":
                 return {"ok": False, "error_code": "PREVIEW_EXPIRED", "message": "preview 已过期。"}
+            return error_result(
+                str(ec or "PREVIEW_INVALID"),
+                "preview no longer matches the authorized artifact.",
+            )
         preview_data = guard["payload"]
 
         mode = preview_data.get("mode", "")

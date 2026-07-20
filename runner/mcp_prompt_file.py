@@ -290,6 +290,10 @@ class MCPPromptFileManager:
             if ec == "PREVIEW_EXPIRED":
                 self._delete_preview(preview_id)
                 return error_result("PREVIEW_EXPIRED", f"preview_id={preview_id} 已过期。请重新调用 preview。")
+            return error_result(
+                str(ec or "PREVIEW_INVALID"),
+                "preview no longer matches the authorized artifact.",
+            )
         preview = guard["payload"]
 
         version = str(preview.get("version") or "")
