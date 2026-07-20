@@ -1938,6 +1938,7 @@ def _stop_matrix_process(process: multiprocessing.Process, pipe: Any) -> None:
     pipe.close()
     process.join(timeout=3.0)
     assert process.exitcode == 0
+    process.close()
 
 
 def _drive_subprocess_snapshot(driver: _Driver, tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
