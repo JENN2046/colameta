@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -23,6 +24,14 @@ from scripts.runner_cli_usage import USAGE_MESSAGE
 from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.http_server_utils import is_tcp_port_bindable, wait_for_tcp_port_bindable
 from runner.runner_global_config import DEFAULT_MCP_HOST, DEFAULT_WEB_HOST, RunnerGlobalConfigStore
+from runner.mcp_private_operator import (
+    OperatorSettingsStore,
+)
+from runner.private_operator_health_ipc import (
+    private_operator_health_ipc_server,
+    private_operator_ipc_unavailable,
+    query_private_operator_health,
+)
 from runner.project_registry import ProjectRegistry, PROJECT_MODE_MANAGED
 from runner.runner_paths import (
     PRIMARY_USER_CONFIG_DIRNAME,
@@ -201,6 +210,44 @@ def _prompt_initial_global_config(
         getpass_func=getpass_func,
         stderr=stderr or sys.stderr,
     )
+
+
+def _run_operator_config(args: list[str]) -> int:
+    if len(args) < 2 or args[0] != "operator-config" or args[1] not in {"status", "enable", "disable"}:
+        print("用法：colameta operator-config <status|enable|disable> [--project-path <path>]", file=sys.stderr)
+        return 1
+    action = args[1]
+    project_path: str | None = None
+    if action == "status":
+        if len(args) == 4 and args[2] == "--project-path":
+            project_path = _resolve_path(args[3])
+        elif len(args) != 2:
+            print("用法：colameta operator-config status [--project-path <path>]", file=sys.stderr)
+            return 1
+    elif len(args) != 2:
+        print("用法：colameta operator-config <enable|disable>", file=sys.stderr)
+        return 1
+    store = OperatorSettingsStore()
+    if action == "status":
+        result = store.status()
+        if result.get("ok"):
+            result = {
+                **result,
+                "private_runtime": query_private_operator_health(project_path),
+            }
+    elif action == "disable":
+        result = store.disable()
+    else:
+        if not sys.stdin.isatty():
+            print("operator-config enable 必须在交互终端运行。", file=sys.stderr)
+            return 1
+        subject = getpass.getpass("Auth0 subject（输入不会回显）：")
+        client = getpass.getpass("ChatGPT CIMD client id（输入不会回显）：")
+        result = store.enable(subject, client)
+        subject = ""
+        client = ""
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
 
 
 def _maybe_interactive_global_config_setup(args: list[str], *, mode: str) -> int | None:
@@ -520,6 +567,20 @@ def _print_connector_runtime_health_summary(
     )
 
 
+def _print_private_operator_runtime_summary(private_runtime: dict[str, object]) -> None:
+    print(
+        "Private operator runtime: "
+        f"observation_status={private_runtime.get('observation_status')} "
+        f"source={private_runtime.get('observation_source')} "
+        f"quarantine_status={private_runtime.get('quarantine_status')} "
+        f"quarantined_close_fd_count={private_runtime.get('quarantined_close_fd_count')} "
+        f"threshold={private_runtime.get('quarantine_attention_threshold')} "
+        f"alert={private_runtime.get('local_alert_code') or 'none'} "
+        f"reason={private_runtime.get('reason_code') or 'none'}",
+        file=sys.stderr,
+    )
+
+
 def _metadata_matches_project_path(metadata: dict[str, object], project_path: str) -> bool:
     root = metadata.get("project_root")
     if not isinstance(root, str) or not root.strip():
@@ -560,6 +621,7 @@ def _service_status_payload(
     web_state: str | None,
     mcp_state: str | None,
     log_path: str | None,
+    private_operator_runtime: dict[str, object] | None = None,
     tunnel_client: dict[str, object] | None = None,
     control_plane: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -602,6 +664,11 @@ def _service_status_payload(
         "apps_connector_closeout": packet["apps_connector_closeout"],
         "apps_connector_smoke_packet": packet["apps_connector_smoke_packet"],
         "stable_replacement_cadence": packet["stable_replacement_cadence"],
+        "private_operator_runtime": (
+            dict(private_operator_runtime)
+            if isinstance(private_operator_runtime, dict)
+            else private_operator_ipc_unavailable("OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND")
+        ),
         "tunnel_evidence": {
             "provided": bool(tunnel_client or control_plane),
             "source": "tunnel_admin_probe" if tunnel_client or control_plane else None,
@@ -628,6 +695,7 @@ def _emit_service_status(
     web_state: str | None,
     mcp_state: str | None,
     log_path: str | None,
+    private_operator_runtime: dict[str, object] | None = None,
     tunnel_client: dict[str, object] | None = None,
     control_plane: dict[str, object] | None = None,
     json_output: bool = False,
@@ -642,6 +710,7 @@ def _emit_service_status(
                     web_state=web_state,
                     mcp_state=mcp_state,
                     log_path=log_path,
+                    private_operator_runtime=private_operator_runtime,
                     tunnel_client=tunnel_client,
                     control_plane=control_plane,
                 )
@@ -667,6 +736,11 @@ def _emit_service_status(
         mcp_state=mcp_state,
         tunnel_client=tunnel_client,
         control_plane=control_plane,
+    )
+    _print_private_operator_runtime_summary(
+        dict(private_operator_runtime)
+        if isinstance(private_operator_runtime, dict)
+        else private_operator_ipc_unavailable("OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND")
     )
 
 
@@ -1887,6 +1961,7 @@ def _run_service_status(args: list[str]) -> int:
     tunnel_options = status_options.get("tunnel")
     json_output = bool(status_options.get("json_output"))
     tunnel_client, control_plane = _collect_status_tunnel_evidence(tunnel_options)
+    private_operator_runtime = query_private_operator_health(project_path)
     metadata = _read_service_metadata(project_path)
     if metadata is None:
         discovered = _discover_running_service_metadata(project_path)
@@ -1899,6 +1974,7 @@ def _run_service_status(args: list[str]) -> int:
                 web_state=web_state,
                 mcp_state=mcp_state,
                 log_path=None,
+                private_operator_runtime=private_operator_runtime,
                 tunnel_client=tunnel_client,
                 control_plane=control_plane,
                 json_output=json_output,
@@ -1911,6 +1987,7 @@ def _run_service_status(args: list[str]) -> int:
             web_state=None,
             mcp_state=None,
             log_path=_service_paths(project_path)["log"] if os.path.isfile(_service_paths(project_path)["log"]) else None,
+            private_operator_runtime=private_operator_runtime,
             tunnel_client=tunnel_client,
             control_plane=control_plane,
             json_output=json_output,
@@ -1929,6 +2006,7 @@ def _run_service_status(args: list[str]) -> int:
                 web_state=web_state,
                 mcp_state=mcp_state,
                 log_path=None,
+                private_operator_runtime=private_operator_runtime,
                 tunnel_client=tunnel_client,
                 control_plane=control_plane,
                 json_output=json_output,
@@ -1942,6 +2020,7 @@ def _run_service_status(args: list[str]) -> int:
             web_state=web_state,
             mcp_state=mcp_state,
             log_path=str(metadata.get("log_path") or "") or None,
+            private_operator_runtime=private_operator_runtime,
             tunnel_client=tunnel_client,
             control_plane=control_plane,
             json_output=json_output,
@@ -1955,6 +2034,7 @@ def _run_service_status(args: list[str]) -> int:
         web_state=web_state,
         mcp_state=mcp_state,
         log_path=str(metadata.get("log_path") or "") or None,
+        private_operator_runtime=private_operator_runtime,
         tunnel_client=tunnel_client,
         control_plane=control_plane,
         json_output=json_output,
@@ -3261,6 +3341,18 @@ def _resolve_debug_actions(cli_has_flag: bool) -> bool:
     return cli_env.resolve_debug_actions(cli_has_flag)
 
 
+def _serve_mcp_http_with_private_operator_health(server, project_path: str, **kwargs) -> int:
+    return _run_with_private_operator_health(
+        project_path,
+        lambda: server.serve_http(**kwargs),
+    )
+
+
+def _run_with_private_operator_health(project_path: str, callback):
+    with private_operator_health_ipc_server(project_path):
+        return callback()
+
+
 def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> int:
     if len(args) < 2:
         print("mcp-http-server 缺少项目目录。", file=sys.stderr)
@@ -3479,7 +3571,9 @@ def _run_mcp_http_server(args: list[str], allow_source_only: bool = False) -> in
     print(f"\U0001f50c  MCP Endpoint: {mcp_url}", file=sys.stderr)
     _print_mcp_auth_status(resolved_auth_mode, public_base_url)
     print("\u2705  Ready. Press Ctrl-C to stop.", file=sys.stderr)
-    return server.serve_http(
+    return _serve_mcp_http_with_private_operator_health(
+        server,
+        project_path,
         host=host,
         port=port,
         auth_token=auth_token,
@@ -3990,40 +4084,49 @@ def _run_combined_serve(args: list[str], project_mode: str | None = None, *, reg
         _print_registry_project_list()
     print("\u2705  Ready. Press Ctrl-C to stop.", file=sys.stderr)
 
-    for thread in threads:
-        thread.start()
+    def coordinate_public_workers() -> int:
+        started_threads: list[threading.Thread] = []
+        try:
+            for thread in threads:
+                thread.start()
+                started_threads.append(thread)
 
-    time.sleep(0.4)
-    if error_event.is_set():
-        for error in errors:
-            print(error, file=sys.stderr)
-        return 1
-
-    if open_web and enable_web:
-        open_url = _web_console_url(web_host, web_port)
-        webbrowser.open(open_url)
-
-    try:
-        while not shutdown_event.is_set():
+            time.sleep(0.4)
             if error_event.is_set():
                 for error in errors:
                     print(error, file=sys.stderr)
                 return 1
-            if not any(thread.is_alive() for thread in threads):
-                print("serve 已退出：所有服务均已停止。", file=sys.stderr)
-                return 1
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        shutdown_event.set()
 
-    if enable_web and web_server is not None and hasattr(web_server, '_httpd'):
-        web_server._httpd.shutdown()
-    if enable_mcp and mcp_server is not None and hasattr(mcp_server, '_httpd'):
-        mcp_server._httpd.shutdown()
-    for thread in threads:
-        thread.join(timeout=5)
-    print("\n已停止 Runner serve。", file=sys.stderr)
-    return 0
+            if open_web and enable_web:
+                open_url = _web_console_url(web_host, web_port)
+                webbrowser.open(open_url)
+
+            try:
+                while not shutdown_event.is_set():
+                    if error_event.is_set():
+                        for error in errors:
+                            print(error, file=sys.stderr)
+                        return 1
+                    if not any(thread.is_alive() for thread in started_threads):
+                        print("serve 已退出：所有服务均已停止。", file=sys.stderr)
+                        return 1
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                shutdown_event.set()
+            print("\n已停止 Runner serve。", file=sys.stderr)
+            return 0
+        finally:
+            if enable_web and web_server is not None and hasattr(web_server, "_httpd"):
+                with contextlib.suppress(BaseException):
+                    web_server._httpd.shutdown()
+            if enable_mcp and mcp_server is not None and hasattr(mcp_server, "_httpd"):
+                with contextlib.suppress(BaseException):
+                    mcp_server._httpd.shutdown()
+            for thread in started_threads:
+                with contextlib.suppress(BaseException):
+                    thread.join(timeout=5)
+
+    return _run_with_private_operator_health(project_path, coordinate_public_workers)
 
 
 def _run_source_only_start(project_path: str, args: list[str]) -> int:
@@ -5054,6 +5157,8 @@ def main() -> int:
         return _run_ops_check(sys.argv[1:])
     if cmd == "doctor":
         return _run_product_doctor(sys.argv[1:])
+    if cmd == "operator-config":
+        return _run_operator_config(sys.argv[1:])
     if cmd == "connect-chatgpt":
         return _run_connect_chatgpt(sys.argv[1:])
     if cmd == "app-smoke":

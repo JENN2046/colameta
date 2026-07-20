@@ -32,12 +32,14 @@ def test_external_oauth_tools_publish_chatgpt_security_scheme_mirrors(tmp_path) 
     assert tools["analyze_project_state"]["_meta"]["securitySchemes"] == read_scheme
 
     remote_workflow_scheme = [
-        {"type": "oauth2", "scopes": ["mcp:preview", "mcp:read"]}
+        {"type": "oauth2", "scopes": ["mcp:commit", "mcp:plan", "mcp:preview", "mcp:read"]}
     ]
     assert tools["run_mcp_workflow"]["securitySchemes"] == remote_workflow_scheme
-    assert tools["manage_git"]["securitySchemes"] == remote_workflow_scheme
-    for tool in tools.values():
-        advertised = tool["securitySchemes"][0]["scopes"]
+    assert tools["manage_git"]["securitySchemes"] == [
+        {"type": "oauth2", "scopes": ["mcp:preview", "mcp:read"]}
+    ]
+    for name in ("list_registered_projects", "get_apps_connector_smoke_packet", "render_commander_app", "analyze_project_state"):
+        advertised = tools[name]["securitySchemes"][0]["scopes"]
         assert "mcp:commit" not in advertised
         assert "mcp:plan" not in advertised
 

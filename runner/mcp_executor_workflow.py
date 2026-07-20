@@ -60,6 +60,7 @@ from runner.executor_validation_truth import (
     summarize_legacy_validation_results,
     validation_truth_from_summary,
 )
+from runner.operator_artifact_binding import bound_artifact_error
 
 
 PREVIEWS_DIR = os.path.join("runtime", "executor-workflow-previews")
@@ -659,6 +660,13 @@ class MCPExecutorWorkflowManager:
                 "run_once",
                 "PREVIEW_NOT_FOUND",
                 f"preview_id={preview_id} 不存在或已过期。请重新调用 run_once_preview。",
+            )
+        binding_error = bound_artifact_error(preview_id, artifact)
+        if binding_error is not None:
+            return self._error(
+                "run_once",
+                binding_error,
+                "preview no longer matches the authorized artifact.",
             )
         if artifact.get("artifact_kind") not in (None, "run_once"):
             return self._error("run_once", "PREVIEW_KIND_MISMATCH", "preview_id 类型不匹配，当前不是 run_once_preview。")

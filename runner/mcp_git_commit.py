@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from runner.operator_artifact_binding import bound_artifact_error
+
 from runner._internal_utils import run_git as _run_git_base
 from runner.current_version import load_current_version
 from runner.core_confirmation import confirmation_git_commit_preview_guard
@@ -942,6 +944,16 @@ class MCPGitCommitManager:
                 "action": "commit",
                 "error_code": "PREVIEW_INVALID",
                 "message": "预览文件格式无效。",
+                "preview_id": normalized_preview_id,
+            }
+
+        binding_error = bound_artifact_error(normalized_preview_id, preview)
+        if binding_error is not None:
+            return {
+                "ok": False,
+                "action": "commit",
+                "error_code": binding_error,
+                "message": "preview no longer matches the authorized artifact.",
                 "preview_id": normalized_preview_id,
             }
 

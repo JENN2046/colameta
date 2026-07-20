@@ -248,6 +248,12 @@ class MCPValidationRunManager:
                     "error_code": "PREVIEW_EXPIRED",
                     "message": "preview_id 已过期，请重新生成 preview。",
                 }
+            return {
+                "ok": False,
+                "action": "run",
+                "error_code": str(ec or "PREVIEW_INVALID"),
+                "message": "preview no longer matches the authorized artifact.",
+            }
         artifact = guard["payload"]
         commands = artifact.get("commands")
         command_specs = artifact.get("command_specs")

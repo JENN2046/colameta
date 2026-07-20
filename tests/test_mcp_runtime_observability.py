@@ -102,7 +102,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             ("project_status", "inspect"): "mcp:read",
             ("source_onboarding", "preview"): "mcp:preview",
             ("plan_update", "preview"): "mcp:preview",
-            ("plan_update", "apply"): "mcp:commit",
+            ("plan_update", "apply"): "mcp:plan",
             ("small_project_patch", "status"): "mcp:read",
             ("small_project_patch", "preview"): "mcp:preview",
             ("small_project_patch", "apply"): "mcp:commit",
@@ -126,10 +126,13 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             ("prompt_to_plan", "plan_preview"): "mcp:preview",
             ("prompt_to_plan", "run_preview"): "mcp:preview",
             ("prompt_to_plan", "apply"): "mcp:commit",
-            ("prompt_to_plan", "plan_apply"): "mcp:commit",
+            ("prompt_to_plan", "plan_apply"): "mcp:plan",
             ("prompt_to_plan", "apply_all"): "mcp:commit",
             ("prompt_to_plan", "run"): "mcp:commit",
             ("thin_governed_loop_preview", "preview"): "mcp:read",
+            ("operator_batch", "preview"): "mcp:commit",
+            ("operator_batch", "execute"): "mcp:commit",
+            ("operator_batch", "status"): "mcp:read",
         }
         tool_def = next(tool for tool in server.tool_defs if tool.name == "run_mcp_workflow")
         declared_workflows = set(tool_def.input_schema["properties"]["workflow"]["enum"])
@@ -5345,8 +5348,8 @@ vm.runInThisContext({json.dumps(widget_script)});
 
         assert result["ok"] is False
         assert result["error_code"] == "REMOTE_POLICY_DENIED"
-        assert result["details"]["required_scope"] == "mcp:commit"
-        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+        assert result["details"]["required_scope"] == "mcp:plan"
+        assert result["details"]["reason_code"] == "REMOTE_MCP_PLAN_DENIED"
 
     def test_external_oauth_remote_policy_denies_docs_update_apply_with_conflicting_preview_phase(self) -> None:
         project = self.make_git_checkout()

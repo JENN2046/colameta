@@ -7,6 +7,7 @@ USAGE_MESSAGE = """用法：
   colameta status [project_path] [--json] [--tunnel-admin-port PORT --tunnel-pid PID]
   colameta ops-check [project_path] [--public-base-url URL] [--json] [--no-network] [--write-status PATH]
   colameta doctor [project_path] [--public-base-url URL] [--json] [--no-network]
+  colameta operator-config <status|enable|disable> [--project-path <path>]
   colameta connect-chatgpt [project_path] [--public-base-url URL] [--project-name NAME] [--json]
   colameta app-smoke [project_path] [--public-base-url URL] [--project-name NAME] [--json]
   colameta full-loop-status [project_path] [--json] [--enable-full-loop] [--confirmation-mode preview-confirm]

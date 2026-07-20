@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from runner.operator_artifact_binding import bound_artifact_error
+
 from runner._internal_utils import run_git as _run_git, write_json_atomic
 from runner.executor_registry import is_supported_execution_provider
 from runner.git_history_reconcile import GitHistoryReconcileScanner
@@ -453,6 +455,15 @@ class PlanningBridge:
     def apply_plan_patch(self, project_path: str, patch_id: str) -> dict[str, Any]:
         paths = self._paths(project_path)
         patch_payload, patch_path = self._load_patch(paths, patch_id)
+        binding_error = bound_artifact_error(patch_id, patch_payload)
+        if binding_error is not None:
+            return {
+                "ok": False,
+                "status": "FAILED",
+                "error_code": binding_error,
+                "message": "plan patch no longer matches the authorized artifact.",
+                "patch_id": patch_id,
+            }
         operation = str(patch_payload.get("operation", "insert_version"))
         project_path_match = self._is_patch_project_match(paths.project_root, patch_payload)
         if not project_path_match:
