@@ -351,6 +351,10 @@ submission confirmations
 }
 ```
 
+如果不传 `work_item_id`，inspect 会返回最多 20 个脱敏的
+`work_item_candidates`，并在 `next_actions` 中给出只读选择调用。先选择一个候选并执行它的
+inspect，再生成 transition preview。七工具 app 不需要暴露底层 `list_work_items`。
+
 CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小上限 64 KiB；
 显式命令行 flag 会覆盖 manifest 中的同名 ready 状态。MCP 工具只接受结构化
 `submission_materials` object，不接受本机文件路径。manifest 里的未知字段会被标为
@@ -842,6 +846,66 @@ validation evidence。
 注意：thin governed loop preview 是 evidence，不是 executor run 授权。
 `codex_execution_packet` 也只授权本地 Codex 在 Jenn/AGENTS 边界内直接工作；不授权
 Delivery accepted、ReviewDecision、GateEvent、commit、push 或 stable replacement。
+
+### 通过七工具私人 app 请求 Work Item Gate review
+
+当 Stage 0-6 正向结果提示“是否请求 Delivery State Gate review”时，继续使用现有
+`run_mcp_workflow`。Commander 仍然只暴露 7 个工具；`gate_review_request` 是复用现有
+Work Item Gate 后端的高层 workflow，不是第 8 个工具。
+
+先做只读检查：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "gate_review_request",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev",
+    "work_item_id": "<work_item_id>"
+  }
+}
+```
+
+再按当前 Work Item 绑定生成签名 Gate preview：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "gate_review_request",
+    "phase": "preview",
+    "project_name": "colameta-self-dev",
+    "work_item_id": "<work_item_id>",
+    "task_version": 1,
+    "target_state": "ready",
+    "expected_state_version": 0,
+    "decision_ids": [],
+    "evidence_artifact_ids": []
+  }
+}
+```
+
+preview 不改变 Delivery State。得到明确授权后，把
+`result.copyable_apply_call.arguments` 原样回传。apply 必须同时满足：完整签名
+`gate_preview`、`confirm_gate_review=true`、参数精确绑定、同一个可信 Work Item principal、
+以及 `mcp:commit` 权限。适配层不直接写 ledger；Work Item Gate 后端仍是唯一状态机和
+GateEvent 权威。最后用 `phase=status` 只读核对 Work Item 和 timeline。
+
+不要把单独的 `mcp:commit` 当作 Work Item 权限。external-OAuth apply 只有同时满足以下条件才
+放行：已配置的私人 Operator subject/client 策略认可调用方、token 带匹配的 Work Item 权限、
+OAuth 授予 `mcp:commit`、后端验证完整签名 preview。其他远程 commit 仍保持拒绝。
+
+apply 返回会区分后端结果。只有 `status=succeeded` 且
+`result.outcome=transition_applied` 才表示目标状态已真正应用；`status=rejected` 和
+`status=shadow_evaluated` 都会返回 `data.ok=false`，不得报告为 Delivery State 已推进。
+
+Gate preview 使用有界 payload 合约，避免签名 `copyable_apply_call` 被通用大响应摘要悄悄
+替换。`decision_ids` 和 `evidence_artifact_ids` 各最多 16 项；每个 ID、`work_item_id` 和
+`idempotency_key` 最多 256 字符。后端完成签名后，ColaMeta 会按实际 JSON 精确计数：完整
+apply 调用最多 26,000 字符，preview workflow 结果最多 56,000 字符。超限时明确返回
+`GATE_REVIEW_*_TOO_LARGE`、`GATE_REVIEW_BINDING_COUNT_EXCEEDED` 或
+`GATE_REVIEW_BINDING_ID_TOO_LONG`，不会返回残缺的 apply 调用。
 
 ## 5. 验证运行怎么做
 

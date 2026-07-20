@@ -3767,6 +3767,20 @@ class WorkflowOrchestrator:
         }
         if extra_result:
             result.update(extra_result)
+        next_actions: list[dict[str, Any]] = []
+        if passed and requested_action == "ask_whether_to_request_delivery_state_gate_review":
+            gate_review_action = {
+                "tool": "run_mcp_workflow",
+                "arguments": {
+                    "workflow": "gate_review_request",
+                    "phase": "inspect",
+                },
+                "risk_level": STEP_RISK_INFO,
+                "requires_confirmation": False,
+                "authority": "read_only",
+            }
+            next_actions.append(gate_review_action)
+            result["gate_review_request_entry"] = gate_review_action
         step = {
             "name": "thin_governed_loop_preview",
             "tool": "run_mcp_workflow",
@@ -3784,7 +3798,7 @@ class WorkflowOrchestrator:
             risk_level=STEP_RISK_INFO,
             status="succeeded" if passed else "blocked",
             requires_confirmation=False,
-            next_actions=[],
+            next_actions=next_actions,
             blockers=blocker_messages,
             warnings=warnings,
             result=result,

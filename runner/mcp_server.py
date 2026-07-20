@@ -42,6 +42,13 @@ from runner.mcp_git_history import MCPGitHistoryManager
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_docs import MCPProjectDocsManager
 from runner.mcp_workflow_router import MCPWorkflowRouter
+from runner.mcp_gate_review_workflow import (
+    GATE_REVIEW_WORKFLOW,
+    GATE_REVIEW_MAX_BINDING_ID_CHARS,
+    GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD,
+    GateReviewWorkflowError,
+    MCPGateReviewWorkflow,
+)
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
@@ -136,6 +143,7 @@ from runner.work_item_mcp_adapter import (
 from runner.work_item_principal_adapter import (
     current_authenticated_token_request_proof,
     current_work_item_principal,
+    principal_from_auth_context,
     work_item_authenticated_request_scope,
     work_item_principal_scope,
 )
@@ -983,6 +991,14 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     workflow = _policy_string_param(params, "workflow")
     phase = _policy_string_param(params, "phase")
     docs_action = _policy_string_param(params, "docs_action")
+    if workflow == GATE_REVIEW_WORKFLOW:
+        if phase in {"inspect", "status"}:
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase == "apply":
+            return "mcp:commit"
+        return None
     if workflow == "operator_batch":
         if phase == "status":
             return "mcp:read"
@@ -4145,8 +4161,10 @@ class MCPPlanningBridgeServer:
                     "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
+                    "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
+                    "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、operator_batch。"
+                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、gate_review_request、operator_batch。"
                     "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
                     "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
                     "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
@@ -4164,9 +4182,10 @@ class MCPPlanningBridgeServer:
                                 "auto_preview", "project_status", "source_onboarding",
                                 "plan_update", "small_project_patch", "docs_update",
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                                "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "operator_batch",
+                                "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
+                                "gate_review_request", "operator_batch",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                         },
                         "phase": {
                             "type": "string",
@@ -4176,6 +4195,64 @@ class MCPPlanningBridgeServer:
                         "preview_id": {
                             "type": "string",
                             "description": "apply/commit/run 阶段必填。prompt_to_plan apply_all 使用 prompt preview_id（来自 prompt_to_plan preview）；prompt_to_plan run 使用 executor run_once_preview 返回的 preview_id。没有匹配的 stored preview 不执行任何写入或提交。不能用 preview_id 绕过安全检查。",
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+                            "description": "gate_review_request inspect/status/preview/apply 的 Work Item ID。",
+                        },
+                        "task_version": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "gate_review_request preview/apply 的任务版本，必须与签名预览一致。",
+                        },
+                        "target_state": {
+                            "type": "string",
+                            "enum": ["proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"],
+                            "description": "gate_review_request preview/apply 的目标 Work Item 状态。",
+                        },
+                        "expected_state_version": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "gate_review_request preview/apply 的乐观锁状态版本。",
+                        },
+                        "decision_ids": {
+                            "type": "array",
+                            "maxItems": GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD,
+                            "items": {
+                                "type": "string",
+                                "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+                            },
+                            "description": "gate_review_request 绑定的 ReviewDecision ID 列表。",
+                        },
+                        "evidence_artifact_ids": {
+                            "type": "array",
+                            "maxItems": GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD,
+                            "items": {
+                                "type": "string",
+                                "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+                            },
+                            "description": "gate_review_request 绑定的证据 artifact ID 列表。",
+                        },
+                        "idempotency_key": {
+                            "type": "string",
+                            "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+                            "description": "gate_review_request 可选幂等键。",
+                        },
+                        "ttl_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 900,
+                            "description": "gate_review_request preview 可选签名预览有效期。",
+                        },
+                        "gate_preview": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "description": "gate_review_request apply 必须原样回传的完整签名 Work Item Gate preview。",
+                        },
+                        "confirm_gate_review": {
+                            "type": "boolean",
+                            "description": "gate_review_request apply 必须显式为 true。",
                         },
                         "batch_preview_id": {
                             "type": "string",
@@ -4238,7 +4315,7 @@ class MCPPlanningBridgeServer:
                         },
                         "project_name": {
                             "type": "string",
-                            "description": "可选。service mode 下项目级 workflow 必须传入已登记 managed project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview 支持按 project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
+                            "description": "可选。service mode 下项目级 workflow 必须传入已登记 managed project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview、gate_review_request 支持按 project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
                         },
                         "goal": {
                             "type": "string",
@@ -8662,6 +8739,12 @@ class MCPPlanningBridgeServer:
                     if key in allowed_data_keys
                 }
             return projected
+        if (
+            tool_name == "run_mcp_workflow"
+            and isinstance(params, dict)
+            and _policy_string_param(params, "workflow") == GATE_REVIEW_WORKFLOW
+        ):
+            return self._commander_public_gate_review_result(public_tool_result)
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
             for key, value in public_tool_result.items():
@@ -8693,6 +8776,42 @@ class MCPPlanningBridgeServer:
                     projected["data"] = clean_data
         clean_result = self._commander_public_sanitize(projected, compact=False)
         return clean_result if isinstance(clean_result, dict) else projected
+
+    def _commander_public_gate_review_result(
+        self,
+        tool_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Minimize public output without corrupting the signed apply contract."""
+
+        projected = self._commander_public_sanitize(tool_result, compact=False)
+        if not isinstance(projected, dict):
+            return tool_result
+        raw_data = tool_result.get("data")
+        clean_data = projected.get("data")
+        if not isinstance(raw_data, dict) or not isinstance(clean_data, dict):
+            return projected
+        raw_result = raw_data.get("result")
+        clean_result = clean_data.get("result")
+        if not isinstance(raw_result, dict) or not isinstance(clean_result, dict):
+            return projected
+        raw_preview = raw_result.get("preview")
+        if not isinstance(raw_preview, dict):
+            return projected
+
+        # PreviewCodec verifies an exact signed shape, including issued_at and
+        # expires_at.  Generic Commander minimization intentionally removes
+        # timestamps, so restore only this opaque, backend-issued contract.
+        clean_result["preview"] = copy.deepcopy(raw_preview)
+        raw_apply_call = raw_result.get("copyable_apply_call")
+        clean_apply_call = clean_result.get("copyable_apply_call")
+        if isinstance(raw_apply_call, dict) and isinstance(clean_apply_call, dict):
+            raw_arguments = raw_apply_call.get("arguments")
+            clean_arguments = clean_apply_call.get("arguments")
+            if isinstance(raw_arguments, dict) and isinstance(clean_arguments, dict):
+                raw_apply_preview = raw_arguments.get("gate_preview")
+                if isinstance(raw_apply_preview, dict):
+                    clean_arguments["gate_preview"] = copy.deepcopy(raw_apply_preview)
+        return projected
 
     def _visible_tool_names(self) -> list[str]:
         return [tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs)]
@@ -9993,6 +10112,33 @@ class MCPPlanningBridgeServer:
         auth_context: MCPAuthContext,
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
+            return None
+        if (
+            name == "run_mcp_workflow"
+            and _policy_string_param(params, "workflow") == GATE_REVIEW_WORKFLOW
+            and _policy_string_param(params, "phase") == "apply"
+        ):
+            loaded = OperatorSettingsStore().load()
+            if not loaded.get("ok"):
+                return self._tool_error(
+                    name,
+                    str(loaded.get("error_code") or "OPERATOR_CONFIG_INVALID"),
+                    "Private Gate review policy is unavailable.",
+                )
+            decision = evaluate_operator_principal(auth_context, loaded["settings"])
+            if not decision.allowed:
+                return self._tool_error(
+                    name,
+                    decision.error_code,
+                    "Private Gate review policy denied this principal.",
+                )
+            principal = principal_from_auth_context(auth_context)
+            if principal is None or not principal.trusted:
+                return self._tool_error(
+                    name,
+                    "WORK_ITEM_PRIVATE_PRINCIPAL_REQUIRED",
+                    "Private Gate review requires authenticated Work Item authority claims.",
+                )
             return None
         if name == "run_mcp_workflow" and _policy_string_param(params, "workflow") == "operator_batch":
             loaded = OperatorSettingsStore().load()
@@ -12200,6 +12346,7 @@ class MCPPlanningBridgeServer:
                 ),
                 "validation": "preview -> explicit authorization -> run -> status",
                 "executor": "run_once_preview -> explicit authorization -> run_once -> status -> get_executor_run_report",
+                "gate_review_request": "inspect -> preview -> explicit authorization -> apply -> status; apply reuses the signed Work Item Gate preview",
             },
             "authority_boundary": {
                 "read_only_tools_do_not_authorize_executor_dispatch": True,
@@ -15483,6 +15630,15 @@ class MCPPlanningBridgeServer:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
         if workflow == "operator_batch":
             return self._tool_operator_batch(params)
+        if workflow == GATE_REVIEW_WORKFLOW:
+            project_name = params.get("project_name")
+            if project_name is not None:
+                return self._route_project_name_tool("run_mcp_workflow", params, require_managed=True)
+            clean = self._strip_project_name_param(params)
+            try:
+                return MCPGateReviewWorkflow(self._tool_work_item_command).handle(clean)
+            except GateReviewWorkflowError as exc:
+                raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
         if workflow not in _SUPPORTED_MCP_WORKFLOWS:
             raise MCPToolInputError("INVALID_WORKFLOW", f"未知 workflow：{workflow}")
         project_name = params.get("project_name")

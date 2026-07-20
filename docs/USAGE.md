@@ -725,6 +725,80 @@ A thin governed loop preview is evidence. It is not executor-run authorization.
 Jenn/AGENTS rules; it does not authorize Delivery accepted, ReviewDecision,
 GateEvent, commit, push, or stable replacement.
 
+### Request a Work Item Gate review through the seven-tool app
+
+When an accepted Stage 0-6 result asks whether to request a Delivery State Gate
+review, use the existing `run_mcp_workflow` tool. This keeps the Commander app at
+exactly seven exposed tools; `gate_review_request` is a high-level workflow over
+the existing Work Item Gate backend, not an eighth tool.
+
+Start with the read-only inspection:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "gate_review_request",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev",
+    "work_item_id": "<work_item_id>"
+  }
+}
+```
+
+If `work_item_id` is omitted, inspect returns up to 20 sanitized
+`work_item_candidates` plus read-only selection calls in `next_actions`. Select
+one candidate and call its inspect action before previewing a transition. The
+seven-tool app does not need the hidden `list_work_items` tool.
+
+Generate a signed Gate preview using the current Work Item bindings:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "gate_review_request",
+    "phase": "preview",
+    "project_name": "colameta-self-dev",
+    "work_item_id": "<work_item_id>",
+    "task_version": 1,
+    "target_state": "ready",
+    "expected_state_version": 0,
+    "decision_ids": [],
+    "evidence_artifact_ids": []
+  }
+}
+```
+
+The preview does not change Delivery State. After explicit authorization, send
+`result.copyable_apply_call.arguments` back unchanged. Apply requires the full
+signed `gate_preview`, `confirm_gate_review=true`, an exact command binding, the
+same trusted Work Item principal, and `mcp:commit`. The adapter performs no
+direct ledger write: the Work Item Gate backend remains the sole state-machine
+and GateEvent authority. Finish with `phase=status` to read the resulting Work
+Item and timeline.
+
+Do not treat `mcp:commit` alone as Work Item authority. External-OAuth apply is
+allowed only when the configured private Operator subject/client policy accepts
+the caller, the token carries matching Work Item authority claims, OAuth grants
+`mcp:commit`, and the backend verifies the signed preview. Other remote commit
+requests remain denied.
+
+An apply response distinguishes the backend outcome. Only
+`status=succeeded` with `result.outcome=transition_applied` means the requested
+state was applied. `status=rejected` and `status=shadow_evaluated` both return
+`data.ok=false` and must not be reported as Delivery State progress.
+
+The Gate preview payload is deliberately bounded so the signed
+`copyable_apply_call` is never silently replaced by the generic large-response
+manifest. Each of `decision_ids` and `evidence_artifact_ids` accepts at most 16
+IDs, and each ID, `work_item_id`, or `idempotency_key` is at most 256 characters.
+After the backend signs the preview, ColaMeta measures the actual JSON: the
+complete apply call must be at most 26,000 characters and the preview workflow
+result at most 56,000 characters. An oversized request fails explicitly with a
+`GATE_REVIEW_*_TOO_LARGE`, `GATE_REVIEW_BINDING_COUNT_EXCEEDED`, or
+`GATE_REVIEW_BINDING_ID_TOO_LONG` error; it does not return a partial apply call.
+
 ## 5. Run Validation
 
 Web GPT does not need to compose shell commands by itself. Use
