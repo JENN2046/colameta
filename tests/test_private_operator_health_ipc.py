@@ -23,6 +23,7 @@ from runner import private_operator_health_ipc as ipc
 
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="private health IPC v1 is Linux-only")
+_MATRIX_MP_CONTEXT = multiprocessing.get_context("fork")
 
 
 _MATRIX_PATH = Path(__file__).resolve().parents[1] / "docs" / "jenn-private-operator-local-ipc-negative-test-matrix.json"
@@ -1597,8 +1598,8 @@ def _start_close_server_process(
     target: str | None,
     failure_phase: str,
 ) -> tuple[multiprocessing.Process, Any, dict[str, Any]]:
-    parent, child = multiprocessing.Pipe()
-    process = multiprocessing.Process(
+    parent, child = _MATRIX_MP_CONTEXT.Pipe()
+    process = _MATRIX_MP_CONTEXT.Process(
         target=_matrix_close_server_process,
         args=(project, root, target, failure_phase, child),
     )
@@ -1925,8 +1926,11 @@ def _matrix_server_process(project: str, root: str, count: int, pipe: Any) -> No
 
 
 def _start_matrix_process(project: str, root: str, count: int) -> tuple[multiprocessing.Process, Any]:
-    parent, child = multiprocessing.Pipe()
-    process = multiprocessing.Process(target=_matrix_server_process, args=(project, root, count, child))
+    parent, child = _MATRIX_MP_CONTEXT.Pipe()
+    process = _MATRIX_MP_CONTEXT.Process(
+        target=_matrix_server_process,
+        args=(project, root, count, child),
+    )
     process.start()
     child.close()
     assert parent.poll(3.0) and parent.recv() is True
@@ -2252,6 +2256,10 @@ def test_negative_matrix_contract_is_exact_and_fully_routed() -> None:
         if require_any:
             assert set(case["driver"]) & set(require_any)
         assert _expected_leaf_paths(case["expected"])
+
+
+def test_matrix_process_context_is_explicit_linux_fork() -> None:
+    assert _MATRIX_MP_CONTEXT.get_start_method() == "fork"
 
 
 def test_close_failure_matrix_phases_control_fault_arming() -> None:
