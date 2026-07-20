@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from runner.operator_artifact_binding import bound_artifact_error
+
 
 _CONFIRMATION_KNOWN_FIELDS: frozenset[str] = frozenset({
     "required", "prompt", "message", "label",
@@ -261,6 +263,13 @@ def confirmation_apply_guard(
         return {
             "ok": False, "payload": None, "confirmation": None,
             "error_code": "PREVIEW_NOT_FOUND", "preview_id": preview_id,
+        }
+
+    binding_error = bound_artifact_error(preview_id, payload)
+    if binding_error is not None:
+        return {
+            "ok": False, "payload": payload, "confirmation": None,
+            "error_code": binding_error, "preview_id": preview_id,
         }
 
     if project_root is not None:

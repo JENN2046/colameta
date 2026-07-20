@@ -461,6 +461,8 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "posture=continue_batching" in output
         assert "risk=unknown" in output
         assert "review=keep_batching" in output
+        assert "Private operator runtime:" not in output
+        assert "OPERATOR_FD_QUARANTINE_ATTENTION" not in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -507,6 +509,18 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             patch.object(runner_cli, "_read_service_metadata", return_value=metadata),
             patch.object(runner_cli, "_is_pid_running", return_value=True),
             patch.object(runner_cli, "_probe_service_health", return_value=("healthy", "healthy")),
+            patch.object(
+                runner_cli,
+                "query_private_operator_health",
+                return_value={
+                    "observation_source": "service_private_ipc",
+                    "observation_status": "observed",
+                    "quarantined_close_fd_count": 0,
+                    "quarantine_attention_threshold": 1,
+                    "quarantine_status": "clear",
+                    "local_alert_code": None,
+                },
+            ),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
             patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
             patch.object(runner_cli.urllib.request, "urlopen", side_effect=fake_urlopen),
@@ -540,6 +554,11 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert "batch=None" in output
         assert "size=empty" in output
         assert "review=keep_batching" in output
+        assert "Private operator runtime:" in output
+        assert "observation_status=observed" in output
+        assert "quarantine_status=clear" in output
+        assert "quarantined_close_fd_count=0" in output
+        assert "alert=none" in output
         assert "token" not in output.lower()
         assert "secret" not in output.lower()
 
@@ -583,6 +602,18 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             patch.object(runner_cli, "_read_service_metadata", return_value=metadata),
             patch.object(runner_cli, "_is_pid_running", return_value=True),
             patch.object(runner_cli, "_probe_service_health", return_value=("healthy", "healthy")),
+            patch.object(
+                runner_cli,
+                "query_private_operator_health",
+                return_value={
+                    "observation_source": "service_private_ipc",
+                    "observation_status": "observed",
+                    "quarantined_close_fd_count": 0,
+                    "quarantine_attention_threshold": 1,
+                    "quarantine_status": "clear",
+                    "local_alert_code": None,
+                },
+            ),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
             patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
             patch.object(runner_cli.urllib.request, "urlopen", return_value=FakeResponse()),
@@ -614,6 +645,14 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
         assert payload["stable_replacement_cadence"]["dev_batch_summary"]["status"] == "unavailable"
         assert payload["stable_replacement_cadence"]["dev_batch_summary"]["commit_count_since_stable"] is None
         assert payload["stable_replacement_cadence"]["batch_review_summary"]["status"] == "unavailable"
+        assert payload["private_operator_runtime"] == {
+            "observation_source": "service_private_ipc",
+            "observation_status": "observed",
+            "quarantined_close_fd_count": 0,
+            "quarantine_attention_threshold": 1,
+            "quarantine_status": "clear",
+            "local_alert_code": None,
+        }
         assert (
             payload["stable_replacement_cadence"]["batch_review_summary"]["suggested_review_action"]
             == "keep_batching"

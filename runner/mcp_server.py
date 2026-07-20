@@ -4,6 +4,7 @@ import threading
 import os
 import re
 import secrets
+import stat
 import sys
 import time
 import hashlib
@@ -46,6 +47,15 @@ from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_wo
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_executor_config import MCPExecutorConfigManager
 from runner.mcp_validation_run import MCPValidationRunManager
+from runner.mcp_private_operator import (
+    OPERATOR_DISPATCH_CAPABILITY,
+    OperatorBatchService,
+    OperatorPermitStore,
+    OperatorSettingsStore,
+    evaluate_operator_principal,
+    operator_authenticated_request_scope,
+)
+from runner.operator_artifact_binding import canonical_artifact_digest
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
     build_apps_connector_closeout_packet,
@@ -966,6 +976,14 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     workflow = _policy_string_param(params, "workflow")
     phase = _policy_string_param(params, "phase")
     docs_action = _policy_string_param(params, "docs_action")
+    if workflow == "operator_batch":
+        if phase == "status":
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase == "execute":
+            return "mcp:commit"
+        return None
     if workflow == "auto_preview":
         return "mcp:preview"
     if workflow == "project_status":
@@ -976,7 +994,7 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         return None
     if workflow == "plan_update":
         if phase == "apply":
-            return "mcp:commit"
+            return "mcp:plan"
         if phase in {"", "preview"}:
             return "mcp:preview"
         return None
@@ -1037,7 +1055,9 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     if workflow == "prompt_to_plan":
         if phase in {"preview", "plan_preview", "run_preview"}:
             return "mcp:preview"
-        if phase in {"apply", "plan_apply", "apply_all", "run"}:
+        if phase == "plan_apply":
+            return "mcp:plan"
+        if phase in {"apply", "apply_all", "run"}:
             return "mcp:commit"
         return None
     return None
@@ -4119,8 +4139,10 @@ class MCPPlanningBridgeServer:
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview。"
-                    "不执行 executor，不自动 commit，写入类默认停 preview。"
+                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、operator_batch。"
+                    "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
+                    "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
+                    "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
                     "commit 只确认已有受控预览(preview_id)，不执行任意 shell，不 git add .，不绕过 preview。"
                     "没有匹配的 stored preview_id 不能创建 commit。"
                     "git_revert 不自动 commit。"
@@ -4135,18 +4157,45 @@ class MCPPlanningBridgeServer:
                                 "auto_preview", "project_status", "source_onboarding",
                                 "plan_update", "small_project_patch", "docs_update",
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                                "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
+                                "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "operator_batch",
                             ],
                             "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。",
                         },
                         "phase": {
                             "type": "string",
-                            "enum": ["inspect", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "status"],
-                            "description": "工作流阶段。inspect/read/status 只读；preview/run_preview/plan_preview 只生成预览；apply/commit/run/plan_apply/apply_all 只确认受控预览ID，不执行任意 git 命令。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                            "enum": ["inspect", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
+                            "description": "工作流阶段。inspect/read/status 只读；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                         },
                         "preview_id": {
                             "type": "string",
                             "description": "apply/commit/run 阶段必填。prompt_to_plan apply_all 使用 prompt preview_id（来自 prompt_to_plan preview）；prompt_to_plan run 使用 executor run_once_preview 返回的 preview_id。没有匹配的 stored preview 不执行任何写入或提交。不能用 preview_id 绕过安全检查。",
+                        },
+                        "batch_preview_id": {
+                            "type": "string",
+                            "description": "operator_batch execute/status 使用的一次性 batch ticket id。",
+                        },
+                        "manifest_digest": {
+                            "type": "string",
+                            "description": "operator_batch execute 必须原样回传的 canonical manifest SHA-256。",
+                        },
+                        "operations": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 16,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "step_id": {"type": "string"},
+                                    "tool": {
+                                        "type": "string",
+                                        "enum": ["run_mcp_workflow", "manage_validation_run", "manage_git"],
+                                    },
+                                    "params": {"type": "object", "additionalProperties": True},
+                                },
+                                "required": ["step_id", "tool", "params"],
+                                "additionalProperties": False,
+                            },
+                            "description": "operator_batch preview 的有序、精确操作清单；execute 不得重传。",
                         },
                         "patch_id": {
                             "type": "string",
@@ -8016,7 +8065,9 @@ class MCPPlanningBridgeServer:
         if policy.default_scope is not None:
             scopes.add(policy.default_scope)
         if policy.selector in {"manage_files", "run_mcp_workflow"}:
-            scopes.update({"mcp:read", "mcp:preview", "mcp:commit"})
+            scopes.update({"mcp:read", "mcp:preview", "mcp:plan", "mcp:commit"})
+        if auth_mode == "external-oauth" and tool_name == "manage_git":
+            scopes.discard("mcp:commit")
         scopes.intersection_update(VALID_MCP_SCOPES)
         oauth_provider = auth_context.get("oauth_provider")
         configured_scopes = getattr(oauth_provider, "scopes", None)
@@ -8024,8 +8075,6 @@ class MCPPlanningBridgeServer:
             scopes.intersection_update(
                 scope for scope in configured_scopes if isinstance(scope, str)
             )
-        if auth_mode == "external-oauth":
-            scopes.difference_update(REMOTE_EXTERNAL_OAUTH_DENIED_SCOPES)
         return sorted(scopes)
 
     def _tool_defs_payload(
@@ -8575,6 +8624,30 @@ class MCPPlanningBridgeServer:
         if not isinstance(tool_result, dict):
             return tool_result
         tool_name = str(tool_result.get("tool") or "")
+        if (
+            tool_name == "run_mcp_workflow"
+            and isinstance(params, dict)
+            and _policy_string_param(params, "workflow") == "operator_batch"
+        ):
+            allowed_root_keys = {"ok", "tool", "error_code", "message"}
+            projected = {
+                key: copy.deepcopy(value)
+                for key, value in tool_result.items()
+                if key in allowed_root_keys
+            }
+            data = tool_result.get("data")
+            if isinstance(data, dict):
+                allowed_data_keys = {
+                    "ok", "error_code", "message", "batch_preview_id",
+                    "manifest_digest", "required_scopes", "operations",
+                    "expires_at", "requires_confirmation", "state", "steps",
+                }
+                projected["data"] = {
+                    key: copy.deepcopy(value)
+                    for key, value in data.items()
+                    if key in allowed_data_keys
+                }
+            return projected
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
             for key, value in tool_result.items():
@@ -9709,10 +9782,14 @@ class MCPPlanningBridgeServer:
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
+        operator_request = (
+            name == "run_mcp_workflow"
+            and _policy_string_param(params, "workflow") == "operator_batch"
+        )
         try:
-            with work_item_authenticated_request_scope(auth_context), work_item_principal_scope(
+            with operator_authenticated_request_scope(auth_context), work_item_authenticated_request_scope(
                 auth_context
-            ):
+            ), work_item_principal_scope(auth_context):
                 data = tool(params)
             result = {"ok": True, "tool": name, "data": data}
             if isinstance(data, dict) and isinstance(data.get("_meta"), dict):
@@ -9722,13 +9799,21 @@ class MCPPlanningBridgeServer:
             return self._commander_public_project_tool_result(result, params)
         except MCPToolInputError as e:
             self._stop_authoritative_canary_if_inactive()
+            if operator_request:
+                return {"ok": False, "tool": name, "error_code": e.error_code, "message": "Operator request was denied."}
             return self._tool_error(name, e.error_code, e.message, e.details)
         except PlanningBridgeError as e:
+            if operator_request:
+                return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
             return self._tool_error(name, "BRIDGE_ERROR", str(e))
         except SourceReviewError as e:
+            if operator_request:
+                return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
             return self._tool_error(name, "SOURCE_REVIEW_ERROR", str(e))
         except Exception as e:
             self._stop_authoritative_canary_if_inactive()
+            if operator_request:
+                return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
             return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。", {"message": str(e)})
 
     def _stop_authoritative_canary_if_inactive(self) -> None:
@@ -9770,8 +9855,26 @@ class MCPPlanningBridgeServer:
     def get_required_scope_for_tool(self, name: str, arguments: dict[str, Any]) -> str:
         return self._required_scope_for_tool(name, arguments)
 
+    def get_required_scopes_for_tool(self, name: str, arguments: dict[str, Any]) -> tuple[str, ...]:
+        return self._required_scopes_for_tool(name, arguments)
+
     def _required_scope_for_tool(self, name: str, params: dict[str, Any]) -> str:
-        return self._tool_policy_scope(name, params) or "mcp:unknown"
+        scopes = self._required_scopes_for_tool(name, params)
+        return scopes[0] if scopes else "mcp:unknown"
+
+    def _required_scopes_for_tool(self, name: str, params: dict[str, Any]) -> tuple[str, ...]:
+        if name == "run_mcp_workflow" and _policy_string_param(params, "workflow") == "operator_batch":
+            try:
+                service = self._operator_batch_service_for_params(params)
+            except Exception:
+                return ("mcp:commit", "mcp:plan")
+            scopes = tuple(
+                scope for scope in service.required_scopes(params)
+                if scope in VALID_MCP_SCOPES
+            )
+            return tuple(dict.fromkeys(scopes))
+        scope = self._tool_policy_scope(name, params)
+        return (scope,) if scope is not None else ()
 
     def _tool_policy_scope(self, name: str, params: dict[str, Any]) -> str | None:
         policy = MCP_TOOL_POLICIES.get(name)
@@ -9817,14 +9920,20 @@ class MCPPlanningBridgeServer:
                 error="invalid_token",
                 error_description="The OAuth access token is invalid.",
             )
-        required_scope = self._required_scope_for_tool(name, params)
-        if validate_scope(token_payload, required_scope):
+        required_scopes = self._required_scopes_for_tool(name, params)
+        missing_scopes = [scope for scope in required_scopes if not validate_scope(token_payload, scope)]
+        if not missing_scopes:
             return None
+        required_scope = " ".join(missing_scopes)
         error = self._tool_error(
             name,
             "INSUFFICIENT_SCOPE",
             "OAuth token scope is insufficient for this tool.",
-            {"required_scope": required_scope},
+            {
+                "required_scope": required_scope,
+                "required_scopes": list(required_scopes),
+                "missing_scopes": missing_scopes,
+            },
         )
         return self._with_oauth_authenticate_challenge(
             error,
@@ -9854,7 +9963,9 @@ class MCPPlanningBridgeServer:
             f'error="{error}"',
             f'error_description="{error_description}"',
         ]
-        if isinstance(required_scope, str) and required_scope in VALID_MCP_SCOPES:
+        if isinstance(required_scope, str) and required_scope and all(
+            scope in VALID_MCP_SCOPES for scope in required_scope.split()
+        ):
             fields.insert(1, f'scope="{required_scope}"')
         enriched = dict(tool_error)
         enriched["_meta"] = {"mcp/www_authenticate": [f"Bearer {', '.join(fields)}"]}
@@ -9868,6 +9979,22 @@ class MCPPlanningBridgeServer:
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
             return None
+        if name == "run_mcp_workflow" and _policy_string_param(params, "workflow") == "operator_batch":
+            loaded = OperatorSettingsStore().load()
+            if not loaded.get("ok"):
+                return self._tool_error(
+                    name,
+                    str(loaded.get("error_code") or "OPERATOR_CONFIG_INVALID"),
+                    "Operator policy is unavailable.",
+                )
+            decision = evaluate_operator_principal(auth_context, loaded["settings"])
+            if decision.allowed:
+                return None
+            return self._tool_error(
+                name,
+                decision.error_code,
+                "Operator policy denied this principal.",
+            )
         required_scope = self._required_scope_for_tool(name, params)
         if required_scope in {"mcp:read", "mcp:preview"}:
             return None
@@ -9900,9 +10027,10 @@ class MCPPlanningBridgeServer:
         granted_scopes = auth_context.get("scopes", [])
         if not isinstance(granted_scopes, list):
             return self._tool_error(name, "UNAUTHORIZED", "cloud-relay scopes 无效。")
-        required_scope = self._required_scope_for_tool(name, params)
-        if required_scope in granted_scopes:
+        required_scopes = self._required_scopes_for_tool(name, params)
+        if all(scope in granted_scopes for scope in required_scopes):
             return None
+        required_scope = " ".join(required_scopes)
         return self._tool_error(
             name,
             "INSUFFICIENT_SCOPE",
@@ -15170,8 +15298,176 @@ class MCPPlanningBridgeServer:
             git_commit_manager=MCPGitCommitManager(self.project_root),
         )
 
+    def _operator_preview_validation(self, operation: dict[str, Any]) -> dict[str, Any]:
+        preview_id = operation.get("preview_id")
+        if not isinstance(preview_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,96}", preview_id):
+            return {"ok": False, "error_code": "OPERATOR_PREVIEW_NOT_FOUND"}
+        runner_dir = resolve_project_runner_dir(self.project_root)
+        tool = operation.get("tool")
+        action = operation.get("operation")
+        phase = operation.get("phase")
+        directory_names: tuple[tuple[str, ...], ...]
+        artifact_profile: str
+        if tool == "manage_git" or (tool == "run_mcp_workflow" and action == "git_commit"):
+            directory_names = (("runtime", "commit-previews"),)
+            artifact_profile = "commit"
+        elif tool == "manage_validation_run":
+            directory_names = (("runtime", "validation-run-previews"),)
+            artifact_profile = "validation"
+        elif tool == "run_mcp_workflow" and action in {"small_project_patch", "docs_update"}:
+            directory_names = (("runtime", "project-patch-previews"),)
+            artifact_profile = "project_patch"
+        elif tool == "run_mcp_workflow" and action == "agent_dispatch" and phase == "run":
+            directory_names = (("runtime", "executor-workflow-previews"),)
+            artifact_profile = "executor"
+        elif tool == "run_mcp_workflow" and action == "prompt_to_plan" and phase in {"apply", "apply_all"}:
+            directory_names = (("runtime", "prompt-file-previews"),)
+            artifact_profile = "prompt_file"
+        elif tool == "run_mcp_workflow" and action == "prompt_to_plan" and phase == "run":
+            directory_names = (("runtime", "executor-workflow-previews"),)
+            artifact_profile = "executor"
+        elif tool == "run_mcp_workflow" and action in {"plan_update", "agent_dispatch", "prompt_to_plan"}:
+            directory_names = (("plan-patches",),)
+            artifact_profile = "plan_patch"
+        else:
+            return {"ok": False, "error_code": "OPERATOR_OPERATION_DENIED"}
+        candidate_dirs = tuple(os.path.join(runner_dir, *parts) for parts in directory_names)
+        for directory in candidate_dirs:
+            root = os.path.abspath(directory)
+            if os.path.realpath(root) != root:
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_UNSAFE"}
+            path = os.path.join(root, f"{preview_id}.json")
+            resolved_path = os.path.realpath(path)
+            if not resolved_path.startswith(root + os.sep):
+                continue
+            try:
+                info = os.lstat(path)
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                    continue
+                flags = os.O_RDONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                fd = os.open(path, flags)
+                with os.fdopen(fd, "rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(opened.st_mode):
+                        return {"ok": False, "error_code": "OPERATOR_PREVIEW_UNSAFE"}
+                    raw = handle.read(1_000_001)
+                if len(raw) > 1_000_000:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_INVALID"}
+                payload = json.loads(raw.decode("utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            project_root = payload.get("project_root")
+            if not isinstance(project_root, str) or os.path.realpath(project_root) != os.path.realpath(self.project_root):
+                return {"ok": False, "error_code": "OPERATOR_PROJECT_MISMATCH"}
+            id_field = "patch_id" if artifact_profile == "plan_patch" else "preview_id"
+            if payload.get(id_field) != preview_id:
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+            if artifact_profile == "commit" and payload.get("can_commit") is not True:
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_BLOCKED"}
+            if artifact_profile == "validation" and payload.get("artifact_kind") != "validation_run":
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+            if artifact_profile == "project_patch" and payload.get("mode") not in {
+                "exact_replace", "unified_diff", "delete_file",
+            }:
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+            if artifact_profile == "prompt_file" and payload.get("action") != "prompt_file_preview":
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+            if artifact_profile == "executor" and payload.get("artifact_kind") != "run_once":
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+            if artifact_profile == "plan_patch":
+                if payload.get("operation") not in {"insert_version", "update_version"}:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_KIND_MISMATCH"}
+                if payload.get("status") in {"APPLIED", "FAILED", "STALE"}:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_ALREADY_CONSUMED"}
+            expires_at = payload.get("expires_at")
+            if artifact_profile != "plan_patch" and (not isinstance(expires_at, str) or not expires_at):
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_INVALID"}
+            if isinstance(expires_at, str) and expires_at:
+                try:
+                    expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                except ValueError:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_INVALID"}
+                if expiry.tzinfo is None:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_INVALID"}
+                if datetime.now(timezone.utc) > expiry:
+                    return {"ok": False, "error_code": "OPERATOR_PREVIEW_EXPIRED"}
+            if payload.get("committed_at") or payload.get("applied_at") or payload.get("consumed_at"):
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_ALREADY_CONSUMED"}
+            return {
+                "ok": True,
+                "preview_digest": canonical_artifact_digest(payload),
+            }
+        return {"ok": False, "error_code": "OPERATOR_PREVIEW_NOT_FOUND"}
+
+    def _operator_internal_dispatch(
+        self,
+        capability: object,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        if capability is not OPERATOR_DISPATCH_CAPABILITY:
+            return {"ok": False, "error_code": "OPERATOR_INTERNAL_CAPABILITY_DENIED"}
+        if tool_name not in {"run_mcp_workflow", "manage_validation_run", "manage_git"}:
+            return {"ok": False, "error_code": "OPERATOR_OPERATION_DENIED"}
+        if (
+            tool_name == "run_mcp_workflow"
+            and params.get("workflow") == "plan_update"
+            and params.get("phase") == "apply"
+        ):
+            patch_id = params.get("patch_id")
+            if not isinstance(patch_id, str) or not patch_id.strip():
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_NOT_FOUND"}
+            try:
+                result = self.bridge.apply_plan_patch(self.project_root, patch_id.strip())
+            except Exception:
+                return {"ok": False, "error_code": "OPERATOR_STEP_ERROR"}
+            if not isinstance(result, dict):
+                return {"ok": False, "error_code": "OPERATOR_STEP_ERROR"}
+            self._record_workflow_if_needed("run_mcp_workflow", "plan_update", params, result)
+            return result
+        handler = self.tools.get(tool_name)
+        if not callable(handler):
+            return {"ok": False, "error_code": "OPERATOR_OPERATION_DENIED"}
+        result = handler(dict(params))
+        if isinstance(result, dict) and result.get("ok") is not True:
+            nested = result.get("result")
+            nested_code = nested.get("error_code") if isinstance(nested, dict) else None
+            if nested_code == "OPERATOR_PREVIEW_CHANGED":
+                return {"ok": False, "error_code": "OPERATOR_PREVIEW_CHANGED"}
+        return result if isinstance(result, dict) else {"ok": False, "error_code": "OPERATOR_STEP_ERROR"}
+
+    def _operator_batch_service(self) -> OperatorBatchService:
+        return OperatorBatchService(
+            settings_store=OperatorSettingsStore(),
+            permit_store=OperatorPermitStore(),
+            preview_validator=self._operator_preview_validation,
+            dispatch=self._operator_internal_dispatch,
+        )
+
+    def _operator_target_server(self, params: dict[str, Any]) -> "MCPPlanningBridgeServer":
+        project_root, _ = self._resolve_managed_project_context(params)
+        if os.path.realpath(project_root) == os.path.realpath(self.project_root):
+            return self
+        return self.__class__(project_root)
+
+    def _operator_batch_service_for_params(self, params: dict[str, Any]) -> OperatorBatchService:
+        return self._operator_target_server(params)._operator_batch_service()
+
+    def _tool_operator_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_name = params.get("project_name")
+        if not isinstance(project_name, str) or not project_name.strip():
+            raise MCPToolInputError("PROJECT_NAME_REQUIRED", "operator_batch 必须指定已登记 managed project_name。")
+        target = self._operator_target_server(params)
+        return target._operator_batch_service().handle(project_name.strip(), params)
+
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        if workflow == "operator_batch":
+            return self._tool_operator_batch(params)
         if workflow not in _SUPPORTED_MCP_WORKFLOWS:
             raise MCPToolInputError("INVALID_WORKFLOW", f"未知 workflow：{workflow}")
         project_name = params.get("project_name")
