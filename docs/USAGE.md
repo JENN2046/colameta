@@ -12,6 +12,9 @@ ReviewDecision creation, or GateEvent emission.
 
 For onboarding a new local project into ColaMeta, read
 [ColaMeta Onboarding](ONBOARDING.md) first.
+For package/source installation, the seven-tool private App, systemd deployment,
+stable replacement, verification, and rollback, read
+[Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
 
 ## 0. Fast Path
 
@@ -30,15 +33,17 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 
 ```text
 1. list_registered_projects
-2. get_agent_consumer_contract
-3. get_service_entry_profile(profile_id="web_gpt_commander")
-4. get_agent_operator_flow_packet(project_name="colameta-self-dev", profile_id="web_gpt_commander")
-5. get_web_gpt_service_entrypoint
-6. get_runtime_version_status(project_name="colameta-self-dev")
-7. get_stable_replacement_cadence(project_name="colameta-self-dev")
-8. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
-9. get_connector_runtime_health_status(project_name="colameta-self-dev")
+2. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
+3. render_commander_app(project_name="colameta-self-dev")
+4. analyze_project_state(project_name="colameta-self-dev")
+5. Use run_mcp_workflow only for the requested read/preview workflow.
+6. Use manage_validation_run for bounded validation.
+7. Use manage_git for reviewed Git operations.
 ```
+
+That is the complete seven-tool Commander surface. Consumer contracts,
+individual runtime/cadence tools, and other low-level diagnostics belong to the
+loopback advanced endpoint; do not assume they are private-App tools.
 
 If you want to start a controlled optimization round:
 
@@ -64,7 +69,9 @@ If connector or tunnel status is still unverified:
 ```text
 1. Confirm local_service=healthy first.
 2. Extract only sanitized evidence from approved status surfaces.
-3. Feed the sanitized evidence into get_connector_runtime_health_status.
+3. In the private App, pass it to get_apps_connector_smoke_packet; an approved
+   local advanced client may instead call get_connector_runtime_health_status
+   on http://127.0.0.1:8768/mcp.
 4. Write a closeout receipt only after operator_closeout.decision=ready.
 ```
 
@@ -108,14 +115,16 @@ dev repo: /home/jenn/src/colameta-dev
 Web GPT and external agents should prefer the stable MCP endpoint. Use a dev
 test MCP endpoint only when you are explicitly validating new dev repo behavior.
 
-For a single service decision, use `readiness` from
-`get_commander_app_manifest(project_name=...)` or `service_readiness_summary`
-from Web `/api/v2/status`. It returns `ready`, `needs_attention`, or `blocked`
-with safe next actions. It is read-only and does not authorize executor runs,
-commits, pushes, stable replacement, ReviewDecision, GateEvent, or Delivery
-accepted.
+For a single private App decision, read the readiness embedded by
+`render_commander_app` in the Apps panel. The advanced endpoint exposes the
+same signal through `get_commander_app_manifest(project_name=...)`, and Web
+exposes `service_readiness_summary` at `/api/v2/status`. It returns `ready`,
+`needs_attention`, or `blocked` with safe next actions. It is read-only and
+does not authorize executor runs, commits, pushes, stable replacement,
+ReviewDecision, GateEvent, or Delivery accepted.
 
-For a role-aware agent handoff, use
+The following role-aware packet is an **advanced loopback** capability, not a
+seven-tool private App call. On the advanced endpoint, use
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` before
 choosing lower-level tools. It returns one `primary_next_action`, the gate level
 for that action, `persona_safe_next_tool`, confirmation flags, and
@@ -132,11 +141,13 @@ same surfaces. It is a read-only smoke packet for:
 Apps connector reachable -> project list includes project_name -> connector closeout ready
 ```
 
-It includes the exact `list_registered_projects` and
-`get_connector_runtime_health_status` calls, plus a sanitized tunnel evidence
-template. If the Apps connector returns `HTTP 401 token_expired`, reconnect the
-Apps connector session. Do not read tokens, cookies, browser login state,
-tunnel-client config, raw logs, or provider responses.
+It includes the exact `list_registered_projects` call, the preferred private
+App `get_apps_connector_smoke_packet` call, and an advanced-only
+`get_connector_runtime_health_status` call shape for an approved local operator,
+plus a sanitized tunnel evidence template. If the Apps connector returns
+`HTTP 401 token_expired`, reconnect the Apps connector session. Do not read
+tokens, cookies, browser login state, tunnel-client config, raw logs, or
+provider responses.
 
 For a one-call ChatGPT Apps smoke handoff, call
 `get_apps_connector_smoke_packet(project_name=...)`. It returns
@@ -149,16 +160,17 @@ If HTTP MCP `tools/list` shows `get_apps_connector_smoke_packet` but the current
 ChatGPT Apps connector tool picker does not, treat it as Apps metadata cache
 staleness. Open a new ChatGPT/Codex window or reconnect the ColaMeta Apps
 connector, then call `list_registered_projects` again. Until the metadata
-refresh exposes the new tool, use `get_connector_runtime_health_status` with the
-same sanitized tunnel evidence as the read-only fallback. Do not read tokens,
+refresh exposes the new tool, reconnect the private App; an operator using the
+approved loopback advanced endpoint may use `get_connector_runtime_health_status`
+with the same sanitized evidence. Do not read tokens,
 cookies, browser login state, connector config, or raw logs.
 
 `get_service_entry_profile` and `get_agent_operator_flow_packet` also return
 `tool_surface_guidance`. If the current Apps tool surface has not exposed a
 referenced tool, use `tool_search` with the exact ColaMeta tool name. If the
-Apps surface still cannot expose it, call the stable HTTP MCP endpoint
-`http://127.0.0.1:8766/mcp` with JSON-RPC `tools/call` and the
-`copyable_tool_call.arguments` payload.
+Apps surface still cannot expose it, do not call a hidden tool through the
+stable Commander endpoint. An explicitly approved local advanced client may
+use `http://127.0.0.1:8768/mcp` instead.
 
 Keep these three versions separate:
 
@@ -174,8 +186,10 @@ origin/main
 ```
 
 Daily use follows the stable service. Development and docs work happens in the
-dev repo. The stable service moves only after push, CI success, and Jenn's exact
-authorization:
+dev repo. Prefer a candidate that has been pushed and passed CI. Stable still
+moves only with Jenn's exact authorization; if that authorization names a
+validated local-only commit, the receipt must disclose the missing push and
+remote-CI traceability:
 
 ```text
 授权替换稳定服务到 <exact_commit_sha>
@@ -220,9 +234,11 @@ operator_closeout.decision=blocked
   broken.
 ```
 
-## 2. First Reads After MCP Connects
+## 2. First Reads On The Advanced Loopback Endpoint
 
-After MCP connects, do read-only calibration first. Do not run an executor,
+This section applies to the complete loopback advanced catalog. The private App
+uses the seven-tool fast path in section 0. After advanced MCP connects, do
+read-only calibration first. Do not run an executor,
 commit, push, or write project state before reading the service contract.
 
 Recommended first reads:
@@ -583,7 +599,7 @@ payload = {
     },
 }
 request = urllib.request.Request(
-    "http://127.0.0.1:8766/mcp",
+    "http://127.0.0.1:8768/mcp",
     data=json.dumps(payload).encode("utf-8"),
     headers={"Content-Type": "application/json"},
 )
@@ -597,7 +613,7 @@ PY
 Minimal `curl` example:
 
 ```bash
-curl -sS http://127.0.0.1:8766/mcp \
+curl -sS http://127.0.0.1:8768/mcp \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_registered_projects","arguments":{}}}'
 ```
@@ -633,7 +649,7 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
   service_entry_profiles.
 ```
 
-## 3. Common Agent Profiles
+## 3. Common Advanced Agent Profiles
 
 Use `get_service_entry_profile` to select an operating profile:
 
@@ -799,6 +815,20 @@ result at most 56,000 characters. An oversized request fails explicitly with a
 `GATE_REVIEW_*_TOO_LARGE`, `GATE_REVIEW_BINDING_COUNT_EXCEEDED`, or
 `GATE_REVIEW_BINDING_ID_TOO_LONG` error; it does not return a partial apply call.
 
+After installing or replacing the private App runtime, verify the live surface
+in this order:
+
+```text
+list_registered_projects -> expected project is available
+analyze_project_state -> commander profile and visible_tool_count=7
+gate_review_request/inspect -> succeeded, read_only=true, side_effects=false
+get_apps_connector_smoke_packet -> connector_closeout_ready / ready, no evidence gaps
+```
+
+When governance is disabled and inspect returns `candidate_count=0`, stop there.
+The live smoke proves routing and policy exposure; it does not authorize a
+synthetic Work Item or Delivery State write.
+
 ## 5. Run Validation
 
 Web GPT does not need to compose shell commands by itself. Use
@@ -937,15 +967,17 @@ evidence_gap_count=0
 operator_closeout.evidence_gaps=[]
 ```
 
-Web Commander and `get_commander_app_manifest` also expose
-`apps_connector_closeout`. Use it when the next operator is ChatGPT Apps: first
-call `list_registered_projects`, then call `get_connector_runtime_health_status`
-with sanitized tunnel evidence, and treat `token_expired` as an Apps session
-reconnect task rather than a local ColaMeta service failure.
-When available, `get_apps_connector_smoke_packet(project_name=...)` packages the
-same handoff into one read-only call and adds a stable replacement drift hint.
-Web Commander also surfaces an `Apps smoke packet` copy action. Prefer that
-call; use the connector health call only as the metadata-refresh fallback.
+Web Commander and the advanced-only `get_commander_app_manifest` also expose
+`apps_connector_closeout`. When the next operator is ChatGPT Apps, call
+`list_registered_projects`, then
+`get_apps_connector_smoke_packet(project_name=...)`; it packages the handoff
+into one read-only call and adds a stable replacement drift hint. If that tool
+is missing from the App metadata, reconnect the private App instead of calling
+a hidden tool. Only an explicitly approved local advanced client on
+`http://127.0.0.1:8768/mcp` may use
+`get_connector_runtime_health_status` with sanitized tunnel evidence. Treat
+`token_expired` as an Apps session reconnect task rather than a local ColaMeta
+service failure.
 
 After a successful external Apps call, persist only the allowlisted smoke status
 and observation time with `colameta ops-check --connector-smoke-status ready
@@ -1115,7 +1147,7 @@ authorization.
 Stable replacement must include:
 
 ```text
-preflight: HEAD / origin/main / CI success
+preflight: exact candidate HEAD + validation + recorded origin/main/CI state
 backup: /home/jenn/tools/colameta-stable-backups/*.tar.gz + sha256
 checkout stable dir to exact commit
 pip reinstall stable package
@@ -1125,8 +1157,17 @@ runtime provenance check
 receipt
 ```
 
+The preferred traceable candidate is merged `origin/main` with successful CI.
+If Jenn instead gives exact authorization for a validated local-only commit,
+the receipt must say that it was not pushed and that remote CI did not validate
+that exact object. Never invent remote traceability.
+
 Do not treat CI success, read-only evidence, preview, or receipt as automatic
 stable replacement authorization.
+
+The complete install/replacement/rollback checklist is maintained in
+[Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md). A replacement
+receipt is evidence for one exact target, not reusable lifecycle authority.
 
 ## 9. Stage Parallel Plan Preview
 
@@ -1256,10 +1297,18 @@ If a new Codex session reports `MCP startup failed`, `Transport channel closed`,
 or `handshaking with MCP server failed`, test the HTTP MCP endpoint directly
 before changing provider/auth config.
 
-## 11. Executor Status Polling
+## 11. Advanced Executor Status Polling
 
-Executor status polling is profile-aware. Read the selected service entry
-profile first:
+The tools in this section are hidden from the seven-tool Commander endpoint.
+Use an explicitly approved local advanced client, for example:
+
+```bash
+codex mcp add colameta-advanced --url http://127.0.0.1:8768/mcp
+```
+
+Do not send these calls through the `8766` Commander entry registered in the
+previous section. On the advanced endpoint, executor status polling is
+profile-aware. Read the selected service entry profile first:
 
 ```json
 {
@@ -1417,7 +1466,7 @@ Push again.
 
 Do not replace the stable service while CI is failing.
 
-## 12. Minimum Safety Boundary
+## 13. Minimum Safety Boundary
 
 Without Jenn's explicit, current, scope-specific authorization, do not execute:
 
@@ -1450,7 +1499,7 @@ private memory
 browser login state
 ```
 
-## 13. Current Delivery Fit
+## 14. Current Delivery Fit
 
 ColaMeta is suitable for:
 

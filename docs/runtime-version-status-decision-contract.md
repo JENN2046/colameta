@@ -1,5 +1,10 @@
 # Runtime Version Status Decision Contract
 
+For installation, stable replacement, post-restart verification, and rollback,
+see [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md). For package
+and loaded-module provenance details, see
+[Runtime Loaded-Code Verification](runtime-loaded-code-verification.md).
+
 ## Status
 
 Status: v1.6 documentation and test contract.

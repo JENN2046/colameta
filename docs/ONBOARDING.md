@@ -11,6 +11,8 @@ emission, or Delivery State accepted.
 
 For daily operation after onboarding, read the
 [ColaMeta Operator Manual](USAGE.md).
+Install or deploy ColaMeta first with
+[Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
 
 ## 1. Choose An Onboarding Mode
 
@@ -76,24 +78,28 @@ stable MCP: http://127.0.0.1:8766/mcp
 ## 3. First Agent Reads
 
 After an agent connects to MCP, it should not run executors or write state
-first. It should read:
+first. On the private App Commander surface, it should use the seven public
+tools in this order:
 
 ```text
 list_registered_projects
-get_agent_consumer_contract
-get_service_entry_profile
-get_agent_operator_flow_packet
-get_web_gpt_service_entrypoint
-get_runtime_version_status
-get_stable_replacement_cadence
 get_apps_connector_smoke_packet
-get_connector_runtime_health_status
+render_commander_app
+analyze_project_state
+run_mcp_workflow only for the requested read/preview workflow
+manage_validation_run only for bounded validation
+manage_git only for reviewed Git operations
 ```
+
+Consumer contracts, individual runtime/cadence tools, and other low-level
+diagnostics are advanced loopback tools. They are not part of the seven-tool
+private App contract.
 
 Project-level tools require `project_name`. If the agent does not know the
 project name, it must call `list_registered_projects` first.
 
-After selecting a profile, prefer
+The remaining role/profile packets in this section are **advanced loopback**
+capabilities. After selecting a profile there, prefer
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` as the
 single role-aware navigation packet. It gives one `primary_next_action`, keeps
 advanced context visible, and remains read-only. The packet also exposes
@@ -103,21 +109,21 @@ advanced context visible, and remains read-only. The packet also exposes
 advanced actions by default so they do not start from executor, commit, push, or
 stable promotion routes.
 
-If a referenced ColaMeta tool is not visible in the current ChatGPT Apps tool
-surface, first use `tool_search` with the exact tool name. If it still is not
-available, use the stable HTTP MCP endpoint with JSON-RPC `tools/call` and the
-packet's `copyable_tool_call.arguments` payload.
+If an advanced tool is not visible in the private App, do not bypass the
+Commander profile. Use an explicitly approved local advanced client on
+`http://127.0.0.1:8768/mcp`.
 
-For the one-line service decision, read `readiness` from
-`get_commander_app_manifest` or `service_readiness_summary` from Web
+For the one-line private App decision, read the readiness embedded by
+`render_commander_app` in the ChatGPT Apps panel's `Readiness` and `Next Step`
+sections. On the advanced endpoint, the same signal is available from
+`get_commander_app_manifest`; Web exposes `service_readiness_summary` at
 `/api/v2/status`. It collapses runtime, local service, and connector closeout
 into `ready`, `needs_attention`, or `blocked`; it is read-only and does not
-authorize executor runs, commits, pushes, stable replacement, ReviewDecision, or
-GateEvent.
-The ChatGPT Apps panel renders the same signal in the `Readiness` and
-`Next Step` sections.
+authorize executor runs, commits, pushes, stable replacement, ReviewDecision,
+or GateEvent.
 For ChatGPT Apps connector handoff, also read `apps_connector_closeout`. It
-packages the read-only smoke sequence: `list_registered_projects`, then
+packages the read-only smoke sequence. The private App uses
+`get_apps_connector_smoke_packet`; the advanced endpoint may also use
 `get_connector_runtime_health_status` with sanitized tunnel evidence. A
 `token_expired` response is an Apps session reconnect task, not evidence that
 the local Web/MCP service is broken.
@@ -130,16 +136,21 @@ hint, not as replacement authorization.
 After onboarding, the minimum smoke checklist is:
 
 ```text
+Private App Commander:
 project appears in list_registered_projects
-selected profile is readable
-get_runtime_version_status returns read_only=true
-get_stable_replacement_cadence returns stable_replacement_not_required for ordinary dev/stable drift
 get_apps_connector_smoke_packet returns read_only=true
-get_connector_runtime_health_status returns read_only=true
-service_readiness_summary/readiness returns ready, needs_attention, or blocked
+render_commander_app embeds ready, needs_attention, or blocked
 analyze_project_state returns project mode and recommended next step
 source-only project is not treated as a managed workflow project
 managed project can enter thin governed loop preview
+gate_review_request inspect is read-only and either returns sanitized candidates or candidate_count=0
+
+Optional loopback advanced smoke on http://127.0.0.1:8768/mcp:
+selected profile is readable
+get_runtime_version_status returns read_only=true
+get_stable_replacement_cadence returns stable_replacement_not_required for ordinary dev/stable drift
+get_connector_runtime_health_status returns read_only=true
+service_readiness_summary/readiness returns ready, needs_attention, or blocked
 ```
 
 If smoke fails, read `error_code` first. Do not guess parameters.
@@ -270,6 +281,9 @@ authorization:
 
 Without that authorization, an agent may do preflight, receipts, previews, and
 recommendations. It may not replace the stable runtime.
+Follow [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md) for the
+backup, exact checkout, wheel reinstall, restart, private App verification, and
+rollback sequence.
 
 ## 9. Agent Boundary
 
@@ -312,12 +326,11 @@ http://127.0.0.1:8766/mcp
 
 Do read-only calibration first:
 1. list_registered_projects
-2. get_agent_consumer_contract
-3. get_service_entry_profile
-4. get_runtime_version_status(project_name="<project_name>")
-5. get_stable_replacement_cadence(project_name="<project_name>")
-6. get_apps_connector_smoke_packet(project_name="<project_name>")
-7. get_connector_runtime_health_status(project_name="<project_name>")
+2. get_apps_connector_smoke_packet(project_name="<project_name>")
+3. render_commander_app(project_name="<project_name>")
+4. analyze_project_state(project_name="<project_name>")
+5. If Stage 0-6 asks for Gate review, call run_mcp_workflow with
+   workflow=gate_review_request and phase=inspect first.
 
 Do not run executors, write Delivery accepted, create ReviewDecision, emit
 GateEvent, replace stable service, or mutate provider/proxy/tunnel/auth config
@@ -326,10 +339,6 @@ unless Jenn gives explicit current authorization.
 For implementation, use run_mcp_workflow with
 workflow=thin_governed_loop_preview and input_mode=draft, then work only within
 allowed_files and validation_commands.
-
-When polling executor status from local Codex, call manage_executor_workflow
-with profile_id="local_codex_commander" and stop when terminal=true or
-polling_exhausted=true.
 ```
 
 For Jenn's current ColaMeta self-dev project, use:

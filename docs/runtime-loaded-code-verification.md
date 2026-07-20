@@ -1,5 +1,9 @@
 # Runtime Loaded-Code Verification
 
+See [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md) for how these
+signals fit into install, stable replacement, private App verification, and
+rollback.
+
 ## Status
 
 Status: v1.9+ read-only runtime/reload awareness.
@@ -73,3 +77,21 @@ Health endpoints expose only a short-TTL cached provenance summary. The cache ke
 ## Non-Authorization Rule
 
 The fields are observability signals only. A stale or unknown result can support an operator handoff notice, but it does not authorize an automatic restart, reload, kill, apply, service lifecycle mutation, executor workflow mutation, config mutation, or Git remote mutation.
+
+After an explicitly authorized stable replacement, require all of the following
+before calling the runtime current:
+
+```text
+loaded_runtime_head or installed-package provenance binds the exact target
+runtime_loaded_code_stale == false
+reload_needed_for_verification == false
+installed package matches its stable source checkout
+authorized services are active/running
+real private App still exposes exactly seven Commander tools
+gate_review_request/inspect succeeds read-only
+connector smoke reports connector_closeout_ready / ready
+```
+
+Runtime freshness alone does not prove the external connector or Gate workflow
+surface. Conversely, a successful connector call does not override stale or
+unknown loaded-code evidence; both layers must pass.

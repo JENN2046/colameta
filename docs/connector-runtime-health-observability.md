@@ -1,5 +1,8 @@
 # Connector / Runtime Health Observability
 
+See [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md) for the
+deployment and post-restart smoke sequence.
+
 `get_runtime_version_status` includes `connector_runtime_health`, and MCP exposes
 `get_connector_runtime_health_status` as a dedicated read-only closeout card.
 Both separate local ColaMeta runtime evidence from external MCP connector
@@ -63,6 +66,9 @@ Current safe surfaces:
   first-class read-only tool. It accepts optional caller-provided sanitized
   `tunnel_client` and `control_plane` summaries with only these fields:
   `status`, `reason_code`, `evidence_source`, and `last_observed_at`.
+- The seven-tool private App exposes `get_apps_connector_smoke_packet`, which
+  packages the same connector/runtime closeout without exposing the dedicated
+  advanced health tool.
 - Web `/api/status` includes a compact card based on the fact that the Web API
   itself is responding; MCP and external connector evidence remain unverified
   unless supplied by another safe status path.
@@ -85,6 +91,12 @@ of normal closeout handling.
 `operator_closeout.decision` is `ready` only when local runtime, local Web/MCP,
 and supplied external connector evidence are all healthy. Missing external
 connector evidence remains blocked as `local_runtime_ready_external_connector_unverified`.
+
+A successful authorized private App call is valid sanitized end-to-end
+connector evidence when it is described truthfully as that call. Do not relabel
+it as a `/healthz` or `/readyz` probe that was never performed. The final packet
+must still report `overall_status=healthy`, `connector_closeout_ready / ready`,
+and zero evidence gaps.
 
 When blocked, `operator_closeout.safe_next_actions` points to approved status
 surfaces and sanitized evidence collection. It does not authorize reading

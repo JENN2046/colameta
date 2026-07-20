@@ -1,5 +1,9 @@
 # ColaMeta Private Beta systemd Operations
 
+For package/source setup and the end-to-end deployment decision tree, start
+with [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md). This file is
+the host-specific systemd operations layer.
+
 The private Beta stack uses system-level units because the WSL instance does
 not provide a persistent per-user systemd manager. The stack has one ownership
 boundary:
@@ -79,16 +83,16 @@ copies the tunnel profile, API key, or connector credentials.
 ## Verify
 
 ```bash
-curl --fail http://127.0.0.1:8801/
-curl --fail http://127.0.0.1:8766/mcp
+curl --fail http://127.0.0.1:8801/api/healthz
+curl --fail http://127.0.0.1:8766/healthz
 curl --fail http://127.0.0.1:8767/healthz
-curl --fail http://127.0.0.1:8768/mcp
+curl --fail http://127.0.0.1:8768/healthz
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 /home/jenn/tools/colameta/.venv/bin/python \
   /home/jenn/tools/colameta/scripts/remote_https_mcp_preflight.py \
   https://colameta-mcp.skmt617.top \
-  --expected-head "$(git -C /home/jenn/src/colameta-dev rev-parse HEAD)"
+  --expected-head "$(git -C /home/jenn/tools/colameta rev-parse HEAD)"
 ```
 
 The default connector and public OAuth endpoint expose these seven high-level
@@ -102,12 +106,34 @@ who need the complete 82-tool catalog can connect a local advanced client to
 `http://127.0.0.1:8768/mcp`; that endpoint is not bound to a public interface or
 forwarded by either tunnel.
 
+Work Item Gate review stays inside `run_mcp_workflow` as
+`workflow=gate_review_request`; it is not an eighth tool. After an install or
+stable replacement, verify `phase=inspect` through the real private App and
+require `status=succeeded`, `read_only=true`, and `side_effects=false`. When the
+served project has governance disabled, `candidate_count=0` is a valid smoke
+result. Do not create a synthetic Work Item to force a transition.
+
 For a controlled restart test, record the current `MainPID`, send `SIGTERM` to
 that exact service PID, and verify that systemd assigns a different running
 `MainPID`. Do not kill by process-name pattern.
 
 ## ChatGPT Apps connector smoke
-After the local and public health checks pass, call `list_registered_projects` through the existing ChatGPT Apps connector and confirm it includes `colameta-self-dev`. Then call `analyze_project_state(project_name="colameta-self-dev")` and confirm the returned Git HEAD matches the deployed checkout. If the Apps call reports an internal tunnel 404 while ports 8766 and 8080 are healthy, check `colameta-tunnel-client.service`; do not read tokens, cookies, connector configuration, or raw logs.
+
+After the local and public health checks pass:
+
+1. call `list_registered_projects` through the existing ChatGPT Apps connector
+   and confirm it includes `colameta-self-dev`;
+2. call `analyze_project_state(project_name="colameta-self-dev")` and confirm
+   the Commander profile exposes exactly seven tools and the expected deployed
+   code HEAD;
+3. call `run_mcp_workflow` with `workflow=gate_review_request` and
+   `phase=inspect`;
+4. call `get_apps_connector_smoke_packet` with approved sanitized evidence and
+   require `connector_closeout_ready / ready` with zero evidence gaps.
+
+If the Apps call reports an internal tunnel 404 while ports 8766 and 8080 are
+healthy, check `colameta-tunnel-client.service`; do not read tokens, cookies,
+connector configuration, or raw logs.
 
 
 ## Roll back

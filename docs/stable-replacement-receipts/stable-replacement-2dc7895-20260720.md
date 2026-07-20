@@ -12,12 +12,19 @@ project_root: /home/jenn/src/colameta-dev
 stable_replacement_result: complete
 private_app_connector_result: ready
 gate_review_live_inspect_result: pass
+candidate_remote_traceability: local_only
+candidate_present_on_origin_main: false
+remote_ci_validated_exact_target: false
 ```
 
 Jenn explicitly authorized replacement to the exact target commit and restart of
 `colameta-stable.service` and `colameta-mcp-remote.service`. This was a ColaMeta
 private App runtime replacement, not a plugin marketplace, package publication,
 tag, release, or public App submission.
+
+The exact target was a validated local commit. It was not pushed, was not on
+`origin/main`, and was not validated by remote CI. The authorization covered
+that exact local object; this receipt does not claim remote traceability.
 
 ## Preflight And Rollback
 
