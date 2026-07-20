@@ -4,19 +4,20 @@
 private_app_gate_review_local_closeout:
   schema_version: colameta_private_app_gate_review_local_closeout.v1
   closeout_status: ready
-  decision: ready_for_local_private_app_acceptance
-  authority_status: local_acceptance_evidence_only
+  decision: ready_for_live_private_app_acceptance
+  authority_status: exact_stable_replacement_completed
   generated_at_utc: 2026-07-20T19:16:15Z
-  last_validated_at_utc: 2026-07-20T21:21:34Z
+  last_validated_at_utc: 2026-07-20T21:30:55Z
   workspace: /home/jenn/src/colameta-dev
   branch: codex/stable-replacement-238cfec-receipt
-  base_head: 0fd3147a63ee11a0284a63692b4e9ded2f4c0991
-  worktree_mode: dirty_local_changes_under_review
-  commit_authority: false
+  base_head: 2dc78955ac284c88d56feee71fa5ebbb02c5d8f8
+  worktree_mode: tracked_clean_with_preexisting_untracked_user_asset
+  commit_authority: true
   push_authority: false
   publish_authority: false
   release_authority: false
-  stable_replacement_authority: false
+  stable_replacement_authority: true
+  stable_replacement_completed: true
   delivery_state_transition_recorded: false
 ```
 
@@ -87,11 +88,16 @@ validation_evidence:
     evidence_basis: authorized Apps connector list_registered_projects and smoke_packet calls succeeded
     secrets_or_private_config_read: false
   live_gate_workflow_readback:
-    result: blocked
+    result: pass
     read_only_call: gate_review_request/inspect
-    error_code: TOOL_POLICY_DENIED
-    reason: current protected stable App runtime has not loaded the dirty-worktree workflow policy
-    stable_service_changed: false
+    status: succeeded
+    read_only: true
+    side_effects: false
+    governance_enabled: false
+    candidate_count: 0
+    reason: exact stable runtime loaded the workflow; repository governance remains intentionally disabled
+    stable_service_changed: true
+    stable_target_commit: 2dc78955ac284c88d56feee71fa5ebbb02c5d8f8
   repository_gate_readback:
     result: pass
     read_only: true
@@ -152,15 +158,18 @@ candidate_files:
   不读取或保存真实凭据。
 - 真实私人 App 连接器本身已经完成只读 smoke，且返回
   `connector_closeout_ready / ready`；该结论证明连接器、认证、项目路由和当前稳定运行时可达。
-- 当前私人 App 在线运行时属于受保护的 `/home/jenn/tools/colameta` stable service。
-  它尚未加载本脏工作区新增的 `gate_review_request` policy；真实只读调用返回
-  `TOOL_POLICY_DENIED`。因此“本地实现验收 ready”不等于“新 workflow 已在稳定私人 App 在线生效”。
-  完成后一项需要另行精确授权 stable replacement/服务重启，不能由本 closeout 或 smoke 自动授权。
+- Jenn 后续精确授权 stable target
+  `2dc78955ac284c88d56feee71fa5ebbb02c5d8f8` 及两项服务重启。受保护的
+  `/home/jenn/tools/colameta` stable runtime 已替换到该提交；真实私人 App 的
+  `gate_review_request/inspect` 已从 `TOOL_POLICY_DENIED` 变为只读成功。
+- 当前仓库 governance 仍为 disabled，候选为 0；因此在线 smoke 没有伪造 Work Item，
+  也没有执行 Delivery State、ReviewDecision 或 GateEvent 写入。完整 preview/apply 正向路径由
+  service-mode/private-OAuth loopback E2E 覆盖。
 
-## 禁止动作
+## 本次交付边界
 
-- 不 commit。
 - 不 push。
 - 不创建或推送 tag。
 - 不发布、不部署。
-- 不替换 `/home/jenn/tools/colameta` stable runtime。
+- 只替换并重启精确授权的 stable target；不授权再次替换其他提交。
+- 不修改 tunnel、DNS、provider 或认证配置。
