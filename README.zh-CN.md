@@ -441,23 +441,55 @@ ColaMeta 更推荐和 GPTs 配合使用。
 - [AGENTS.md 生成规则](assets/gpts/agents-generation-rules.zh-CN.md)
 - [项目记忆规则](assets/gpts/project-memory-rules.zh-CN.md)
 
+## 私人 App 与七工具 Commander
+
+ChatGPT/Codex 私人 App 使用聚焦的 Commander surface，不直接暴露完整 advanced MCP catalog。
+它恰好提供 7 个高层工具：
+
+```text
+list_registered_projects
+get_apps_connector_smoke_packet
+render_commander_app
+analyze_project_state
+run_mcp_workflow
+manage_validation_run
+manage_git
+```
+
+Work Item Gate review 不会增加第 8 个工具。通过 `run_mcp_workflow` 调用
+`workflow=gate_review_request`：先做只读 `phase=inspect`，再生成有界签名 preview；只有完整
+preview、精确 bindings、所需 OAuth/Work Item 权限以及显式确认全部通过后，才允许 apply。
+如果项目没有启用 Work Item governance，成功 inspect 且候选为 0 就是真实结果，不能为了继续
+流程伪造 Work Item。
+
+workflow 细节见 [ColaMeta 使用说明书](docs/USAGE.zh-CN.md)；本地安装、私人 App、systemd、
+稳定替换、验收与回滚见
+[ColaMeta 安装与部署说明书](docs/INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
+
 ---
 
 ## 安装
 
-```bash
-pip3 install colameta
-```
-
-如果系统没有 `pip3`，可以使用 venv：
+推荐使用隔离 venv：
 
 ```bash
 python3 -m venv path/to/venv
-source path/to/venv/bin/activate
-pip3 install colameta
+path/to/venv/bin/python -m pip install --upgrade pip
+path/to/venv/bin/python -m pip install colameta
+path/to/venv/bin/colameta --version
 ```
 
-安装后可以直接使用 `colameta` 命令。
+从当前源码开发：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[test]"
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/self_hosting_smoke.py
+```
+
+启动网络可见服务、私人 App endpoint、systemd 栈或稳定替换前，请先读
+[ColaMeta 安装与部署说明书](docs/INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
 
 ---
 
@@ -470,6 +502,9 @@ pip3 install colameta
 
 如果你要把一个新项目接入 ColaMeta，先看：
 [ColaMeta 通用 Onboarding](docs/ONBOARDING.zh-CN.md)。
+
+安装、私人 App 部署、稳定替换、验收与回滚见：
+[ColaMeta 安装与部署说明书](docs/INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
 
 ### 登记一个 managed 项目
 

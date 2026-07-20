@@ -443,21 +443,56 @@ Reference documents:
 - [AGENTS.md generation rules](assets/gpts/agents-generation-rules.zh-CN.md)
 - [Project memory rules](assets/gpts/project-memory-rules.zh-CN.md)
 
-## Installation
+## Private App And The Seven-Tool Commander
 
-```bash
-pip3 install colameta
+The ChatGPT/Codex private App uses a focused Commander surface instead of the
+complete advanced MCP catalog. It exposes exactly seven high-level tools:
+
+```text
+list_registered_projects
+get_apps_connector_smoke_packet
+render_commander_app
+analyze_project_state
+run_mcp_workflow
+manage_validation_run
+manage_git
 ```
 
-If `pip3` is not available, use venv:
+Work Item Gate review does not add an eighth tool. Use
+`run_mcp_workflow` with `workflow=gate_review_request`: start with read-only
+`phase=inspect`, generate a signed bounded preview, and apply only after the
+complete preview, exact bindings, required OAuth/Work Item authority, and
+explicit confirmation all pass. A successful inspect with zero candidates is
+the correct result when Work Item governance is disabled; it is not a reason to
+invent a Work Item.
+
+See the [Operator Manual](docs/USAGE.md) for workflow details and
+[Installation And Deployment](docs/INSTALLATION_AND_DEPLOYMENT.md) for local,
+private App, systemd, stable replacement, verification, and rollback steps.
+
+## Installation
+
+An isolated virtual environment is recommended:
 
 ```bash
 python3 -m venv path/to/venv
-source path/to/venv/bin/activate
-pip3 install colameta
+path/to/venv/bin/python -m pip install --upgrade pip
+path/to/venv/bin/python -m pip install colameta
+path/to/venv/bin/colameta --version
 ```
 
-After installation, you can use the `colameta` command directly.
+For development from this checkout:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[test]"
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/self_hosting_smoke.py
+```
+
+Read [Installation And Deployment](docs/INSTALLATION_AND_DEPLOYMENT.md) before
+starting a network-visible service, private App endpoint, systemd stack, or
+stable replacement.
 
 ---
 
@@ -470,6 +505,10 @@ For Jenn's local stable service / Web GPT / Codex operator workflow, see
 
 For onboarding a new local project into ColaMeta, see
 [ColaMeta Onboarding](docs/ONBOARDING.md).
+
+For installation, private App deployment, stable replacement, verification,
+and rollback, see
+[ColaMeta Installation And Deployment](docs/INSTALLATION_AND_DEPLOYMENT.md).
 
 ### Register a managed project
 

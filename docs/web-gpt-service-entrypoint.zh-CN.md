@@ -1,23 +1,27 @@
 # Web GPT Service Entrypoint Guide
 
-状态：`dev_runtime_ready_for_web_gpt_trial`
+状态：`stable_private_app_ready`
 
 本文给网页端 GPT 使用 ColaMeta 项目服务时做入口说明。它不是稳定服务晋升授权，不授权 executor run、commit、push、route transition、release、deploy 或替换 `/home/jenn/tools/colameta`。
+
+服务安装、systemd、stable replacement、验收与回滚见
+[ColaMeta 安装与部署说明书](INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
 
 ## 当前服务边界
 
 - 稳定服务目录：`/home/jenn/tools/colameta`
 - 稳定服务 MCP：`http://127.0.0.1:8766/mcp`
 - 稳定服务 Web：`http://127.0.0.1:8801`
-- 当前 dev 测试服务 MCP：`http://127.0.0.1:8776/mcp`
-- 当前 dev 测试服务 Web：`http://127.0.0.1:8811`
+- 私人 App external-OAuth origin：`http://127.0.0.1:8767/mcp`
+- loopback advanced MCP：`http://127.0.0.1:8768/mcp`
 - 当前 dev repo：`/home/jenn/src/colameta-dev`
 
-网页端 GPT 需要优先连接当前被明确授权的 MCP endpoint。没有稳定晋升授权时，使用 dev 测试服务验证新能力；不要假定稳定服务已经包含 dev repo 最新能力。
+网页端 GPT 需要优先连接当前被明确授权的 MCP endpoint。不能从 dev repo 新提交自动推导
+stable 已加载；先看 runtime provenance 和真实工具返回。
 
 ## 首批工具
 
-网页端 GPT 连接 MCP 后，先读取项目列表和 Agent 消费者契约：
+网页端 GPT 连接私人 App 后，先读取项目列表：
 
 ```json
 {
@@ -26,78 +30,58 @@
 }
 ```
 
-```json
-{
-  "name": "get_agent_consumer_contract",
-  "arguments": {}
-}
-```
-
-然后调用服务入口卡片：
+然后读取 connector smoke 和 Commander 面板：
 
 ```json
 {
-  "name": "get_web_gpt_service_entrypoint",
-  "arguments": {}
+  "name": "get_apps_connector_smoke_packet",
+  "arguments": {"project_name": "colameta-self-dev"}
 }
 ```
 
-这个工具只读，返回：
+```json
+{
+  "name": "render_commander_app",
+  "arguments": {"project_name": "colameta-self-dev"}
+}
+```
 
-- 服务 profile
-- Agent 消费者契约入口
-- 是否需要 `project_name`
-- 已登记项目摘要
-- 推荐首调用顺序
-- 薄治理闭环 `draft -> provided` 用法
-- 验证运行 `preview -> run -> status` 用法
-- 禁止动作边界
+当前 Commander 恰好暴露 7 个工具：
+
+```text
+list_registered_projects
+get_apps_connector_smoke_packet
+render_commander_app
+analyze_project_state
+run_mcp_workflow
+manage_validation_run
+manage_git
+```
+
+高级 consumer/runtime/cadence 等工具只在 loopback advanced endpoint 使用，不属于私人 App
+默认 surface。
 
 ## 推荐首调用顺序
 
 1. `list_registered_projects`
-2. `get_agent_consumer_contract`
-3. `get_service_entry_profile`，传入 `profile_id=web_gpt_commander`
-4. `get_web_gpt_service_entrypoint`
-5. `get_stable_promotion_readiness`，必须传入已登记的 `project_name`
-6. `get_connector_runtime_health_status`，必须传入已登记的 `project_name`
-7. `analyze_project_state`，必须传入已登记的 `project_name`
-8. `manage_workflow_run`，用 `action=list` 查看最近证据
+2. `get_apps_connector_smoke_packet`，传入已登记的 `project_name`
+3. `render_commander_app`，传入已登记的 `project_name`
+4. `analyze_project_state`，传入已登记的 `project_name`
+5. 需要业务流程时再用 `run_mcp_workflow`
+6. 有界验证用 `manage_validation_run`
+7. 审查后的 Git 操作用 `manage_git`
 
-网页端 GPT 应选择 `service_entry_profiles` 里的 `web_gpt_commander` 画像。这个画像的意思是：网页 GPT 可以负责读服务入口、整理 payload、向 Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。
+网页端 GPT 使用的默认画像是 `web_gpt_commander`：可以读服务入口、整理 payload、向
+Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。
 
 如果使用 `render_commander_app` 打开 ChatGPT Apps 面板，先看顶部的 `Readiness` 和
 `Next Step`。`Readiness` 只会是 `ready`、`needs_attention` 或 `blocked`；`Next Step` 展示
 primary blocker 和第一条 safe next action。它们都是 read-only 状态解释，不授权 executor run、
 commit、push、stable replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 
-示例：
-
-```json
-{
-  "name": "get_stable_promotion_readiness",
-  "arguments": {
-    "project_name": "colameta-self-dev"
-  }
-}
-```
-
-这个工具只读，用来判断当前服务候选是否只是 dev 试用、是否可进入稳定晋升审查、以及还有哪些 local blockers / warnings。它不授权替换稳定服务。
-
-```json
-{
-  "name": "get_connector_runtime_health_status",
-  "arguments": {
-    "project_name": "colameta-self-dev"
-  }
-}
-```
-
-这个工具只读，用来区分本地 runtime/Web/MCP 健康和外部 connector/tunnel 真实可用性。缺少
-`tunnel_client` 或 `control_plane` sanitized evidence 时，closeout 必须保持 blocked；
-只有本地 runtime、Web/MCP、tunnel-client、control-plane 证据都 healthy 时，才会进入
-`connector_closeout_ready`。它不读取 tunnel-client/proxy/provider 配置，不读取 token/cookie/
-credential，也不授权网络修复或稳定服务替换。
+`get_apps_connector_smoke_packet` 只接受脱敏的 connector evidence，不读取
+tunnel-client/proxy/provider 配置，也不读取 token/cookie/credential。只有 runtime、MCP 与
+外部 connector 证据都 healthy 时，才会进入 `connector_closeout_ready / ready`。
 
 ```json
 {
@@ -107,6 +91,27 @@ credential，也不授权网络修复或稳定服务替换。
   }
 }
 ```
+
+## Work Item Gate review
+
+当 Stage 0-6 正向结果请求 Gate review 时，不增加新工具，继续使用
+`run_mcp_workflow`：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "gate_review_request",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+验收应看到 `status=succeeded`、`read_only=true`、`side_effects=false`。如果 governance
+disabled 且 `candidate_count=0`，这是正确边界；不要伪造 Work Item。preview/apply 必须继续遵守
+完整签名 preview、精确 bindings、显式确认、`mcp:commit` 和可信私人 Operator/Work Item
+authority 的联合门禁。
 
 ## 薄治理闭环输入草稿
 

@@ -36,6 +36,7 @@ IPC_OBSERVATION_SOURCE = "service_private_ipc"
 IPC_UNAVAILABLE_ALERT_CODE = "OPERATOR_PRIVATE_HEALTH_UNAVAILABLE"
 IPC_MAX_PACKET_BYTES = 1024
 IPC_MAX_REGISTRATIONS = 64
+IPC_MAX_AGGREGATED_CLOSE_FDS = 65535 * IPC_MAX_REGISTRATIONS
 IPC_TIMEOUT_SECONDS = 0.25
 IPC_LISTEN_BACKLOG = 4
 IPC_ROOT_DIRNAME = "private-operator-health"
@@ -134,6 +135,20 @@ def _observed_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
         "quarantine_attention_threshold": snapshot["quarantine_attention_threshold"],
         "quarantine_status": snapshot["quarantine_status"],
         "local_alert_code": snapshot["local_alert_code"],
+    }
+
+
+def _aggregate_snapshots(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    if not snapshots:
+        raise PrivateOperatorIPCError("OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND")
+    count = sum(snapshot["quarantined_close_fd_count"] for snapshot in snapshots)
+    if count < 0 or count > IPC_MAX_AGGREGATED_CLOSE_FDS:
+        raise PrivateOperatorIPCError("OPERATOR_PRIVATE_PROTOCOL_INVALID")
+    return {
+        "quarantined_close_fd_count": count,
+        "quarantine_attention_threshold": OPERATOR_QUARANTINE_ATTENTION_THRESHOLD,
+        "quarantine_status": "attention" if count else "clear",
+        "local_alert_code": OPERATOR_QUARANTINE_ALERT_CODE if count else None,
     }
 
 
@@ -1064,19 +1079,61 @@ class PrivateOperatorHealthIPCClient:
             return private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNSUPPORTED")
         root_fd: int | None = None
         lock_fd: int | None = None
-        pidfd: int | None = None
-        client_socket: socket.socket | None = None
+        selected_registrations: list[tuple[_FrozenRegistration, int]] = []
         result: dict[str, Any] | None = None
         try:
             root_fd, root_identity = _open_secure_root(self.root_path, create=False)
             lock_fd = _open_registry_lock(root_fd, create=False)
             with _locked_registry(lock_fd):
-                selected, pidfd = self._select_registration(root_fd, project_path)
+                selected_registrations = self._select_registrations(root_fd, project_path)
             if not _close_owned_fd(lock_fd):
                 lock_fd = None
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
             lock_fd = None
-            registration = selected.registration
+            expected_project = (
+                _project_fingerprint(project_path) if project_path is not None else None
+            )
+            snapshots = [
+                self._query_registration(selected, pidfd, expected_project)
+                for selected, pidfd in selected_registrations
+            ]
+            lock_fd = _open_registry_lock(root_fd, create=False)
+            with _locked_registry(lock_fd):
+                for selected, _pidfd in selected_registrations:
+                    registration = selected.registration
+                    current = _read_registration(root_fd, registration.filename)
+                    if (
+                        current.st_dev != selected.st_dev
+                        or current.st_ino != selected.st_ino
+                        or current.canonical != selected.canonical
+                    ):
+                        raise PrivateOperatorIPCError("OPERATOR_PRIVATE_IPC_REGISTRATION_CHANGED")
+                _assert_root_path_identity(self.root_path, root_identity)
+            if not all(_pidfd_alive(pidfd) for _selected, pidfd in selected_registrations):
+                raise PrivateOperatorIPCError("OPERATOR_PRIVATE_PROCESS_NOT_RUNNING")
+            result = _observed_projection(_aggregate_snapshots(snapshots))
+        except PrivateOperatorIPCError as exc:
+            result = private_operator_ipc_unavailable(exc.reason_code)
+        except BaseException:
+            result = private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
+        close_ok = _safe_close_many([pidfd for _selected, pidfd in selected_registrations])
+        if lock_fd is not None:
+            close_ok = _close_owned_fd(lock_fd) and close_ok
+        if root_fd is not None:
+            close_ok = _close_owned_fd(root_fd) and close_ok
+        if not close_ok:
+            return private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
+        return result or private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
+
+    def _query_registration(
+        self,
+        selected: _FrozenRegistration,
+        pidfd: int,
+        expected_project_fingerprint: str | None,
+    ) -> dict[str, Any]:
+        registration = selected.registration
+        client_socket: socket.socket | None = None
+        try:
             if not _pidfd_alive(pidfd):
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_PROCESS_NOT_RUNNING")
             client_socket = socket.socket(
@@ -1093,11 +1150,7 @@ class PrivateOperatorHealthIPCClient:
                 registration,
                 peer_pid=peer_pid,
                 peer_uid=peer_uid,
-                expected_project_fingerprint=(
-                    _project_fingerprint(project_path)
-                    if project_path is not None
-                    else None
-                ),
+                expected_project_fingerprint=expected_project_fingerprint,
             )
             if not _pidfd_alive(pidfd):
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_PROCESS_NOT_RUNNING")
@@ -1124,37 +1177,16 @@ class PrivateOperatorHealthIPCClient:
             )
             if not _pidfd_alive(pidfd):
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_PROCESS_NOT_RUNNING")
-            lock_fd = _open_registry_lock(root_fd, create=False)
-            with _locked_registry(lock_fd):
-                current = _read_registration(root_fd, registration.filename)
-                if (
-                    current.st_dev != selected.st_dev
-                    or current.st_ino != selected.st_ino
-                    or current.canonical != selected.canonical
-                ):
-                    raise PrivateOperatorIPCError("OPERATOR_PRIVATE_IPC_REGISTRATION_CHANGED")
-                _assert_root_path_identity(self.root_path, root_identity)
-            result = _observed_projection(snapshot)
-        except PrivateOperatorIPCError as exc:
-            result = private_operator_ipc_unavailable(exc.reason_code)
-        except BaseException:
-            result = private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
-        close_ok = _close_socket(client_socket)
-        if pidfd is not None:
-            close_ok = _close_owned_fd(pidfd) and close_ok
-        if lock_fd is not None:
-            close_ok = _close_owned_fd(lock_fd) and close_ok
-        if root_fd is not None:
-            close_ok = _close_owned_fd(root_fd) and close_ok
-        if not close_ok:
-            return private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
-        return result or private_operator_ipc_unavailable("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
+            return snapshot
+        finally:
+            if not _close_socket(client_socket):
+                raise PrivateOperatorIPCError("OPERATOR_PRIVATE_IPC_UNAVAILABLE")
 
-    def _select_registration(
+    def _select_registrations(
         self,
         root_fd: int,
         project_path: str | None,
-    ) -> tuple[_FrozenRegistration, int]:
+    ) -> list[tuple[_FrozenRegistration, int]]:
         requested_project = _project_fingerprint(project_path) if project_path is not None else None
         candidates: list[tuple[_FrozenRegistration, int]] = []
         matching_registration_seen = False
@@ -1202,9 +1234,10 @@ class PrivateOperatorHealthIPCClient:
                 if matching_registration_seen and identity_failure is not None:
                     raise PrivateOperatorIPCError(identity_failure)
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND")
-            if len(candidates) != 1:
+            if project_path is None and len(candidates) != 1:
                 raise PrivateOperatorIPCError("OPERATOR_PRIVATE_SERVICE_AMBIGUOUS")
-            selected = candidates.pop()
+            selected = candidates
+            candidates = []
             return selected
         finally:
             if candidates and not _safe_close_many([pidfd for _frozen, pidfd in candidates]):

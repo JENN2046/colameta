@@ -41,6 +41,7 @@
       "server_peercred": {"required": ["uid"], "optional": []},
       "source_import_scan": {"required": ["targets"], "optional": []},
       "start_listener": {"required": ["fault"], "optional": []},
+      "subprocess_aggregate": {"required": ["quarantined_fd_counts"], "optional": ["fault"]},
       "subprocess_restart": {"required": ["old_count", "new_count"], "optional": []},
       "subprocess_snapshot": {"required": ["quarantined_fd_count"], "optional": []},
       "timeout": {"required": ["phase"], "optional": []}
@@ -71,6 +72,8 @@
     {"case_id":"process-exits-during-stat-read","category":"identity","driver":{"action":"process_identity","fault":"exit_during_read"},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_PROCESS_NOT_RUNNING","public_change":"none"}},
     {"case_id":"service-zero-match","category":"discovery","driver":{"action":"discover_registration","matches":0},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND","public_change":"none","fd_delta":0}},
     {"case_id":"service-multiple-match","category":"discovery","driver":{"action":"discover_registration","matches":2},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_SERVICE_AMBIGUOUS","public_change":"none","fd_delta":0}},
+    {"case_id":"service-same-project-explicit-aggregate","category":"discovery","driver":{"action":"subprocess_aggregate","quarantined_fd_counts":[0,2,3]},"expected":{"status":"observed","count":5,"quarantine_status":"attention","no_project_reason":"OPERATOR_PRIVATE_SERVICE_AMBIGUOUS","public_change":"none"}},
+    {"case_id":"service-same-project-partial-failure","category":"discovery","driver":{"action":"subprocess_aggregate","quarantined_fd_counts":[1,2],"fault":"one_listener_unavailable"},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_IPC_UNAVAILABLE","no_project_reason":"OPERATOR_PRIVATE_SERVICE_AMBIGUOUS","public_change":"none"}},
     {"case_id":"service-project-mismatch","category":"discovery","driver":{"action":"discover_registration","fault":"project_mismatch"},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND","public_change":"none","fd_delta":0}},
     {"case_id":"registration-enumeration-overflow","category":"discovery","driver":{"action":"discover_registration","entry_count":65},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_REGISTRY_SATURATED","public_change":"none","fd_delta":0}},
     {"case_id":"registration-unknown-leaf","category":"discovery","driver":{"action":"discover_registration","fault":"unknown_leaf_name"},"expected":{"status":"unavailable","reason":"OPERATOR_PRIVATE_IPC_REGISTRATION_UNSAFE","public_change":"none","fd_delta":0}},

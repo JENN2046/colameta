@@ -7,6 +7,10 @@ a stable HTTPS remote MCP service for ChatGPT Developer Mode. It does not
 authorize DNS, TLS, cloud resource creation, deployment, production routing, or
 public app submission by itself.
 
+For installation, source/venv setup, the seven-tool Commander, systemd, stable
+replacement, verification, and rollback, start with
+[Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
+
 ## Target Contract
 
 Use a stable HTTPS service base URL:
@@ -134,8 +138,14 @@ ColaMeta is only the MCP resource server:
 - ColaMeta enforces the configured `--oauth-scopes` as the resource-server
   allowlist, not only as metadata;
 - ColaMeta applies the `remote_public` tool policy after OAuth scope validation:
-  read/preview tools are allowed, while every `mcp:commit` and `mcp:plan`
-  action is denied before the tool handler runs;
+  read/preview tools are allowed, while general `mcp:commit` and `mcp:plan`
+  actions are denied before the tool handler runs;
+- two narrow trusted-operator routes are evaluated before the general denial:
+  `operator_batch` remains its own Operator-policy channel, while private
+  `gate_review_request/apply` additionally requires an accepted Operator
+  subject/client, matching authenticated Work Item authority claims and
+  `mcp:commit`, a verified complete signed Gate preview with exact bindings,
+  and `confirm_gate_review=true`;
 - ColaMeta does not serve `/authorize`, `/register`, `/token`, or `/revoke`.
 
 Example:
@@ -166,9 +176,15 @@ https://colameta-mcp.skmt617.top/mcp
 ```
 
 Do not grant `mcp:commit` or `mcp:plan` to public or default ChatGPT
-connectors. Enabling remote write/plan operations requires a separate trusted
-operator channel or local confirmation design; `external-oauth` public remote
-mode is intentionally read/preview only.
+connectors. Neither `operator_batch` nor the private Gate exception is general
+remote write authority: an unconfigured, mismatched, or public/default
+principal remains denied before a mutating handler runs. Any other remote
+write/plan capability requires a separate trusted operator channel and explicit
+design.
+
+The Commander App still exposes exactly seven tools. Gate review is routed
+through `run_mcp_workflow(workflow="gate_review_request")`; no eighth tool or
+hidden Work Item list endpoint is published.
 
 The current `oauth` mode remains available for Jenn-only private operation and
 local bring-up. Do not treat it as the long-term public or multi-user auth
@@ -225,6 +241,9 @@ After the live preflight passes:
    prompt that should not trigger a tool.
 5. Record only redacted evidence: status, reason code, endpoint class,
    observed time, and whether tool listing succeeded.
+6. For the ColaMeta private App, also verify exactly seven tools,
+   `gate_review_request/inspect` as read-only, and
+   `get_apps_connector_smoke_packet` as `connector_closeout_ready / ready`.
 
 ## Submission Boundary
 

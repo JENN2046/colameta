@@ -346,7 +346,7 @@ def test_selection_identity_unavailable_closes_prior_candidate_pidfds(
     monkeypatch.setattr(ipc, "_pidfd_alive", lambda _fd: True)
     monkeypatch.setattr(ipc, "_process_start_ticks", start_ticks)
     with pytest.raises(ipc.PrivateOperatorIPCError) as rejected:
-        ipc.PrivateOperatorHealthIPCClient(root_path=str(tmp_path))._select_registration(9, project)
+        ipc.PrivateOperatorHealthIPCClient(root_path=str(tmp_path))._select_registrations(9, project)
     assert rejected.value.reason_code == "OPERATOR_PRIVATE_PROCESS_IDENTITY_UNAVAILABLE"
     assert len(opened) == 2
     for fd in opened:
@@ -799,7 +799,7 @@ def _drive_discover_registration(driver: _Driver, tmp_path: Path, monkeypatch: p
         monkeypatch.setattr(ipc, "_registration_names", lambda _fd: [registration.filename, registration.filename])
         monkeypatch.setattr(ipc, "_read_registration", lambda _fd, _name: frozen)
         reason = _exception_reason(
-            lambda: ipc.PrivateOperatorHealthIPCClient(root_path=root)._select_registration(root_fd, project)
+            lambda: ipc.PrivateOperatorHealthIPCClient(root_path=root)._select_registrations(root_fd, None)
         )
         ipc._close_owned_fd(root_fd)
         return _reason_result(reason)
@@ -1919,7 +1919,13 @@ def _matrix_server_process(project: str, root: str, count: int, pipe: Any) -> No
     server = ipc.PrivateOperatorHealthIPCServer(project, root_path=root, snapshot_supplier=lambda: _snapshot(count))
     pipe.send(server.start())
     try:
-        pipe.recv()
+        command = pipe.recv()
+        if command == "close_listener":
+            assert ipc._close_socket(server._listener)
+            server._listener = None
+            pipe.send("listener_closed")
+            command = pipe.recv()
+        assert command == "stop"
     finally:
         server.close()
         pipe.close()
@@ -1943,6 +1949,108 @@ def _stop_matrix_process(process: multiprocessing.Process, pipe: Any) -> None:
     process.join(timeout=3.0)
     assert process.exitcode == 0
     process.close()
+
+
+def _disable_matrix_listener(process: multiprocessing.Process, pipe: Any) -> None:
+    assert process.is_alive()
+    pipe.send("close_listener")
+    assert pipe.poll(3.0) and pipe.recv() == "listener_closed"
+
+
+def _drive_subprocess_aggregate(driver: _Driver, tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    counts = driver.take("quarantined_fd_counts")
+    fault = driver.optional("fault")
+    assert isinstance(counts, list) and len(counts) >= 2
+    assert all(isinstance(count, int) and not isinstance(count, bool) for count in counts)
+    root = _root(tmp_path)
+    project = str(tmp_path / "project")
+    os.mkdir(project)
+    processes = [_start_matrix_process(project, root, count) for count in counts]
+    try:
+        if fault == "one_listener_unavailable":
+            _disable_matrix_listener(*processes[-1])
+        projection = ipc.query_private_operator_health(project, root_path=root)
+        without_project = ipc.query_private_operator_health(root_path=root)
+    finally:
+        for process, pipe in processes:
+            _stop_matrix_process(process, pipe)
+    result = {
+        "no_project_reason": without_project.get("reason_code"),
+        "public_change": "none",
+        "status": projection["observation_status"],
+    }
+    if projection["observation_status"] == "observed":
+        result.update(
+            count=projection["quarantined_close_fd_count"],
+            quarantine_status=projection["quarantine_status"],
+        )
+    else:
+        result["reason"] = projection["reason_code"]
+    return result
+
+
+def test_same_project_aggregate_revalidates_every_registration_after_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    project = str(tmp_path / "project")
+    os.mkdir(project)
+    processes = [_start_matrix_process(project, root, count) for count in (1, 2)]
+    real_read = ipc._read_registration
+    read_count = 0
+
+    def change_second_post_query_read(root_fd: int, filename: str) -> ipc._FrozenRegistration:
+        nonlocal read_count
+        read_count += 1
+        frozen = real_read(root_fd, filename)
+        if read_count == 4:
+            return ipc._FrozenRegistration(
+                frozen.registration,
+                frozen.st_dev,
+                frozen.st_ino + 1,
+                frozen.canonical,
+            )
+        return frozen
+
+    monkeypatch.setattr(ipc, "_read_registration", change_second_post_query_read)
+    try:
+        projection = ipc.query_private_operator_health(project, root_path=root)
+    finally:
+        for process, pipe in processes:
+            _stop_matrix_process(process, pipe)
+    assert read_count == 4
+    assert projection["observation_status"] == "unavailable"
+    assert projection["reason_code"] == "OPERATOR_PRIVATE_IPC_REGISTRATION_CHANGED"
+    assert projection["quarantined_close_fd_count"] is None
+
+
+def test_same_project_aggregate_rechecks_all_pidfds_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    project = str(tmp_path / "project")
+    os.mkdir(project)
+    processes = [_start_matrix_process(project, root, count) for count in (1, 2)]
+    real_alive = ipc._pidfd_alive
+    calls = 0
+
+    def first_generation_exits_after_all_responses(pidfd: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return False if calls == 9 else real_alive(pidfd)
+
+    monkeypatch.setattr(ipc, "_pidfd_alive", first_generation_exits_after_all_responses)
+    try:
+        projection = ipc.query_private_operator_health(project, root_path=root)
+    finally:
+        for process, pipe in processes:
+            _stop_matrix_process(process, pipe)
+    assert calls == 9
+    assert projection["observation_status"] == "unavailable"
+    assert projection["reason_code"] == "OPERATOR_PRIVATE_PROCESS_NOT_RUNNING"
+    assert projection["quarantined_close_fd_count"] is None
 
 
 def _drive_subprocess_snapshot(driver: _Driver, tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -2227,6 +2335,7 @@ _MATRIX_ACTIONS: dict[
     "server_peercred": _drive_server_peercred,
     "source_import_scan": _drive_source_import_scan,
     "start_listener": _drive_start_listener,
+    "subprocess_aggregate": _drive_subprocess_aggregate,
     "subprocess_restart": _drive_subprocess_restart,
     "subprocess_snapshot": _drive_subprocess_snapshot,
     "timeout": _drive_timeout,
@@ -2238,7 +2347,7 @@ def test_negative_matrix_contract_is_exact_and_fully_routed() -> None:
     assert contract["test_node"] == "tests/test_private_operator_health_ipc.py::test_negative_matrix_case"
     assert contract["all_rows_must_execute"] is True
     case_ids = [case["case_id"] for case in _MATRIX_CASES]
-    assert len(case_ids) == len(set(case_ids)) == 154
+    assert len(case_ids) == len(set(case_ids)) == 156
     schemas = contract["action_schemas"]
     assert set(schemas) == set(_MATRIX_ACTIONS)
     for case in _MATRIX_CASES:

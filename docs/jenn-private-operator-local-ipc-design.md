@@ -1,16 +1,17 @@
 # Jenn Private Operator Local Health IPC
 
-Status: implemented locally; validation in progress; not delivered or deployed
+Status: same-project multi-instance aggregation implemented locally; validation in progress; not delivered or deployed
 
 ## Required outcome
 
 `colameta status` and `colameta operator-config status` must be able to read the
-quarantine attention state from the selected running ColaMeta service process.
+quarantine attention state from every validated running ColaMeta service process
+for the explicitly selected project.
 The channel is local, private, read-only, and diagnostic-only. It is not an
 authorization input and must never appear in MCP, HTTP health endpoints, Web
 Console responses, connector health, tickets, logs, or provider responses.
 
-The CLI now queries the selected service through the private IPC and never reads
+The CLI now queries the selected service set through the private IPC and never reads
 `private_operator_local_runtime_status()` in the CLI process. An IPC failure
 produces `unknown/unavailable`; there is no fallback to the CLI process's
 zero-value `clear` result.
@@ -51,9 +52,9 @@ Add `runner/private_operator_health_ipc.py` with four internal components:
 
 - `PrivateOperatorHealthIPCServer`: owns the abstract listener and samples
   `private_operator_local_runtime_status()` inside the service process;
-- `PrivateOperatorHealthIPCClient`: selects exactly one service process,
-  verifies its registration and peer identity, and returns a detached local
-  projection;
+- `PrivateOperatorHealthIPCClient`: freezes all live service processes for an
+  explicitly selected project, verifies every registration and peer identity,
+  and returns one detached aggregate local projection;
 - `PrivateOperatorIPCRegistration`: strict frozen registration schema;
 - `private_operator_ipc_unavailable(reason_code)`: fixed, local-only failure
   projection without paths or exception text.
@@ -86,20 +87,30 @@ For every matching registration, the client opens a pidfd and reads only
 `/proc/<pid>/stat` start ticks. Zero live generation-matching registrations is
 always `unavailable` with `OPERATOR_PRIVATE_REGISTRATION_NOT_FOUND`; the
 registry-only client cannot distinguish a stopped service from a running
-service whose IPC startup failed. More than one matching live generation means
-`OPERATOR_PRIVATE_SERVICE_AMBIGUOUS`. The client never scans arbitrary PIDs or
-guesses an endpoint.
+service whose IPC startup failed. When an exact project path is supplied,
+every live generation matching that project is selected. Without an exact
+project path, more than one live generation remains
+`OPERATOR_PRIVATE_SERVICE_AMBIGUOUS`. The client never scans arbitrary PIDs,
+picks the first registration, or guesses an endpoint.
 
 The stat parser locates the final `)` terminating the parenthesized `comm`
 field, then indexes the remaining fields; it never uses a naive whole-line
 space split. Missing, malformed, boolean-like, zero, or out-of-range start ticks
 are invalid.
 
-After selection, the client retains the pidfd and frozen process start ticks.
-It keeps the pidfd open until the response has been fully validated and uses
-zero-timeout polling before connect and after response; a readable pidfd means
-the process exited. A dead pidfd, PID reuse, changed start identity, or
-unreadable process identity fails closed.
+After selection, the client retains every pidfd and frozen process start tick.
+It keeps every pidfd open until all responses and all post-query registrations
+have been fully validated, and uses zero-timeout polling before connect and
+after each response; a readable pidfd means that process exited. A dead pidfd,
+PID reuse, changed start identity, unreadable process identity, connection
+failure, malformed response, or changed registration from any selected
+instance fails the whole observation closed. The client never reports a
+partial count.
+
+Only after every instance passes does the client sum the per-process quarantine
+counts. The aggregate is bounded by `65535 * 64`; its attention state and fixed
+local alert are recomputed from the sum. The aggregation is diagnostic-only and
+does not change authorization or any public surface.
 
 ## Private registration root
 
@@ -317,14 +328,14 @@ process's `private_operator_local_runtime_status()` are removed from their
 output paths.
 
 `colameta status <project_path>` filters registrations by that exact canonical
-project fingerprint. `colameta operator-config status` remains usable without a
-project argument: it queries only when exactly one live validated registration
-exists across all projects. Zero is unavailable/no-registration; more than one
-is ambiguous.
+project fingerprint and aggregates all validated instances for only that
+project. `colameta operator-config status` remains usable without a project
+argument only when exactly one live validated registration exists across all
+projects. Zero is unavailable/no-registration; more than one is ambiguous.
 It may additionally accept an explicit `--project-path <path>` to select by
-fingerprint. It must never pick the first registration, reuse a last-selected
-project implicitly, aggregate counts across processes, or cross-read another
-project.
+fingerprint and enable same-project aggregation. It must never pick the first
+registration, reuse a last-selected project implicitly, aggregate across
+different projects, or cross-read another project.
 
 ### Descriptor outcome semantics
 
