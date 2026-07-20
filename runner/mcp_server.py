@@ -294,6 +294,13 @@ _COMMANDER_PUBLIC_COMPACT_OMIT_KEYS = {
 _COMMANDER_PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
+_COMMANDER_PUBLIC_FILE_URI_RE = re.compile(
+    r"(?<![A-Za-z0-9])file:(?://(?:localhost)?/|/)[^\s,;\]\[(){}<>\"']+",
+    re.IGNORECASE,
+)
+_COMMANDER_PUBLIC_UNC_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9\\])\\\\[^\\\s,;\]\[(){}<>\"']+\\[^\s,;\]\[(){}<>\"']+"
+)
 _COMMANDER_PUBLIC_WINDOWS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
@@ -8494,6 +8501,8 @@ class MCPPlanningBridgeServer:
         redacted = value
         if self.project_root:
             redacted = redacted.replace(self.project_root, "<project>")
+        redacted = _COMMANDER_PUBLIC_FILE_URI_RE.sub("<local-path>", redacted)
+        redacted = _COMMANDER_PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
         redacted = _COMMANDER_PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
         return _COMMANDER_PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
 
@@ -8503,6 +8512,8 @@ class MCPPlanningBridgeServer:
             return bool(
                 value.startswith("/")
                 or re.match(r"^[A-Za-z]:\\", value)
+                or _COMMANDER_PUBLIC_FILE_URI_RE.search(value)
+                or _COMMANDER_PUBLIC_UNC_PATH_RE.search(value)
                 or _COMMANDER_PUBLIC_POSIX_PATH_RE.search(value)
                 or _COMMANDER_PUBLIC_WINDOWS_PATH_RE.search(value)
             )
@@ -8623,7 +8634,10 @@ class MCPPlanningBridgeServer:
             return tool_result
         if not isinstance(tool_result, dict):
             return tool_result
-        tool_name = str(tool_result.get("tool") or "")
+        public_tool_result = copy.deepcopy(tool_result)
+        if public_tool_result.get("ok") is False:
+            public_tool_result.pop("details", None)
+        tool_name = str(public_tool_result.get("tool") or "")
         if (
             tool_name == "run_mcp_workflow"
             and isinstance(params, dict)
@@ -8632,10 +8646,10 @@ class MCPPlanningBridgeServer:
             allowed_root_keys = {"ok", "tool", "error_code", "message"}
             projected = {
                 key: copy.deepcopy(value)
-                for key, value in tool_result.items()
+                for key, value in public_tool_result.items()
                 if key in allowed_root_keys
             }
-            data = tool_result.get("data")
+            data = public_tool_result.get("data")
             if isinstance(data, dict):
                 allowed_data_keys = {
                     "ok", "error_code", "message", "batch_preview_id",
@@ -8650,7 +8664,7 @@ class MCPPlanningBridgeServer:
             return projected
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
-            for key, value in tool_result.items():
+            for key, value in public_tool_result.items():
                 if self._commander_public_omit_key(str(key), value, compact=False):
                     continue
                 clean_value = self._commander_public_sanitize(value, compact=False)
@@ -8658,7 +8672,7 @@ class MCPPlanningBridgeServer:
                     sanitized_root[str(key)] = clean_value
             return sanitized_root
 
-        projected = copy.deepcopy(tool_result)
+        projected = public_tool_result
         data = projected.get("data")
         if isinstance(data, dict):
             if tool_name == "list_registered_projects":
@@ -9850,7 +9864,8 @@ class MCPPlanningBridgeServer:
         arguments: dict[str, Any],
         auth_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._call_tool(name, arguments, auth_context=auth_context)
+        tool_result = self._call_tool(name, arguments, auth_context=auth_context)
+        return self._commander_public_project_tool_result(tool_result, arguments)
 
     def get_required_scope_for_tool(self, name: str, arguments: dict[str, Any]) -> str:
         return self._required_scope_for_tool(name, arguments)

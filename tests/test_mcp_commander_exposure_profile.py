@@ -253,6 +253,68 @@ def test_commander_public_path_redaction_covers_all_absolute_local_roots(
     assert "runner/mcp_server.py" in public_message
 
 
+def test_commander_legacy_agent_error_omits_internal_details(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+
+    def fail_with_private_diagnostics(_: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError(
+            r"provider failed at file:///etc/colameta/private.json and "
+            r"\\operator-host\private-share\diagnostic.json"
+        )
+
+    server.tools["manage_git"] = fail_with_private_diagnostics
+
+    result = server.call_tool_for_agent("manage_git", {"action": "status"})
+
+    assert result == {
+        "ok": False,
+        "tool": "manage_git",
+        "error_code": "TOOL_EXEC_ERROR",
+        "message": "工具执行失败。",
+    }
+
+
+def test_normal_legacy_agent_error_keeps_existing_diagnostics(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    diagnostic = "normal-profile diagnostic"
+
+    def fail_with_diagnostics(_: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError(diagnostic)
+
+    server.tools["manage_git"] = fail_with_diagnostics
+
+    result = server.call_tool_for_agent("manage_git", {"action": "status"})
+
+    assert result["details"] == {"message": diagnostic}
+
+
+def test_commander_file_uri_and_unc_redaction_applies_to_all_three_envelopes(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    params = {"action": "status", "project_name": "colameta-self-dev"}
+    private_file_uri = "file:///etc/colameta/private.json"
+    private_unc = r"\\operator-host\private-share\diagnostic.json"
+    message = (
+        f"local evidence {private_file_uri} and {private_unc}; "
+        "docs https://example.com/operator/help"
+    )
+    data = {"ok": True, "message": message}
+    raw_result = {"ok": True, "tool": "manage_git", "data": data}
+    server.tools["manage_git"] = lambda _: data
+
+    legacy = server.call_tool_for_agent("manage_git", params)
+    mcp = server._as_mcp_call_result(raw_result, params)["structuredContent"]
+    actions = server._package_actions_rest_response("manage_git", params, raw_result)
+
+    for envelope in (legacy, mcp, actions):
+        public_message = envelope["data"]["message"]
+        assert public_message.count("<local-path>") == 2
+        assert private_file_uri not in public_message
+        assert private_unc not in public_message
+        assert "https://example.com/operator/help" in public_message
+
+
 def test_commander_projection_applies_to_mcp_and_actions_envelopes(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     result = {

@@ -3,7 +3,7 @@
 ## Contract
 
 The seven-tool `commander` exposure profile applies
-`commander_public_minimal.v1` to successful tool results before they are
+`commander_public_minimal.v1` to successful and failed tool results before they are
 returned through MCP `tools/call`, the legacy agent-call path, or the REST
 Actions adapter. The `normal`, `maintainer`, `legacy`, and loopback advanced
 profiles retain their existing full engineering responses.
@@ -34,9 +34,11 @@ are not required for the user-facing workflow, including:
   exposure profile.
 
 Local paths embedded in otherwise useful human-readable text are replaced with
-`<project>` or `<local-path>`. Removed diagnostics are dropped rather than moved
-into tool-result `_meta`, so the widget does not receive an unnecessary hidden
-copy.
+`<project>` or `<local-path>`, including POSIX paths, drive-letter paths, local
+`file:` URIs, and UNC paths. Failed Commander results omit internal `details`
+rather than exposing exception diagnostics. Removed diagnostics are dropped
+rather than moved into tool-result `_meta`, so the widget does not receive an
+unnecessary hidden copy.
 
 ## Preserved operational fields
 
@@ -56,8 +58,10 @@ The connector smoke replaces raw checkout heads with a boolean
 
 ## Validation boundary
 
-Unit coverage exercises all seven tools, the MCP result envelope, the REST
-Actions envelope, hidden-tool filtering, local-path redaction, operational
-continuation fields, and normal-profile compatibility. A stable/public runtime
-must still be replaced at an explicitly authorized exact commit before live
-connector and Dashboard re-review can treat this contract as deployed.
+Unit coverage exercises all seven tools, the MCP result envelope, the legacy
+agent-call envelope, the REST Actions envelope, hidden-tool filtering,
+POSIX/drive-letter/`file:`/UNC local-path redaction, failed-result diagnostic
+filtering, operational continuation fields, and normal-profile compatibility.
+A stable/public runtime must still be replaced at an explicitly authorized
+exact commit before live connector and Dashboard re-review can treat this
+contract as deployed.
