@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from runner import mcp_server as mcp_server_module
 from runner import mcp_private_operator as private_operator_module
 from runner.mcp_private_operator import (
     OPERATOR_PROFILE_JENN,
@@ -1969,6 +1970,95 @@ def test_ticket_manifest_tamper_is_rejected_and_cannot_downgrade_scopes(tmp_path
     }) == ("mcp:commit", "mcp:plan")
     result = _matrix_execute(service, preview)
     assert result["error_code"] == "OPERATOR_TICKET_INVALID"
+
+
+def test_execute_scope_gate_binds_requested_digest_before_handler_ticket_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatch_calls: list[str] = []
+    settings, permits, service = _matrix_service(
+        tmp_path / "operator",
+        dispatch=lambda _capability, tool, _params: (
+            dispatch_calls.append(tool) or {"ok": True}
+        ),
+    )
+    plan_preview = _matrix_preview(service, [{
+        "step_id": "plan",
+        "tool": "run_mcp_workflow",
+        "params": {
+            "workflow": "plan_update",
+            "phase": "apply",
+            "patch_id": "preview_scope_plan_01",
+        },
+    }])
+    commit_preview = _matrix_preview(
+        service,
+        [_commit_operation("commit", "preview_scope_commit_01")],
+    )
+    plan_ticket = permits.read(plan_preview["batch_preview_id"])
+    commit_ticket = permits.read(commit_preview["batch_preview_id"])
+    assert isinstance(plan_ticket, dict)
+    assert isinstance(commit_ticket, dict)
+    replacement_ticket = json.loads(json.dumps(commit_ticket))
+    replacement_ticket["batch_preview_id"] = plan_preview["batch_preview_id"]
+    replacement_path = Path(permits._ticket_path(plan_preview["batch_preview_id"]))
+    swap_attempted = False
+
+    def validate_scope(_token: dict, scope: str) -> bool:
+        nonlocal swap_attempted
+        if not swap_attempted:
+            swap_attempted = True
+            replacement_path.write_text(
+                private_operator_module._canonical_json(replacement_ticket),
+                encoding="utf-8",
+            )
+            replacement_path.chmod(0o600)
+        return scope == "mcp:plan"
+
+    provider = SimpleNamespace(
+        issuer="https://issuer.example/",
+        audience="https://mcp.example/mcp",
+        resource="https://mcp.example/mcp",
+        scopes=("mcp:read", "mcp:preview", "mcp:plan", "mcp:commit"),
+        validate_scope=validate_scope,
+        protected_resource_metadata_url=lambda: (
+            "https://mcp.example/.well-known/oauth-protected-resource"
+        ),
+    )
+    auth = _auth()
+    auth["oauth_provider"] = provider
+    auth["token"]["scope"] = "mcp:plan"
+    server = MCPPlanningBridgeServer(str(tmp_path / "project"), exposure_profile="commander")
+    monkeypatch.setattr(
+        mcp_server_module,
+        "OperatorSettingsStore",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        server,
+        "_operator_target_server",
+        lambda _params: server,
+    )
+    monkeypatch.setattr(server, "_operator_batch_service", lambda: service)
+    params = {
+        "workflow": "operator_batch",
+        "phase": "execute",
+        "project_name": "project",
+        "batch_preview_id": plan_preview["batch_preview_id"],
+        "manifest_digest": commit_preview["manifest_digest"],
+    }
+
+    result = server._call_tool("run_mcp_workflow", params, auth_context=auth)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "INSUFFICIENT_SCOPE"
+    assert result["details"]["required_scopes"] == ["mcp:commit", "mcp:plan"]
+    assert result["details"]["missing_scopes"] == ["mcp:commit"]
+    assert swap_attempted is True
+    assert dispatch_calls == []
+    assert permits.read(plan_preview["batch_preview_id"])["state"] == "pending"
+    assert settings.status()["enabled"] is True
 
 
 def test_ticket_operation_change_fails_canonical_manifest_recalculation(tmp_path: Path) -> None:

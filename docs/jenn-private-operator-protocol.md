@@ -155,7 +155,11 @@ uses a space-separated OAuth `scope` value, for example
 Scope discovery resolves the registered target project before validating the
 manifest. If target resolution, ticket validation, or preview validation fails,
 the scope gate fails closed to `mcp:plan` plus `mcp:commit`; it never downgrades
-the request to `mcp:preview`.
+the request to `mcp:preview`. Execute scope discovery uses manifest scopes only
+when the request's `manifest_digest` exactly matches the validated ticket. A
+missing, malformed, mismatched, or concurrently replaced ticket therefore
+requires both mutation scopes and cannot pass authorization using scopes from a
+different manifest.
 
 ## Jenn principal policy
 

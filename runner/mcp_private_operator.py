@@ -1433,10 +1433,16 @@ class OperatorBatchService:
                 return tuple(normalized["required_scopes"])
             return ("mcp:commit", "mcp:plan")
         if phase == "execute":
+            requested_digest = params.get("manifest_digest")
             ticket = self.permit_store.read(str(params.get("batch_preview_id") or ""))
             if isinstance(ticket, dict):
                 validated = validate_operator_ticket(ticket)
-                if validated.get("ok"):
+                if (
+                    validated.get("ok")
+                    and isinstance(requested_digest, str)
+                    and _DIGEST_RE.fullmatch(requested_digest)
+                    and requested_digest == validated.get("manifest_digest")
+                ):
                     return tuple(validated["required_scopes"])
             return ("mcp:commit", "mcp:plan")
         return ()

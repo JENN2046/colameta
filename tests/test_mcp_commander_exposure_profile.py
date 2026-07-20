@@ -220,6 +220,39 @@ def test_commander_public_operational_tools_keep_required_continuation_fields(tm
         assert "/home/example" not in data["message"]
 
 
+def test_commander_public_path_redaction_covers_all_absolute_local_roots(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    message = (
+        "failed at /etc/colameta/config.json, /root/private.txt, "
+        "/run/colameta/service.sock, /proc/123/status, and D:\\private\\operator.json; "
+        "docs https://example.com/etc/config and relative runner/mcp_server.py"
+    )
+
+    projected = server._commander_public_project_tool_result(
+        {
+            "ok": False,
+            "tool": "manage_git",
+            "data": {"ok": False, "message": message},
+        },
+        {"project_name": "colameta-self-dev"},
+    )
+
+    public_message = projected["data"]["message"]
+    assert public_message.count("<local-path>") == 5
+    for private_path in (
+        "/etc/colameta/config.json",
+        "/root/private.txt",
+        "/run/colameta/service.sock",
+        "/proc/123/status",
+        "D:\\private\\operator.json",
+    ):
+        assert private_path not in public_message
+    assert "https://example.com/etc/config" in public_message
+    assert "runner/mcp_server.py" in public_message
+
+
 def test_commander_projection_applies_to_mcp_and_actions_envelopes(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     result = {

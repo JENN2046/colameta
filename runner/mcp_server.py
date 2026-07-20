@@ -292,10 +292,10 @@ _COMMANDER_PUBLIC_COMPACT_OMIT_KEYS = {
     "unreconciled_direct_versions",
 }
 _COMMANDER_PUBLIC_POSIX_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9:/])/(?:home|Users|tmp|var|opt|srv|mnt|workspace|private)/[^\s,;\]\[(){}<>\"']+"
+    r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
 _COMMANDER_PUBLIC_WINDOWS_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\(?:Users|Temp|ProgramData|workspace)\\)[^\s,;\]\[(){}<>\"']+",
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
 )
 
