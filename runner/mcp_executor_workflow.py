@@ -942,6 +942,12 @@ class MCPExecutorWorkflowManager:
         except BaseException as exc:
             try:
                 try:
+                    self._delete_preview_artifact(preview_id)
+                except BaseException:
+                    logging.exception(
+                        "failed to delete preview after background worker start failure"
+                    )
+                try:
                     self._finalize_preview_claim(
                         preview_id=preview_id,
                         run_id=run_id,

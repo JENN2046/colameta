@@ -415,6 +415,20 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
         assert decision["classification"] == "completed_idle_stale_session"
         assert decision["recommended_action"] == "start_new"
         assert decision["head_mismatch_classification"]["status"] == "completed_idle_stale_session"
+        assert decision["project_root"] == tmp
+        assert decision["manifest_file"].endswith("executor-session.json")
+        for compatibility_field in (
+            "identity_kind",
+            "conversation_identity_present",
+            "resume_identity_present",
+            "optimization_goal",
+            "cache_hit_preference",
+            "context_facts",
+            "preview",
+        ):
+            assert compatibility_field in decision
+        assert isinstance(decision["context_facts"], dict)
+        assert isinstance(decision["preview"], dict)
 
     def test_invocation_preview_cannot_downgrade_human_review_to_start_new(self) -> None:
         with tempfile.TemporaryDirectory(prefix="colameta-canonical-invocation-") as tmp:

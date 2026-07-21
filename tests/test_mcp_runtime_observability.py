@@ -4413,6 +4413,68 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert calls == [(str(project), "codex")]
         assert data["executor"]["continuation_snapshot"]["snapshot_id"] == snapshot.snapshot_id
 
+    def test_executor_continuation_decision_retains_additive_diagnostics(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        preview = {
+            "ok": True,
+            "selected_provider": "codex",
+            "identity_kind": "conversation_id",
+            "identity_present": True,
+            "conversation_identity_present": True,
+            "optimization_goal": "maximize_cache_hit",
+            "cache_hit_preference": "prefer_resume_for_cache_hit",
+            "context_facts": {"head_mismatch": False},
+        }
+        snapshot = snapshot_from_fact_bundle(
+            str(project),
+            {
+                "executor_session_status": {
+                    "ok": True,
+                    "active": True,
+                    "record": {
+                        "active": True,
+                        "provider": "codex",
+                        "current_head": "a" * 40,
+                        "conversation_id": "private-conversation-value",
+                    },
+                    "current_head": "a" * 40,
+                    "matches_current_head": True,
+                },
+                "continuation_preview": preview,
+                "requested_provider": "codex",
+                "selected_provider": "codex",
+                "identity_present": True,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": False,
+                "job_status": "idle",
+                "latest_run_status": "completed",
+                "runner_status": "VERSION_PASSED",
+                "current_version_status": "PASSED",
+                "worktree_clean": True,
+            },
+        )
+        server._continuation_snapshot_supplier = (
+            lambda project_root, provider: snapshot
+        )
+
+        data = server._tool_get_executor_continuation_decision(
+            {"provider": "codex"}
+        )
+
+        assert data["classification"] == "resume_eligible"
+        assert data["project_root"] == str(project)
+        assert data["manifest_file"].endswith("executor-session.json")
+        assert data["identity_kind"] == "conversation_id"
+        assert data["conversation_identity_present"] is True
+        assert data["resume_identity_present"] is True
+        assert data["optimization_goal"] == "maximize_cache_hit"
+        assert data["cache_hit_preference"] == "prefer_resume_for_cache_hit"
+        assert data["context_facts"] == {"head_mismatch": False}
+        assert data["preview"] == preview
+        assert data["continuation_snapshot"]["snapshot_id"] == snapshot.snapshot_id
+
     def test_commander_app_manifest_embedded_flow_does_not_refresh_manifest_recursively(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)

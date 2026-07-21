@@ -340,6 +340,55 @@ def test_background_worker_heartbeat_start_failure_releases_lease_and_finalizes_
     assert finalized and finalized[0]["final_status"] == "FAILED"
 
 
+def test_outer_background_worker_start_failure_deletes_preview_and_releases_lease(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "outer-worker"
+    project.mkdir()
+    lease = ProjectOperationLease(project).acquire()
+    assert lease.held
+    manager = MCPExecutorWorkflowManager.__new__(MCPExecutorWorkflowManager)
+    manager._service = SimpleNamespace(run_once=lambda **kwargs: {"ok": True})
+    manager._mark_claim_worker_started = lambda **kwargs: None
+    deleted: list[str] = []
+    finalized: list[dict[str, Any]] = []
+    manager._delete_preview_artifact = lambda preview_id: deleted.append(preview_id)
+    manager._finalize_preview_claim = lambda **kwargs: finalized.append(kwargs)
+
+    class FailingOuterThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("outer worker start failed")
+
+    with (
+        patch("runner.mcp_executor_workflow.threading.Thread", FailingOuterThread),
+        pytest.raises(RuntimeError, match="outer worker start failed"),
+    ):
+        manager._start_run_once_background_worker(
+            provider="codex",
+            execution_mode="run",
+            include_diff_summary=False,
+            include_report_markdown=False,
+            max_report_chars=100,
+            reason="test",
+            run_id="run",
+            preview_id="preview",
+            operation_lease=lease,
+        )
+
+    assert deleted == ["preview"]
+    assert finalized and finalized[0]["final_status"] == "FAILED"
+    assert finalized[0]["error_code"] == "BACKGROUND_WORKER_START_FAILED"
+    assert lease.held is False
+    recovered = ProjectOperationLease(project).acquire()
+    try:
+        assert recovered.held
+    finally:
+        recovered.release()
+
+
 def test_cross_process_busy_blocks_mcp_claim_worker_and_executor_service(
     tmp_path: Path,
     spawn_context: Any,

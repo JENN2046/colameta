@@ -405,6 +405,42 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
     }
 
 
+def add_continuation_compatibility_fields(
+    decision: dict[str, Any],
+    *,
+    project_root: str,
+    manifest_file: str,
+    preview: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the legacy diagnostic fields without changing canonical authority."""
+
+    compatible = dict(decision)
+    compatible.update(
+        {
+            "project_root": project_root,
+            "manifest_file": manifest_file,
+            "identity_kind": _clean_status(preview.get("identity_kind")),
+            "conversation_identity_present": bool(
+                preview.get("conversation_identity_present") is True
+            ),
+            "resume_identity_present": bool(
+                compatible.get("identity_present") is True
+            ),
+            "optimization_goal": preview.get(
+                "optimization_goal",
+                "maximize_cache_hit",
+            ),
+            "cache_hit_preference": preview.get(
+                "cache_hit_preference",
+                "start_new_avoids_cache_stale",
+            ),
+            "context_facts": preview.get("context_facts", {}),
+            "preview": preview,
+        }
+    )
+    return compatible
+
+
 def _legacy_continuation_decision(classification: str, recommended_action: str, reason: str) -> str:
     if recommended_action == "resume":
         return "resume_auto_eligible"
@@ -913,19 +949,12 @@ class ExecutorSessionStore:
         canonical_facts["requested_provider"] = normalized_requested
         canonical_facts.setdefault("selected_provider", selected_provider)
         decision = build_canonical_continuation_decision(canonical_facts)
-        decision.update(
-            {
-                "project_root": self.project_root,
-                "manifest_file": self.manifest_file,
-                "identity_kind": self._normalize_optional_str(preview.get("identity_kind")),
-                "conversation_identity_present": bool(preview.get("conversation_identity_present") is True),
-                "resume_identity_present": bool(decision.get("identity_present") is True),
-                "optimization_goal": preview.get("optimization_goal", "maximize_cache_hit"),
-                "cache_hit_preference": preview.get("cache_hit_preference", "start_new_avoids_cache_stale"),
-                "context_facts": preview.get("context_facts", {}),
-            }
+        return add_continuation_compatibility_fields(
+            decision,
+            project_root=self.project_root,
+            manifest_file=self.manifest_file,
+            preview=preview,
         )
-        return decision
 
     def get_resume_invocation_preview(
         self,

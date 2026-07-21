@@ -7,7 +7,7 @@ commander_convergence_taskbook_chinese_companion:
   status: companion_review_ready
   authority_status: planning_reference_only
   source_document: docs/taskbooks/COMMANDER_CONVERGENCE_TASKBOOK.md
-  source_sha256: 1b84312561d690181be81e0e5d959cd72f0a129a950ecf3b1d3fa0379d3b161b
+  source_sha256: 6013315fd9857b29bccb8d3c53dea5681ec9f0497476d7a9db7884ee8e228b97
   source_hash_status: bound_to_current_source_draft
   generated_at: 2026-07-21
   workspace: /home/jenn/src/colameta-dev
@@ -632,14 +632,14 @@ cc_s01_a2_local_closeout:
     safety: pass
     usability_and_test_evidence: pass
   remaining_p0_p1_p2_findings: 0
-  targeted_regression: 244_passed_84_subtests
-  full_pytest: 1915_passed_2_skipped_139_subtests
+  targeted_regression: 246_passed_84_subtests
+  full_pytest: 1917_passed_2_skipped_139_subtests
   self_hosting_smoke: passed
   compileall: passed
   ruff_check: passed
   diff_check: passed
   final_project_and_venv_bytecode_count: 0
-  commit_authorized: false
-  push_authorized: false
+  commit_authorized: true
+  push_authorized: true
   stable_replacement_authorized: false
 ```

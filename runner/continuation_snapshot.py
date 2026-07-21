@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from runner.executor_session import ExecutorSessionStore, build_canonical_continuation_decision
+from runner.executor_session import (
+    ExecutorSessionStore,
+    add_continuation_compatibility_fields,
+    build_canonical_continuation_decision,
+)
 from runner.planning_bridge import PlanningBridge
 from runner.project_operation_lease import ProjectOperationLease
 from runner.source_review_bridge import SourceReviewBridge
@@ -133,9 +137,15 @@ class ContinuationSnapshot:
                 )
             else:
                 facts[capability] = provider_policy_allows_resume
-        decision = build_canonical_continuation_decision(facts)
+        store = ExecutorSessionStore(self.project_root)
+        decision = add_continuation_compatibility_fields(
+            build_canonical_continuation_decision(facts),
+            project_root=self.project_root,
+            manifest_file=store.manifest_file,
+            preview=self.continuation_preview,
+        )
         try:
-            invocation = ExecutorSessionStore(self.project_root).get_resume_invocation_preview(
+            invocation = store.get_resume_invocation_preview(
                 requested_provider=effective_provider,
                 fact_bundle=facts,
                 continuation_decision=decision,
