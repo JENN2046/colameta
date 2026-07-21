@@ -258,11 +258,40 @@ class CodexExecutor:
             model=getattr(self, "model", None),
             reasoning_effort=getattr(self, "reasoning_effort", None),
         )
+        candidate = self._get_codex_auto_resume_candidate(plan.project_root)
+        decision = candidate.get("decision")
+        decision = decision if isinstance(decision, dict) else {}
+        if executor_session_mode not in {"auto", "resume_existing", "start_new"}:
+            raise CodexCliError(f"Unsupported executor_session_mode={executor_session_mode}")
         conversation_id = None
         if executor_session_mode != "start_new":
-            candidate = self._get_codex_auto_resume_candidate(plan.project_root)
             conversation_id = candidate.get("conversation_id") if candidate.get("enabled") else None
+        if conversation_id and (
+            decision.get("recommended_action") != "resume"
+            or decision.get("resume_allowed") is not True
+        ):
+            raise CodexCliError(
+                "Canonical continuation decision forbids resuming the existing Codex session. "
+                f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+            )
+        if executor_session_mode == "resume_existing" and (
+            decision.get("recommended_action") != "resume"
+            or decision.get("resume_allowed") is not True
+            or not conversation_id
+        ):
+            raise CodexCliError(
+                "Canonical continuation decision forbids resuming the existing Codex session. "
+                f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+            )
         if not conversation_id:
+            if (
+                decision.get("recommended_action") != "start_new"
+                or decision.get("start_new_allowed") is not True
+            ):
+                raise CodexCliError(
+                    "Canonical continuation decision forbids starting a new Codex session. "
+                    f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+                )
             return adapter.execute_prompt(
                 project_root=plan.project_root,
                 logs_dir=plan.logs_dir,
@@ -296,6 +325,15 @@ class CodexExecutor:
             raise
         except CodexCliError as resume_error:
             resume_failed_reason = self._sanitize_codex_error(resume_error)
+            if (
+                decision.get("recommended_action") != "start_new"
+                or decision.get("start_new_allowed") is not True
+            ):
+                raise CodexCliError(
+                    "Codex resume failed and canonical continuation decision forbids fallback to a new session. "
+                    f"resume_failed_reason={resume_failed_reason}",
+                    log_path=getattr(resume_error, "log_path", None),
+                ) from resume_error
             if progress:
                 progress("codex_resume_fallback_started", None)
             try:
@@ -339,10 +377,13 @@ class CodexExecutor:
             return fallback_run
 
     def _get_codex_auto_resume_candidate(self, project_root: str) -> dict[str, Any]:
-        store = ExecutorSessionStore(project_root)
-        status = store.get_status()
-        decision = store.get_continuation_decision(requested_provider="codex")
-        invocation = store.get_resume_invocation_preview(requested_provider="codex")
+        from runner.continuation_snapshot import get_or_collect_continuation_snapshot
+
+        snapshot = get_or_collect_continuation_snapshot(project_root, "codex")
+        projection = snapshot.project("codex")
+        status = snapshot.session_status
+        decision = projection["canonical_continuation_decision"]
+        invocation = projection["resume_invocation_preview"]
         record = status.get("record") if isinstance(status, dict) else None
         if not isinstance(record, dict):
             record = {}
@@ -373,6 +414,7 @@ class CodexExecutor:
             "decision": decision,
             "invocation": invocation,
             "status": status,
+            "continuation_snapshot_id": snapshot.snapshot_id,
         }
 
     def _sanitize_codex_error(self, error: CodexCliError) -> str:

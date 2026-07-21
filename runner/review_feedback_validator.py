@@ -56,7 +56,19 @@ class ReviewFeedbackValidatorError(ValueError):
 
 def validate_review_feedback_for_preview(review_feedback_candidate: dict[str, Any], validation_context: dict[str, Any]) -> dict[str, Any]:
     context_errors = _validate_context(validation_context)
-    schema_result = validate_review_feedback_schema(review_feedback_candidate)
+    schema_result = validate_review_feedback_schema(
+        review_feedback_candidate,
+        expected_master_taskbook_hash=(
+            validation_context.get("expected_master_taskbook_hash")
+            if isinstance(validation_context, dict)
+            else None
+        ),
+        expected_stage_taskbook_hash=(
+            validation_context.get("expected_stage_taskbook_hash")
+            if isinstance(validation_context, dict)
+            else None
+        ),
+    )
     binding_check = _binding_check(review_feedback_candidate if isinstance(review_feedback_candidate, dict) else {}, validation_context)
     pass_alias_policy_check = _pass_alias_policy_check(review_feedback_candidate if isinstance(review_feedback_candidate, dict) else {})
     forbidden_claim_check = {

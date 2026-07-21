@@ -10,6 +10,7 @@ from runner.local_execution_receipt import (
     assert_local_execution_receipt_result_contract,
     validate_local_execution_receipt,
 )
+from runner.validation_truth import evidence_record_sha256
 
 
 class LocalExecutionReceiptTests(unittest.TestCase):
@@ -41,6 +42,35 @@ class LocalExecutionReceiptTests(unittest.TestCase):
             "remaining_risks": [{"risk_id": "review_required", "risk": "Reviewer has not accepted delivery."}],
         }
 
+    def attach_provenance(
+        self,
+        receipt: dict,
+        *,
+        subject_path: str = "$",
+        claimed_subject: str = "execution",
+        claimed_completed: bool = True,
+    ) -> None:
+        receipt["evidence_provenance"] = {
+            "schema_version": "evidence_provenance.v1",
+            "entries": [
+                {
+                    "subject_path": subject_path,
+                    "evidence_kind": "observed",
+                    "binding": {
+                        "record_id": receipt["receipt_id"],
+                        "record_schema_version": receipt["receipt_schema_version"],
+                        "subject_path": subject_path,
+                        "content_sha256": evidence_record_sha256(receipt),
+                    },
+                    "claimed_evidence_subject": claimed_subject,
+                    "claimed_subject_requires_execution": True,
+                    "claimed_subject_operation_completed": claimed_completed,
+                    "claimed_execution_performed": True,
+                    "claimed_eligible_for_acceptance": True,
+                }
+            ],
+        }
+
     def test_executed_receipt_passes_without_self_acceptance(self) -> None:
         result = validate_local_execution_receipt(self.valid_receipt())
 
@@ -50,6 +80,50 @@ class LocalExecutionReceiptTests(unittest.TestCase):
         assert result["truth_distinction"]["receipt_self_accepts_delivery"] is False
         assert result["review_accepted"] is False
         assert result["delivery_state_accepted"] is False
+        assert result["evidence_provenance"]["provenance_status"] == "legacy_unclassified"
+        assert result["evidence_provenance"]["eligible_for_acceptance"] is False
+
+    def test_observed_execution_provenance_is_validator_eligible(self) -> None:
+        receipt = self.valid_receipt()
+        self.attach_provenance(receipt)
+
+        result = validate_local_execution_receipt(receipt)
+
+        assert result["receipt_check_result"] == RECEIPT_CHECK_PASSED
+        provenance = result["evidence_provenance"]
+        assert provenance["provenance_status"] == "verified"
+        assert provenance["eligible_for_acceptance"] is True
+        assert provenance["entries"][0]["execution_performed"] is True
+        assert provenance["authority_boundary"]["eligible_means_accepted"] is False
+
+    def test_provenance_subject_downgrade_fails_closed(self) -> None:
+        receipt = self.valid_receipt()
+        self.attach_provenance(receipt, claimed_subject="read_only_observation")
+
+        result = validate_local_execution_receipt(receipt)
+
+        assert result["receipt_check_result"] == RECEIPT_CHECK_FAILED_CLOSED
+        assert "EVIDENCE_PROVENANCE_SUBJECT_DOWNGRADE" in {
+            item["code"] for item in result["rejection_reasons"]
+        }
+        assert result["evidence_provenance"]["eligible_for_acceptance"] is False
+        assert result["evidence_provenance"]["entries"][0]["eligible_for_acceptance"] is False
+
+    def test_provenance_path_and_completion_mismatch_fail_closed(self) -> None:
+        path_receipt = self.valid_receipt()
+        self.attach_provenance(path_receipt, subject_path="$.validation_results")
+        path_result = validate_local_execution_receipt(path_receipt)
+
+        completion_receipt = self.valid_receipt()
+        self.attach_provenance(completion_receipt, claimed_completed=False)
+        completion_result = validate_local_execution_receipt(completion_receipt)
+
+        assert "EVIDENCE_PROVENANCE_PATH_MISMATCH" in {
+            item["code"] for item in path_result["rejection_reasons"]
+        }
+        assert "EVIDENCE_PROVENANCE_COMPLETION_MISMATCH" in {
+            item["code"] for item in completion_result["rejection_reasons"]
+        }
 
     def test_blocked_before_execution_receipt_can_be_truthful(self) -> None:
         receipt = self.valid_receipt("blocked_before_execution", "not_run")

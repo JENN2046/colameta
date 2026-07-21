@@ -25,6 +25,7 @@ from runner.source_review_bridge import SourceReviewBridge, SourceReviewError
 from runner.executor_inventory import load_executor_inventory
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_session import ExecutorSessionStore
+from runner.continuation_snapshot import collect_continuation_snapshot
 from runner.executor_status import polling_guidance_for_profile
 from runner.project_identity import build_project_identity
 from runner.project_registry import ProjectRegistry
@@ -8641,6 +8642,17 @@ class MCPPlanningBridgeServer:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
+                handled, contract_value = (
+                    CommanderProjectionService.project_cc_s01_contract_value(
+                        clean_key,
+                        nested,
+                    )
+                )
+                if handled:
+                    sanitized[clean_key] = self._commander_public_contract_sanitize(
+                        contract_value
+                    )
+                    continue
                 if self._commander_public_omit_key(clean_key, nested, compact=compact):
                     continue
                 clean_value = self._commander_public_sanitize(nested, compact=compact)
@@ -8654,6 +8666,20 @@ class MCPPlanningBridgeServer:
                 if clean_item is not None:
                     sanitized_items.append(clean_item)
             return sanitized_items
+        if isinstance(value, str):
+            return self._commander_public_string(value)
+        return copy.deepcopy(value)
+
+    def _commander_public_contract_sanitize(self, value: Any) -> Any:
+        """Redact strings inside an already allowlisted CC-S01 contract tree."""
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._commander_public_contract_sanitize(nested)
+                for key, nested in value.items()
+            }
+        if isinstance(value, list):
+            return [self._commander_public_contract_sanitize(item) for item in value]
         if isinstance(value, str):
             return self._commander_public_string(value)
         return copy.deepcopy(value)
@@ -8996,6 +9022,11 @@ class MCPPlanningBridgeServer:
                         "source_observer",
                     ],
                     "description": "可选。指定 Commander 内嵌 agent flow 所属 persona；默认 web_gpt_commander。",
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["pi", "codex", "opencode"],
+                    "description": "可选。绑定 Commander continuation snapshot 的执行器；默认 codex。",
                 },
                 "tunnel_client": self._sanitized_connector_evidence_schema(
                     "可选。调用方提供的 sanitized tunnel-client 状态，只采信 status/reason_code/evidence_source/last_observed_at。"
@@ -12071,8 +12102,31 @@ class MCPPlanningBridgeServer:
         runtime_status = self._runtime_version_status_for_project(project_root, local_service=local_service)
         return self._stable_replacement_hint(project_root, runtime_status)
 
+    def _collect_continuation_snapshot_for_project(
+        self,
+        project_root: str,
+        provider: str | None,
+    ):
+        supplier = getattr(self, "_continuation_snapshot_supplier", None)
+        if callable(supplier):
+            return supplier(project_root, provider)
+        return collect_continuation_snapshot(
+            project_root,
+            requested_provider=provider,
+            planning_bridge=self.bridge,
+            source_review=self.source_review,
+        )
+
     def _commander_app_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
         project_root, project_record = self._resolve_read_only_project_context(params)
+        continuation_provider = str(params.get("provider") or "codex").strip().lower()
+        if continuation_provider not in {"pi", "codex", "opencode"}:
+            continuation_provider = "codex"
+        continuation_snapshot = self._collect_continuation_snapshot_for_project(
+            project_root,
+            continuation_provider,
+        )
+        continuation_projection = continuation_snapshot.project(continuation_provider)
         tunnel_client = self._connector_external_evidence_param(params, "tunnel_client")
         control_plane = self._connector_external_evidence_param(params, "control_plane")
         local_service = self._connector_runtime_local_service_evidence(project_root)
@@ -12142,6 +12196,9 @@ class MCPPlanningBridgeServer:
                 "safe_next_action": copy.deepcopy(release_submission_evidence.get("safe_next_action")),
             },
         ).project()["sections"]
+        canonical_continuation_decision = continuation_projection[
+            "canonical_continuation_decision"
+        ]
         app_status = str(connector_summary.get("overall_status") or "unknown")
         readiness_status = str(readiness.get("status") or app_status)
         runtime_label = "runtime_current" if runtime_status.get("reload_needed_for_verification") is False else "runtime_needs_verification"
@@ -12210,6 +12267,10 @@ class MCPPlanningBridgeServer:
             "apps_connector_closeout": apps_connector_closeout,
             "runtime": runtime_summary,
             "connector": connector_summary,
+            "canonical_continuation_decision": canonical_continuation_decision,
+            "continuation_snapshot": continuation_snapshot.public_view(
+                continuation_provider
+            ),
             "domain_projections": domain_projections,
             "registered_projects": self._web_gpt_registered_project_summary(),
             "profiles": profiles,
@@ -12856,30 +12917,48 @@ class MCPPlanningBridgeServer:
         return self._with_project_identity(self.bridge.get_runner_status(project_root), project_root)
 
     def _tool_get_executor_session_status(self, _: dict[str, Any]) -> dict[str, Any]:
-        return self._with_project_identity(ExecutorSessionStore(self.project_root).get_status())
+        snapshot = self._collect_continuation_snapshot_for_project(
+            self.project_root,
+            "codex",
+        )
+        result = dict(snapshot.session_status)
+        result["continuation_snapshot"] = snapshot.public_view("codex")
+        return self._with_project_identity(result)
 
     def _tool_get_executor_continuation_preview(self, _: dict[str, Any]) -> dict[str, Any]:
-        return self._with_project_identity(ExecutorSessionStore(self.project_root).get_continuation_preview())
+        snapshot = self._collect_continuation_snapshot_for_project(
+            self.project_root,
+            "codex",
+        )
+        result = dict(snapshot.continuation_preview)
+        result["continuation_snapshot"] = snapshot.public_view("codex")
+        return self._with_project_identity(result)
 
     def _tool_get_executor_continuation_decision(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = params.get("provider")
         if not isinstance(provider, str) or provider.strip().lower() not in {"pi", "codex", "opencode"}:
             raise MCPToolInputError("INVALID_PROVIDER", "provider 必须是 pi、codex 或 opencode。")
-        return self._with_project_identity(
-            ExecutorSessionStore(self.project_root).get_continuation_decision(
-                requested_provider=provider.strip().lower()
-            )
+        normalized_provider = provider.strip().lower()
+        snapshot = self._collect_continuation_snapshot_for_project(
+            self.project_root,
+            normalized_provider,
         )
+        result = dict(snapshot.project(normalized_provider)["canonical_continuation_decision"])
+        result["continuation_snapshot"] = snapshot.public_view(normalized_provider)
+        return self._with_project_identity(result)
 
     def _tool_get_executor_resume_invocation_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = params.get("provider")
         if not isinstance(provider, str) or provider.strip().lower() not in {"pi", "codex", "opencode"}:
             raise MCPToolInputError("INVALID_PROVIDER", "provider 必须是 pi、codex 或 opencode。")
-        return self._with_project_identity(
-            ExecutorSessionStore(self.project_root).get_resume_invocation_preview(
-                requested_provider=provider.strip().lower()
-            )
+        normalized_provider = provider.strip().lower()
+        snapshot = self._collect_continuation_snapshot_for_project(
+            self.project_root,
+            normalized_provider,
         )
+        result = dict(snapshot.project(normalized_provider)["resume_invocation_preview"])
+        result["continuation_snapshot"] = snapshot.public_view(normalized_provider)
+        return self._with_project_identity(result)
 
     def _tool_get_review_context(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
@@ -13169,10 +13248,15 @@ class MCPPlanningBridgeServer:
                 raise MCPToolInputError("INVALID_PROVIDER", "provider 必须是 pi、codex 或 opencode。")
             provider = provider_raw.strip().lower()
 
+        continuation_snapshot = self._collect_continuation_snapshot_for_project(
+            project_root,
+            provider,
+        )
         orchestrator = WorkflowOrchestrator(
             project_root=project_root,
             source_review=self.source_review,
             planning_bridge=self.bridge,
+            continuation_snapshot=continuation_snapshot,
         )
         fact_snapshot = orchestrator.build_fact_snapshot(provider=provider, include_reports=include_reports)
 

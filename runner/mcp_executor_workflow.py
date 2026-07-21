@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import threading
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any, Callable
 
 from runner._internal_utils import now_iso as _shared_now_iso
@@ -23,6 +25,8 @@ from runner.executor_run_claims import ExecutorRunClaimStore, parse_iso_datetime
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.executor_session import ExecutorSessionStore
+from runner.continuation_snapshot import collect_continuation_snapshot
+from runner.project_operation_lease import ProjectOperationLease
 from runner.executor_status import apply_claim_to_status, read_executor_events_for_status, status_base_result
 from runner.executor_registry import is_supported_execution_provider
 from runner.final_version_closeout import (
@@ -92,6 +96,57 @@ _EXECUTION_ATTEMPT_BINDING_PREFLIGHT_CHECKS = (
     ("attempt_id", "ATTEMPT_ID_MISMATCH", "attempt_id 已变化。"),
     ("artifact_refs", "ARTIFACT_REFS_MISMATCH", "artifact_refs 已变化。"),
 )
+
+
+class _OperationLeaseOwnership:
+    def __init__(self, lease: ProjectOperationLease) -> None:
+        self.lease = lease
+        self.transferred = False
+        self.failure_cleanup: Callable[[BaseException], None] | None = None
+
+    def release_if_owned(self) -> None:
+        if not self.transferred:
+            self.lease.release()
+
+    def cleanup_failure(self, error: BaseException) -> None:
+        cleanup = self.failure_cleanup
+        self.failure_cleanup = None
+        if cleanup is not None:
+            cleanup(error)
+
+
+_ACTIVE_OPERATION_LEASE_OWNERS: ContextVar[list[_OperationLeaseOwnership] | None] = ContextVar(
+    "colameta_mcp_operation_lease_owners",
+    default=None,
+)
+
+
+def _guard_operation_lease_ownership(method):
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        owners: list[_OperationLeaseOwnership] = []
+        token = _ACTIVE_OPERATION_LEASE_OWNERS.set(owners)
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            for owner in reversed(owners):
+                owner.cleanup_failure(exc)
+            raise
+        finally:
+            for owner in reversed(owners):
+                owner.release_if_owned()
+            _ACTIVE_OPERATION_LEASE_OWNERS.reset(token)
+
+    return guarded
+
+
+def _register_operation_lease(lease: ProjectOperationLease) -> _OperationLeaseOwnership:
+    owners = _ACTIVE_OPERATION_LEASE_OWNERS.get()
+    if owners is None:
+        raise RuntimeError("operation lease ownership guard is not active")
+    owner = _OperationLeaseOwnership(lease)
+    owners.append(owner)
+    return owner
 
 
 class MCPExecutorWorkflowManager:
@@ -209,33 +264,29 @@ class MCPExecutorWorkflowManager:
         pending_versions = pending_alignment.get("pending_versions", [])
         next_not_started_version = pending_alignment.get("next_not_started_version")
         pending_count = int(pending_alignment.get("pending_count", 0))
-        session_store = ExecutorSessionStore(self.project_root)
-        session_status = session_store.get_status()
+        continuation_snapshot = collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+        )
+        projection = continuation_snapshot.project(provider)
+        session_status = continuation_snapshot.session_status
         session_record = session_status.get("record") if isinstance(session_status, dict) else None
         if not isinstance(session_record, dict):
             session_record = {}
-        continuation_decision = session_store.get_continuation_decision(requested_provider=provider)
+        continuation_decision = projection["canonical_continuation_decision"]
         compact_continuation = self._compact_continuation_decision(continuation_decision)
         effective_continuation = dict(compact_continuation)
-        if executor_session_mode == "start_new":
-            effective_continuation.update({
-                "decision": "start_new_requested",
-                "decision_reason": "requested_start_new",
-                "should_start_new": True,
-                "should_resume": False,
-                "next_action_hint": "executor_session_mode=start_new 已显式请求新会话；run_once 不应续接已有会话。",
-                "risk_level": "info",
-                "resume_blockers": [],
-                "resume_warnings": [],
-                "risk_warnings": [],
-                "continuation_available": False,
-            })
         session_manifest_missing = "no_session_manifest" in effective_continuation.get("hard_blockers", [])
+        continuation_action_gate = self._continuation_action_gate(
+            effective_continuation,
+            requested_session_mode=executor_session_mode,
+        )
 
         executor_session_affinity = self._build_executor_session_affinity(
             provider=selected_executor_profile["provider"],
             session_record=session_record,
             continuation_decision=effective_continuation,
+            requested_session_mode=executor_session_mode,
         )
         executor_session_readiness = {
             "session_manifest_present": not session_manifest_missing,
@@ -245,7 +296,8 @@ class MCPExecutorWorkflowManager:
             "decision_reason": effective_continuation.get("decision_reason"),
             "should_start_new": effective_continuation.get("should_start_new"),
             "should_resume": effective_continuation.get("should_resume"),
-            "message": "未发现可续接执行器会话；run_once 将启动新会话并生成 session manifest。" if session_manifest_missing else effective_continuation.get("next_action_hint"),
+            "action_allowed": continuation_action_gate["allowed"],
+            "message": continuation_action_gate["message"],
         }
 
         # Add profile_provider_matches_session_provider to affinity
@@ -260,7 +312,7 @@ class MCPExecutorWorkflowManager:
         continuation_facts = self._build_executor_session_continuation_facts(
             provider=provider,
             preflight_result=preflight_result,
-            session_store=session_store,
+            session_store=ExecutorSessionStore(self.project_root),
             session_record=session_record,
             continuation_decision=continuation_decision,
             requested_session_mode=executor_session_mode,
@@ -287,6 +339,8 @@ class MCPExecutorWorkflowManager:
             "executor_session_readiness": executor_session_readiness,
             "executor_session_affinity": base_affinity,
             "continuation_decision": effective_continuation,
+            "continuation_snapshot": continuation_snapshot.public_view(provider),
+            "continuation_action_gate": continuation_action_gate,
             "selected_executor_profile": selected_executor_profile,
             "executor_session_continuation_facts": continuation_facts,
             "preflight_summary": {
@@ -424,9 +478,13 @@ class MCPExecutorWorkflowManager:
         session_provider = session_record.get("provider") if isinstance(session_record, dict) else None
         session_version = session_record.get("version") if isinstance(session_record, dict) else None
 
-        # Default behavior from current auto logic
-        will_resume = bool(continuation_decision.get("should_resume") is True)
-        will_start_new = bool(continuation_decision.get("should_start_new") is True)
+        # Default behavior is an exact projection of the canonical action gate.
+        action_gate = self._continuation_action_gate(
+            continuation_decision,
+            requested_session_mode="auto",
+        )
+        will_resume = bool(action_gate.get("selected_action") == "resume" and action_gate.get("allowed") is True)
+        will_start_new = bool(action_gate.get("selected_action") == "start_new" and action_gate.get("allowed") is True)
         default_reason = str(continuation_decision.get("decision_reason") or "no_session_manifest")
 
         # Session facts
@@ -508,7 +566,7 @@ class MCPExecutorWorkflowManager:
                 "will_start_new_session": will_start_new,
                 "reason": default_reason,
             },
-            "allowed_session_modes": ["auto", "resume_existing", "start_new"],
+            "allowed_session_modes": self._allowed_session_modes(continuation_decision),
             "session": {
                 "has_session_manifest": has_session_manifest,
                 "provider": session_provider,
@@ -628,6 +686,7 @@ class MCPExecutorWorkflowManager:
             "warning_codes": warning_codes,
         }
 
+    @_guard_operation_lease_ownership
     def _run_once(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id", params.get("preview_key", "")), default="")
         profile_id = self._str_param(params.get("profile_id"), default="")
@@ -709,8 +768,28 @@ class MCPExecutorWorkflowManager:
                 "当前 preview 未包含 executor_session_continuation_facts，不能使用显式会话模式。请重新调用 run_once_preview。",
             )
 
+        operation_lease = ProjectOperationLease(
+            self.project_root,
+            operation_kind="executor_run_once",
+            surface="mcp_executor",
+        ).acquire()
+        if not operation_lease.held:
+            return {
+                "ok": False,
+                "action": "run_once",
+                "status": "blocked",
+                "risk_level": "blocked",
+                "error_code": operation_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
+                "message": "Project operation lease is busy or unavailable.",
+                "provider": provider,
+                "execution_mode": execution_mode,
+                "preview_id": preview_id,
+            }
+        lease_ownership = _register_operation_lease(operation_lease)
+
         re_preflight = self._service.preflight(provider=provider, execution_mode=execution_mode)
         if re_preflight.get("preflight_blocked"):
+            operation_lease.release()
             return {
                 "ok": False,
                 "action": "run_once",
@@ -733,35 +812,48 @@ class MCPExecutorWorkflowManager:
 
         compare_result = self._compare_artifact_with_preflight(artifact, re_preflight)
         if not compare_result.get("ok"):
+            operation_lease.release()
             return compare_result
 
         if re_preflight.get("blocking_git_status_short"):
+            operation_lease.release()
             return self._error(
                 "run_once",
                 "GIT_STATUS_MISMATCH",
                 "run_once 前置校验要求 blocking_git_status_short 为空，当前工作区存在阻断执行器的改动。",
             )
 
-        # Validate explicit session mode before proceeding
-        if executor_session_mode == "resume_existing":
-            session_store = ExecutorSessionStore(self.project_root)
-            session_decision = session_store.get_continuation_decision(requested_provider=provider)
-            cd = session_decision if isinstance(session_decision, dict) else {}
-            can_resume = bool(
-                cd.get("decision") == "resume_auto_eligible"
-                and cd.get("should_resume") is True
-            )
-            if not can_resume:
-                return {
-                    "ok": False,
-                    "action": "run_once",
-                    "status": "blocked",
-                    "error_code": "RESUME_EXISTING_NOT_AVAILABLE",
-                    "message": "executor_session_mode=resume_existing 但当前没有兼容的可续接执行器会话。",
-                    "provider": provider,
-                    "execution_mode": execution_mode,
-                    "preview_id": preview_id,
-                }
+        # Re-read the canonical decision immediately before claiming the
+        # preview.  No requested mode may be downgraded to a different action.
+        continuation_snapshot = collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+            held_operation_lease=operation_lease,
+        )
+        session_decision = continuation_snapshot.project(provider)[
+            "canonical_continuation_decision"
+        ]
+        compact_session_decision = self._compact_continuation_decision(session_decision)
+        action_gate = self._continuation_action_gate(
+            compact_session_decision,
+            requested_session_mode=executor_session_mode,
+        )
+        if action_gate.get("allowed") is not True:
+            operation_lease.release()
+            return {
+                "ok": False,
+                "action": "run_once",
+                "status": "blocked",
+                "risk_level": "blocked",
+                "error_code": "CONTINUATION_ACTION_NOT_ALLOWED",
+                "message": action_gate["message"],
+                "provider": provider,
+                "execution_mode": execution_mode,
+                "preview_id": preview_id,
+                "executor_session_mode": executor_session_mode,
+                "canonical_continuation_decision": compact_session_decision,
+                "continuation_snapshot": continuation_snapshot.public_view(provider),
+            }
 
         claim_result = self._claim_preview_artifact(
             action="run_once",
@@ -772,28 +864,34 @@ class MCPExecutorWorkflowManager:
             profile_id=profile_id,
         )
         if not claim_result.get("ok"):
+            operation_lease.release()
             return claim_result
         run_id = str(claim_result.get("run_id", ""))
         preview_claimed_at = str(claim_result.get("claimed_at", ""))
         preview_claim_status = str(claim_result.get("preview_claim_status", ""))
 
-        self._start_run_once_background_worker(
-            provider=provider,
-            execution_mode=execution_mode,
-            include_diff_summary=include_diff_summary,
-            include_report_markdown=include_report_markdown,
-            max_report_chars=max_report_chars,
-            reason=reason,
-            executor_session_mode=executor_session_mode,
-            model=effective_model,
-            model_source=effective_model_source,
-            reasoning_effort=effective_reasoning_effort,
-            reasoning_effort_source=effective_reasoning_effort_source,
-            run_id=run_id,
-            preview_id=preview_id,
-            preview_claimed_at=preview_claimed_at,
-            preview_claim_status=preview_claim_status,
-        )
+        try:
+            self._start_run_once_background_worker(
+                provider=provider,
+                execution_mode=execution_mode,
+                include_diff_summary=include_diff_summary,
+                include_report_markdown=include_report_markdown,
+                max_report_chars=max_report_chars,
+                reason=reason,
+                executor_session_mode=executor_session_mode,
+                model=effective_model,
+                model_source=effective_model_source,
+                reasoning_effort=effective_reasoning_effort,
+                reasoning_effort_source=effective_reasoning_effort_source,
+                run_id=run_id,
+                preview_id=preview_id,
+                preview_claimed_at=preview_claimed_at,
+                preview_claim_status=preview_claim_status,
+                operation_lease=operation_lease,
+            )
+            lease_ownership.transferred = True
+        except Exception:
+            raise
 
         return run_once_started_result(
             run_id=run_id,
@@ -814,30 +912,50 @@ class MCPExecutorWorkflowManager:
         reasoning_effort_source: str | None = None,
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
+        operation_lease: ProjectOperationLease | None = None,
     ) -> None:
-        started_at = self._now_iso()
-        self._mark_claim_worker_started(
-            preview_id=preview_id,
-            run_id=run_id,
-            thread_started_at=started_at,
-            worker_pid=os.getpid(),
-            heartbeat_interval_seconds=CLAIM_HEARTBEAT_INTERVAL_SECONDS,
-        )
-        run_once_callable = self._service.run_once
-        threading.Thread(
-            target=self._run_once_background_worker,
-            args=(
-                provider, execution_mode,
-                include_diff_summary, include_report_markdown,
-                max_report_chars, reason,
-                executor_session_mode, model, model_source,
-                reasoning_effort, reasoning_effort_source,
-                run_id, preview_id,
-                preview_claimed_at, preview_claim_status,
-                run_once_callable,
-            ),
-            daemon=True,
-        ).start()
+        try:
+            started_at = self._now_iso()
+            self._mark_claim_worker_started(
+                preview_id=preview_id,
+                run_id=run_id,
+                thread_started_at=started_at,
+                worker_pid=os.getpid(),
+                heartbeat_interval_seconds=CLAIM_HEARTBEAT_INTERVAL_SECONDS,
+            )
+            run_once_callable = self._service.run_once
+            worker = threading.Thread(
+                target=self._run_once_background_worker,
+                args=(
+                    provider, execution_mode,
+                    include_diff_summary, include_report_markdown,
+                    max_report_chars, reason,
+                    executor_session_mode, model, model_source,
+                    reasoning_effort, reasoning_effort_source,
+                    run_id, preview_id,
+                    preview_claimed_at, preview_claim_status,
+                    run_once_callable, operation_lease,
+                ),
+                daemon=True,
+            )
+            worker.start()
+        except BaseException as exc:
+            try:
+                try:
+                    self._finalize_preview_claim(
+                        preview_id=preview_id,
+                        run_id=run_id,
+                        final_status="FAILED",
+                        error_code="BACKGROUND_WORKER_START_FAILED",
+                        message=str(exc),
+                        exception_type=type(exc).__name__,
+                    )
+                except Exception:
+                    logging.exception("failed to finalize claim after background worker start failure")
+            finally:
+                if operation_lease is not None:
+                    operation_lease.release()
+            raise
 
     def _run_once_background_worker(
         self,
@@ -852,24 +970,38 @@ class MCPExecutorWorkflowManager:
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
         run_once_callable: Callable[..., dict[str, Any]] | None = None,
+        operation_lease: ProjectOperationLease | None = None,
     ) -> None:
         heartbeat_stop_event = threading.Event()
         heartbeat_state: dict[str, Any] = {"errors": 0, "last_error": ""}
-
-        heartbeat_thread = threading.Thread(
-            target=self._run_once_heartbeat_worker,
-            args=(
-                preview_id,
-                run_id,
-                heartbeat_stop_event,
-                CLAIM_HEARTBEAT_INTERVAL_SECONDS,
-                heartbeat_state,
-            ),
-            daemon=True,
-        )
-        heartbeat_thread.start()
-        self._refresh_claim_heartbeat(preview_id=preview_id, run_id=run_id, error_state=heartbeat_state)
+        heartbeat_thread: threading.Thread | None = None
+        heartbeat_started = False
+        final_status = "FAILED"
+        report_id = ""
+        error_code = ""
+        error_message = ""
+        exception_type = ""
+        blockers: list[str] = []
+        warnings: list[str] = []
         try:
+            heartbeat_thread = threading.Thread(
+                target=self._run_once_heartbeat_worker,
+                args=(
+                    preview_id,
+                    run_id,
+                    heartbeat_stop_event,
+                    CLAIM_HEARTBEAT_INTERVAL_SECONDS,
+                    heartbeat_state,
+                ),
+                daemon=True,
+            )
+            heartbeat_thread.start()
+            heartbeat_started = True
+            self._refresh_claim_heartbeat(
+                preview_id=preview_id,
+                run_id=run_id,
+                error_state=heartbeat_state,
+            )
             service_run_once = run_once_callable or self._service.run_once
             result = service_run_once(
                 provider=provider,
@@ -887,20 +1019,16 @@ class MCPExecutorWorkflowManager:
                 preview_id=preview_id,
                 preview_claimed_at=preview_claimed_at,
                 preview_claim_status=preview_claim_status,
+                operation_lease=operation_lease,
             )
             final_status = "COMPLETED" if bool(result.get("ok")) else "FAILED"
             report_id = str(result.get("latest_report_id") or "")
-            error_code = ""
-            error_message = ""
-            exception_type = ""
-            blockers: list[str] = []
-            warnings: list[str] = []
             if not result.get("ok"):
                 error_code = str(result.get("error_code") or "EXECUTOR_FAILED")
                 error_message = str(result.get("message") or "执行器返回失败状态")
                 blockers = self._str_list(result.get("blockers", []))
                 warnings = self._str_list(result.get("warnings", []))
-        except Exception as exc:
+        except BaseException as exc:
             final_status = "FAILED"
             report_id = ""
             error_code = "BACKGROUND_WORKER_CRASHED"
@@ -911,8 +1039,22 @@ class MCPExecutorWorkflowManager:
             warnings = []
         finally:
             heartbeat_stop_event.set()
-            heartbeat_thread.join(timeout=max(1.0, float(CLAIM_HEARTBEAT_INTERVAL_SECONDS)))
-            self._refresh_claim_heartbeat(preview_id=preview_id, run_id=run_id, error_state=heartbeat_state)
+            if heartbeat_started and heartbeat_thread is not None:
+                try:
+                    heartbeat_thread.join(
+                        timeout=max(1.0, float(CLAIM_HEARTBEAT_INTERVAL_SECONDS))
+                    )
+                except BaseException:
+                    logging.exception("failed to join run_once heartbeat worker")
+            try:
+                self._refresh_claim_heartbeat(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    error_state=heartbeat_state,
+                )
+            except BaseException:
+                heartbeat_state["errors"] = int(heartbeat_state.get("errors", 0) or 0) + 1
+                logging.exception("failed to refresh final run_once heartbeat")
             heartbeat_error_count = int(heartbeat_state.get("errors", 0) or 0)
             if heartbeat_error_count > 0:
                 warnings = list(warnings)
@@ -921,18 +1063,27 @@ class MCPExecutorWorkflowManager:
                     error_code = "CLAIM_HEARTBEAT_UPDATE_FAILED"
                 if not error_message and final_status == "FAILED":
                     error_message = "执行器 heartbeat 写入失败，请检查服务日志。"
-            self._delete_preview_artifact(preview_id)
-            self._finalize_preview_claim(
-                preview_id=preview_id,
-                run_id=run_id,
-                final_status=final_status,
-                report_id=report_id,
-                error_code=error_code,
-                message=error_message,
-                exception_type=exception_type,
-                blockers=blockers,
-                warnings=warnings,
-            )
+            try:
+                self._delete_preview_artifact(preview_id)
+            except BaseException:
+                logging.exception("failed to delete completed run_once preview artifact")
+            try:
+                self._finalize_preview_claim(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    final_status=final_status,
+                    report_id=report_id,
+                    error_code=error_code,
+                    message=error_message,
+                    exception_type=exception_type,
+                    blockers=blockers,
+                    warnings=warnings,
+                )
+            except BaseException:
+                logging.exception("failed to finalize completed run_once claim")
+            finally:
+                if operation_lease is not None:
+                    operation_lease.release()
 
     def _run_once_heartbeat_worker(
         self,
@@ -996,9 +1147,13 @@ class MCPExecutorWorkflowManager:
                 "warnings": preflight.get("warnings", []),
             }
 
-        session_store = ExecutorSessionStore(self.project_root)
-        continuation_decision = session_store.get_continuation_decision(requested_provider=provider)
-        resume_preview = session_store.get_resume_invocation_preview(requested_provider=provider)
+        continuation_snapshot = collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+        )
+        projection = continuation_snapshot.project(provider)
+        continuation_decision = projection["canonical_continuation_decision"]
+        resume_preview = projection["resume_invocation_preview"]
 
         preview_id = self._generate_preview_key(prefix="bounded_preview")
         artifact = run_bounded_preview_artifact(
@@ -1019,6 +1174,7 @@ class MCPExecutorWorkflowManager:
             created_at=self._now_iso(),
             expires_at=self._now_iso_ts(PREVIEW_TTL_SECONDS),
         )
+        artifact["continuation_snapshot"] = continuation_snapshot.public_view(provider)
         self._write_preview_artifact(preview_id, artifact)
 
         stop_conditions = [
@@ -1087,6 +1243,7 @@ class MCPExecutorWorkflowManager:
             "blocks": [],
         }
 
+    @_guard_operation_lease_ownership
     def _run_bounded(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = self._str_param(params.get("preview_id", params.get("preview_key", "")), default="")
         profile_id = self._str_param(params.get("profile_id"), default="")
@@ -1140,6 +1297,26 @@ class MCPExecutorWorkflowManager:
         if max_iterations > 1 and not trusted_mode:
             return self._error("run_bounded", "TRUSTED_MODE_REQUIRED", "max_iterations > 1 需要 trusted_mode=true。")
 
+        operation_lease = ProjectOperationLease(
+            self.project_root,
+            operation_kind="executor_run_bounded",
+            surface="mcp_executor",
+        ).acquire()
+        if not operation_lease.held:
+            return self._bounded_blocked_result(
+                preview_id=preview_id,
+                provider=provider,
+                max_iterations=max_iterations,
+                trusted_mode=trusted_mode,
+                allow_fix=allow_fix,
+                allow_commit=allow_commit,
+                reason="project_operation_busy",
+                message="Project operation lease is busy or unavailable.",
+                blocks=[{"code": operation_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE", "message": "project operation blocked"}],
+                warnings=[],
+            )
+        lease_ownership = _register_operation_lease(operation_lease)
+
         preflight = self._service.preflight(provider=provider, execution_mode="run")
         if preflight.get("preflight_blocked"):
             preflight_blocks = preflight.get("blocks", [])
@@ -1149,6 +1326,7 @@ class MCPExecutorWorkflowManager:
                 if isinstance(item, dict)
             }
             stop_reason = "dirty_worktree_unexpected" if "DIRTY_GIT_STATUS" in codes else "blocked_preflight"
+            operation_lease.release()
             return self._bounded_blocked_result(
                 preview_id=preview_id,
                 provider=provider,
@@ -1164,9 +1342,11 @@ class MCPExecutorWorkflowManager:
 
         compare_result = self._compare_bounded_artifact_with_preflight(artifact, preflight)
         if not compare_result.get("ok"):
+            operation_lease.release()
             return compare_result
 
         if preflight.get("blocking_git_status_short"):
+            operation_lease.release()
             return self._bounded_blocked_result(
                 preview_id=preview_id,
                 provider=provider,
@@ -1180,14 +1360,21 @@ class MCPExecutorWorkflowManager:
                 warnings=[],
             )
 
-        session_store = ExecutorSessionStore(self.project_root)
-        continuation_decision = session_store.get_continuation_decision(requested_provider=provider)
-        hard_blockers = continuation_decision.get("hard_blockers", []) if isinstance(continuation_decision, dict) else []
-        risk_level = continuation_decision.get("risk_level") if isinstance(continuation_decision, dict) else "none"
-        decision = str(continuation_decision.get("decision") or "") if isinstance(continuation_decision, dict) else ""
-        hard_blockers_list = [str(item) for item in hard_blockers if isinstance(item, str)]
-        hard_blockers_effective = [item for item in hard_blockers_list if item != "no_session_manifest"]
-        if hard_blockers_effective or (str(risk_level) == "blocked" and decision != "start_new_no_session"):
+        continuation_snapshot = collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+            held_operation_lease=operation_lease,
+        )
+        continuation_decision = continuation_snapshot.project(provider)[
+            "canonical_continuation_decision"
+        ]
+        compact_continuation_decision = self._compact_continuation_decision(continuation_decision)
+        action_gate = self._continuation_action_gate(
+            compact_continuation_decision,
+            requested_session_mode="auto",
+        )
+        if action_gate.get("allowed") is not True:
+            operation_lease.release()
             return self._bounded_blocked_result(
                 preview_id=preview_id,
                 provider=provider,
@@ -1196,13 +1383,14 @@ class MCPExecutorWorkflowManager:
                 allow_fix=allow_fix,
                 allow_commit=allow_commit,
                 reason="continuation_risk_warning",
-                message="continuation 决策存在 hard_blockers 或 blocked 风险。",
-                blocks=[{"code": "CONTINUATION_RISK_WARNING", "message": "续接风险过高，停止执行。"}],
-                warnings=hard_blockers_effective,
+                message=action_gate["message"],
+                blocks=[{"code": "CONTINUATION_ACTION_NOT_ALLOWED", "message": action_gate["message"]}],
+                warnings=self._str_list(compact_continuation_decision.get("hard_blockers")),
             )
 
         inventory = preflight.get("executor_inventory")
         if not self._provider_available(inventory, provider):
+            operation_lease.release()
             return self._bounded_blocked_result(
                 preview_id=preview_id,
                 provider=provider,
@@ -1225,10 +1413,30 @@ class MCPExecutorWorkflowManager:
             profile_id=profile_id,
         )
         if not claim_result.get("ok"):
+            operation_lease.release()
             return claim_result
         run_id = str(claim_result.get("run_id", ""))
         preview_claimed_at = str(claim_result.get("claimed_at", ""))
         preview_claim_status = str(claim_result.get("preview_claim_status", ""))
+
+        def finalize_failed_bounded_claim(error: BaseException) -> None:
+            try:
+                self._delete_preview_artifact(preview_id)
+            except BaseException:
+                logging.exception("failed to delete failed bounded preview artifact")
+            try:
+                self._finalize_preview_claim(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    final_status="FAILED",
+                    error_code="BOUNDED_WORKFLOW_CRASHED",
+                    message="bounded workflow failed after preview claim",
+                    exception_type=type(error).__name__,
+                )
+            except BaseException:
+                logging.exception("failed to finalize failed bounded claim")
+
+        lease_ownership.failure_cleanup = finalize_failed_bounded_claim
 
         iteration_results: list[dict[str, Any]] = []
         workflow_steps: list[dict[str, Any]] = [
@@ -1275,6 +1483,7 @@ class MCPExecutorWorkflowManager:
                 preview_id=preview_id,
                 preview_claimed_at=preview_claimed_at,
                 preview_claim_status=preview_claim_status,
+                operation_lease=operation_lease,
             )
             workflow_steps.append({"action": f"{step_prefix}_run_once", "status": "completed" if run_result.get("ok") else "failed"})
 
@@ -1357,6 +1566,8 @@ class MCPExecutorWorkflowManager:
             final_status="COMPLETED",
             report_id=str(latest_report_id or ""),
         )
+        lease_ownership.failure_cleanup = None
+        operation_lease.release()
 
         next_actions = self._build_bounded_next_actions(
             classification=final_classification,
@@ -1533,9 +1744,14 @@ class MCPExecutorWorkflowManager:
         poll_attempt = bounded_int(poll_attempt_raw, default=1, minimum=1, maximum=9_223_372_036_854_775_807)
         result = status_base_result(poll_attempt, profile_id=profile_id)
 
-        store = ExecutorSessionStore(self.project_root)
-        session_status = store.get_status()
-        result["session_status"] = session_status
+        continuation_snapshot = collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=self._str_param(params.get("provider"), default="codex", lower=True),
+        )
+        result["session_status"] = continuation_snapshot.session_status
+        result["continuation_snapshot"] = continuation_snapshot.public_view(
+            self._str_param(params.get("provider"), default="codex", lower=True)
+        )
 
         if preview_id:
             claim = self._read_preview_claim_record(preview_id)
@@ -4264,17 +4480,30 @@ class MCPExecutorWorkflowManager:
         provider: str,
         session_record: dict[str, Any],
         continuation_decision: dict[str, Any],
+        requested_session_mode: str = "auto",
     ) -> dict[str, Any]:
-        will_resume = bool(continuation_decision.get("decision") == "resume_auto_eligible" and continuation_decision.get("should_resume") is True)
+        action_gate = self._continuation_action_gate(
+            continuation_decision,
+            requested_session_mode=requested_session_mode,
+        )
+        will_resume = bool(action_gate.get("allowed") is True and action_gate.get("selected_action") == "resume")
+        will_start_new = bool(action_gate.get("allowed") is True and action_gate.get("selected_action") == "start_new")
         resume_identity_present = bool(continuation_decision.get("resume_identity_present") is True)
         resume_identity_kind = continuation_decision.get("resume_identity_kind")
         resume_source_version = session_record.get("version") if isinstance(session_record.get("version"), str) else None
         resume_source_provider = session_record.get("provider") if isinstance(session_record.get("provider"), str) else None
-        start_new_reason = None if will_resume else str(continuation_decision.get("decision_reason") or "not_resume_auto_eligible")
-        resume_reason = str(continuation_decision.get("decision_reason") or "resume_auto_eligible") if will_resume else None
+        decision_reason = str(continuation_decision.get("reason") or continuation_decision.get("decision_reason") or "continuation_action_not_allowed")
+        start_new_reason = decision_reason if will_start_new else None
+        resume_reason = decision_reason if will_resume else None
         return {
             "will_resume_session": will_resume,
-            "will_start_new_session": not will_resume,
+            "will_start_new_session": will_start_new,
+            "action_blocked": action_gate.get("allowed") is not True,
+            "requested_session_mode": requested_session_mode,
+            "selected_action": action_gate.get("selected_action"),
+            "recommended_action": continuation_decision.get("recommended_action"),
+            "resume_allowed": continuation_decision.get("resume_allowed") is True,
+            "start_new_allowed": continuation_decision.get("start_new_allowed") is True,
             "resume_provider": resume_source_provider if will_resume else provider,
             "resume_identity_kind": resume_identity_kind,
             "resume_identity_present": resume_identity_present,
@@ -4282,14 +4511,84 @@ class MCPExecutorWorkflowManager:
             "resume_reason": resume_reason,
             "start_new_reason": start_new_reason,
             "cache_affinity_expected": will_resume and resume_identity_present,
-            "message": "下一次 run_once 预计会续接上一轮执行器会话，有利于连续任务缓存命中（GPTs 可最终决策）。" if will_resume else "下一次 run_once 预计会开启新执行器会话；不会命中上一轮对话缓存（可手动指定 resume_existing 以优先缓存命中）。",
+            "message": action_gate["message"],
         }
+
+    def _continuation_action_gate(
+        self,
+        continuation_decision: dict[str, Any],
+        *,
+        requested_session_mode: str,
+    ) -> dict[str, Any]:
+        decision = continuation_decision if isinstance(continuation_decision, dict) else {}
+        recommended_action = str(decision.get("recommended_action") or "inspect_evidence")
+        if requested_session_mode == "resume_existing":
+            selected_action = "resume"
+            allowed = bool(recommended_action == "resume" and decision.get("resume_allowed") is True)
+        elif requested_session_mode == "start_new":
+            selected_action = "start_new"
+            allowed = bool(recommended_action == "start_new" and decision.get("start_new_allowed") is True)
+        elif requested_session_mode == "auto":
+            selected_action = recommended_action
+            allowed = bool(
+                (selected_action == "resume" and decision.get("resume_allowed") is True)
+                or (selected_action == "start_new" and decision.get("start_new_allowed") is True)
+            )
+        else:
+            selected_action = "invalid"
+            allowed = False
+
+        if allowed and selected_action == "resume":
+            message = "Canonical continuation decision allows resuming the existing executor session."
+        elif allowed and selected_action == "start_new":
+            message = "Canonical continuation decision allows starting a new executor session."
+        else:
+            message = (
+                "Canonical continuation decision blocks the requested executor session action; "
+                f"requested_session_mode={requested_session_mode}, recommended_action={recommended_action}."
+            )
+        return {
+            "allowed": allowed,
+            "requested_session_mode": requested_session_mode,
+            "selected_action": selected_action,
+            "recommended_action": recommended_action,
+            "resume_allowed": decision.get("resume_allowed") is True,
+            "start_new_allowed": decision.get("start_new_allowed") is True,
+            "message": message,
+        }
+
+    def _allowed_session_modes(self, continuation_decision: dict[str, Any]) -> list[str]:
+        modes: list[str] = []
+        if self._continuation_action_gate(
+            continuation_decision,
+            requested_session_mode="auto",
+        )["allowed"]:
+            modes.append("auto")
+        if self._continuation_action_gate(
+            continuation_decision,
+            requested_session_mode="resume_existing",
+        )["allowed"]:
+            modes.append("resume_existing")
+        if self._continuation_action_gate(
+            continuation_decision,
+            requested_session_mode="start_new",
+        )["allowed"]:
+            modes.append("start_new")
+        return modes
 
     def _compact_continuation_decision(self, decision: Any) -> dict[str, Any]:
         if not isinstance(decision, dict):
             return {}
         return {
             "ok": decision.get("ok"),
+            "schema_version": decision.get("schema_version"),
+            "classification": decision.get("classification"),
+            "recommended_action": decision.get("recommended_action"),
+            "resume_allowed": decision.get("resume_allowed"),
+            "start_new_allowed": decision.get("start_new_allowed"),
+            "reason": decision.get("reason"),
+            "severity": decision.get("severity"),
+            "decision_source": decision.get("decision_source"),
             "decision": decision.get("decision"),
             "decision_reason": decision.get("decision_reason"),
             "should_start_new": decision.get("should_start_new"),

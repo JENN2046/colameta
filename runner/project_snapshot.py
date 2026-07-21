@@ -5,8 +5,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from runner.development_target import resolve_development_target
+from runner.continuation_snapshot import (
+    ContinuationSnapshot,
+    collect_continuation_snapshot,
+    snapshot_from_fact_bundle,
+)
 from runner.executor_run_reports import ExecutorRunReportStore
-from runner.executor_session import ExecutorSessionStore
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.planning_bridge import PlanningBridge
 from runner.project_identity import build_project_identity
@@ -61,6 +65,8 @@ class ProjectSnapshotBuilder:
         *,
         provider: str | None = None,
         include_reports: bool = True,
+        continuation_fact_bundle: dict[str, Any] | None = None,
+        continuation_snapshot: ContinuationSnapshot | None = None,
     ) -> ProjectSnapshot:
         partial_errors: list[dict[str, str]] = []
         project_identity = self._build_project_identity()
@@ -91,6 +97,8 @@ class ProjectSnapshotBuilder:
         executor = self._build_executor_status(
             provider=provider,
             partial_errors=partial_errors,
+            continuation_fact_bundle=continuation_fact_bundle,
+            continuation_snapshot=continuation_snapshot,
         )
         reports = self._build_reports(
             include_reports=include_reports,
@@ -273,25 +281,35 @@ class ProjectSnapshotBuilder:
         *,
         provider: str | None,
         partial_errors: list[dict[str, str]],
+        continuation_fact_bundle: dict[str, Any] | None = None,
+        continuation_snapshot: ContinuationSnapshot | None = None,
     ) -> dict[str, Any]:
         try:
-            session_store = ExecutorSessionStore(self.project_root, target=self._target)
-            session_status = session_store.get_status()
-            continuation_preview = session_store.get_continuation_preview()
+            captured = continuation_snapshot
+            if captured is None and continuation_fact_bundle is not None:
+                captured = snapshot_from_fact_bundle(
+                    self.project_root,
+                    continuation_fact_bundle,
+                )
+            if captured is None:
+                captured = collect_continuation_snapshot(
+                    self.project_root,
+                    requested_provider=provider,
+                    planning_bridge=self.planning_bridge,
+                    source_review=self.source_review,
+                )
+            projection = captured.project(provider)
+            session_status = captured.session_status
+            continuation_preview = captured.continuation_preview
             has_session = bool(session_status.get("active", False)) if isinstance(session_status, dict) else False
             continuation_available = bool(continuation_preview.get("continuation_available")) if isinstance(continuation_preview, dict) else False
-
-            decision_result = None
-            if provider is not None:
-                try:
-                    decision_result = session_store.get_continuation_decision(requested_provider=provider)
-                except Exception as exc:
-                    partial_errors.append({"name": "executor_continuation_decision", "error_code": "CONTEXT_ERROR", "message": str(exc)})
+            decision_result = projection.get("canonical_continuation_decision")
+            partial_errors.extend(captured.partial_errors)
 
             exec_risk = "none"
             exec_blockers: list[str] = []
             exec_warnings: list[str] = []
-            should_start_new = True
+            should_start_new = False
             should_resume = False
             manual_confirmation = False
 
@@ -301,9 +319,23 @@ class ProjectSnapshotBuilder:
                 exec_warnings = list(continuation_preview.get("warnings", []))
 
             if isinstance(decision_result, dict):
-                should_start_new = bool(decision_result.get("should_start_new", True))
-                should_resume = bool(decision_result.get("should_resume", False))
-                manual_confirmation = bool(decision_result.get("manual_confirmation_required", False))
+                continuation_available = bool(decision_result.get("resume_allowed") is True)
+                should_start_new = bool(
+                    decision_result.get("recommended_action") == "start_new"
+                    and decision_result.get("start_new_allowed") is True
+                )
+                should_resume = bool(
+                    decision_result.get("recommended_action") == "resume"
+                    and decision_result.get("resume_allowed") is True
+                )
+                manual_confirmation = bool(decision_result.get("recommended_action") == "human_review")
+                exec_risk = str(decision_result.get("risk_level") or exec_risk)
+                exec_blockers = list(decision_result.get("hard_blockers") or exec_blockers)
+                exec_warnings = list(decision_result.get("risk_warnings") or exec_warnings)
+            else:
+                continuation_available = False
+                exec_risk = "blocked"
+                exec_blockers = [*exec_blockers, "canonical_continuation_decision_unavailable"]
 
             decision_owner = None
             optimization_goal = None
@@ -331,6 +363,8 @@ class ProjectSnapshotBuilder:
                 "recommended_default": recommended_default,
                 "cache_hit_preference": cache_hit_preference,
                 "context_facts": context_facts,
+                "canonical_continuation_decision": decision_result,
+                "continuation_snapshot": captured.public_view(provider),
             }
         except Exception as exc:
             partial_errors.append({"name": "executor", "error_code": "CONTEXT_ERROR", "message": str(exc)})

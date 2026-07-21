@@ -442,6 +442,119 @@ class ExecutorRunOnceService:
         preview_id: str = "",
         preview_claimed_at: str = "",
         preview_claim_status: str = "",
+        operation_lease: Any | None = None,
+    ) -> dict[str, Any]:
+        from runner.project_operation_lease import ProjectOperationLease
+
+        lease = operation_lease
+        owns_lease = False
+        valid_held_lease = bool(
+            isinstance(lease, ProjectOperationLease)
+            and lease.held
+            and lease.shared is False
+            and lease.canonical_project_root == os.path.realpath(self.project_root)
+        )
+        if not valid_held_lease:
+            lease = ProjectOperationLease(
+                self.project_root,
+                operation_kind="executor_run_once",
+                surface="executor_service",
+            ).acquire()
+            if not lease.held:
+                return {
+                    "ok": False,
+                    "action": "run_once",
+                    "status": "blocked",
+                    "error_code": lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
+                    "message": "Project operation lease is busy or unavailable.",
+                    "provider": self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER,
+                    "execution_mode": execution_mode,
+                    "classification": "blocked_project_operation",
+                    "blocks": [lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE"],
+                    "warnings": [],
+                }
+            owns_lease = True
+        try:
+            from runner.continuation_snapshot import (
+                collect_continuation_snapshot,
+                continuation_snapshot_scope,
+            )
+
+            snapshot = collect_continuation_snapshot(
+                self.project_root,
+                requested_provider=provider,
+                held_operation_lease=lease,
+            )
+            decision = snapshot.project(provider)["canonical_continuation_decision"]
+            recommended_action = str(decision.get("recommended_action") or "inspect_evidence")
+            if executor_session_mode == "resume_existing":
+                continuation_allowed = bool(
+                    recommended_action == "resume"
+                    and decision.get("resume_allowed") is True
+                )
+            elif executor_session_mode == "start_new":
+                continuation_allowed = bool(
+                    recommended_action == "start_new"
+                    and decision.get("start_new_allowed") is True
+                )
+            else:
+                continuation_allowed = bool(
+                    (recommended_action == "resume" and decision.get("resume_allowed") is True)
+                    or (recommended_action == "start_new" and decision.get("start_new_allowed") is True)
+                )
+            if not continuation_allowed:
+                return {
+                    "ok": False,
+                    "action": "run_once",
+                    "status": "blocked",
+                    "error_code": "CONTINUATION_ACTION_NOT_ALLOWED",
+                    "message": "Canonical continuation snapshot blocks executor dispatch.",
+                    "provider": self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER,
+                    "execution_mode": execution_mode,
+                    "classification": "blocked_continuation",
+                    "blocks": ["CONTINUATION_ACTION_NOT_ALLOWED"],
+                    "warnings": [],
+                    "continuation_snapshot": snapshot.public_view(provider),
+                }
+            with continuation_snapshot_scope(snapshot):
+                return self._run_once_under_lease(
+                    provider=provider,
+                    execution_mode=execution_mode,
+                    include_diff_summary=include_diff_summary,
+                    include_report_markdown=include_report_markdown,
+                    max_report_chars=max_report_chars,
+                    reason=reason,
+                    executor_session_mode=executor_session_mode,
+                    model=model,
+                    model_source=model_source,
+                    reasoning_effort=reasoning_effort,
+                    reasoning_effort_source=reasoning_effort_source,
+                    run_id=run_id,
+                    preview_id=preview_id,
+                    preview_claimed_at=preview_claimed_at,
+                    preview_claim_status=preview_claim_status,
+                )
+        finally:
+            if owns_lease:
+                lease.release()
+
+    def _run_once_under_lease(
+        self,
+        provider: str,
+        execution_mode: str = "run",
+        include_diff_summary: bool = True,
+        include_report_markdown: bool = False,
+        max_report_chars: int = 30000,
+        reason: str = "",
+        executor_session_mode: str = "auto",
+        model: str | None = None,
+        model_source: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
+        run_id: str = "",
+        preview_id: str = "",
+        preview_claimed_at: str = "",
+        preview_claim_status: str = "",
     ) -> dict[str, Any]:
         provider_norm = self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER
         mode = self._normalize_execution_mode(execution_mode)
@@ -1869,7 +1982,10 @@ class ExecutorRunOnceService:
 
     def _safe_get_continuation_decision(self, provider: str) -> dict[str, Any]:
         try:
-            return ExecutorSessionStore(self.project_root, target=self._target).get_continuation_decision(requested_provider=provider)
+            from runner.continuation_snapshot import get_or_collect_continuation_snapshot
+
+            snapshot = get_or_collect_continuation_snapshot(self.project_root, provider)
+            return snapshot.project(provider)["canonical_continuation_decision"]
         except Exception as exc:
             return {
                 "ok": False,
@@ -1896,7 +2012,10 @@ class ExecutorRunOnceService:
 
     def _safe_get_resume_invocation_preview(self, provider: str) -> dict[str, Any]:
         try:
-            return ExecutorSessionStore(self.project_root, target=self._target).get_resume_invocation_preview(requested_provider=provider)
+            from runner.continuation_snapshot import get_or_collect_continuation_snapshot
+
+            snapshot = get_or_collect_continuation_snapshot(self.project_root, provider)
+            return snapshot.project(provider)["resume_invocation_preview"]
         except Exception as exc:
             return {
                 "ok": False,

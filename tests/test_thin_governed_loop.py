@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.master_taskbook_registry import MasterTaskbookRegistryError
 from runner.thin_governed_loop import (
@@ -13,6 +14,7 @@ from runner.thin_governed_loop import (
     STAGE_ANCHOR_VERIFIED,
     THIN_LOOP_FAILED_CLOSED,
     THIN_LOOP_PASSED,
+    build_draft_evidence_provenance,
     example_stage_3_6_inputs,
     run_stage_0_6_thin_governed_loop,
     run_stage_3_6_thin_governed_loop,
@@ -168,7 +170,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
             "executor_dispatch_authorized": False,
         }
 
-    def test_thin_loop_workflow_accepts_real_input_objects(self) -> None:
+    def test_legacy_provided_inputs_are_parseable_but_unclassified_and_ineligible(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
         inputs = example_stage_3_6_inputs()
         output = WorkflowOrchestrator(project_root).handle(
@@ -189,6 +191,10 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert output.result["input_mode"] == "provided"
         assert output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
         assert output.result["thin_loop"]["delivery_state_accepted"] is False
+        provenance = output.result["thin_loop"]["evidence_provenance"]
+        assert provenance["provenance_status"] == "legacy_unclassified"
+        assert provenance["legacy_read_parse_only"] is True
+        assert provenance["eligible_for_acceptance"] is False
         assert output.result["forbidden_authority_outputs"]["delivery_state_accepted"] is False
 
     def test_thin_loop_workflow_template_mode_returns_input_contract_only(self) -> None:
@@ -218,7 +224,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert contract["draft_mode_output"]["submit_as"] == "thin_loop_inputs"
         assert contract["read_only_boundary"]["writes_delivery_state"] is False
 
-    def test_thin_loop_workflow_draft_mode_returns_reusable_input_bundle(self) -> None:
+    def test_prov_01_draft_packet_can_be_ready_while_receipt_remains_not_run(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
         orchestrator = WorkflowOrchestrator(project_root)
         draft_seed = {
@@ -312,10 +318,33 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert bundle["external_taskbook_claim"]["allowed_files"] == draft_seed["allowed_files"]
         assert bundle["execution_envelope"]["allowed_files"] == draft_seed["allowed_files"]
         assert bundle["execution_envelope"]["validation_commands"] == draft_seed["validation_commands"]
-        assert bundle["local_execution_receipt"]["touched_files"] == draft_seed["allowed_files"]
+        receipt = bundle["local_execution_receipt"]
+        assert receipt["execution_result"] == "blocked_before_execution"
+        assert receipt["command_attempts"] == []
+        assert receipt["touched_files"] == []
+        assert receipt["observed_mutations"] == []
         assert bundle["local_execution_receipt"]["validation_commands"] == draft_seed["validation_commands"]
+        assert receipt["validation_results"] == []
+        assert receipt["validation_summary"] == "not_run"
+        assert receipt["scope_check_result"] == "not_run"
         assert bundle["review_feedback"]["review_decision_value"] == "PLAN_ADJUST"
         assert bundle["review_feedback"]["reviewer_notes"] == draft_seed["reviewer_notes"]
+        provenance = bundle["evidence_provenance"]
+        assert provenance["schema_version"] == "evidence_provenance.v1"
+        by_path = {entry["subject_path"]: entry for entry in provenance["entries"]}
+        assert by_path["local_execution_receipt"]["evidence_kind"] == "draft"
+        assert by_path["local_execution_receipt"]["claimed_execution_performed"] is False
+        assert by_path["local_execution_receipt"]["claimed_eligible_for_acceptance"] is False
+        assert by_path["local_execution_receipt.validation_results"]["evidence_kind"] == "draft"
+        assert by_path["review_feedback"]["evidence_kind"] == "placeholder"
+        assert by_path["review_feedback.master_taskbook_hash"]["evidence_kind"] == "placeholder"
+        assert by_path["review_feedback.stage_taskbook_hash"]["evidence_kind"] == "placeholder"
+        assert all(entry["claimed_eligible_for_acceptance"] is False for entry in provenance["entries"])
+        assert draft_output.result["thin_loop"]["evidence_provenance"] == {
+            "schema_version": "evidence_provenance.v1",
+            "provenance_status": "draft_non_acceptable",
+            "eligible_for_acceptance": False,
+        }
         assert "draft" in draft_output.result["input_contract"]["accepted_input_modes"]
         assert "draft_seed" in draft_output.result["input_contract"]["transport"]["bundle_allowed_fields"]
 
@@ -324,68 +353,189 @@ class ThinGovernedLoopTests(unittest.TestCase):
             next_request_payload,
         )
 
-        assert provided_output.ok is True
-        assert provided_output.status == "succeeded"
+        assert provided_output.ok is False
+        assert provided_output.status == "blocked"
         assert provided_output.result["input_mode"] == "provided"
-        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_PASSED
+        assert provided_output.result["thin_loop"]["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        assert provided_output.result["thin_loop"]["evidence_provenance"]["eligible_for_acceptance"] is False
+        assert any(
+            item["code"] == "thin_loop_evidence_provenance_ineligible"
+            for item in provided_output.result["thin_loop"]["blockers"]
+        )
         assert provided_output.result["thin_loop"]["requested_commander_action"] == "ask_whether_to_prepare_plan_adjustment_draft"
         assert provided_output.result["thin_loop"]["delivery_state_accepted"] is False
 
-    def test_thin_loop_draft_packet_recommends_start_new_on_head_mismatch(self) -> None:
+    def test_prov_03_simulated_or_placeholder_evidence_fails_closed_without_becoming_observed(self) -> None:
+        for evidence_kind in ("simulated", "placeholder"):
+            with self.subTest(evidence_kind=evidence_kind):
+                inputs = example_stage_3_6_inputs()
+                provenance = build_draft_evidence_provenance(inputs)
+                for entry in provenance["entries"]:
+                    entry["evidence_kind"] = evidence_kind
+                inputs["evidence_provenance"] = provenance
+
+                result = run_stage_3_6_thin_governed_loop(inputs)
+
+                assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+                assert result["evidence_provenance"]["eligible_for_acceptance"] is False
+                assert all(
+                    entry["evidence_kind"] != "observed"
+                    for entry in result["evidence_provenance"]["entries"]
+                )
+                assert any(
+                    item["code"] == "thin_loop_evidence_provenance_ineligible"
+                    for item in result["blockers"]
+                )
+
+    def test_acceptance_aware_provenance_fails_closed_when_required_subject_is_omitted(self) -> None:
+        inputs = example_stage_3_6_inputs()
+        provenance = build_draft_evidence_provenance(inputs)
+        for entry in provenance["entries"]:
+            requires_execution = entry["subject_path"] in {
+                "local_execution_receipt",
+                "local_execution_receipt.validation_results",
+            }
+            entry["evidence_kind"] = "observed"
+            entry["claimed_subject_operation_completed"] = True
+            entry["claimed_execution_performed"] = requires_execution
+            entry["claimed_eligible_for_acceptance"] = True
+        omitted_path = "review_feedback.stage_taskbook_hash"
+        provenance["entries"] = [
+            entry for entry in provenance["entries"] if entry["subject_path"] != omitted_path
+        ]
+        inputs["evidence_provenance"] = provenance
+
+        result = run_stage_3_6_thin_governed_loop(inputs)
+
+        assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        assert result["evidence_provenance"]["eligible_for_acceptance"] is False
+        coverage = next(
+            reason
+            for reason in result["evidence_provenance_rejection_reasons"]
+            if reason["code"] == "EVIDENCE_PROVENANCE_SUBJECT_COVERAGE_INCOMPLETE"
+        )
+        assert coverage["details"]["missing_subject_paths"] == [omitted_path]
+        assert any(
+            item["code"] == "thin_loop_evidence_provenance_ineligible"
+            for item in result["blockers"]
+        )
+
+    def test_observed_not_run_validation_cannot_claim_completed_or_eligible(self) -> None:
+        inputs = example_stage_3_6_inputs()
+        receipt = inputs["local_execution_receipt"]
+        receipt["validation_results"] = [
+            {"command": "python -m pytest -q", "result": "not_run"}
+        ]
+        receipt["validation_summary"] = "not_run"
+        provenance = build_draft_evidence_provenance(inputs)
+        for entry in provenance["entries"]:
+            subject_path = entry["subject_path"]
+            requires_execution = subject_path in {
+                "local_execution_receipt",
+                "local_execution_receipt.validation_results",
+            }
+            entry["evidence_kind"] = "observed"
+            entry["claimed_subject_operation_completed"] = True
+            entry["claimed_execution_performed"] = requires_execution
+            entry["claimed_eligible_for_acceptance"] = True
+        inputs["evidence_provenance"] = provenance
+
+        result = run_stage_3_6_thin_governed_loop(inputs)
+
+        assert result["thin_loop_status"] == THIN_LOOP_FAILED_CLOSED
+        entries = {
+            entry["subject_path"]: entry
+            for entry in result["evidence_provenance"]["entries"]
+        }
+        validation = entries["local_execution_receipt.validation_results"]
+        assert validation["subject_operation_completed"] is False
+        assert validation["execution_performed"] is False
+        assert validation["eligible_for_acceptance"] is False
+        assert "EVIDENCE_PROVENANCE_COMPLETION_MISMATCH" in {
+            reason["code"]
+            for reason in result["evidence_provenance_rejection_reasons"]
+        }
+
+    def test_prov_02_draft_review_and_hash_values_are_placeholder_evidence(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])
+        output = WorkflowOrchestrator(project_root).handle(
+            "thin_governed_loop_preview",
+            {"phase": "preview", "input_mode": "draft", "draft_seed": {}},
+        )
 
-        class StubSessionStore:
-            def __init__(self, project_root: str):
-                self.project_root = project_root
+        entries = {
+            entry["subject_path"]: entry
+            for entry in output.result["generated_input_bundle"]["evidence_provenance"]["entries"]
+        }
+        placeholder_paths = {
+            "review_feedback",
+            "review_feedback.master_taskbook_hash",
+            "review_feedback.stage_taskbook_hash",
+        }
+        assert all(entries[path]["evidence_kind"] == "placeholder" for path in placeholder_paths)
+        assert all(entries[path]["claimed_eligible_for_acceptance"] is False for path in placeholder_paths)
 
-            def get_status(self) -> dict:
-                return {
+    def test_thin_loop_draft_packet_preserves_canonical_human_review_decision(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        session_status = {
+            "ok": True,
+            "matches_current_head": False,
+            "current_head": "b" * 40,
+            "record": {
+                "provider": "codex",
+                "conversation_id": "private-conversation",
+                "current_head": "a" * 40,
+            },
+        }
+        snapshot = snapshot_from_fact_bundle(
+            project_root,
+            {
+                "executor_session_status": session_status,
+                "continuation_preview": {
                     "ok": True,
-                    "matches_current_head": False,
-                    "current_head": "b" * 40,
-                    "record": {"current_head": "a" * 40},
-                    "head_mismatch_classification": {
-                        "status": "unknown_head_mismatch",
-                        "evidence": {"head_mismatch": True},
-                    },
-                }
-
-            def get_continuation_decision(self, *, requested_provider: str) -> dict:
-                return {
-                    "ok": True,
-                    "decision": "start_new_blocked",
-                    "decision_reason": "head_mismatch",
-                    "hard_blockers": [],
-                    "risk_warnings": ["head_mismatch"],
-                    "context_facts": {"head_mismatch": True},
-                }
-
-            def get_resume_invocation_preview(self, *, requested_provider: str) -> dict:
-                return {"ok": True, "head_mismatch_classification": {"evidence": {"head_mismatch": True}}}
-
-        with patch("runner.core_orchestrator.ExecutorSessionStore", StubSessionStore):
-            draft_output = WorkflowOrchestrator(project_root).handle(
-                "thin_governed_loop_preview",
-                {
-                    "phase": "preview",
-                    "input_mode": "draft",
-                    "draft_seed": {
-                        "goal": "Update a small docs sentence.",
-                        "allowed_files": ["docs/example.md"],
-                        "validation_commands": ["git diff --check"],
-                    },
+                    "selected_provider": "codex",
+                    "identity_present": True,
                 },
-            )
+                "selected_provider": "codex",
+                "requested_provider": "codex",
+                "identity_present": True,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": True,
+                "job_status": "running",
+                "latest_run_status": "running",
+                "worktree_clean": False,
+            },
+        )
+        draft_output = WorkflowOrchestrator(
+            project_root,
+            continuation_snapshot=snapshot,
+        ).handle(
+            "thin_governed_loop_preview",
+            {
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "goal": "Update a small docs sentence.",
+                    "allowed_files": ["docs/example.md"],
+                    "validation_commands": ["git diff --check"],
+                },
+            },
+        )
 
         assert draft_output.ok is True
         packet = draft_output.result["codex_execution_packet"]
         guidance = packet["executor_session_recovery"]
-        assert guidance["status"] == "start_new_recommended_due_to_head_mismatch"
-        assert guidance["recommended_session_mode"] == "start_new"
+        assert guidance["status"] == "continuation_human_review_required"
+        assert guidance["recommended_action"] == "human_review"
+        assert guidance["recommended_session_mode"] == "blocked"
         assert guidance["resume_existing_allowed_by_packet"] is False
-        assert guidance["managed_executor_mode_hint"] == "executor_session_mode=start_new"
-        assert "Do not resume the stale executor session" in guidance["safe_recovery_steps"][0]
-        assert "start a fresh local codex session" in packet["copy_paste_codex_prompt"].lower()
+        assert guidance["start_new_allowed_by_packet"] is False
+        assert guidance["managed_executor_mode_hint"] is None
+        assert guidance["canonical_continuation_decision"]["recommended_action"] == "human_review"
+        assert guidance["invocation_uses_canonical_decision"] is True
+        assert "possibly active head mismatch" in guidance["safe_recovery_steps"][0].lower()
+        assert "start a fresh local codex session" not in packet["copy_paste_codex_prompt"].lower()
 
     def test_thin_loop_draft_packet_blocks_missing_validation_without_example_evidence(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])

@@ -44,6 +44,11 @@ from runner.taskbook_import_adoption_preview import (
 )
 from runner.taskbook_import_preview import PREVIEW_READY as IMPORT_PREVIEW_READY, render_taskbook_import_preview
 from runner.taskbook_version_candidate_mapping import MAPPING_READY, map_preview_to_version_candidate
+from runner.validation_truth import (
+    EVIDENCE_PROVENANCE_SCHEMA_VERSION,
+    evidence_record_sha256,
+    validate_evidence_provenance,
+)
 from runner.stage_taskbook_registry import (
     StageTaskbookRegistryError,
     load_stage_taskbook_registry,
@@ -64,6 +69,110 @@ _STAGE_0_REQUIRED_ANCHORS = (
     ".colameta/taskbooks/master_taskbook_registry.json",
     ".colameta/taskbooks/stage_taskbook_registry.json",
 )
+
+THIN_LOOP_INPUT_SCHEMA_VERSION = "thin_governed_loop_inputs.v1"
+_THIN_LOOP_PROVENANCE_SUBJECTS = {
+    "local_execution_receipt": "execution",
+    "local_execution_receipt.validation_results": "validation",
+    "review_feedback": "review",
+    "review_feedback.master_taskbook_hash": "hash_binding",
+    "review_feedback.stage_taskbook_hash": "hash_binding",
+}
+
+
+def build_draft_evidence_provenance(bound_record: dict[str, Any]) -> dict[str, Any]:
+    """Bind explicitly non-observed draft/placeholder provenance to a thin-loop record."""
+    digest = evidence_record_sha256(_thin_loop_provenance_bound_record(bound_record))
+    record_id = bound_record.get("current_head")
+    entries = []
+    for subject_path, evidence_subject in _THIN_LOOP_PROVENANCE_SUBJECTS.items():
+        evidence_kind = "draft" if evidence_subject in {"execution", "validation"} else "placeholder"
+        entries.append(
+            {
+                "subject_path": subject_path,
+                "evidence_kind": evidence_kind,
+                "binding": {
+                    "record_id": record_id,
+                    "record_schema_version": THIN_LOOP_INPUT_SCHEMA_VERSION,
+                    "subject_path": subject_path,
+                    "content_sha256": digest,
+                },
+                "claimed_evidence_subject": evidence_subject,
+                "claimed_subject_operation_completed": False,
+                "claimed_execution_performed": False,
+                "claimed_eligible_for_acceptance": False,
+            }
+        )
+    return {
+        "schema_version": EVIDENCE_PROVENANCE_SCHEMA_VERSION,
+        "entries": entries,
+    }
+
+
+def _thin_loop_provenance_bound_record(values: dict[str, Any]) -> dict[str, Any]:
+    record = {
+        "current_head": values.get("current_head"),
+        "external_taskbook_claim": _dict(values.get("external_taskbook_claim")),
+        "execution_envelope": _dict(values.get("execution_envelope")),
+        "local_execution_receipt": _dict(values.get("local_execution_receipt")),
+        "review_feedback": _dict(values.get("review_feedback")),
+    }
+    if "evidence_provenance" in values:
+        record["evidence_provenance"] = values.get("evidence_provenance")
+    return record
+
+
+def _thin_loop_provenance_subject_specs(
+    *,
+    local_receipt: dict[str, Any],
+    review_feedback: dict[str, Any],
+    receipt_valid: bool,
+    feedback_valid: bool,
+) -> dict[str, dict[str, Any]]:
+    execution_completed = local_receipt.get("execution_result") in {"executed", "executed_with_failures"}
+    validation_results = local_receipt.get("validation_results")
+    validation_completed = bool(
+        execution_completed
+        and isinstance(validation_results, list)
+        and validation_results
+        and all(
+            isinstance(item, dict) and item.get("result") in {"passed", "failed"}
+            for item in validation_results
+        )
+    )
+    reviewer_attestation = review_feedback.get("reviewer_attestation")
+    review_completed = (
+        feedback_valid
+        and isinstance(reviewer_attestation, dict)
+        and reviewer_attestation.get("attested") is True
+    )
+    return {
+        "local_execution_receipt": {
+            "evidence_subject": "execution",
+            "subject_operation_completed": execution_completed,
+            "subject_valid": receipt_valid,
+        },
+        "local_execution_receipt.validation_results": {
+            "evidence_subject": "validation",
+            "subject_operation_completed": validation_completed,
+            "subject_valid": receipt_valid,
+        },
+        "review_feedback": {
+            "evidence_subject": "review",
+            "subject_operation_completed": review_completed,
+            "subject_valid": feedback_valid,
+        },
+        "review_feedback.master_taskbook_hash": {
+            "evidence_subject": "hash_binding",
+            "subject_operation_completed": review_completed,
+            "subject_valid": feedback_valid,
+        },
+        "review_feedback.stage_taskbook_hash": {
+            "evidence_subject": "hash_binding",
+            "subject_operation_completed": review_completed,
+            "subject_valid": feedback_valid,
+        },
+    }
 
 
 def verify_stage_0_2_governance_anchors(project_root: str | Path) -> dict[str, Any]:
@@ -387,6 +496,29 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
     )
     decision_adapter = adapt_review_decision_value(str(review_feedback.get("review_decision_value") or "UNKNOWN"))
 
+    provenance_bound_record = _thin_loop_provenance_bound_record(values)
+    base_valid = all(
+        (
+            external_validation["validation_result"] == VALIDATION_PASSED,
+            envelope_validation["envelope_check_result"] == ENVELOPE_CHECK_PASSED,
+            receipt_validation["receipt_check_result"] == RECEIPT_CHECK_PASSED,
+            feedback_validation["validation_status"] == VALID_FOR_PREVIEW,
+        )
+    )
+    provenance_validation = validate_evidence_provenance(
+        provenance_bound_record,
+        record_id=values.get("current_head"),
+        record_schema_version=THIN_LOOP_INPUT_SCHEMA_VERSION,
+        subject_specs=_thin_loop_provenance_subject_specs(
+            local_receipt=local_receipt,
+            review_feedback=review_feedback,
+            receipt_valid=receipt_validation["receipt_check_result"] == RECEIPT_CHECK_PASSED,
+            feedback_valid=feedback_validation["validation_status"] == VALID_FOR_PREVIEW,
+        ),
+        base_valid=base_valid,
+    )
+    provenance_projection = provenance_validation["projection"]
+
     stage_results = {
         "stage_03_import": {
             "external_validation": external_validation["validation_result"],
@@ -401,6 +533,7 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
             "executor_report": executor_report["report_status"],
             "evidence_receipt": evidence_receipt["evidence_receipt_status"],
             "audit_package_handoff_readiness": audit_package["handoff_readiness"],
+            "evidence_provenance": provenance_projection["provenance_status"],
         },
         "stage_05_reviewer_handoff": {
             "handoff_generation": handoff["generation_status"],
@@ -415,6 +548,17 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
         },
     }
     blockers = _loop_blockers(stage_results)
+    if "evidence_provenance" in values and provenance_projection.get("eligible_for_acceptance") is not True:
+        blockers.append(
+            {
+                "code": "thin_loop_evidence_provenance_ineligible",
+                "stage": "stage_04_execution_evidence",
+                "provenance_status": provenance_projection.get("provenance_status"),
+                "rejection_codes": [
+                    reason.get("code") for reason in provenance_validation.get("rejection_reasons", [])
+                ],
+            }
+        )
     return {
         "thin_loop_status": THIN_LOOP_PASSED if not blockers else THIN_LOOP_FAILED_CLOSED,
         "thin_loop_path": [
@@ -426,6 +570,9 @@ def run_stage_3_6_thin_governed_loop(inputs: dict[str, Any] | None = None) -> di
         ],
         "stage_results": stage_results,
         "blockers": blockers,
+        "evidence_provenance": provenance_projection,
+        "evidence_provenance_rejection_reasons": provenance_validation["rejection_reasons"],
+        "evidence_provenance_known_conflicts": provenance_validation["known_conflicts"],
         "authority_boundary": {
             "thin_loop_result_is_authority": False,
             "thin_loop_authorizes_executor_dispatch": False,

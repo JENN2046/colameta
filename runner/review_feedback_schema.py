@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from runner.validation_truth import (
+    legacy_evidence_provenance_projection,
+    validate_evidence_provenance,
+)
+
 
 REVIEW_FEEDBACK_SCHEMA_CHECK_PASSED = "review_feedback_schema_check_passed"
 REVIEW_FEEDBACK_SCHEMA_CHECK_FAILED_CLOSED = "review_feedback_schema_check_failed_closed"
@@ -59,6 +64,9 @@ FORBIDDEN_REVIEW_FEEDBACK_CLAIM_KEYS = frozenset(
         "executor_continuation_authorized",
         "review_accepted",
         "accepted_delivery_state",
+        "creates_review_decision",
+        "emits_gate_event",
+        "writes_delivery_state",
     }
 )
 
@@ -70,7 +78,12 @@ class ReviewFeedbackSchemaError(ValueError):
         self.details = details or {}
 
 
-def validate_review_feedback_schema(feedback: dict[str, Any]) -> dict[str, Any]:
+def validate_review_feedback_schema(
+    feedback: dict[str, Any],
+    *,
+    expected_master_taskbook_hash: str | None = None,
+    expected_stage_taskbook_hash: str | None = None,
+) -> dict[str, Any]:
     rejected_fields: set[str] = set()
     rejection_reasons: list[dict[str, Any]] = []
     known_conflicts: list[dict[str, Any]] = []
@@ -160,6 +173,44 @@ def validate_review_feedback_schema(feedback: dict[str, Any]) -> dict[str, Any]:
             for item in forbidden_claims
         )
 
+    review_completed = bool(
+        normalized_review_decision_value is not None
+        and isinstance(feedback.get("reviewer_attestation"), dict)
+        and feedback["reviewer_attestation"].get("attested") is True
+        and isinstance(feedback.get("submitted_at"), str)
+        and feedback["submitted_at"].strip()
+    )
+    provenance = validate_evidence_provenance(
+        feedback,
+        record_id=feedback.get("review_feedback_id"),
+        record_schema_version=feedback.get("review_feedback_schema_version"),
+        subject_specs={
+            "$": {
+                "evidence_subject": "review",
+                "subject_operation_completed": review_completed,
+            },
+            "$.master_taskbook_hash": {
+                "evidence_subject": "hash_binding",
+                "subject_operation_completed": _hash_matches_expected(
+                    feedback.get("master_taskbook_hash"),
+                    expected_master_taskbook_hash,
+                ),
+            },
+            "$.stage_taskbook_hash": {
+                "evidence_subject": "hash_binding",
+                "subject_operation_completed": _hash_matches_expected(
+                    feedback.get("stage_taskbook_hash"),
+                    expected_stage_taskbook_hash,
+                ),
+            },
+        },
+        base_valid=not rejection_reasons,
+    )
+    if provenance["rejection_reasons"]:
+        rejected_fields.add("evidence_provenance")
+        rejection_reasons.extend(provenance["rejection_reasons"])
+        known_conflicts.extend(provenance["known_conflicts"])
+
     result = _schema_result(
         feedback=feedback,
         rejected_fields=sorted(rejected_fields),
@@ -167,6 +218,7 @@ def validate_review_feedback_schema(feedback: dict[str, Any]) -> dict[str, Any]:
         known_conflicts=known_conflicts,
         normalized_review_decision_value=normalized_review_decision_value,
         pass_alias_used=feedback.get("review_decision_value") == "PASS",
+        evidence_provenance=provenance["projection"],
     )
     assert_review_feedback_schema_result_contract(result)
     return result
@@ -237,6 +289,7 @@ def _schema_result(
     known_conflicts: list[dict[str, Any]],
     normalized_review_decision_value: str | None,
     pass_alias_used: bool,
+    evidence_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     passed = not rejection_reasons
     return {
@@ -246,6 +299,8 @@ def _schema_result(
         "rejected_fields": rejected_fields,
         "rejection_reasons": rejection_reasons,
         "known_conflicts": known_conflicts,
+        "evidence_provenance": evidence_provenance
+        or legacy_evidence_provenance_projection(),
         "allowed_review_decision_values": list(ALLOWED_REVIEW_DECISION_VALUES),
         "normalized_review_decision_value": normalized_review_decision_value,
         "pass_alias_used": pass_alias_used,
@@ -286,6 +341,10 @@ def _sha256_hex(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
+def _hash_matches_expected(value: Any, expected: Any) -> bool:
+    return bool(_sha256_hex(value) and _sha256_hex(expected) and value == expected)
+
+
 def _forbidden_truthy_claims(value: Any, path: str = "review_feedback") -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     if isinstance(value, dict):
@@ -312,4 +371,3 @@ def _truthy_claim(value: Any) -> bool:
 
 def _safe_forbidden_claims(claims: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [{"path": str(item["path"]), "key": str(item["key"])} for item in claims]
-

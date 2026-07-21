@@ -158,6 +158,101 @@ def test_commander_public_compact_tools_omit_local_diagnostics_and_hidden_action
         assert "hidden_action" not in projected["data"]
 
 
+def test_commander_public_projection_preserves_cc_s01_contract_facts(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    canonical = {
+        "ok": True,
+        "schema_version": "executor_continuation_decision.v1",
+        "classification": "active_operation_head_mismatch",
+        "resume_allowed": False,
+        "start_new_allowed": False,
+        "recommended_action": "human_review",
+        "reason": "operation_running",
+        "severity": "blocked",
+        "decision_source": "runner.executor_session.build_canonical_continuation_decision",
+        "head_mismatch_classification": {
+            "status": "active_operation_head_mismatch",
+            "session_head": "a" * 40,
+            "current_head": "b" * 40,
+            "evidence": {
+                "head_mismatch": True,
+                "session_id": "private-session-id",
+                "raw_logs": "private-raw-log",
+            },
+        },
+        "hard_blockers": ["inspect /etc/colameta/private-state.json"],
+        "project_root": "/home/example/src/private-project",
+        "manifest_file": "/home/example/src/private-project/.colameta/session.json",
+    }
+    provenance = {
+        "schema_version": "evidence_provenance.v1",
+        "provenance_status": "verified",
+        "legacy_read_parse_only": False,
+        "eligible_for_acceptance": True,
+        "entries": [
+            {
+                "subject_path": "$.master_taskbook_hash",
+                "evidence_kind": "observed",
+                "evidence_subject": "hash_binding",
+                "subject_requires_execution": False,
+                "subject_operation_completed": True,
+                "execution_performed": False,
+                "eligible_for_acceptance": True,
+                "binding_status": "verified",
+                "session_id": "private-session-id",
+                "raw_logs": "private-raw-log",
+                "binding": {
+                    "record_id": "private-record-id",
+                    "record_schema_version": "review_feedback.v1",
+                    "subject_path": "$.master_taskbook_hash",
+                    "content_sha256": "f" * 64,
+                    "raw_logs": "private-raw-log",
+                },
+            }
+        ],
+        "authority_boundary": {
+            "eligible_means_accepted": False,
+            "creates_review_decision": False,
+            "emits_gate_event": False,
+            "writes_delivery_state": False,
+        },
+    }
+
+    projected = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "analyze_project_state",
+            "data": {
+                "executor": {"canonical_continuation_decision": canonical},
+                "evidence_provenance": provenance,
+                "authority_boundary": {"does_not_authorize_executor_run": True},
+            },
+        },
+        {"project_name": "colameta-self-dev"},
+    )
+
+    public_decision = projected["data"]["executor"]["canonical_continuation_decision"]
+    assert public_decision["recommended_action"] == "human_review"
+    assert public_decision["resume_allowed"] is False
+    assert public_decision["start_new_allowed"] is False
+    assert "project_root" not in public_decision
+    assert "manifest_file" not in public_decision
+    assert public_decision["hard_blockers"] == ["inspect <local-path>"]
+    public_classification = public_decision["head_mismatch_classification"]
+    assert "session_head" not in public_classification
+    assert "current_head" not in public_classification
+    assert "session_id" not in public_classification["evidence"]
+    assert "raw_logs" not in public_classification["evidence"]
+    public_provenance = projected["data"]["evidence_provenance"]
+    assert public_provenance["entries"][0]["subject_path"] == "$.master_taskbook_hash"
+    assert public_provenance["entries"][0]["execution_performed"] is False
+    assert "session_id" not in public_provenance["entries"][0]
+    assert "raw_logs" not in public_provenance["entries"][0]
+    assert "record_id" not in public_provenance["entries"][0]["binding"]
+    assert public_provenance["authority_boundary"]["eligible_means_accepted"] is False
+    assert projected["data"]["authority_boundary"]["does_not_authorize_executor_run"] is True
+
+
 def test_commander_public_smoke_replaces_runtime_heads_with_alignment_fact(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     projected = server._commander_public_project_tool_result(

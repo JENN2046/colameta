@@ -94,6 +94,16 @@ ChatGPT Apps connector 交接时，也读 `apps_connector_closeout`。私人 App
 如果当前服务暴露 `get_apps_connector_smoke_packet`，优先用它做同一个只读交接。
 它还会返回 stable replacement drift hint；这只是提示，不是替换授权。
 
+支持续接决策的读取还会返回公开 `continuation_snapshot`。用 `snapshot_id` 确认 Commander、
+Analyze/Web、Thin-loop recovery 与 executor guidance 来自同一次捕获；不同 ID 不能拼接使用。
+新请求通常会产生新 ID，公开 snapshot 不包含私人 session identity 原值。
+
+启用 executor 前，确认主机支持 POSIX `flock`，canonical 项目根目录属于服务用户，并且没有
+group/world write 位（`mode & 0o022 == 0`）。ColaMeta 把 operation lease 加在既有目录
+descriptor 上，不创建 lock file。`PROJECT_OPERATION_BUSY` 表示应等待当前操作结束，再从新
+snapshot 重试；`PROJECT_OPERATION_LEASE_UNAVAILABLE` 表示部署、owner 或权限不符合合约，应保持
+dispatch 停止并修正环境。不要通过删除 runtime/session 状态或放宽权限绕过任一 gate。
+
 ## 4. 新项目最小 smoke
 
 接入后最小 smoke checklist：
@@ -129,6 +139,12 @@ PROJECT_NOT_REGISTERED
 
 PROJECT_MODE_UNSUPPORTED
   对 source-only 项目调用了 managed-only workflow。
+
+PROJECT_OPERATION_BUSY
+  其他进程持有项目 operation lease。等待或轮询当前 run，再用新的 snapshot/preview 重试。
+
+PROJECT_OPERATION_LEASE_UNAVAILABLE
+  主机或项目根目录 owner/mode 不符合 POSIX lease 合约。保持写操作停止并修正部署。
 ```
 
 ## 5. 进入受控优化
