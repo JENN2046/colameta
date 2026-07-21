@@ -211,6 +211,113 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
         assert decision["recommended_action"] == "start_new"
         assert decision["resume_allowed"] is False
         assert decision["start_new_allowed"] is True
+        assert "stale_session_resume_forbidden" not in decision["hard_blockers"]
+        assert "stale_session_resume_forbidden" in decision["resume_blockers"]
+
+    def test_cont_02_stale_session_allows_start_new_dispatch_precheck(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="colameta-stale-start-new-") as tmp:
+            snapshot = snapshot_from_fact_bundle(
+                tmp,
+                canonical_fact_bundle(status=session_status()),
+            )
+            orchestrator = WorkflowOrchestrator(
+                tmp,
+                analyze_state_fn=lambda params: {
+                    "ok": True,
+                    "plan": {
+                        "source_only": False,
+                        "lint_blocking_issue_count": 0,
+                    },
+                    "git": {
+                        "blocking_working_tree_clean": True,
+                        "working_tree_clean": True,
+                    },
+                    "runner": {},
+                },
+                continuation_snapshot=snapshot,
+            )
+
+            precheck = orchestrator._agent_dispatch_precheck(
+                {"provider": "codex"},
+                require_runner_managed=True,
+                require_git_clean=True,
+                require_lint_clean=True,
+                require_provider=True,
+                require_executor_session_clear=True,
+            )
+
+        assert precheck["ok"] is True
+        assert precheck["inspect_result"]["dispatch_ready"] is True
+        assert precheck["inspect_result"]["hard_blockers"] == []
+        decision = snapshot.project("codex")["canonical_continuation_decision"]
+        assert decision["recommended_action"] == "start_new"
+        assert decision["start_new_allowed"] is True
+        assert "stale_session_resume_forbidden" not in decision["hard_blockers"]
+        assert "stale_session_resume_forbidden" in decision["resume_blockers"]
+
+    def test_dispatch_precheck_preserves_non_stale_hard_blockers(self) -> None:
+        stale_with_upstream_blocker = canonical_fact_bundle(status=session_status())
+        stale_with_upstream_blocker["hard_blockers"] = ["upstream_hard_blocker"]
+        cases = {
+            "stale_with_upstream_blocker": (
+                stale_with_upstream_blocker,
+                "upstream_hard_blocker",
+            ),
+            "active_operation": (
+                canonical_fact_bundle(operation_running=True),
+                "active_operation_head_mismatch",
+            ),
+            "unknown_evidence": (
+                canonical_fact_bundle(
+                    status=session_status(),
+                    operation_running=None,
+                    job_status=None,
+                    latest_run_status=None,
+                    runner_status=None,
+                    current_version_status=None,
+                    worktree_clean=None,
+                ),
+                "continuation_evidence_incomplete",
+            ),
+        }
+
+        with tempfile.TemporaryDirectory(prefix="colameta-hard-blockers-") as tmp:
+            for name, (facts, expected_blocker) in cases.items():
+                with self.subTest(case=name):
+                    snapshot = snapshot_from_fact_bundle(tmp, facts)
+                    orchestrator = WorkflowOrchestrator(
+                        tmp,
+                        analyze_state_fn=lambda params: {
+                            "ok": True,
+                            "plan": {
+                                "source_only": False,
+                                "lint_blocking_issue_count": 0,
+                            },
+                            "git": {
+                                "blocking_working_tree_clean": True,
+                                "working_tree_clean": True,
+                            },
+                            "runner": {},
+                        },
+                        continuation_snapshot=snapshot,
+                    )
+
+                    precheck = orchestrator._agent_dispatch_precheck(
+                        {"provider": "codex"},
+                        require_runner_managed=True,
+                        require_git_clean=True,
+                        require_lint_clean=True,
+                        require_provider=True,
+                        require_executor_session_clear=True,
+                    )
+
+                    decision = snapshot.project("codex")[
+                        "canonical_continuation_decision"
+                    ]
+                    assert expected_blocker in decision["hard_blockers"]
+                    assert precheck["ok"] is False
+                    assert precheck["error"].status == "blocked"
+                    assert expected_blocker in precheck["error"].blockers
 
     def test_cont_03_active_head_mismatch_requires_human_review(self) -> None:
         decision = build_canonical_continuation_decision(

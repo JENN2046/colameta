@@ -354,10 +354,14 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
         "head_evidence_incomplete": "continuation_evidence_incomplete",
         "provider_or_identity_mismatch": reason,
         "resume_unsupported": reason,
-        "completed_idle_stale_session": "stale_session_resume_forbidden",
     }.get(classification)
     if canonical_blocker:
         hard_blockers = _unique_string_items([*hard_blockers, canonical_blocker])
+    resume_blockers = list(hard_blockers)
+    if classification == "completed_idle_stale_session":
+        resume_blockers = _unique_string_items(
+            [*resume_blockers, "stale_session_resume_forbidden"]
+        )
 
     legacy_decision = _legacy_continuation_decision(classification, recommended_action, reason)
     next_action_hint = {
@@ -389,7 +393,7 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
         "should_start_new": bool(start_new_allowed and recommended_action == "start_new"),
         "manual_confirmation_required": recommended_action == "human_review",
         "hard_blockers": hard_blockers,
-        "resume_blockers": hard_blockers,
+        "resume_blockers": resume_blockers,
         "risk_level": "blocked" if severity == "blocked" else ("warning" if severity == "warning" else "none"),
         "risk_warnings": risk_warnings,
         "resume_warnings": risk_warnings,

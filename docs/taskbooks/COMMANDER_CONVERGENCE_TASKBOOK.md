@@ -667,8 +667,12 @@ remediation now preserves explicit false capability facts, rejects malformed
 evidence kinds, requires complete provenance subject coverage, exercises
 CONT-01 through CONT-05 across Session, Analyze, Thin-loop, Web, Invocation,
 and Commander projections, and documents snapshot/lease operation for users
-and operators. Final ordered validation and independent re-review have now
-passed and are the evidence for the ready state below.
+and operators. A later PR review found that
+`stale_session_resume_forbidden` was incorrectly projected as a general hard
+blocker even when the canonical decision safely allowed `start_new`; the
+review fix now keeps that reason in `resume_blockers` only and includes an
+agent-dispatch precheck regression. Final ordered validation and independent
+re-review have now passed and are the evidence for the ready state below.
 
 Local closeout evidence:
 
@@ -680,8 +684,8 @@ cc_s01_a2_local_closeout:
     safety: pass
     usability_and_test_evidence: pass
   remaining_p0_p1_p2_findings: 0
-  targeted_regression: 246_passed_84_subtests
-  full_pytest: 1917_passed_2_skipped_139_subtests
+  targeted_regression: 248_passed_87_subtests
+  full_pytest: 1919_passed_2_skipped_142_subtests
   self_hosting_smoke: passed
   compileall: passed
   ruff_check: passed
