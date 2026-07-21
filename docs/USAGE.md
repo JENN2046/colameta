@@ -741,6 +741,37 @@ A thin governed loop preview is evidence. It is not executor-run authorization.
 Jenn/AGENTS rules; it does not authorize Delivery accepted, ReviewDecision,
 GateEvent, commit, push, or stable replacement.
 
+### Read continuation snapshots and operation-lease errors
+
+Continuation-aware responses include a public `continuation_snapshot` with a
+`snapshot_id`. Within one request, compare that ID across the top-level result,
+Analyze/Web facts, Thin-loop `executor_session_recovery`, Commander, or executor
+status before treating their recommendation as one decision. Different IDs
+mean different captures and must not be combined as if they were atomic. A new
+request normally creates a new snapshot. The public object may carry an
+identity binding, but never the raw private session identity.
+
+Before executor claim/dispatch, ColaMeta takes an exclusive project operation
+lease; read-only snapshots take a shared lease. The lease is a POSIX `flock` on
+the already-existing canonical project-root directory descriptor, not a lock
+file. The root must be owned by the effective process user and must not be
+group/world writable (`mode & 0o022 == 0`).
+
+Handle the two fail-closed errors as follows:
+
+- `PROJECT_OPERATION_BUSY`: another process owns an incompatible lease. Do not
+  claim a preview, start another worker, or delete session/runtime state. Poll
+  the existing run or wait for its process to finish, then request a fresh
+  snapshot and preview.
+- `PROJECT_OPERATION_LEASE_UNAVAILABLE`: the platform, canonical root,
+  ownership, directory flags, or permissions do not satisfy the lease
+  contract. Keep executor dispatch stopped. Verify POSIX/`flock`, the service
+  account owner, that path resolution reaches the expected canonical root,
+  that the final root open is not replaced through a symlink race, and the mode
+  bits; correct the deployment rather than weakening permissions or bypassing
+  the gate. A caller path may itself be a symlink alias when it resolves to the
+  same safe canonical root.
+
 ### Request a Work Item Gate review through the seven-tool app
 
 When an accepted Stage 0-6 result asks whether to request a Delivery State Gate

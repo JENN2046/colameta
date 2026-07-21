@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import socket
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 from runner.cloud_agent_client import CloudRelayToolBridge, RelayRequest
 from runner.cloud_pairing import CloudAgentCredential
+from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.mcp_server import MCPPlanningBridgeServer, MCP_TOOL_POLICIES, _MCPRateLimiter
 from runner.project_registry import ProjectRegistry
 from runner.product_console import record_product_console_action_result
@@ -4141,6 +4143,27 @@ vm.runInThisContext({json.dumps(widget_script)});
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
         server.project_registry = self.temp_registry()
         self.register_demo_project(server.project_registry, project)
+        continuation_snapshot = snapshot_from_fact_bundle(
+            str(project),
+            {
+                "executor_session_status": {"ok": True},
+                "continuation_preview": {"ok": True},
+                "requested_provider": "codex",
+                "selected_provider": None,
+                "identity_present": False,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": False,
+                "job_status": "idle",
+            },
+        )
+        continuation_snapshot_calls: list[tuple[str, str | None]] = []
+
+        def supply_continuation_snapshot(project_root: str, provider: str | None):
+            continuation_snapshot_calls.append((project_root, provider))
+            return continuation_snapshot
+
+        server._continuation_snapshot_supplier = supply_continuation_snapshot
         record_product_console_action_result(
             str(project),
             action_id="submission_evidence_activity",
@@ -4182,6 +4205,16 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert data["app"]["render_tool"] == "render_commander_app"
         assert data["app"]["embedded_flow_profile_id"] == "reviewer_agent"
         assert data["project_name"] == "demo-project"
+        assert continuation_snapshot_calls == [(str(project), "codex")]
+        assert data["continuation_snapshot"]["snapshot_id"] == continuation_snapshot.snapshot_id
+        continuation = data["canonical_continuation_decision"]
+        assert continuation["classification"] == "no_session"
+        assert continuation["recommended_action"] == "start_new"
+        assert continuation["resume_allowed"] is False
+        assert continuation["start_new_allowed"] is True
+        assert continuation["decision_source"] == (
+            "runner.executor_session.build_canonical_continuation_decision"
+        )
         assert data["connector"]["external_connector_status"] == "healthy"
         assert data["readiness"]["status"] in {"ready", "needs_attention", "blocked"}
         assert data["readiness"]["read_only"] is True
@@ -4201,6 +4234,7 @@ vm.runInThisContext({json.dumps(widget_script)});
             embedded_connector["evidence_gap_count"]
             == data["connector"]["operator_closeout"]["evidence_gap_count"]
         )
+
         assert data["agent_operator_flow"]["persona_safe_next_tool"] == "manage_workflow_run"
         assert data["agent_operator_flow"]["primary_next_action"]["tool"]
         assert data["initial_reads"][2]["arguments"]["profile_id"] == "reviewer_agent"
@@ -4285,6 +4319,161 @@ vm.runInThisContext({json.dumps(widget_script)});
         serialized = json.dumps(rejected, ensure_ascii=False)
         assert "must-not-return" not in serialized
         assert "raw_token" not in serialized
+
+    def test_commander_snapshot_preserves_identity_binding_without_raw_identity(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        private_identity = "private-commander-conversation-value"
+        snapshot = snapshot_from_fact_bundle(
+            str(project),
+            {
+                "executor_session_status": {
+                    "ok": True,
+                    "active": True,
+                    "current_head": HEAD_A,
+                    "record": {
+                        "active": True,
+                        "provider": "codex",
+                        "current_head": HEAD_A,
+                        "conversation_id": private_identity,
+                    },
+                },
+                "continuation_preview": {
+                    "ok": True,
+                    "selected_provider": "codex",
+                    "identity_present": True,
+                },
+                "requested_provider": "codex",
+                "selected_provider": "codex",
+                "identity_present": True,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": False,
+                "job_status": "idle",
+                "latest_run_status": "completed",
+                "runner_status": "VERSION_PASSED",
+                "current_version_status": "PASSED",
+                "worktree_clean": True,
+            },
+        )
+        calls: list[tuple[str, str | None]] = []
+
+        def supply(project_root: str, provider: str | None):
+            calls.append((project_root, provider))
+            return snapshot
+
+        server._continuation_snapshot_supplier = supply
+        result = server.call_tool_for_agent(
+            "get_commander_app_manifest",
+            {"project_name": "demo-project", "provider": "codex"},
+        )
+
+        assert result["ok"] is True
+        data = result["data"]
+        assert calls == [(str(project), "codex")]
+        assert data["continuation_snapshot"]["snapshot_id"] == snapshot.snapshot_id
+        assert data["continuation_snapshot"]["identity_binding_sha256"] == hashlib.sha256(
+            private_identity.encode("utf-8")
+        ).hexdigest()
+        assert private_identity not in json.dumps(data, sort_keys=True)
+
+    def test_analyze_project_state_collects_one_continuation_snapshot(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+        snapshot = snapshot_from_fact_bundle(
+            str(project),
+            {
+                "executor_session_status": {"ok": True},
+                "continuation_preview": {"ok": True},
+                "requested_provider": "codex",
+                "selected_provider": None,
+                "identity_present": False,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": False,
+                "job_status": "idle",
+            },
+        )
+        calls: list[tuple[str, str | None]] = []
+
+        def supply(project_root: str, provider: str | None):
+            calls.append((project_root, provider))
+            return snapshot
+
+        server._continuation_snapshot_supplier = supply
+        data = server._tool_analyze_project_state(
+            {"project_name": "demo-project", "provider": "codex", "include_reports": False}
+        )
+
+        assert data["ok"] is True
+        assert calls == [(str(project), "codex")]
+        assert data["executor"]["continuation_snapshot"]["snapshot_id"] == snapshot.snapshot_id
+
+    def test_executor_continuation_decision_retains_additive_diagnostics(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        preview = {
+            "ok": True,
+            "selected_provider": "codex",
+            "identity_kind": "conversation_id",
+            "identity_present": True,
+            "conversation_identity_present": True,
+            "optimization_goal": "maximize_cache_hit",
+            "cache_hit_preference": "prefer_resume_for_cache_hit",
+            "context_facts": {"head_mismatch": False},
+        }
+        snapshot = snapshot_from_fact_bundle(
+            str(project),
+            {
+                "executor_session_status": {
+                    "ok": True,
+                    "active": True,
+                    "record": {
+                        "active": True,
+                        "provider": "codex",
+                        "current_head": "a" * 40,
+                        "conversation_id": "private-conversation-value",
+                    },
+                    "current_head": "a" * 40,
+                    "matches_current_head": True,
+                },
+                "continuation_preview": preview,
+                "requested_provider": "codex",
+                "selected_provider": "codex",
+                "identity_present": True,
+                "provider_resume_supported": True,
+                "resume_invocation_verified": True,
+                "operation_running": False,
+                "job_status": "idle",
+                "latest_run_status": "completed",
+                "runner_status": "VERSION_PASSED",
+                "current_version_status": "PASSED",
+                "worktree_clean": True,
+            },
+        )
+        server._continuation_snapshot_supplier = (
+            lambda project_root, provider: snapshot
+        )
+
+        data = server._tool_get_executor_continuation_decision(
+            {"provider": "codex"}
+        )
+
+        assert data["classification"] == "resume_eligible"
+        assert data["project_root"] == str(project)
+        assert data["manifest_file"].endswith("executor-session.json")
+        assert data["identity_kind"] == "conversation_id"
+        assert data["conversation_identity_present"] is True
+        assert data["resume_identity_present"] is True
+        assert data["optimization_goal"] == "maximize_cache_hit"
+        assert data["cache_hit_preference"] == "prefer_resume_for_cache_hit"
+        assert data["context_facts"] == {"head_mismatch": False}
+        assert data["preview"] == preview
+        assert data["continuation_snapshot"]["snapshot_id"] == snapshot.snapshot_id
 
     def test_commander_app_manifest_embedded_flow_does_not_refresh_manifest_recursively(self) -> None:
         project = self.make_git_checkout(managed=True)

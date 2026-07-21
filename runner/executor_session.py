@@ -21,6 +21,28 @@ COMPLETED_IDLE_STALE_SESSION_MESSAGE = (
     "New development versions should start from the current HEAD."
 )
 
+CANONICAL_CONTINUATION_DECISION_SCHEMA_VERSION = "executor_continuation_decision.v1"
+CANONICAL_CONTINUATION_DECISION_SOURCE = "runner.executor_session.build_canonical_continuation_decision"
+CANONICAL_CONTINUATION_CLASSIFICATIONS = frozenset(
+    {
+        "no_session",
+        "resume_eligible",
+        "completed_idle_stale_session",
+        "active_operation_head_mismatch",
+        "head_evidence_incomplete",
+        "provider_or_identity_mismatch",
+        "resume_unsupported",
+    }
+)
+CANONICAL_CONTINUATION_ACTIONS = frozenset(
+    {
+        "resume",
+        "start_new",
+        "inspect_evidence",
+        "human_review",
+    }
+)
+
 
 def classify_executor_session_head_mismatch(
     *,
@@ -96,6 +118,24 @@ def classify_executor_session_head_mismatch(
         },
     }
 
+    if active_operation:
+        result = dict(base_result)
+        result.update(
+            {
+                "status": "active_operation_head_mismatch",
+                "severity": "blocked",
+                "blocks_auto_resume": True,
+                "blocks_auto_start": True,
+                "reason": "operation_or_live_run_running",
+                "operator_message": (
+                    "An executor operation or live run appears to be running. Automatic resume/start are blocked pending "
+                    "human judgment; runtime/session files must not be modified automatically."
+                ),
+                "allowed_next_actions": ["read_status", "inspect_live_run", "human_review_required"],
+            }
+        )
+        return result
+
     if not session_exists:
         return base_result
     if not heads_comparable:
@@ -115,27 +155,9 @@ def classify_executor_session_head_mismatch(
             }
         )
         return result
+
     if not head_mismatch:
         return base_result
-
-    if active_operation:
-        result = dict(base_result)
-        result.update(
-            {
-                "status": "active_operation_head_mismatch",
-                "severity": "blocked",
-                "blocks_auto_resume": True,
-                "blocks_auto_start": True,
-                "reason": "operation_or_live_run_running",
-                "operator_message": (
-                    "Executor session resume metadata records a HEAD different from the current project HEAD while "
-                    "an operation or live run appears to be running. Automatic resume/start are blocked pending "
-                    "human judgment; runtime/session files must not be modified automatically."
-                ),
-                "allowed_next_actions": ["read_status", "inspect_live_run", "human_review_required"],
-            }
-        )
-        return result
 
     completed_idle_evidence = bool(
         operation_running is False
@@ -191,6 +213,262 @@ def classify_executor_session_head_mismatch(
             "allowed_next_actions": ["read_status", "inspect_runtime_evidence", "human_review_required"],
         }
     )
+    return result
+
+
+def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[str, Any]:
+    """Build the one fail-closed continuation decision from an explicit fact bundle."""
+    facts = dict(fact_bundle) if isinstance(fact_bundle, dict) else {}
+    status = facts.get("executor_session_status")
+    status = status if isinstance(status, dict) else {}
+    record = facts.get("session_record")
+    if not isinstance(record, dict):
+        record = status.get("record")
+    record = record if isinstance(record, dict) else {}
+
+    selected_provider = _clean_status(facts.get("selected_provider"))
+    if selected_provider is None:
+        selected_provider = _clean_status(record.get("provider"))
+    requested_provider = _clean_status(facts.get("requested_provider")) or selected_provider
+    allowed_providers = {"pi", "codex", "opencode"}
+    provider_matches = bool(
+        requested_provider
+        and selected_provider
+        and requested_provider == selected_provider
+    )
+
+    identity_present = facts.get("identity_present")
+    if identity_present is None:
+        identity_present = any(
+            bool(_normalize_executor_identity_str(record.get(key)))
+            for key in ("conversation_id", "session_id", "session_file")
+        )
+    identity_present = bool(identity_present is True)
+
+    provider_resume_supported = bool(facts.get("provider_resume_supported") is True)
+    resume_invocation_verified = bool(facts.get("resume_invocation_verified") is True)
+    hard_blockers = _unique_string_items(facts.get("hard_blockers"))
+    risk_warnings = _unique_string_items(facts.get("risk_warnings"))
+
+    classification_detail = classify_executor_session_head_mismatch(
+        executor_session_status=status,
+        session_record=record,
+        session_head=facts.get("session_head"),
+        current_head=facts.get("current_head"),
+        operation_running=facts.get("operation_running"),
+        job_status=facts.get("job_status"),
+        latest_run_status=facts.get("latest_run_status"),
+        latest_claim_status=facts.get("latest_claim_status"),
+        live_run=facts.get("live_run") if isinstance(facts.get("live_run"), dict) else None,
+        runner_status=facts.get("runner_status"),
+        current_version_status=facts.get("current_version_status"),
+        worktree_clean=facts.get("worktree_clean"),
+    )
+    mismatch_status = str(classification_detail.get("status") or "unknown_head_mismatch")
+    evidence = classification_detail.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    session_exists = bool(evidence.get("session_exists") is True)
+
+    classification = "head_evidence_incomplete"
+    recommended_action = "inspect_evidence"
+    reason = str(classification_detail.get("reason") or "continuation_evidence_incomplete")
+    severity = "blocked"
+    resume_allowed = False
+    start_new_allowed = False
+
+    # Fixed precedence: active/uncertain mismatch, safe start-new cases, then resume.
+    if mismatch_status == "active_operation_head_mismatch":
+        classification = "active_operation_head_mismatch"
+        recommended_action = "human_review"
+        severity = "blocked"
+        reason = str(classification_detail.get("reason") or "operation_or_live_run_running")
+    elif facts.get("continuation_evidence_fail_closed") is True:
+        classification = "head_evidence_incomplete"
+        recommended_action = "inspect_evidence"
+        severity = "blocked"
+        reason = str(facts.get("continuation_evidence_failure_reason") or "continuation_snapshot_unavailable")
+    elif not session_exists:
+        classification = "no_session"
+        recommended_action = "start_new"
+        reason = "no_session_manifest"
+        severity = "info"
+        start_new_allowed = True
+    elif mismatch_status == "unknown_head_mismatch":
+        classification = "head_evidence_incomplete"
+        recommended_action = "inspect_evidence"
+        severity = "blocked"
+        reason = str(classification_detail.get("reason") or "head_evidence_incomplete")
+    elif mismatch_status == "completed_idle_stale_session":
+        classification = "completed_idle_stale_session"
+        recommended_action = "start_new"
+        severity = "warning"
+        reason = str(classification_detail.get("reason") or "completed_idle_stale_session")
+        start_new_allowed = True
+    elif (
+        requested_provider not in allowed_providers
+        or not selected_provider
+        or not provider_matches
+        or not identity_present
+    ):
+        classification = "provider_or_identity_mismatch"
+        recommended_action = "start_new"
+        severity = "warning"
+        start_new_allowed = True
+        if requested_provider not in allowed_providers:
+            reason = "invalid_or_missing_requested_provider"
+        elif not selected_provider:
+            reason = "selected_provider_missing"
+        elif not provider_matches:
+            reason = "provider_mismatch"
+        else:
+            reason = "resume_identity_missing"
+    elif not provider_resume_supported or not resume_invocation_verified:
+        classification = "resume_unsupported"
+        recommended_action = "start_new"
+        severity = "warning"
+        start_new_allowed = True
+        reason = (
+            "provider_resume_not_supported"
+            if not provider_resume_supported
+            else "resume_invocation_unverified"
+        )
+    elif hard_blockers:
+        classification = "head_evidence_incomplete"
+        recommended_action = "inspect_evidence"
+        severity = "blocked"
+        reason = "hard_blocked:" + ",".join(hard_blockers)
+    else:
+        classification = "resume_eligible"
+        recommended_action = "resume"
+        reason = "same_head_provider_identity_resume_verified"
+        severity = "info"
+        resume_allowed = True
+
+    if classification not in CANONICAL_CONTINUATION_CLASSIFICATIONS:
+        raise AssertionError(f"unexpected canonical continuation classification: {classification}")
+    if recommended_action not in CANONICAL_CONTINUATION_ACTIONS:
+        raise AssertionError(f"unexpected canonical continuation action: {recommended_action}")
+
+    canonical_blocker = {
+        "active_operation_head_mismatch": "active_operation_head_mismatch",
+        "head_evidence_incomplete": "continuation_evidence_incomplete",
+        "provider_or_identity_mismatch": reason,
+        "resume_unsupported": reason,
+    }.get(classification)
+    if canonical_blocker:
+        hard_blockers = _unique_string_items([*hard_blockers, canonical_blocker])
+    resume_blockers = list(hard_blockers)
+    if classification == "completed_idle_stale_session":
+        resume_blockers = _unique_string_items(
+            [*resume_blockers, "stale_session_resume_forbidden"]
+        )
+
+    legacy_decision = _legacy_continuation_decision(classification, recommended_action, reason)
+    next_action_hint = {
+        "resume": "Continuation facts are fully verified; resume may be used.",
+        "start_new": "The canonical continuation decision requires a new session.",
+        "inspect_evidence": "Continuation evidence is incomplete; inspect evidence before choosing a session action.",
+        "human_review": "A possibly active HEAD mismatch requires human review before any session action.",
+    }[recommended_action]
+
+    return {
+        "ok": True,
+        "schema_version": CANONICAL_CONTINUATION_DECISION_SCHEMA_VERSION,
+        "classification": classification,
+        "resume_allowed": resume_allowed,
+        "start_new_allowed": start_new_allowed,
+        "recommended_action": recommended_action,
+        "reason": reason,
+        "severity": severity,
+        "decision_source": CANONICAL_CONTINUATION_DECISION_SOURCE,
+        "requested_provider": requested_provider,
+        "selected_provider": selected_provider,
+        "provider_matches": provider_matches,
+        "identity_present": identity_present,
+        "provider_resume_supported": provider_resume_supported,
+        "resume_invocation_verified": resume_invocation_verified,
+        "continuation_available": resume_allowed,
+        "session_resume_available": resume_allowed,
+        "should_resume": resume_allowed,
+        "should_start_new": bool(start_new_allowed and recommended_action == "start_new"),
+        "manual_confirmation_required": recommended_action == "human_review",
+        "hard_blockers": hard_blockers,
+        "resume_blockers": resume_blockers,
+        "risk_level": "blocked" if severity == "blocked" else ("warning" if severity == "warning" else "none"),
+        "risk_warnings": risk_warnings,
+        "resume_warnings": risk_warnings,
+        "head_mismatch_classification": classification_detail,
+        "next_action_hint": next_action_hint,
+        "decision_owner": "executor_session",
+        # Compatibility fields are projections of the canonical result and never inputs to it.
+        "decision": legacy_decision,
+        "decision_reason": reason,
+        "recommended_default": recommended_action,
+        "policy": "canonical_continuation_decision_v1",
+        "actual_executor_resume_attempted": False,
+    }
+
+
+def add_continuation_compatibility_fields(
+    decision: dict[str, Any],
+    *,
+    project_root: str,
+    manifest_file: str,
+    preview: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the legacy diagnostic fields without changing canonical authority."""
+
+    compatible = dict(decision)
+    compatible.update(
+        {
+            "project_root": project_root,
+            "manifest_file": manifest_file,
+            "identity_kind": _clean_status(preview.get("identity_kind")),
+            "conversation_identity_present": bool(
+                preview.get("conversation_identity_present") is True
+            ),
+            "resume_identity_present": bool(
+                compatible.get("identity_present") is True
+            ),
+            "optimization_goal": preview.get(
+                "optimization_goal",
+                "maximize_cache_hit",
+            ),
+            "cache_hit_preference": preview.get(
+                "cache_hit_preference",
+                "start_new_avoids_cache_stale",
+            ),
+            "context_facts": preview.get("context_facts", {}),
+            "preview": preview,
+        }
+    )
+    return compatible
+
+
+def _legacy_continuation_decision(classification: str, recommended_action: str, reason: str) -> str:
+    if recommended_action == "resume":
+        return "resume_auto_eligible"
+    if classification == "no_session":
+        return "start_new_no_session"
+    if classification == "provider_or_identity_mismatch" and reason == "provider_mismatch":
+        return "start_new_provider_mismatch"
+    if classification == "resume_unsupported":
+        return "start_new_resume_invocation_unverified"
+    return "start_new_blocked"
+
+
+def _unique_string_items(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
     return result
 
 
@@ -535,8 +813,8 @@ class ExecutorSessionStore:
             eligibility["resume_eligible"] = True
         return self._finalize_continuation_decision(eligibility)
 
-    def get_continuation_preview(self) -> dict[str, Any]:
-        status = self.get_status()
+    def get_continuation_preview(self, status: dict[str, Any] | None = None) -> dict[str, Any]:
+        status = status if isinstance(status, dict) else self.get_status()
         if not isinstance(status, dict):
             return {
                 "ok": False,
@@ -631,8 +909,17 @@ class ExecutorSessionStore:
             "head_mismatch_classification": head_mismatch_classification,
         }
 
-    def get_continuation_decision(self, requested_provider: str | None = None) -> dict[str, Any]:
-        preview = self.get_continuation_preview()
+    def get_continuation_decision(
+        self,
+        requested_provider: str | None = None,
+        *,
+        fact_bundle: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        injected_facts = dict(fact_bundle) if isinstance(fact_bundle, dict) else {}
+        status = injected_facts.get("executor_session_status")
+        status = status if isinstance(status, dict) else self.get_status()
+        preview = injected_facts.get("continuation_preview")
+        preview = preview if isinstance(preview, dict) else self.get_continuation_preview(status=status)
         if not isinstance(preview, dict) or not preview.get("ok"):
             return {
                 "ok": False,
@@ -640,163 +927,52 @@ class ExecutorSessionStore:
                 "message": "无法生成续接预览。",
             }
 
-        policy = "auto_resume_when_verified"
-        allowed_providers = {"pi", "codex", "opencode"}
         selected_provider = self._normalize_optional_str(preview.get("selected_provider"))
         normalized_requested = self._normalize_optional_str(requested_provider)
+        if not normalized_requested:
+            normalized_requested = self._normalize_optional_str(injected_facts.get("requested_provider"))
         if normalized_requested:
             normalized_requested = normalized_requested.lower()
         if not normalized_requested:
             normalized_requested = selected_provider
-
-        hard_blockers = list(preview.get("hard_blockers") or preview.get("blockers") or [])
-        risk_warnings = list(preview.get("risk_warnings") or [])
-        risk_level = str(preview.get("risk_level") or "none")
-        identity_kind = self._normalize_optional_str(preview.get("identity_kind"))
-        identity_present = bool(preview.get("identity_present") is True)
-        conversation_identity_present = bool(preview.get("conversation_identity_present") is True)
-        provider_matches = bool(
-            normalized_requested
-            and selected_provider
-            and normalized_requested == selected_provider
-        )
-
-        decision = "start_new_blocked"
-        decision_reason = "hard_blocked"
-        continuation_available = False
-        should_start_new = True
-        manual_confirmation_required = False
-        should_resume = False
         provider_resume_supported, resume_invocation_verified, _ = self._provider_resume_policy(normalized_requested)
-
-        if not normalized_requested:
-            decision = "start_new_no_provider"
-            decision_reason = "no_selected_provider"
-            hard_blockers.append("no_selected_provider")
-        elif normalized_requested not in allowed_providers:
-            decision = "start_new_invalid_provider"
-            decision_reason = "invalid_provider"
-            hard_blockers.append("provider_unknown")
-        elif selected_provider and not provider_matches:
-            decision = "start_new_provider_mismatch"
-            decision_reason = "provider_mismatch"
-            hard_blockers.append("provider_mismatch")
-        else:
-            continuation_available = bool(preview.get("continuation_available") is True)
-            if continuation_available:
-                if (
-                    provider_matches
-                    and identity_present
-                    and provider_resume_supported
-                    and resume_invocation_verified
-                    and not hard_blockers
-                ):
-                    decision = "resume_auto_eligible"
-                    decision_reason = "same_project_provider_identity_available"
-                    should_start_new = False
-                    should_resume = True
-                    manual_confirmation_required = False
-                    hard_blockers = []
-                else:
-                    decision = "start_new_resume_invocation_unverified"
-                    decision_reason = "resume_invocation_unverified"
-                    should_start_new = True
-                    should_resume = False
-                    manual_confirmation_required = False
-                    if not provider_resume_supported:
-                        hard_blockers.append("provider_resume_not_supported")
-                    if not resume_invocation_verified:
-                        hard_blockers.append("resume_invocation_unverified")
-                    if normalized_requested == "pi":
-                        hard_blockers.append("pi_resume_invocation_unverified")
-            else:
-                if "no_session_manifest" in hard_blockers:
-                    decision = "start_new_no_session"
-                    decision_reason = "no_session_manifest"
-                else:
-                    decision = "start_new_blocked"
-                    decision_reason = "hard_blocked"
-
-        if normalized_requested in allowed_providers and not provider_resume_supported:
-            hard_blockers.append("provider_resume_not_supported")
-
-        hard_blockers = self._unique_items(hard_blockers)
-        risk_warnings = self._unique_items(risk_warnings)
-        session_resume_available = bool(
-            continuation_available
-            and provider_matches
-            and provider_resume_supported
-            and identity_present
-            and not hard_blockers
-        )
-        if decision == "resume_auto_eligible":
-            base = "当前存在同项目、同执行器的可续接候选。Runner 仅提供事实，由 GPTs 最终决策，推荐默认 resume 以最大化缓存命中。"
-            if risk_level == "warning":
-                next_action_hint = f"{base} HEAD 或分支有其他变化，已记录风险。"
-            else:
-                next_action_hint = base
-        elif decision == "start_new_provider_mismatch":
-            next_action_hint = "当前记录的会话来自其他执行器，本项目优先考虑最大化缓存命中。"
-        elif decision == "start_new_invalid_provider":
-            next_action_hint = "请求的执行器无效，本项目优先考虑最大化缓存命中。"
-        elif decision == "start_new_no_session":
-            next_action_hint = "当前没有可续接会话，默认启动新会话；由 GPTs 决策。"
-        else:
-            next_action_hint = "当前存在硬阻断，默认启动新会话；由 GPTs 决策。"
-
-        decision_owner = preview.get("decision_owner", "gpts") if isinstance(preview, dict) else "gpts"
-        optimization_goal = preview.get("optimization_goal", "maximize_cache_hit") if isinstance(preview, dict) else "maximize_cache_hit"
-        preview_recommended = preview.get("recommended_default") if isinstance(preview, dict) else None
-        recommended_default = preview_recommended or ("start_new" if should_start_new else "resume")
-        cache_hit_preference = preview.get("cache_hit_preference") if isinstance(preview, dict) else None
-        if not cache_hit_preference:
-            cache_hit_preference = "prefer_resume_for_cache_hit" if continuation_available else "start_new_avoids_cache_stale"
-        context_facts = preview.get("context_facts", {}) if isinstance(preview, dict) else {}
-        if not isinstance(context_facts, dict):
-            context_facts = {}
-        head_mismatch_classification = preview.get("head_mismatch_classification")
-        if not isinstance(head_mismatch_classification, dict):
-            head_mismatch_classification = {}
-
-        return {
-            "ok": True,
-            "project_root": self.project_root,
-            "manifest_file": self.manifest_file,
+        defaults = {
+            "executor_session_status": status,
+            "continuation_preview": preview,
             "requested_provider": normalized_requested,
             "selected_provider": selected_provider,
-            "provider_matches": provider_matches,
-            "identity_kind": identity_kind,
-            "identity_present": identity_present,
-            "continuation_available": continuation_available,
-            "policy": policy,
-            "decision": decision,
-            "decision_reason": decision_reason,
-            "should_resume": should_resume,
-            "should_start_new": should_start_new,
-            "manual_confirmation_required": manual_confirmation_required,
-            "risk_level": risk_level,
-            "risk_warnings": risk_warnings,
-            "resume_warnings": risk_warnings,
-            "hard_blockers": hard_blockers,
-            "resume_blockers": hard_blockers,
+            "identity_present": preview.get("identity_present") is True,
             "provider_resume_supported": provider_resume_supported,
-            "session_resume_available": session_resume_available,
-            "conversation_identity_present": conversation_identity_present,
-            "resume_identity_present": identity_present,
-            "actual_executor_resume_attempted": False,
             "resume_invocation_verified": resume_invocation_verified,
-            "next_action_hint": next_action_hint,
-            "decision_owner": decision_owner,
-            "optimization_goal": optimization_goal,
-            "recommended_default": recommended_default,
-            "cache_hit_preference": cache_hit_preference,
-            "context_facts": context_facts,
-            "head_mismatch_classification": head_mismatch_classification,
-            "preview": preview,
+            "hard_blockers": list(preview.get("hard_blockers") or preview.get("blockers") or []),
+            "risk_warnings": list(preview.get("risk_warnings") or []),
         }
+        canonical_facts = {**defaults, **injected_facts}
+        canonical_facts["executor_session_status"] = status
+        canonical_facts["continuation_preview"] = preview
+        canonical_facts["requested_provider"] = normalized_requested
+        canonical_facts.setdefault("selected_provider", selected_provider)
+        decision = build_canonical_continuation_decision(canonical_facts)
+        return add_continuation_compatibility_fields(
+            decision,
+            project_root=self.project_root,
+            manifest_file=self.manifest_file,
+            preview=preview,
+        )
 
-    def get_resume_invocation_preview(self, requested_provider: str | None = None) -> dict[str, Any]:
-        decision = self.get_continuation_decision(requested_provider=requested_provider)
+    def get_resume_invocation_preview(
+        self,
+        requested_provider: str | None = None,
+        *,
+        fact_bundle: dict[str, Any] | None = None,
+        continuation_decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        decision = continuation_decision if isinstance(continuation_decision, dict) else None
+        if decision is None:
+            decision = self.get_continuation_decision(
+                requested_provider=requested_provider,
+                fact_bundle=fact_bundle,
+            )
         if not isinstance(decision, dict) or not decision.get("ok"):
             return {
                 "ok": False,
@@ -819,13 +995,15 @@ class ExecutorSessionStore:
         risk_warnings = list(decision.get("risk_warnings") or [])
         hard_blockers = self._unique_items(list(decision.get("hard_blockers") or []))
         decision_name = str(decision.get("decision") or "start_new_blocked")
+        recommended_action = str(decision.get("recommended_action") or "inspect_evidence")
         (
             provider_resume_supported,
             resume_invocation_verified_flag,
             resume_invocation_kind,
         ) = self._provider_resume_policy(provider)
         should_resume = bool(
-            decision_name == "resume_auto_eligible"
+            decision.get("recommended_action") == "resume"
+            and decision.get("resume_allowed") is True
             and continuation_available
             and provider_matches
             and provider_resume_supported
@@ -833,7 +1011,7 @@ class ExecutorSessionStore:
             and identity_present
             and not hard_blockers
         )
-        requires_manual_confirmation = False
+        requires_manual_confirmation = recommended_action == "human_review"
 
         resume_invocation_supported = provider_resume_supported
         resume_invocation_verified = resume_invocation_verified_flag
@@ -856,8 +1034,12 @@ class ExecutorSessionStore:
             }
             if should_resume:
                 next_action_hint = "Codex resume invocation shape is verified. 下一次执行会自动 resume 同一会话。"
-            else:
+            elif recommended_action == "start_new":
                 next_action_hint = "Codex resume invocation shape is verified. 当前状态会在下一次执行使用新会话。"
+            elif recommended_action == "human_review":
+                next_action_hint = "当前 continuation 决策要求人工判断；不得 resume 或启动新会话。"
+            else:
+                next_action_hint = "当前 continuation 证据不完整；补齐证据前不得 resume 或启动新会话。"
         elif provider == "opencode":
             command_preview = []
             alternate_command_preview = []
@@ -868,8 +1050,12 @@ class ExecutorSessionStore:
             }
             if should_resume:
                 next_action_hint = "OpenCode server resume is supported. 下一次执行会自动 resume 同一会话。"
-            else:
+            elif recommended_action == "start_new":
                 next_action_hint = "OpenCode server resume is supported. 当前状态会在下一次执行使用新会话。"
+            elif recommended_action == "human_review":
+                next_action_hint = "当前 continuation 决策要求人工判断；不得 resume 或启动新会话。"
+            else:
+                next_action_hint = "当前 continuation 证据不完整；补齐证据前不得 resume 或启动新会话。"
         elif provider == "pi":
             command_preview = []
             alternate_command_preview = []
@@ -914,6 +1100,7 @@ class ExecutorSessionStore:
             "next_action_hint": next_action_hint,
             "head_mismatch_classification": decision.get("head_mismatch_classification", {}),
             "continuation_decision": decision,
+            "canonical_continuation_decision": decision,
         }
 
     def _provider_resume_policy(self, provider: str | None) -> tuple[bool, bool, str]:

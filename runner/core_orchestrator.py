@@ -14,6 +14,12 @@ from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.plan_patch_workflow import PlanPatchAutoApplyService
 from runner.source_review_bridge import SourceReviewBridge
 from runner.executor_session import ExecutorSessionStore
+from runner.continuation_snapshot import (
+    ContinuationSnapshot,
+    collect_continuation_snapshot,
+    get_or_collect_continuation_snapshot,
+    snapshot_from_fact_bundle,
+)
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
@@ -73,6 +79,7 @@ class WorkflowOrchestrator:
         git_commit_manager: MCPGitCommitManager | None = None,
         planning_bridge: PlanningBridge | None = None,
         executor_workflow_factory: Callable[[str], MCPExecutorWorkflowManager] | None = None,
+        continuation_snapshot: ContinuationSnapshot | None = None,
     ):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self._source_review = source_review or SourceReviewBridge()
@@ -88,6 +95,7 @@ class WorkflowOrchestrator:
         self._executor_workflow_factory = executor_workflow_factory or (
             lambda project_root: MCPExecutorWorkflowManager(project_root)
         )
+        self._continuation_snapshot = continuation_snapshot
 
         self._runner_plan_manager: MCPRunnerPlanManager | None = None
         self._executor_run_report_store: ExecutorRunReportStore | None = None
@@ -427,14 +435,32 @@ class WorkflowOrchestrator:
         self,
         provider: str | None = None,
         include_reports: bool = True,
+        continuation_fact_bundle: dict[str, Any] | None = None,
+        continuation_snapshot: ContinuationSnapshot | None = None,
     ) -> CoreFactSnapshot:
+        captured = continuation_snapshot or self._continuation_snapshot
+        if captured is None and continuation_fact_bundle is not None:
+            captured = snapshot_from_fact_bundle(self.project_root, continuation_fact_bundle)
+        if captured is None:
+            captured = collect_continuation_snapshot(
+                self.project_root,
+                requested_provider=provider,
+                planning_bridge=self._planning_bridge,
+                source_review=self._source_review,
+            )
+        if self._continuation_snapshot is None:
+            self._continuation_snapshot = captured
         snapshot = ProjectSnapshotBuilder(
             self.project_root,
             source_review=self._source_review,
             planning_bridge=self._planning_bridge,
             runner_plan_manager=self.runner_plan_manager,
             executor_run_report_store=self.executor_run_report_store,
-        ).build(provider=provider, include_reports=include_reports)
+        ).build(
+            provider=provider,
+            include_reports=include_reports,
+            continuation_snapshot=captured,
+        )
         project_identity = snapshot.project_identity
         mode = snapshot.mode
         git = dict(snapshot.git)
@@ -444,6 +470,26 @@ class WorkflowOrchestrator:
         executor = dict(snapshot.executor)
         reports = dict(snapshot.reports)
         partial_errors = list(snapshot.partial_errors)
+
+        # ProjectSnapshotBuilder owns the single canonical decision read for
+        # this snapshot.  Analyze only projects that exact object.
+        canonical_continuation_decision = executor.get("canonical_continuation_decision")
+        if isinstance(canonical_continuation_decision, dict):
+            executor["canonical_continuation_decision"] = canonical_continuation_decision
+            executor["continuation_available"] = bool(
+                canonical_continuation_decision.get("resume_allowed") is True
+            )
+            executor["decision"] = canonical_continuation_decision.get("decision")
+            executor["should_resume"] = bool(
+                canonical_continuation_decision.get("resume_allowed") is True
+            )
+            executor["should_start_new"] = bool(
+                canonical_continuation_decision.get("start_new_allowed") is True
+                and canonical_continuation_decision.get("recommended_action") == "start_new"
+            )
+            executor["manual_confirmation_required"] = bool(
+                canonical_continuation_decision.get("recommended_action") == "human_review"
+            )
 
         plan_blockers = list(plan_status.get("blockers", []))
         plan_warnings = list(plan_status.get("warnings", []))
@@ -489,6 +535,9 @@ class WorkflowOrchestrator:
                 "decision": executor.get("decision"),
                 "should_resume": executor.get("should_resume", False),
                 "should_start_new": executor.get("should_start_new", True),
+                "canonical_continuation_decision": executor.get(
+                    "canonical_continuation_decision"
+                ),
             },
             latest_report=reports,
             can_continue=bool(runner.get("has_pending_versions") or executor.get("continuation_available")),
@@ -970,15 +1019,30 @@ class WorkflowOrchestrator:
         else:
             git_clean = False
 
-        session_store = ExecutorSessionStore(self.project_root)
-        session_status = session_store.get_status()
-        continuation_preview = session_store.get_continuation_preview()
+        continuation_snapshot = self._continuation_snapshot or get_or_collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+            planning_bridge=self._planning_bridge,
+            source_review=self._source_review,
+        )
+        if self._continuation_snapshot is None:
+            self._continuation_snapshot = continuation_snapshot
+        continuation_projection = continuation_snapshot.project(provider)
+        session_status = continuation_snapshot.session_status
+        continuation_preview = continuation_snapshot.continuation_preview
+        continuation_decision = continuation_projection["canonical_continuation_decision"]
         session_step_result = {
             "ok": True,
             "session_status": session_status,
             "continuation_preview": continuation_preview,
-            "warnings": continuation_preview.get("warnings", []) if isinstance(continuation_preview, dict) else [],
-            "blockers": continuation_preview.get("hard_blockers", []) if require_executor_session_clear and isinstance(continuation_preview, dict) else [],
+            "canonical_continuation_decision": continuation_decision,
+            "continuation_snapshot": continuation_snapshot.public_view(provider),
+            "warnings": continuation_decision.get("risk_warnings", []),
+            "blockers": (
+                continuation_decision.get("hard_blockers", [])
+                if require_executor_session_clear
+                else []
+            ),
         }
         steps.append(self._step("agent_dispatch", "executor_session", "status", session_step_result, STEP_RISK_INFO))
 
@@ -992,13 +1056,14 @@ class WorkflowOrchestrator:
             blockers.append("Git 工作区存在改动，先清理后再派发执行。")
 
         hard_blockers: list[str] = []
-        if isinstance(continuation_preview, dict):
-            for item in continuation_preview.get("risk_warnings", []) or []:
+        if isinstance(continuation_decision, dict):
+            for item in continuation_decision.get("risk_warnings", []) or []:
                 if isinstance(item, str) and item not in warnings:
                     warnings.append(item)
-            for item in continuation_preview.get("hard_blockers", []) or []:
+            for item in continuation_decision.get("hard_blockers", []) or []:
                 if isinstance(item, str) and item not in hard_blockers:
                     hard_blockers.append(item)
+        if isinstance(continuation_preview, dict):
             for item in continuation_preview.get("warnings", []) or []:
                 if isinstance(item, str) and item not in warnings:
                     warnings.append(item)
@@ -3326,6 +3391,11 @@ class WorkflowOrchestrator:
             ],
             "stage_results": {},
             "blockers": [],
+            "evidence_provenance": {
+                "schema_version": generated_input_bundle["evidence_provenance"]["schema_version"],
+                "provenance_status": "draft_non_acceptable",
+                "eligible_for_acceptance": False,
+            },
             "authority_boundary": self._thin_loop_authority_boundary(),
             "delivery_state_accepted": False,
             "review_decision_created": False,
@@ -3363,6 +3433,7 @@ class WorkflowOrchestrator:
                         "execution_envelope",
                         "local_execution_receipt",
                         "review_feedback",
+                        "evidence_provenance",
                     ],
                     "next_request_shape": {
                         "workflow": "thin_governed_loop_preview",
@@ -3418,7 +3489,10 @@ class WorkflowOrchestrator:
             validation_commands=validation_commands,
         )
         direct_execution_ready = not packet_blockers
-        session_guidance = self._thin_loop_executor_session_guidance(provider="codex")
+        session_guidance = self._thin_loop_executor_session_guidance(
+            provider="codex",
+            continuation_snapshot=self._continuation_snapshot,
+        )
         closeout_template = self._thin_loop_closeout_summary_template(validation_commands)
         prompt = self._thin_loop_codex_prompt(
             objective=objective,
@@ -3556,25 +3630,42 @@ class WorkflowOrchestrator:
             )
         return blockers
 
-    def _thin_loop_executor_session_guidance(self, *, provider: str) -> dict[str, Any]:
+    def _thin_loop_executor_session_guidance(
+        self,
+        *,
+        provider: str,
+        continuation_snapshot: ContinuationSnapshot | None = None,
+    ) -> dict[str, Any]:
         fallback = {
             "status": "session_guidance_unavailable",
             "provider": provider,
-            "recommended_session_mode": "start_new",
+            "recommended_action": "inspect_evidence",
+            "recommended_session_mode": "blocked",
             "resume_existing_allowed_by_packet": False,
-            "local_codex_direct_session": "start_new",
-            "managed_executor_mode_hint": "executor_session_mode=start_new",
+            "start_new_allowed_by_packet": False,
+            "local_codex_direct_session": "blocked",
+            "managed_executor_mode_hint": None,
             "reason": "executor_session_status_unavailable",
             "head_mismatch": None,
             "hard_blockers": [],
             "warnings": [],
+            "canonical_continuation_decision": None,
             "does_not_reset_or_modify_session_metadata": True,
         }
         try:
-            store = ExecutorSessionStore(self.project_root)
-            status = store.get_status()
-            decision = store.get_continuation_decision(requested_provider=provider)
-            invocation = store.get_resume_invocation_preview(requested_provider=provider)
+            captured = continuation_snapshot or self._continuation_snapshot
+            if captured is None:
+                captured = collect_continuation_snapshot(
+                    self.project_root,
+                    requested_provider=provider,
+                    planning_bridge=self._planning_bridge,
+                    source_review=self._source_review,
+                )
+                self._continuation_snapshot = captured
+            projection = captured.project(provider)
+            status = captured.session_status
+            decision = projection["canonical_continuation_decision"]
+            invocation = projection["resume_invocation_preview"]
         except Exception as exc:
             out = dict(fallback)
             out["error"] = str(exc)
@@ -3587,66 +3678,80 @@ class WorkflowOrchestrator:
         if not isinstance(invocation, dict):
             invocation = {}
 
-        context_facts = decision.get("context_facts")
-        if not isinstance(context_facts, dict):
-            context_facts = {}
         hard_blockers = [str(item) for item in decision.get("hard_blockers", []) if isinstance(item, str)]
         warnings = [str(item) for item in decision.get("risk_warnings", []) if isinstance(item, str)]
-        status_classification = status.get("head_mismatch_classification")
-        if not isinstance(status_classification, dict):
-            status_classification = {}
-        invocation_classification = invocation.get("head_mismatch_classification")
-        if not isinstance(invocation_classification, dict):
-            invocation_classification = {}
-        status_classification_evidence = status_classification.get("evidence")
-        if not isinstance(status_classification_evidence, dict):
-            status_classification_evidence = {}
-        invocation_classification_evidence = invocation_classification.get("evidence")
-        if not isinstance(invocation_classification_evidence, dict):
-            invocation_classification_evidence = {}
-
-        head_mismatch = bool(
-            context_facts.get("head_mismatch") is True
-            or status.get("matches_current_head") is False
-            or status_classification_evidence.get("head_mismatch") is True
-            or invocation_classification_evidence.get("head_mismatch") is True
+        classification = decision.get("head_mismatch_classification")
+        classification = classification if isinstance(classification, dict) else {}
+        classification_evidence = classification.get("evidence")
+        classification_evidence = (
+            classification_evidence if isinstance(classification_evidence, dict) else {}
         )
-        if head_mismatch:
-            return {
-                "status": "start_new_recommended_due_to_head_mismatch",
-                "provider": provider,
-                "recommended_session_mode": "start_new",
-                "resume_existing_allowed_by_packet": False,
-                "local_codex_direct_session": "start_new",
-                "managed_executor_mode_hint": "executor_session_mode=start_new",
-                "reason": "avoid_resuming_stale_head_session",
-                "head_mismatch": True,
-                "session_head": status.get("record", {}).get("current_head") if isinstance(status.get("record"), dict) else None,
-                "current_head": status.get("current_head"),
-                "hard_blockers": hard_blockers,
-                "warnings": warnings,
-                "safe_recovery_steps": [
-                    "Do not resume the stale executor session for this M0-M2 packet.",
-                    "Start a fresh local Codex conversation with copy_paste_codex_prompt.",
-                    "If using managed executor later, pass executor_session_mode=start_new after a fresh run_once_preview.",
-                    "Do not reset session metadata unless Jenn explicitly asks for reset.",
-                ],
-                "does_not_reset_or_modify_session_metadata": True,
-            }
-
-        should_resume = bool(decision.get("should_resume") is True)
-        recommended = "auto" if should_resume else "start_new"
+        recommended_action = str(decision.get("recommended_action") or "inspect_evidence")
+        resume_allowed = bool(decision.get("resume_allowed") is True)
+        start_new_allowed = bool(decision.get("start_new_allowed") is True)
+        session_mode = {
+            "resume": "auto",
+            "start_new": "start_new",
+            "inspect_evidence": "blocked",
+            "human_review": "blocked",
+        }.get(recommended_action, "blocked")
+        guidance_status = {
+            "resume": "resume_available",
+            "start_new": "start_new_recommended",
+            "inspect_evidence": "continuation_evidence_inspection_required",
+            "human_review": "continuation_human_review_required",
+        }.get(recommended_action, "continuation_evidence_inspection_required")
+        managed_hint = {
+            "resume": "executor_session_mode=auto",
+            "start_new": "executor_session_mode=start_new",
+        }.get(recommended_action)
+        safe_recovery_steps = {
+            "resume": [
+                "Use the canonical resume path only while the bound facts remain current.",
+            ],
+            "start_new": [
+                "Do not resume the prior executor session.",
+                "Start a fresh local Codex conversation with copy_paste_codex_prompt.",
+                "Do not reset session metadata unless Jenn explicitly asks for reset.",
+            ],
+            "inspect_evidence": [
+                "Inspect the missing continuation evidence before selecting a session mode.",
+                "Do not resume or start a managed executor session from this packet.",
+            ],
+            "human_review": [
+                "Review the possibly active HEAD mismatch before selecting a session mode.",
+                "Do not resume or start a managed executor session from this packet.",
+            ],
+        }.get(recommended_action, ["Inspect continuation evidence before selecting a session mode."])
         return {
-            "status": "resume_available" if should_resume else "start_new_recommended",
+            "status": guidance_status,
             "provider": provider,
-            "recommended_session_mode": recommended,
-            "resume_existing_allowed_by_packet": should_resume,
-            "local_codex_direct_session": "fresh_or_resume_at_codex_discretion" if should_resume else "start_new",
-            "managed_executor_mode_hint": "executor_session_mode=auto" if should_resume else "executor_session_mode=start_new",
-            "reason": str(decision.get("decision_reason") or decision.get("decision") or "no_resume_candidate"),
-            "head_mismatch": False,
+            "recommended_action": recommended_action,
+            "recommended_session_mode": session_mode,
+            "resume_existing_allowed_by_packet": resume_allowed,
+            "start_new_allowed_by_packet": start_new_allowed,
+            "local_codex_direct_session": (
+                "fresh_or_resume_at_codex_discretion"
+                if recommended_action == "resume"
+                else ("start_new" if recommended_action == "start_new" else "blocked")
+            ),
+            "managed_executor_mode_hint": managed_hint,
+            "reason": str(decision.get("reason") or "continuation_evidence_incomplete"),
+            "head_mismatch": classification_evidence.get("head_mismatch"),
+            "session_head": (
+                status.get("record", {}).get("current_head")
+                if isinstance(status.get("record"), dict)
+                else None
+            ),
+            "current_head": status.get("current_head"),
             "hard_blockers": hard_blockers,
             "warnings": warnings,
+            "safe_recovery_steps": safe_recovery_steps,
+            "canonical_continuation_decision": decision,
+            "continuation_snapshot": captured.public_view(provider),
+            "invocation_uses_canonical_decision": (
+                invocation.get("canonical_continuation_decision") is decision
+            ),
             "does_not_reset_or_modify_session_metadata": True,
         }
 
@@ -3717,7 +3822,7 @@ class WorkflowOrchestrator:
                 "- Edit only allowed files unless the user explicitly expands scope.",
                 "- Do not read token/cookie/credential/browser login state, tunnel config, proxy config, raw logs, or private memory.",
                 "- Do not write Delivery accepted, ReviewDecision, GateEvent, commit, push, or stable replacement.",
-                "- If executor session metadata has a stale HEAD, start a fresh local Codex session; do not resume the stale session.",
+                "- Follow only the canonical session guidance below; when it is blocked, do not resume or start a managed executor session.",
                 f"- Session guidance: {session_guidance.get('status')} / {session_guidance.get('managed_executor_mode_hint')}.",
                 "",
                 "Validation commands:",
@@ -3806,7 +3911,7 @@ class WorkflowOrchestrator:
         )
 
     def _thin_loop_generated_input_bundle(self, params: dict[str, Any]) -> dict[str, Any]:
-        from runner.thin_governed_loop import example_stage_3_6_inputs
+        from runner.thin_governed_loop import build_draft_evidence_provenance, example_stage_3_6_inputs
 
         bundle_param = params.get("thin_loop_inputs")
         if not isinstance(bundle_param, dict):
@@ -3828,6 +3933,7 @@ class WorkflowOrchestrator:
         }
         for field in self._thin_loop_object_fields():
             generated[field] = inputs[field]
+        generated["evidence_provenance"] = build_draft_evidence_provenance(generated)
         return generated
 
     @staticmethod
@@ -3933,11 +4039,6 @@ class WorkflowOrchestrator:
             applied.add("allowed_files")
             external_claim["allowed_files"] = allowed_files
             envelope["allowed_files"] = allowed_files
-            local_receipt["touched_files"] = allowed_files
-            local_receipt["observed_mutations"] = [
-                {"path": path, "mutation_type": "modified"}
-                for path in allowed_files
-            ]
 
         forbidden_files = self._thin_loop_seed_string_list(draft_seed, "forbidden_files")
         if forbidden_files:
@@ -3951,14 +4052,6 @@ class WorkflowOrchestrator:
             external_claim["acceptance_commands"] = validation_commands
             envelope["validation_commands"] = validation_commands
             local_receipt["validation_commands"] = validation_commands
-            local_receipt["validation_results"] = [
-                {"command": command, "result": "passed"}
-                for command in validation_commands
-            ]
-            local_receipt["command_attempts"] = [
-                {"command": command, "exit_code": 0, "result": "passed"}
-                for command in validation_commands
-            ]
 
         allowed_commands = self._thin_loop_seed_string_list(draft_seed, "allowed_commands")
         if allowed_commands:
@@ -3992,15 +4085,6 @@ class WorkflowOrchestrator:
         if review_feedback.get("review_decision_value") == "PASS" and pass_alias_policy_id:
             applied.add("pass_alias_policy_id_when_used")
             review_feedback["pass_alias_policy_id_when_used"] = pass_alias_policy_id
-        if local_receipt.get("touched_files") and local_receipt.get("validation_commands"):
-            local_receipt["execution_result"] = "executed"
-            local_receipt["validation_summary"] = "passed"
-            local_receipt["scope_check_result"] = "passed"
-            local_receipt["blocked_or_failed_reasons"] = []
-            local_receipt["known_gaps"] = []
-            local_receipt["remaining_risks"] = [
-                {"risk_id": "review_required", "risk": "Reviewer has not accepted delivery."}
-            ]
         return sorted(applied)
 
     def _thin_loop_seed_goal(self, seed: dict[str, Any]) -> tuple[str, str]:
@@ -4064,6 +4148,9 @@ class WorkflowOrchestrator:
         }
         for field in object_fields:
             inputs[field] = provided[field]
+        provenance = params.get("evidence_provenance", bundle.get("evidence_provenance"))
+        if provenance is not None:
+            inputs["evidence_provenance"] = provenance
         return inputs, "provided", []
 
     def _thin_loop_requested_input_mode(self, params: dict[str, Any]) -> str:
@@ -4109,13 +4196,14 @@ class WorkflowOrchestrator:
                 },
             ],
             "transport": {
-                "direct_fields": list(self._thin_loop_object_fields()),
+                "direct_fields": [*self._thin_loop_object_fields(), "evidence_provenance"],
                 "bundle_field": "thin_loop_inputs",
                 "bundle_allowed_fields": [
                     "input_mode",
                     "current_head",
                     "draft_seed",
                     *self._thin_loop_object_fields(),
+                    "evidence_provenance",
                 ],
             },
             "minimal_request_shape": {
@@ -4128,6 +4216,7 @@ class WorkflowOrchestrator:
                 "execution_envelope": "<object>",
                 "local_execution_receipt": "<object>",
                 "review_feedback": "<object>",
+                "evidence_provenance": "<optional versioned sibling envelope; omission is legacy_unclassified>",
             },
             "draft_request_shape": {
                 "workflow": "thin_governed_loop_preview",
@@ -4151,9 +4240,9 @@ class WorkflowOrchestrator:
                 "authority": "draft_input_only_not_execution_or_acceptance_authority",
             },
             "draft_seed_fields": {
-                "allowed_files": "同步写入 external_taskbook_claim、execution_envelope、local_execution_receipt。",
+                "allowed_files": "同步写入 external_taskbook_claim、execution_envelope；不伪造 receipt.touched_files/observed_mutations。",
                 "forbidden_files": "同步写入 external_taskbook_claim、execution_envelope。",
-                "validation_commands": "同步写入 acceptance_commands、validation_commands、command_attempts、validation_results。",
+                "validation_commands": "同步写入计划/边界字段；receipt 仍为 blocked_before_execution，且不伪造 passed/exit_code。",
                 "allowed_commands": "可选覆盖 execution_envelope.allowed_commands；不传时沿用 validation_commands。",
                 "goal": "写入 external_taskbook_claim provenance/manual_acceptance；无 reviewer_notes 时也写入 review_feedback.reviewer_notes。",
                 "objective": "goal 的同义字段；用于自然语言目标。",
@@ -4737,24 +4826,28 @@ class WorkflowOrchestrator:
     def _auto_preview_executor(self, params: dict[str, Any]) -> dict[str, Any]:
         steps: list[dict[str, Any]] = []
 
-        session_store = ExecutorSessionStore(self.project_root)
-        session_status = session_store.get_status()
+        provider = params.get("provider", "codex")
+        snapshot = self._continuation_snapshot or get_or_collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=provider,
+            planning_bridge=self._planning_bridge,
+            source_review=self._source_review,
+        )
+        if self._continuation_snapshot is None:
+            self._continuation_snapshot = snapshot
+        projection = snapshot.project(provider)
+        session_status = snapshot.session_status
         steps.append(self._step(
             "auto_preview", "executor_session", "status", session_status, STEP_RISK_INFO,
         ))
 
-        provider = params.get("provider", "codex")
-        continuation_decision = session_store.get_continuation_decision(
-            requested_provider=provider,
-        )
+        continuation_decision = projection["canonical_continuation_decision"]
         steps.append(self._step(
             "auto_preview", "executor_session", "continuation_decision",
             continuation_decision, STEP_RISK_INFO,
         ))
 
-        resume_preview = session_store.get_resume_invocation_preview(
-            requested_provider=provider,
-        )
+        resume_preview = projection["resume_invocation_preview"]
         steps.append(self._step(
             "auto_preview", "executor_session", "resume_invocation_preview",
             resume_preview, STEP_RISK_INFO,
@@ -4771,6 +4864,7 @@ class WorkflowOrchestrator:
             "session_status": session_status,
             "continuation_decision": continuation_decision,
             "resume_invocation_preview": resume_preview,
+            "continuation_snapshot": snapshot.public_view(provider),
             "executor_inventory": executor_inventory_raw,
         }
         goal_text = str(params.get("goal") or "").lower()

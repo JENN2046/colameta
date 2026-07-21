@@ -419,6 +419,22 @@ GPTs can decide whether a task should:
 
 The decision can consider the current project, branch, executor provider, session identity, task semantics, risk, and cache-hit goals.
 
+Each read or dispatch boundary captures these facts in one provider-aware
+`continuation_snapshot`. Its public `snapshot_id` lets Web, Analyze, Thin-loop,
+Commander, and executor guidance prove that they projected the same capture;
+a later request normally receives a new ID. Private session identity is not
+returned in the public snapshot.
+
+Executor mutations also use a project-scoped shared/exclusive POSIX operation
+lease held on the existing project-root directory descriptor. A competing
+operation fails closed with `PROJECT_OPERATION_BUSY`; an environment where the
+lease cannot be established fails closed with
+`PROJECT_OPERATION_LEASE_UNAVAILABLE`. The lease creates no project lock file.
+It requires POSIX `flock`, a project root owned by the effective service user,
+and no group/world write bits (`mode & 0o022 == 0`). Do not bypass either error
+by deleting runtime/session data or weakening permissions: wait for the active
+operation, or correct the owner/platform/permission mismatch before retrying.
+
 Each executor task records independent token usage, including input tokens, output tokens, cached tokens, cache writes, and cache hit rate.
 
 This lets the human client see in the Web Console or execution report:

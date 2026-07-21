@@ -856,6 +856,30 @@ validation evidence。
 `codex_execution_packet` 也只授权本地 Codex 在 Jenn/AGENTS 边界内直接工作；不授权
 Delivery accepted、ReviewDecision、GateEvent、commit、push 或 stable replacement。
 
+### 读取 continuation snapshot 和 operation lease 错误
+
+支持续接决策的响应会返回公开 `continuation_snapshot` 和 `snapshot_id`。在同一次请求内，只有
+顶层结果、Analyze/Web facts、Thin-loop `executor_session_recovery`、Commander 或 executor
+status 的 ID 相同，才能把它们当成同一次事实捕获的同一项决策。ID 不同表示捕获时点不同，不能
+拼成一个“原子结果”；新请求通常会产生新 snapshot。公开对象可以带 identity binding，但不会
+返回私人 session identity 原值。
+
+在 executor claim/dispatch 前，ColaMeta 会取得独占项目 operation lease；只读 snapshot 使用
+共享 lease。Lease 是加在既有 canonical 项目根目录 directory descriptor 上的 POSIX `flock`，
+不是项目里的 lock file。项目根目录必须属于当前有效进程用户，且不能有 group/world write 位
+（`mode & 0o022 == 0`）。
+
+两个 fail-closed 错误按下面处理：
+
+- `PROJECT_OPERATION_BUSY`：其他进程持有不兼容 lease。不要 claim preview、启动第二个 worker，
+  也不要删除 session/runtime 状态。轮询已有 run 或等待其进程结束，然后重新请求 snapshot 和
+  preview。
+- `PROJECT_OPERATION_LEASE_UNAVAILABLE`：平台、canonical root、owner、目录打开条件或权限不符合
+  lease 合约。保持 executor dispatch 停止；检查 POSIX/`flock`、服务账号 owner、路径确实解析到
+  预期 canonical root、最终 root 打开未被 symlink race 替换，以及 mode bits。
+  调用方路径本身可以是 symlink alias，只要它解析到同一个安全 canonical root。应修正部署，
+  不要放宽权限或绕过 gate。
+
 ### 通过七工具私人 app 请求 Work Item Gate review
 
 当 Stage 0-6 正向结果提示“是否请求 Delivery State Gate review”时，继续使用现有

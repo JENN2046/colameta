@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from runner.validation_truth import (
+    legacy_evidence_provenance_projection,
+    validate_evidence_provenance,
+)
 from runner.work_item_governance.references import (
     optional_work_item_reference_projection,
     optional_work_item_reference_rejections,
@@ -12,7 +16,6 @@ RECEIPT_CHECK_PASSED = "receipt_check_passed"
 RECEIPT_CHECK_FAILED_CLOSED = "receipt_check_failed_closed"
 EXPECTED_RECEIPT_SCHEMA_VERSION = "local_execution_receipt.v1"
 EXPECTED_RECEIPT_KIND = "local_execution_receipt"
-
 REQUIRED_RECEIPT_FIELDS = (
     "receipt_id",
     "receipt_schema_version",
@@ -221,11 +224,30 @@ def validate_local_execution_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
             for item in forbidden_claims
         )
 
+    provenance = validate_evidence_provenance(
+        receipt,
+        record_id=receipt.get("receipt_id"),
+        record_schema_version=receipt.get("receipt_schema_version"),
+        subject_specs={
+            "$": {
+                "evidence_subject": "execution",
+                "subject_operation_completed": execution_result
+                in {"executed", "executed_with_failures"},
+            }
+        },
+        base_valid=not rejection_reasons,
+    )
+    if provenance["rejection_reasons"]:
+        rejected_fields.add("evidence_provenance")
+        rejection_reasons.extend(provenance["rejection_reasons"])
+        known_conflicts.extend(provenance["known_conflicts"])
+
     result = _receipt_result(
         receipt=receipt,
         rejected_fields=sorted(rejected_fields),
         rejection_reasons=rejection_reasons,
         known_conflicts=known_conflicts,
+        evidence_provenance=provenance["projection"],
     )
     assert_local_execution_receipt_result_contract(result)
     return result
@@ -255,6 +277,7 @@ def _receipt_result(
     rejected_fields: list[str],
     rejection_reasons: list[dict[str, Any]],
     known_conflicts: list[dict[str, Any]],
+    evidence_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     passed = not rejection_reasons
     result = {
@@ -264,6 +287,7 @@ def _receipt_result(
         "rejected_fields": rejected_fields,
         "rejection_reasons": rejection_reasons,
         "known_conflicts": known_conflicts,
+        "evidence_provenance": evidence_provenance or legacy_evidence_provenance_projection(),
         "execution_result": receipt.get("execution_result"),
         "validation_results": receipt.get("validation_results", []),
         "scope_check_result": receipt.get("scope_check_result"),

@@ -258,11 +258,40 @@ class OpenCodeExecutor:
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
     ) -> OpenCodeRunResult:
+        candidate = self._get_opencode_auto_resume_candidate(plan.project_root)
+        decision = candidate.get("decision")
+        decision = decision if isinstance(decision, dict) else {}
+        if executor_session_mode not in {"auto", "resume_existing", "start_new"}:
+            raise OpenCodeCliError(f"Unsupported executor_session_mode={executor_session_mode}")
         resume_session_id = None
         if executor_session_mode != "start_new":
-            candidate = self._get_opencode_auto_resume_candidate(plan.project_root)
             resume_session_id = candidate.get("resume_session_id") if candidate.get("enabled") else None
+        if resume_session_id and (
+            decision.get("recommended_action") != "resume"
+            or decision.get("resume_allowed") is not True
+        ):
+            raise OpenCodeCliError(
+                "Canonical continuation decision forbids resuming the existing OpenCode session. "
+                f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+            )
+        if executor_session_mode == "resume_existing" and (
+            decision.get("recommended_action") != "resume"
+            or decision.get("resume_allowed") is not True
+            or not resume_session_id
+        ):
+            raise OpenCodeCliError(
+                "Canonical continuation decision forbids resuming the existing OpenCode session. "
+                f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+            )
         if not resume_session_id:
+            if (
+                decision.get("recommended_action") != "start_new"
+                or decision.get("start_new_allowed") is not True
+            ):
+                raise OpenCodeCliError(
+                    "Canonical continuation decision forbids starting a new OpenCode session. "
+                    f"recommended_action={decision.get('recommended_action') or 'inspect_evidence'}"
+                )
             return adapter.execute_prompt(
                 project_root=plan.project_root,
                 logs_dir=plan.logs_dir,
@@ -303,10 +332,13 @@ class OpenCodeExecutor:
             raise OpenCodeCliError(message, log_path=getattr(resume_error, "log_path", None)) from resume_error
 
     def _get_opencode_auto_resume_candidate(self, project_root: str) -> dict[str, Any]:
-        store = ExecutorSessionStore(project_root)
-        status = store.get_status()
-        decision = store.get_continuation_decision(requested_provider="opencode")
-        invocation = store.get_resume_invocation_preview(requested_provider="opencode")
+        from runner.continuation_snapshot import get_or_collect_continuation_snapshot
+
+        snapshot = get_or_collect_continuation_snapshot(project_root, "opencode")
+        projection = snapshot.project("opencode")
+        status = snapshot.session_status
+        decision = projection["canonical_continuation_decision"]
+        invocation = projection["resume_invocation_preview"]
         record = status.get("record") if isinstance(status, dict) else None
         if not isinstance(record, dict):
             record = {}
@@ -337,6 +369,7 @@ class OpenCodeExecutor:
             "decision": decision,
             "invocation": invocation,
             "status": status,
+            "continuation_snapshot_id": snapshot.snapshot_id,
         }
 
     def _select_opencode_resume_session_value(self, record: dict[str, Any]) -> str | None:

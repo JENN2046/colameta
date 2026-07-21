@@ -131,6 +131,21 @@ If the server exposes `get_apps_connector_smoke_packet`, use it for the same
 handoff in one read-only call. It also returns stable replacement drift as a
 hint, not as replacement authorization.
 
+Continuation-aware reads also return a public `continuation_snapshot`. Use its
+`snapshot_id` to confirm that Commander, Analyze/Web, Thin-loop recovery, and
+executor guidance came from the same capture; do not combine different IDs.
+A new request normally has a new ID, and raw private session identity is not
+part of the public snapshot.
+
+Before enabling executor work, confirm that the host supports POSIX `flock` and
+that the canonical project root is owned by the service user with no
+group/world write bits (`mode & 0o022 == 0`). ColaMeta holds the operation lease
+on the existing directory descriptor and creates no lock file. Treat
+`PROJECT_OPERATION_BUSY` as “wait for the active operation and retry from a
+fresh snapshot.” Treat `PROJECT_OPERATION_LEASE_UNAVAILABLE` as a deployment or
+ownership/permission mismatch: keep dispatch stopped and fix the environment.
+Never delete runtime/session state or loosen permissions to bypass either gate.
+
 ## 4. Minimal New-Project Smoke
 
 After onboarding, the minimum smoke checklist is:
@@ -166,6 +181,14 @@ PROJECT_NOT_REGISTERED
 
 PROJECT_MODE_UNSUPPORTED
   A managed-only workflow was called for a source-only project.
+
+PROJECT_OPERATION_BUSY
+  Another process holds the project operation lease. Wait or poll the active
+  run, then retry with a fresh snapshot/preview.
+
+PROJECT_OPERATION_LEASE_UNAVAILABLE
+  The host or project-root owner/mode does not satisfy the POSIX lease contract.
+  Keep mutations stopped and correct the deployment.
 ```
 
 ## 5. Enter Controlled Optimization

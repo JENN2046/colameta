@@ -62,9 +62,13 @@ from runner.project_registry import ProjectRegistry
 from runner.runner_settings import RunnerSettingsStore
 from runner.executor_session import (
     ExecutorSessionStore,
-    classify_executor_session_head_mismatch,
     select_executor_identity_for_display,
 )
+from runner.continuation_snapshot import (
+    ContinuationSnapshot,
+    collect_continuation_snapshot,
+)
+from runner.project_operation_lease import ProjectOperationLease
 from runner.runner_paths import resolve_project_runner_dir, resolve_project_runner_rel_dir
 from runner.service_lifecycle_store import ServiceLifecycleStore
 from runner.web_console_v2_assets import render_v2_index_page
@@ -345,6 +349,7 @@ class WebConsoleServer:
         self.operation_running = False
         self.operation_name = ""
         self.operation_started_at: str | None = None
+        self._active_project_operation_lease: ProjectOperationLease | None = None
         self.last_operation_result: dict[str, Any] | None = None
         self.job: dict[str, Any] = {"status": "idle"}
         self.pending_commit_preview: dict[str, Any] | None = None
@@ -454,6 +459,21 @@ class WebConsoleServer:
     def _now_iso(self) -> str:
         return datetime.now().astimezone().isoformat()
 
+    def _collect_continuation_snapshot(
+        self,
+        requested_provider: str | None,
+    ) -> ContinuationSnapshot:
+        supplier = getattr(self, "_continuation_snapshot_supplier", None)
+        if callable(supplier):
+            return supplier(requested_provider)
+        session_store = getattr(self, "executor_session_store", None)
+        return collect_continuation_snapshot(
+            self.project_root,
+            requested_provider=requested_provider,
+            session_store=(session_store if isinstance(session_store, ExecutorSessionStore) else None),
+            planning_bridge=self.bridge,
+        )
+
     def _operation_running_payload(self) -> dict[str, Any]:
         return {
             "ok": False,
@@ -497,8 +517,20 @@ class WebConsoleServer:
             return payload
 
     def _run_operation(self, operation_name: str, fn) -> dict[str, Any]:
+        project_lease = ProjectOperationLease(
+            self.project_root,
+            operation_kind=operation_name,
+            surface="web",
+        ).acquire()
+        if not project_lease.held:
+            return {
+                "ok": False,
+                "error_code": project_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
+                "message": "当前项目已有跨进程操作，或项目操作锁不可用。",
+            }
         with self.operation_lock:
             if self.operation_running:
+                project_lease.release()
                 return self._operation_running_payload()
             if operation_name not in ("commit_preview", "commit_confirm"):
                 self.pending_commit_preview = None
@@ -507,6 +539,7 @@ class WebConsoleServer:
             self.operation_running = True
             self.operation_name = operation_name
             self.operation_started_at = self._now_iso()
+            self._active_project_operation_lease = project_lease
         started_at = self.operation_started_at
         try:
             return self._operation_payload(operation_name, started_at, fn)
@@ -515,6 +548,8 @@ class WebConsoleServer:
                 self.operation_running = False
                 self.operation_name = ""
                 self.operation_started_at = None
+                self._active_project_operation_lease = None
+            project_lease.release()
 
     def _load_runtime_context(self) -> tuple[ProjectWorkspace, Any, Any, StateStore, RunnerStateMachine]:
         workspace = ProjectWorkspace.from_project_path(self.project_root)
@@ -1911,50 +1946,15 @@ class WebConsoleServer:
             runtime_status=get_runtime_version_status(self.project_root, local_service=local_service),
             local_service=local_service,
         )
-        try:
-            data["executor_session_status"] = self.executor_session_store.get_status()
-        except Exception:
-            data["executor_session_status"] = {
-                "ok": False,
-                "active": False,
-                "message": "执行会话状态读取失败。",
-            }
-        try:
-            data["executor_continuation_preview"] = self.executor_session_store.get_continuation_preview()
-        except Exception:
-            data["executor_continuation_preview"] = {
-                "ok": False,
-                "continuation_available": False,
-                "message": "执行会话续接预览读取失败。",
-            }
         current_provider = self._resolve_current_execution_provider(
             fallback_provider=data["execution_display"].get("provider", DEFAULT_EXECUTION_PROVIDER)
         )
-        try:
-            data["executor_continuation_decision"] = self.executor_session_store.get_continuation_decision(
-                requested_provider=current_provider
-            )
-        except Exception:
-            data["executor_continuation_decision"] = {
-                "ok": False,
-                "decision": "start_new_blocked",
-                "continuation_available": False,
-                "message": "执行会话续接决策读取失败。",
-            }
-        try:
-            data["executor_resume_invocation_preview"] = self.executor_session_store.get_resume_invocation_preview(
-                requested_provider=current_provider
-            )
-        except Exception:
-            data["executor_resume_invocation_preview"] = {
-                "ok": False,
-                "resume_invocation_supported": False,
-                "resume_invocation_verified": False,
-                "resume_invocation_kind": "preview_unavailable",
-                "command_preview": [],
-                "message": "执行会话调用形态预览读取失败。",
-            }
-        self._apply_executor_session_head_mismatch_classification(data)
+        continuation_snapshot = self._collect_continuation_snapshot(current_provider)
+        self._apply_executor_session_head_mismatch_classification(
+            data,
+            requested_provider=current_provider,
+            continuation_snapshot=continuation_snapshot,
+        )
         data["executor_session_display"] = build_executor_session_display(
             executor_session_status=data.get("executor_session_status"),
             continuation_decision=data.get("executor_continuation_decision"),
@@ -2684,57 +2684,31 @@ class WebConsoleServer:
         *,
         runner_status_data: dict[str, Any] | None = None,
         live_run: dict[str, Any] | None = None,
+        requested_provider: str | None = None,
+        continuation_snapshot: ContinuationSnapshot | None = None,
     ) -> dict[str, Any]:
-        session_status = data.get("executor_session_status")
-        if not isinstance(session_status, dict):
-            try:
-                session_status = self.executor_session_store.get_status()
-                data["executor_session_status"] = session_status
-            except Exception:
-                session_status = {}
-
-        existing = session_status.get("head_mismatch_classification") if isinstance(session_status, dict) else None
-        if isinstance(existing, dict) and existing.get("status") == "none":
-            classification = existing
-        else:
-            runner_data = runner_status_data if isinstance(runner_status_data, dict) else data
-            if not (
-                isinstance(runner_data, dict)
-                and "runner_status" in runner_data
-                and "current_version_status" in runner_data
-            ):
-                try:
-                    runner_data = self.bridge.get_runner_status(self.project_root)
-                except Exception:
-                    runner_data = {}
-
-            job_status = self._current_job_status_for_classification()
-            latest_run_status, latest_claim_status, live_data = self._latest_run_evidence_for_classification(live_run)
-            classification = classify_executor_session_head_mismatch(
-                executor_session_status=session_status,
-                operation_running=bool(self.operation_running),
-                job_status=job_status,
-                latest_run_status=latest_run_status,
-                latest_claim_status=latest_claim_status,
-                live_run=live_data,
-                runner_status=str(runner_data.get("runner_status") or "") if isinstance(runner_data, dict) else None,
-                current_version_status=(
-                    str(runner_data.get("current_version_status") or "") if isinstance(runner_data, dict) else None
-                ),
-                worktree_clean=self._read_worktree_clean_for_status(),
-            )
-
-        if isinstance(session_status, dict):
-            session_status["head_mismatch_classification"] = classification
+        captured = continuation_snapshot or self._collect_continuation_snapshot(
+            requested_provider
+        )
+        projection = captured.project(requested_provider)
+        session_status = dict(captured.session_status)
+        preview = dict(captured.continuation_preview)
+        decision = projection["canonical_continuation_decision"]
+        invocation = projection["resume_invocation_preview"]
+        classification = decision["head_mismatch_classification"]
+        session_status["head_mismatch_classification"] = classification
+        session_status["canonical_continuation_decision"] = decision
+        data["executor_session_status"] = session_status
+        data["executor_continuation_preview"] = preview
+        data["executor_continuation_decision"] = decision
         data["executor_session_head_mismatch"] = classification
-        for key in (
-            "executor_continuation_preview",
-            "executor_continuation_decision",
-            "executor_resume_invocation_preview",
-        ):
+        data["executor_resume_invocation_preview"] = invocation
+        data["continuation_snapshot"] = captured.public_view(requested_provider)
+        for key in ("executor_continuation_preview", "executor_resume_invocation_preview"):
             payload = data.get(key)
             if isinstance(payload, dict):
                 payload["head_mismatch_classification"] = classification
+                payload["canonical_continuation_decision"] = decision
         return classification
 
     def _current_job_status_for_classification(self) -> str | None:
@@ -3088,10 +3062,10 @@ class WebConsoleServer:
         return data
 
     def _api_auto_apply_patches(self) -> dict[str, Any]:
-        if self.operation_running:
-            return self._operation_running_payload()
         service = PlanPatchAutoApplyService(self.project_root)
-        return service.auto_apply()
+        operation = self._run_operation("auto_apply_patches", service.auto_apply)
+        result = operation.get("result") if isinstance(operation, dict) else None
+        return result if isinstance(result, dict) else operation
 
     def _job_operation_callable(self, operation: str):
         operations = {
@@ -3113,8 +3087,20 @@ class WebConsoleServer:
                 "message": "当前操作不可用。",
             }
 
+        project_lease = ProjectOperationLease(
+            self.project_root,
+            operation_kind=operation,
+            surface="web_job",
+        ).acquire()
+        if not project_lease.held:
+            return {
+                "ok": False,
+                "error_code": project_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
+                "message": "当前项目已有跨进程操作，或项目操作锁不可用。",
+            }
         with self.operation_lock:
             if self.operation_running or self.job.get("status") == "running":
+                project_lease.release()
                 return {
                     "ok": False,
                     "error_code": "JOB_ALREADY_RUNNING",
@@ -3127,6 +3113,7 @@ class WebConsoleServer:
             self.operation_running = True
             self.operation_name = operation
             self.operation_started_at = started_at
+            self._active_project_operation_lease = project_lease
             self.job = {
                 "job_id": job_id,
                 "operation": operation,
@@ -3138,8 +3125,22 @@ class WebConsoleServer:
                 "error_code": "",
             }
 
-        thread = threading.Thread(target=self._run_job_worker, args=(job_id, operation, fn), daemon=True)
-        thread.start()
+        thread = threading.Thread(
+            target=self._run_job_worker,
+            args=(job_id, operation, fn, project_lease),
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception:
+            with self.operation_lock:
+                self.operation_running = False
+                self.operation_name = ""
+                self.operation_started_at = None
+                self._active_project_operation_lease = None
+                self.job = {"status": "idle"}
+            project_lease.release()
+            raise
         return {
             "ok": True,
             "job_id": job_id,
@@ -3148,24 +3149,35 @@ class WebConsoleServer:
             "message": "已开始处理。",
         }
 
-    def _run_job_worker(self, job_id: str, operation: str, fn) -> None:
-        started_at = self.operation_started_at or self._now_iso()
-        payload = self._operation_payload(operation, started_at, fn)
-        status = "passed" if payload.get("ok") else "failed"
-        with self.operation_lock:
-            self.job = {
-                "job_id": job_id,
-                "operation": operation,
-                "status": status,
-                "started_at": payload.get("started_at"),
-                "ended_at": payload.get("ended_at"),
-                "message": payload.get("message", ""),
-                "result": payload.get("result", {}),
-                "error_code": payload.get("error_code") or "",
-            }
-            self.operation_running = False
-            self.operation_name = ""
-            self.operation_started_at = None
+    def _run_job_worker(
+        self,
+        job_id: str,
+        operation: str,
+        fn,
+        project_lease: ProjectOperationLease,
+    ) -> None:
+        try:
+            started_at = self.operation_started_at or self._now_iso()
+            payload = self._operation_payload(operation, started_at, fn)
+            status = "passed" if payload.get("ok") else "failed"
+            with self.operation_lock:
+                self.job = {
+                    "job_id": job_id,
+                    "operation": operation,
+                    "status": status,
+                    "started_at": payload.get("started_at"),
+                    "ended_at": payload.get("ended_at"),
+                    "message": payload.get("message", ""),
+                    "result": payload.get("result", {}),
+                    "error_code": payload.get("error_code") or "",
+                }
+        finally:
+            with self.operation_lock:
+                self.operation_running = False
+                self.operation_name = ""
+                self.operation_started_at = None
+                self._active_project_operation_lease = None
+            project_lease.release()
 
     def _api_job_status(self) -> dict[str, Any]:
         with self.operation_lock:
@@ -3178,20 +3190,26 @@ class WebConsoleServer:
         provider = (body or {}).get("provider", "").strip().lower()
         if not is_supported_execution_provider(provider):
             return {"ok": False, "message": f"不支持的执行器：{provider}"}
-        try:
-            from runner.runner_settings import RunnerSettings
-            saved = self.runner_settings_store.save_settings_for_project(
-                self.project_root,
-                RunnerSettings(execution_provider=provider),
-            )
-            return {
-                "ok": True,
-                "provider": provider,
-                "provider_display": get_executor_provider_display(provider),
-                "settings_file": saved.get("settings_file"),
-            }
-        except Exception as e:
-            return {"ok": False, "message": f"执行器切换失败：{e}"}
+
+        def _switch() -> dict[str, Any]:
+            try:
+                from runner.runner_settings import RunnerSettings
+                saved = self.runner_settings_store.save_settings_for_project(
+                    self.project_root,
+                    RunnerSettings(execution_provider=provider),
+                )
+                return {
+                    "ok": True,
+                    "provider": provider,
+                    "provider_display": get_executor_provider_display(provider),
+                    "settings_file": saved.get("settings_file"),
+                }
+            except Exception as e:
+                return {"ok": False, "message": f"执行器切换失败：{e}"}
+
+        operation = self._run_operation("switch_executor", _switch)
+        result = operation.get("result") if isinstance(operation, dict) else None
+        return result if isinstance(result, dict) else operation
 
     def _load_execution_provider(self, workspace: ProjectWorkspace) -> str:
         settings = self.runner_settings_store.load_for_project(workspace.workspace_root, workspace.plan_file)
@@ -3320,6 +3338,7 @@ class WebConsoleServer:
                 include_report_markdown=False,
                 max_report_chars=30000,
                 reason="web_console",
+                operation_lease=self._active_project_operation_lease,
             )
             if not run_ret.get("ok"):
                 return {
@@ -3896,13 +3915,16 @@ class WebConsoleServer:
             return obj
         return str(obj)
 
-    def _api_v2_live_run(self) -> dict[str, Any]:
+    def _api_v2_live_run(
+        self,
+        continuation_snapshot: ContinuationSnapshot | None = None,
+    ) -> dict[str, Any]:
         from runner.executor_read import handle_inspect_executor_activity
-        session_status: dict[str, Any] | None = None
-        try:
-            session_status = self.executor_session_store.get_status()
-        except Exception:
-            session_status = None
+        session_status = (
+            continuation_snapshot.session_status
+            if isinstance(continuation_snapshot, ContinuationSnapshot)
+            else None
+        )
         try:
             inspect_result = handle_inspect_executor_activity(
                 self.project_root, "latest_run_status", {}
@@ -4218,8 +4240,20 @@ class WebConsoleServer:
             return self._json_safe(result)
 
     def _api_v2_status_bound_to_project(self) -> dict[str, Any]:
-        orchestrator = WorkflowOrchestrator(self.project_root)
-        core_output = orchestrator.handle("project_status", {"include_reports": True})
+        continuation_provider = self._resolve_current_execution_provider(
+            fallback_provider=DEFAULT_EXECUTION_PROVIDER
+        )
+        continuation_snapshot = self._collect_continuation_snapshot(
+            continuation_provider
+        )
+        orchestrator = WorkflowOrchestrator(
+            self.project_root,
+            continuation_snapshot=continuation_snapshot,
+        )
+        core_output = orchestrator.handle(
+            "project_status",
+            {"include_reports": True, "provider": continuation_provider},
+        )
         result = self._json_safe(core_output)
         try:
             thin_loop_preview = orchestrator.handle(
@@ -4328,11 +4362,19 @@ class WebConsoleServer:
                 "path": f"{self.runner_rel_dir}/memory.md",
             }
         result["memory"] = self._json_safe(memory_result)
-        live_run = self._api_v2_live_run()
+        live_run = self._api_v2_live_run(continuation_snapshot)
         result["live_run"] = live_run
         if not (isinstance(live_run, dict) and live_run.get("available") is True):
-            self._enrich_latest_report_identity(result)
-        self._apply_executor_session_head_mismatch_classification(result, live_run=live_run)
+            self._enrich_latest_report_identity(
+                result,
+                session_status=continuation_snapshot.session_status,
+            )
+        self._apply_executor_session_head_mismatch_classification(
+            result,
+            live_run=live_run,
+            requested_provider=continuation_provider,
+            continuation_snapshot=continuation_snapshot,
+        )
         result["executor_session_display"] = build_executor_session_display(
             executor_session_status=result.get("executor_session_status"),
             continuation_decision=result.get("executor_continuation_decision"),
@@ -4349,7 +4391,12 @@ class WebConsoleServer:
         result["last_operation_result"] = self.last_operation_result
         return result
 
-    def _enrich_latest_report_identity(self, result: dict[str, Any]) -> None:
+    def _enrich_latest_report_identity(
+        self,
+        result: dict[str, Any],
+        *,
+        session_status: dict[str, Any] | None = None,
+    ) -> None:
         try:
             snapshot = result.get("fact_snapshot")
             if not isinstance(snapshot, dict):
@@ -4390,6 +4437,7 @@ class WebConsoleServer:
                     identity = self._latest_report_session_identity_from_current_session(
                         latest=latest,
                         lineage=lineage,
+                        session_status=session_status,
                     )
                     if identity.get("identity_present") is True:
                         latest["session_id_full"] = str(identity.get("identity_value") or "")
@@ -4415,11 +4463,9 @@ class WebConsoleServer:
         *,
         latest: dict[str, Any],
         lineage: dict[str, Any],
+        session_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        try:
-            status = self.executor_session_store.get_status()
-        except Exception:
-            status = {}
+        status = session_status if isinstance(session_status, dict) else {}
         record = status.get("record") if isinstance(status, dict) and isinstance(status.get("record"), dict) else {}
         if not record:
             return {"identity_present": False}
