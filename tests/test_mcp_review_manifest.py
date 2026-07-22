@@ -350,6 +350,34 @@ def test_review_manifest_fails_closed_when_managed_plan_or_version_changes(tmp_p
     assert mismatch[0]["actual"]["mode"] == "managed"
 
 
+def test_review_manifest_read_fails_closed_when_context_changes(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path, managed=True)
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+
+    state_path = project / ".colameta" / "state.json"
+    state_path.write_text(json.dumps({"current_version": "v9.10"}), encoding="utf-8")
+    read = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    assert read["ok"] is False
+    assert read["error_code"] == "CONTEXT_BINDING_MISMATCH"
+    assert read["details"]["mismatches"] == [
+        {"field": "current_version", "expected": "v9.9", "actual": "v9.10"}
+    ]
+
+
 def test_review_manifest_subjects_are_paged_and_require_read_scope(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     content = "page-bound review input\n" * 900
@@ -561,6 +589,48 @@ def test_review_manifest_routes_source_only_registered_projects_without_opening_
     )
     assert high_risk["ok"] is False
     assert high_risk["error_code"] == "REVIEW_MANIFEST_SUBJECT_DENIED"
+
+
+def test_review_manifest_service_read_continuation_keeps_project_name(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = "service compatibility page\n" * 900
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(str(project), project_name="review-target")
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(str(tmp_path), service_mode=True)
+    server.project_registry = registry
+
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "project_name": "review-target",
+            "review_manifest": _manifest(project, project_name="review-target"),
+        },
+    )
+    assert inspected["ok"] is True
+    descriptor = inspected["data"]["subjects"][0]
+    assert descriptor["page_count"] > 1
+
+    first_read = server.call_tool_for_agent("run_mcp_workflow", descriptor["read_call"]["arguments"])
+    assert first_read["ok"] is True
+    next_reads = first_read["data"]["recommended_next_reads"]
+    assert len(next_reads) == 1
+    next_call = next_reads[0]
+    assert next_call["kind"] == "mcp_tool"
+    assert next_call["tool"] == "run_mcp_workflow"
+    assert next_call["arguments"]["project_name"] == "review-target"
+    assert next_call["arguments"]["review_manifest_subject_index"] == 1
+    assert next_call["arguments"]["review_manifest_page"] == 2
+
+    second_read = server.call_tool_for_agent("run_mcp_workflow", next_call["arguments"])
+    assert second_read["ok"] is True
+    assert second_read["data"]["subject_page"]["page"] == 2
 
 
 def test_review_manifest_rejects_symlink_subject_aliases(tmp_path: Path) -> None:
