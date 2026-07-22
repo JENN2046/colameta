@@ -47,6 +47,36 @@ _GOAL_CLASSIFIERS: list[tuple[set[str], str]] = [
     ({"patch", "edit", "修改"}, "small_project_patch"),
 ]
 
+# ``auto_preview`` may infer a bounded route, but an explicit instruction not
+# to execute must always win over a keyword match such as "executor", "Codex",
+# or the historical short form "exec". These are deliberately narrow safety
+# vetoes for executor routing, not a general natural-language parser.
+_EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:do\s+not|don't|dont|never|without)\s+"
+        r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
+        r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
+        r"use|using|execute|executing)\s+)?"
+        r"(?:the\s+|any\s+)?(?:executor|codex|opencode|pi|execution|execute)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bno\s+(?:executor|codex|opencode|pi|execution)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:不要|别|不需要|无需|禁止|不得)\s*"
+        r"(?:启动|运行|执行|调用|触发|调度|恢复|使用)?\s*"
+        r"(?:执行器|executor|codex|opencode|pi|执行)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"不(?:启动|运行|执行|调用|触发|调度|恢复|使用)\s*"
+        r"(?:执行器|executor|codex|opencode|pi|执行)",
+        re.IGNORECASE,
+    ),
+)
+
 _STOP_NEEDS_PLAN_APPLY_CONFIRMATION = "needs_plan_apply_confirmation"
 _STOP_NEEDS_COMMIT_CONFIRMATION = "needs_commit_confirmation"
 _STOP_NEEDS_DOCS_APPLY_CONFIRMATION = "needs_docs_apply_confirmation"
@@ -4913,11 +4943,18 @@ class WorkflowOrchestrator:
         if not goal_lower:
             return {"selected_workflow": "project_status", "confidence": 1.0, "reason": "empty goal"}
 
+        executor_explicitly_forbidden = any(
+            pattern.search(goal_lower) is not None
+            for pattern in _EXECUTOR_NEGATION_PATTERNS
+        )
+
         best_workflow = "project_status"
         best_confidence = 0.0
         best_reason = ""
 
         for keywords, workflow in _GOAL_CLASSIFIERS:
+            if workflow == "executor" and executor_explicitly_forbidden:
+                continue
             matches = sum(1 for kw in keywords if kw in goal_lower)
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
@@ -4927,6 +4964,15 @@ class WorkflowOrchestrator:
                     best_reason = f"matched {matches} keyword(s) in {workflow} classifier"
 
         if best_workflow == "project_status":
+            if executor_explicitly_forbidden:
+                return {
+                    "selected_workflow": best_workflow,
+                    "confidence": 0.8,
+                    "reason": (
+                        "goal explicitly forbids executor execution; "
+                        "defaulted to read-only project_status"
+                    ),
+                }
             return {
                 "selected_workflow": best_workflow,
                 "confidence": 0.3,

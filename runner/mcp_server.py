@@ -63,6 +63,22 @@ from runner.mcp_private_operator import (
     evaluate_operator_principal,
     operator_authenticated_request_scope,
 )
+from runner.mcp_result_artifacts import MCPResultArtifactStore, ResultArtifactHandle
+from runner.review_manifest import (
+    REVIEW_MANIFEST_SCHEMA_VERSION,
+    REVIEW_MANIFEST_WORKFLOW,
+    REVIEW_MANIFEST_WORKFLOW_INTENT,
+    ReviewManifestError,
+    ReviewManifestHandle,
+    ReviewManifestInspection,
+    ReviewManifestStore,
+    StoredReviewManifest,
+    collect_review_context_binding,
+    inspect_review_manifest,
+    read_stored_review_manifest_page,
+    verify_stored_review_context,
+    verify_stored_review_manifest,
+)
 from runner.operator_artifact_binding import canonical_artifact_digest
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
@@ -203,6 +219,34 @@ MCP_CLIENT_RATE_LIMIT_BUCKETS = _env_int("COLAMETA_MCP_CLIENT_RATE_LIMIT_BUCKETS
 MCP_TARGET_TOOL_RESULT_CHARS = 60000
 MCP_HARD_TOOL_RESULT_CHARS = 75000
 MCP_MANAGE_FILES_READ_TARGET_CHARS = 24000
+MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
+    "COLAMETA_MCP_RESULT_ARTIFACT_TTL_SECONDS",
+    900,
+    minimum=60,
+)
+MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
+MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
+MCP_RESULT_ARTIFACT_URI_RE = re.compile(
+    r"^colameta://result-artifact/(?P<artifact_id>[A-Za-z0-9_-]{16,128})"
+    r"(?:/pages/(?P<page>[1-9][0-9]*))?$"
+)
+MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
+    "COLAMETA_MCP_REVIEW_MANIFEST_TTL_SECONDS",
+    900,
+    minimum=60,
+)
+MCP_REVIEW_MANIFEST_MAX_ITEMS = 32
+MCP_REVIEW_MANIFEST_URI_RE = re.compile(
+    r"^colameta://review-manifest/(?P<review_manifest_id>[A-Za-z0-9_-]{16,128})"
+    r"(?:/subjects/(?P<subject_index>[1-9][0-9]*)(?:/pages/(?P<page>[1-9][0-9]*))?)?$"
+)
+_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
+    r"^colameta://(?:"
+    r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
+    r"|review-manifest/[A-Za-z0-9_-]{16,128}"
+    r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
+    r")$"
+)
 REMOTE_EXTERNAL_OAUTH_POLICY = "remote_public"
 COMMANDER_APP_WIDGET_URI = "ui://colameta/commander/v1.html"
 COMMANDER_APP_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
@@ -1024,6 +1068,10 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         return None
     if workflow == "thin_governed_loop_preview":
         return "mcp:read"
+    if workflow == REVIEW_MANIFEST_WORKFLOW:
+        if phase in {"inspect", "verify", "status"}:
+            return "mcp:read"
+        return None
     if workflow == "small_project_patch":
         if phase == "status":
             return "mcp:read"
@@ -1394,6 +1442,15 @@ class MCPPlanningBridgeServer:
         self._token_transport_proof_validator = None
         self._preflight_conformance_only = False
         self._preflight_conformance_ledger_snapshot_binding_digest: str | None = None
+        self._mcp_result_artifact_store = MCPResultArtifactStore(
+            ttl_seconds=MCP_RESULT_ARTIFACT_TTL_SECONDS,
+            page_chars=MCP_RESULT_ARTIFACT_PAGE_CHARS,
+            max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
+        )
+        self._review_manifest_store = ReviewManifestStore(
+            ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
+            max_items=MCP_REVIEW_MANIFEST_MAX_ITEMS,
+        )
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -4162,10 +4219,12 @@ class MCPPlanningBridgeServer:
                     "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
+                    "review_manifest：把独立审查输入严格绑定到 project/branch/HEAD/Runner plan/current version/"
+                    "review unit/intent 与 subject SHA-256；只返回受控 MCP resource，绝不开放任意文件读取。"
                     "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                     "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、gate_review_request、operator_batch。"
+                    "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、review_manifest、gate_review_request、operator_batch。"
                     "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
                     "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
                     "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
@@ -4184,14 +4243,14 @@ class MCPPlanningBridgeServer:
                                 "plan_update", "small_project_patch", "docs_update",
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
                                 "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
-                                "gate_review_request", "operator_batch",
+                                "review_manifest", "gate_review_request", "operator_batch",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                         },
                         "phase": {
                             "type": "string",
-                            "enum": ["inspect", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
-                            "description": "工作流阶段。inspect/read/status 只读；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                            "enum": ["inspect", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
+                            "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，verify 重新核对当前上下文和所有 subject hash；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                         },
                         "preview_id": {
                             "type": "string",
@@ -4538,6 +4597,70 @@ class MCPPlanningBridgeServer:
                         "current_head": {
                             "type": "string",
                             "description": "thin_governed_loop_preview 可选。用于 evidence preview 的 HEAD 绑定；不传时读取当前 checkout HEAD。",
+                        },
+                        "review_manifest": {
+                            "type": "object",
+                            "description": "review_manifest inspect 可选：省略时只返回当前绑定模板；提供时建立独立审查会话。精确只读合同必须使用 schema_version=colameta.review_manifest.v1，绑定 project_name、branch、head、runner_plan、current_version、review_unit、workflow_intent=independent_review、subjects[{path,sha256}]；可选 acceptance_commands 仅预览，不执行。",
+                            "properties": {
+                                "schema_version": {"type": "string", "const": REVIEW_MANIFEST_SCHEMA_VERSION},
+                                "review_unit": {"type": "string", "maxLength": 160},
+                                "workflow_intent": {"type": "string", "const": REVIEW_MANIFEST_WORKFLOW_INTENT},
+                                "project_name": {"type": "string", "maxLength": 128},
+                                "branch": {"type": "string", "maxLength": 255},
+                                "head": {"type": "string", "pattern": "^[0-9a-fA-F]{40,128}$"},
+                                "runner_plan": {
+                                    "type": "object",
+                                    "properties": {
+                                        "mode": {"type": "string", "enum": ["managed", "source-only"]},
+                                        "plan_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$"},
+                                    },
+                                    "required": ["mode", "plan_sha256"],
+                                    "additionalProperties": False,
+                                },
+                                "current_version": {"type": ["string", "null"], "maxLength": 128},
+                                "subjects": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 64,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {"type": "string"},
+                                            "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+                                        },
+                                        "required": ["path", "sha256"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                                "acceptance_commands": {
+                                    "type": "array",
+                                    "maxItems": 32,
+                                    "items": {
+                                        "oneOf": [
+                                            {"type": "string", "maxLength": 2000},
+                                            {
+                                                "type": "object",
+                                                "properties": {
+                                                    "command": {"type": "string", "maxLength": 2000},
+                                                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+                                                    "continue_on_failure": {"type": "boolean"},
+                                                },
+                                                "required": ["command"],
+                                                "additionalProperties": False,
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                            "required": [
+                                "schema_version", "review_unit", "workflow_intent", "project_name",
+                                "branch", "head", "runner_plan", "current_version", "subjects",
+                            ],
+                            "additionalProperties": False,
+                        },
+                        "review_manifest_id": {
+                            "type": "string",
+                            "description": "review_manifest verify 必填。来自 inspect 的短期只读审查会话 ID；不能用于读未声明文件或授权任何写入。",
                         },
                     },
                     "required": ["workflow"],
@@ -5993,6 +6116,267 @@ class MCPPlanningBridgeServer:
             },
         }
 
+    @staticmethod
+    def _mcp_result_artifact_uri(artifact_id: str, page: int | None = None) -> str:
+        base = f"colameta://result-artifact/{artifact_id}"
+        return base if page is None else f"{base}/pages/{page}"
+
+    @staticmethod
+    def _parse_mcp_result_artifact_uri(uri: str) -> tuple[str, int] | None:
+        matched = MCP_RESULT_ARTIFACT_URI_RE.fullmatch(uri)
+        if matched is None:
+            return None
+        artifact_id = matched.group("artifact_id")
+        page_raw = matched.group("page")
+        try:
+            page = int(page_raw) if page_raw is not None else 1
+        except ValueError:
+            return None
+        return artifact_id, page
+
+    def _store_packaged_result_artifact(
+        self,
+        tool_name: str,
+        structured_tool_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Keep a short-lived, public-projected continuation for one large result."""
+
+        handle = self._mcp_result_artifact_store.put(
+            tool=tool_name,
+            payload=structured_tool_result,
+        )
+        if handle is None:
+            return None
+        return self._result_artifact_manifest_fields(handle)
+
+    def _result_artifact_manifest_fields(
+        self,
+        handle: ResultArtifactHandle,
+    ) -> dict[str, Any]:
+        resource_uri = self._mcp_result_artifact_uri(handle.artifact_id)
+        return {
+            "artifact_id": handle.artifact_id,
+            "resource_uri": resource_uri,
+            "page_uri_template": f"{resource_uri}/pages/{{page}}",
+            "page_count": handle.page_count,
+            "content_sha256": handle.content_sha256,
+            "expires_at": handle.expires_at,
+        }
+
+    @staticmethod
+    def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
+        resource_uri = artifact_fields.get("resource_uri")
+        return {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": resource_uri},
+            "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
+        }
+
+    @staticmethod
+    def _mcp_result_artifact_resource_access_error(
+        auth_context: MCPAuthContext,
+    ) -> tuple[str, str] | None:
+        if not isinstance(auth_context, dict):
+            return None
+        auth_mode = auth_context.get("mode")
+        if auth_mode == "cloud-relay":
+            scopes = auth_context.get("scopes")
+            if not isinstance(scopes, list) or "mcp:read" not in scopes:
+                return "resource_access_denied", "Result artifact requires the mcp:read scope."
+            return None
+        if auth_mode not in {"oauth", "external-oauth"}:
+            return None
+        oauth_provider = auth_context.get("oauth_provider")
+        token_payload = auth_context.get("token")
+        validate_scope = getattr(oauth_provider, "validate_scope", None)
+        if not callable(validate_scope) or not isinstance(token_payload, dict):
+            return "resource_auth_invalid", "Result artifact requires a valid read-scoped OAuth token."
+        try:
+            allowed = bool(validate_scope(token_payload, "mcp:read"))
+        except Exception:
+            allowed = False
+        if not allowed:
+            return "resource_access_denied", "Result artifact requires the mcp:read scope."
+        return None
+
+    @staticmethod
+    def _mcp_review_manifest_uri(
+        review_manifest_id: str,
+        *,
+        subject_index: int | None = None,
+        page: int | None = None,
+    ) -> str:
+        base = f"colameta://review-manifest/{review_manifest_id}"
+        if subject_index is None:
+            return base
+        subject_uri = f"{base}/subjects/{subject_index}"
+        return subject_uri if page is None else f"{subject_uri}/pages/{page}"
+
+    @staticmethod
+    def _parse_mcp_review_manifest_uri(
+        uri: str,
+    ) -> tuple[str, int | None, int | None] | None:
+        matched = MCP_REVIEW_MANIFEST_URI_RE.fullmatch(uri)
+        if matched is None:
+            return None
+        review_manifest_id = matched.group("review_manifest_id")
+        subject_raw = matched.group("subject_index")
+        page_raw = matched.group("page")
+        try:
+            subject_index = int(subject_raw) if subject_raw is not None else None
+            page = int(page_raw) if page_raw is not None else None
+        except ValueError:
+            return None
+        return review_manifest_id, subject_index, page
+
+    def _review_manifest_handle_fields(
+        self,
+        handle: ReviewManifestHandle,
+    ) -> dict[str, Any]:
+        return {
+            "review_manifest_id": handle.review_manifest_id,
+            "manifest_sha256": handle.manifest_sha256,
+            "manifest_resource_uri": self._mcp_review_manifest_uri(handle.review_manifest_id),
+            "expires_at": handle.expires_at,
+        }
+
+    def _review_manifest_subject_descriptor(
+        self,
+        handle: ReviewManifestHandle,
+        *,
+        subject_index: int,
+        path: str,
+        sha256: str,
+        byte_size: int,
+        page_count: int,
+    ) -> dict[str, Any]:
+        resource_uri = self._mcp_review_manifest_uri(
+            handle.review_manifest_id,
+            subject_index=subject_index,
+        )
+        return {
+            "subject_index": subject_index,
+            "path": path,
+            "sha256": sha256,
+            "byte_size": byte_size,
+            "page_count": page_count,
+            "resource_uri": resource_uri,
+            "page_uri_template": f"{resource_uri}/pages/{{page}}",
+        }
+
+    @staticmethod
+    def _mcp_read_scoped_resource_access_error(
+        auth_context: MCPAuthContext,
+        *,
+        resource_label: str,
+    ) -> tuple[str, str] | None:
+        if not isinstance(auth_context, dict):
+            return None
+        auth_mode = auth_context.get("mode")
+        if auth_mode == "cloud-relay":
+            scopes = auth_context.get("scopes")
+            if not isinstance(scopes, list) or "mcp:read" not in scopes:
+                return "resource_access_denied", f"{resource_label} requires the mcp:read scope."
+            return None
+        if auth_mode not in {"oauth", "external-oauth"}:
+            return None
+        oauth_provider = auth_context.get("oauth_provider")
+        token_payload = auth_context.get("token")
+        validate_scope = getattr(oauth_provider, "validate_scope", None)
+        if not callable(validate_scope) or not isinstance(token_payload, dict):
+            return "resource_auth_invalid", f"{resource_label} requires a valid read-scoped OAuth token."
+        try:
+            allowed = bool(validate_scope(token_payload, "mcp:read"))
+        except Exception:
+            allowed = False
+        if not allowed:
+            return "resource_access_denied", f"{resource_label} requires the mcp:read scope."
+        return None
+
+    def _review_manifest_resource_read_result(self, uri: str) -> dict[str, Any] | None:
+        parsed = self._parse_mcp_review_manifest_uri(uri)
+        if parsed is None:
+            return None
+        review_manifest_id, subject_index, page = parsed
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return None
+        current_context = collect_review_context_binding(
+            stored.project_root,
+            project_name=str(stored.context_binding.get("project_name") or ""),
+        )
+        verify_stored_review_context(
+            stored,
+            current_context_binding=current_context,
+        )
+        if subject_index is None:
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            self._review_manifest_resource_summary(stored),
+                            ensure_ascii=False,
+                        ),
+                    }
+                ]
+            }
+        subject_page = read_stored_review_manifest_page(
+            stored,
+            subject_index=subject_index,
+            page=page or 1,
+        )
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(subject_page.to_dict(), ensure_ascii=False),
+                }
+            ]
+        }
+
+    def _review_manifest_resource_summary(
+        self,
+        stored: StoredReviewManifest,
+    ) -> dict[str, Any]:
+        handle = stored.handle
+        return {
+            "schema_version": "colameta.review_manifest_resource.v1",
+            **self._review_manifest_handle_fields(handle),
+            "review_unit": stored.context_binding.get("review_unit"),
+            "workflow_intent": stored.context_binding.get("workflow_intent"),
+            "context_binding": dict(stored.context_binding),
+            "acceptance_commands_preview": list(stored.manifest.get("acceptance_commands") or []),
+            "subjects": [
+                self._review_manifest_subject_descriptor(
+                    handle,
+                    subject_index=index,
+                    path=subject.path,
+                    sha256=subject.sha256,
+                    byte_size=subject.byte_size,
+                    page_count=subject.page_count,
+                )
+                for index, subject in enumerate(stored.subjects, start=1)
+            ],
+            "read_only": True,
+            "side_effects": False,
+            "authority_boundary": self._review_manifest_authority_boundary(),
+        }
+
+    @staticmethod
+    def _review_manifest_authority_boundary() -> dict[str, bool]:
+        return {
+            "does_not_authorize_executor_run": True,
+            "does_not_authorize_validation_run": True,
+            "does_not_authorize_commit_or_push": True,
+            "does_not_authorize_review_decision": True,
+            "does_not_authorize_delivery_acceptance": True,
+            "does_not_read_unlisted_files": True,
+        }
+
     def _mcp_resources_list_result(self) -> dict[str, Any]:
         return {
             "resources": [
@@ -6007,14 +6391,32 @@ class MCPPlanningBridgeServer:
             ]
         }
 
-    def _mcp_resource_read_result(self, uri: str) -> dict[str, Any]:
+    def _mcp_resource_read_result(self, uri: str) -> dict[str, Any] | None:
+        if uri == COMMANDER_APP_WIDGET_URI:
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
+                        "text": self._commander_widget_html(),
+                        "_meta": self._commander_widget_resource_meta(),
+                    }
+                ]
+            }
+
+        parsed = self._parse_mcp_result_artifact_uri(uri)
+        if parsed is None:
+            return None
+        artifact_id, page = parsed
+        artifact_page = self._mcp_result_artifact_store.read_page(artifact_id, page)
+        if artifact_page is None:
+            return None
         return {
             "contents": [
                 {
                     "uri": uri,
-                    "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
-                    "text": self._commander_widget_html(),
-                    "_meta": self._commander_widget_resource_meta(),
+                    "mimeType": "application/json",
+                    "text": json.dumps(artifact_page.to_dict(), ensure_ascii=False),
                 }
             ]
         }
@@ -8087,14 +8489,64 @@ class MCPPlanningBridgeServer:
                 if not isinstance(uri, str) or not uri.strip():
                     return self._protocol_error(req_id, -32602, "invalid_resource_uri", "resources/read 需要 uri。")
                 normalized_uri = uri.strip()
-                if normalized_uri != COMMANDER_APP_WIDGET_URI:
+                is_result_artifact = self._parse_mcp_result_artifact_uri(normalized_uri) is not None
+                is_review_manifest = self._parse_mcp_review_manifest_uri(normalized_uri) is not None
+                if (
+                    normalized_uri != COMMANDER_APP_WIDGET_URI
+                    and not is_result_artifact
+                    and not is_review_manifest
+                ):
                     return self._protocol_error(
                         req_id,
                         -32602,
                         "resource_not_found",
                         f"未知 resource uri：{normalized_uri}",
                     )
-                return self._result(req_id, self._mcp_resource_read_result(normalized_uri))
+                if is_result_artifact:
+                    access_error = self._mcp_result_artifact_resource_access_error(auth_context)
+                    if access_error is not None:
+                        error_code, message = access_error
+                        return self._protocol_error(req_id, -32602, error_code, message)
+                if is_review_manifest:
+                    access_error = self._mcp_read_scoped_resource_access_error(
+                        auth_context,
+                        resource_label="Review manifest resource",
+                    )
+                    if access_error is not None:
+                        error_code, message = access_error
+                        return self._protocol_error(req_id, -32602, error_code, message)
+                    try:
+                        resource_result = self._review_manifest_resource_read_result(normalized_uri)
+                    except ReviewManifestError as exc:
+                        return self._protocol_error(
+                            req_id,
+                            -32602,
+                            exc.error_code,
+                            exc.message,
+                            exc.details,
+                        )
+                else:
+                    resource_result = self._mcp_resource_read_result(normalized_uri)
+                if resource_result is None:
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        (
+                            "result_artifact_not_found_or_expired"
+                            if is_result_artifact
+                            else "review_manifest_not_found_or_expired"
+                            if is_review_manifest
+                            else "resource_not_found"
+                        ),
+                        (
+                            "结果 artifact 不存在、已过期或页码无效。"
+                            if is_result_artifact
+                            else "审查 manifest 不存在、已过期或资源页码无效。"
+                            if is_review_manifest
+                            else f"未知 resource uri：{normalized_uri}"
+                        ),
+                    )
+                return self._result(req_id, resource_result)
             if method in ("call_tool", "tools/call"):
                 if not isinstance(params, dict):
                     return self._result(req_id, self._tool_error("call_tool", "INVALID_PARAMS", "params 必须是对象。"))
@@ -8576,6 +9028,11 @@ class MCPPlanningBridgeServer:
         return filtered
 
     def _commander_public_string(self, value: str) -> str:
+        # These opaque MCP resource identifiers are not local file paths.  Keep
+        # only the fully validated forms intact so a ChatGPT reviewer can follow
+        # the bounded resources/read continuation contract.
+        if _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(value):
+            return value
         redacted = value
         if self.project_root:
             redacted = redacted.replace(self.project_root, "<project>")
@@ -8738,9 +9195,16 @@ class MCPPlanningBridgeServer:
         if not isinstance(tool_result, dict):
             return tool_result
         public_tool_result = copy.deepcopy(tool_result)
-        if public_tool_result.get("ok") is False:
-            public_tool_result.pop("details", None)
         tool_name = str(public_tool_result.get("tool") or "")
+        if public_tool_result.get("ok") is False:
+            is_review_manifest_mismatch = (
+                tool_name == "run_mcp_workflow"
+                and isinstance(params, dict)
+                and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
+                and public_tool_result.get("error_code") == "CONTEXT_BINDING_MISMATCH"
+            )
+            if not is_review_manifest_mismatch:
+                public_tool_result.pop("details", None)
         if (
             tool_name == "run_mcp_workflow"
             and isinstance(params, dict)
@@ -8913,6 +9377,20 @@ class MCPPlanningBridgeServer:
             if isinstance(data, dict):
                 data_keys = [str(k) for k in list(data.keys())[:40]]
             omitted_fields = [f"data.{k}" for k in data_keys] if data_keys else ["data"]
+            artifact_fields = self._store_packaged_result_artifact(
+                tool_name,
+                structured_tool_result,
+            )
+            recommended_next_reads = self._mcp_recommended_next_reads(
+                tool_name,
+                safe_params,
+                structured_tool_result,
+            )
+            if artifact_fields is not None:
+                recommended_next_reads = [
+                    self._result_artifact_next_read(artifact_fields),
+                    *recommended_next_reads,
+                ]
             manifest_sc: dict[str, Any] = {
                 "ok": bool(structured_tool_result.get("ok")),
                 "tool": tool_name,
@@ -8928,8 +9406,10 @@ class MCPPlanningBridgeServer:
                     "original_error_code": structured_tool_result.get("error_code"),
                 },
                 "omitted_fields": omitted_fields,
-                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, structured_tool_result),
+                "recommended_next_reads": recommended_next_reads,
             }
+            if artifact_fields is not None:
+                manifest_sc.update(artifact_fields)
             if not manifest_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
                 manifest_sc["error_code"] = structured_tool_result.get("error_code")
             manifest_text = json.dumps(manifest_sc, ensure_ascii=False)
@@ -8953,8 +9433,10 @@ class MCPPlanningBridgeServer:
                     "hard_tool_result_chars": MCP_HARD_TOOL_RESULT_CHARS,
                 },
                 "omitted_fields": ["data"],
-                "recommended_next_reads": self._mcp_recommended_next_reads(tool_name, safe_params, structured_tool_result)[:2],
+                "recommended_next_reads": recommended_next_reads[:2],
             }
+            if artifact_fields is not None:
+                reduced_sc.update(artifact_fields)
             if not reduced_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
                 reduced_sc["error_code"] = structured_tool_result.get("error_code")
             reduced_text = json.dumps(reduced_sc, ensure_ascii=False)
@@ -9467,6 +9949,30 @@ class MCPPlanningBridgeServer:
                     "description": "Fields omitted from a packaged large response.",
                     "items": {"type": "string"},
                 },
+                "artifact_id": {
+                    "type": "string",
+                    "description": "Opaque short-lived ID for a packaged result continuation artifact.",
+                },
+                "resource_uri": {
+                    "type": "string",
+                    "description": "MCP resource URI for page 1 of a packaged result artifact.",
+                },
+                "page_uri_template": {
+                    "type": "string",
+                    "description": "MCP resource URI template for later artifact pages.",
+                },
+                "page_count": {
+                    "type": "integer",
+                    "description": "Number of readable pages in a packaged result artifact.",
+                },
+                "content_sha256": {
+                    "type": "string",
+                    "description": "SHA-256 of the complete artifact content.",
+                },
+                "expires_at": {
+                    "type": "string",
+                    "description": "Expiry timestamp for a packaged result artifact.",
+                },
                 "recommended_next_reads": {
                     "type": "array",
                     "description": "Suggested smaller follow-up reads when a large response is packaged.",
@@ -9770,6 +10276,20 @@ class MCPPlanningBridgeServer:
             if isinstance(data, dict):
                 data_keys = [str(k) for k in list(data.keys())[:40]]
             omitted_fields = [f"data.{k}" for k in data_keys] if data_keys else ["data"]
+            artifact_fields = self._store_packaged_result_artifact(
+                tool_name,
+                sanitized_tool_result,
+            )
+            recommended_next_reads = self._actions_recommended_next_reads(
+                tool_name,
+                params,
+                sanitized_tool_result,
+            )
+            if artifact_fields is not None:
+                recommended_next_reads = [
+                    self._result_artifact_next_read(artifact_fields),
+                    *recommended_next_reads,
+                ]
             summary: dict[str, Any] = {
                 "response_char_estimate": response_chars,
                 "target_response_chars": ACTIONS_TARGET_RESPONSE_CHARS,
@@ -9786,8 +10306,10 @@ class MCPPlanningBridgeServer:
                 "message": "响应内容较大，已返回摘要与续读建议。",
                 "summary": summary,
                 "omitted_fields": omitted_fields,
-                "recommended_next_reads": self._actions_recommended_next_reads(tool_name, params, sanitized_tool_result),
+                "recommended_next_reads": recommended_next_reads,
             }
+            if artifact_fields is not None:
+                manifest.update(artifact_fields)
             if not ok_value and isinstance(sanitized_tool_result.get("error_code"), str):
                 manifest["error_code"] = sanitized_tool_result.get("error_code")
             if self._json_char_count(manifest) <= ACTIONS_HARD_RESPONSE_CHARS:
@@ -9804,8 +10326,10 @@ class MCPPlanningBridgeServer:
                     "hard_response_chars": ACTIONS_HARD_RESPONSE_CHARS,
                 },
                 "omitted_fields": ["data"],
-                "recommended_next_reads": self._actions_recommended_next_reads(tool_name, params, sanitized_tool_result)[:2],
+                "recommended_next_reads": recommended_next_reads[:2],
             }
+            if artifact_fields is not None:
+                reduced_manifest.update(artifact_fields)
             if not ok_value and isinstance(sanitized_tool_result.get("error_code"), str):
                 reduced_manifest["error_code"] = sanitized_tool_result.get("error_code")
             if self._json_char_count(reduced_manifest) <= ACTIONS_HARD_RESPONSE_CHARS:
@@ -15710,10 +16234,225 @@ class MCPPlanningBridgeServer:
         target = self._operator_target_server(params)
         return target._operator_batch_service().handle(project_name.strip(), params)
 
+    def _review_manifest_project_context(
+        self,
+        params: dict[str, Any],
+    ) -> tuple[str, str, dict[str, Any]]:
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        if isinstance(project_record, dict) or params.get("project_name") is not None:
+            project_name = self._project_name_for_context(project_root, project_record, params)
+        else:
+            identity_name = self._project_identity_for_root(project_root).get("project_name")
+            project_name = (
+                identity_name.strip()
+                if isinstance(identity_name, str) and identity_name.strip()
+                else os.path.basename(project_root.rstrip(os.sep)) or self.project_hint
+            )
+        context_binding = collect_review_context_binding(
+            project_root,
+            project_name=project_name,
+        )
+        unavailable = [
+            field
+            for field in ("branch", "head")
+            if not isinstance(context_binding.get(field), str)
+            or not str(context_binding.get(field)).strip()
+        ]
+        if unavailable:
+            raise MCPToolInputError(
+                "REVIEW_MANIFEST_CONTEXT_UNAVAILABLE",
+                "review_manifest 需要可读取 branch 和 HEAD 的 Git checkout。",
+                {"missing_context_fields": unavailable},
+            )
+        return (
+            os.path.realpath(os.path.abspath(project_root)),
+            project_name,
+            context_binding,
+        )
+
+    def _review_manifest_packet(
+        self,
+        *,
+        handle: ReviewManifestHandle,
+        inspection: ReviewManifestInspection | StoredReviewManifest,
+        phase: str,
+    ) -> dict[str, Any]:
+        manifest = inspection.manifest
+        context_binding = inspection.context_binding
+        subjects = inspection.subjects
+        subject_descriptors = [
+            self._review_manifest_subject_descriptor(
+                handle,
+                subject_index=index,
+                path=subject.path,
+                sha256=subject.sha256,
+                byte_size=subject.byte_size,
+                page_count=subject.page_count,
+            )
+            for index, subject in enumerate(subjects, start=1)
+        ]
+        handle_fields = self._review_manifest_handle_fields(handle)
+        manifest_resource_uri = handle_fields["manifest_resource_uri"]
+        return {
+            "ok": True,
+            "workflow": REVIEW_MANIFEST_WORKFLOW,
+            "phase": phase,
+            "schema_version": "colameta.review_manifest_inspection.v1",
+            "read_only": True,
+            "side_effects": False,
+            **handle_fields,
+            "review_unit": context_binding["review_unit"],
+            "workflow_intent": context_binding["workflow_intent"],
+            "context_binding": dict(context_binding),
+            "subject_count": len(subject_descriptors),
+            "subjects": subject_descriptors,
+            "acceptance_commands_preview": list(manifest.get("acceptance_commands") or []),
+            "independent_review_packet": {
+                "packet_kind": "manifest_bound_independent_review.v1",
+                "review_unit": context_binding["review_unit"],
+                "workflow_intent": context_binding["workflow_intent"],
+                "manifest_sha256": handle.manifest_sha256,
+                "manifest_resource_uri": manifest_resource_uri,
+                "subject_count": len(subject_descriptors),
+                "subject_read_contract": {
+                    "only_manifest_subjects_are_readable": True,
+                    "subject_hash_is_reverified_on_every_read": True,
+                    "context_is_reverified_on_every_read": True,
+                    "resources_are_process_local_and_short_lived": True,
+                },
+                "validation_preview": {
+                    "commands": list(manifest.get("acceptance_commands") or []),
+                    "commands_executed": False,
+                },
+                "authority_boundary": self._review_manifest_authority_boundary(),
+            },
+            "recommended_next_reads": [
+                {
+                    "kind": "mcp_resource",
+                    "tool": "resources/read",
+                    "arguments": {"uri": manifest_resource_uri},
+                    "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
+                }
+            ],
+        }
+
+    @staticmethod
+    def _review_manifest_template(
+        current_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "workflow": REVIEW_MANIFEST_WORKFLOW,
+            "phase": "inspect",
+            "status": "template_ready",
+            "schema_version": "colameta.review_manifest_template.v1",
+            "read_only": True,
+            "side_effects": False,
+            "context_binding": dict(current_context),
+            "review_manifest_template": {
+                "schema_version": REVIEW_MANIFEST_SCHEMA_VERSION,
+                "review_unit": "<caller-defined review unit>",
+                "workflow_intent": REVIEW_MANIFEST_WORKFLOW_INTENT,
+                **dict(current_context),
+                "subjects": [
+                    {
+                        "path": "<project-relative safe text path>",
+                        "sha256": "<SHA-256 of exact current file bytes>",
+                    }
+                ],
+                "acceptance_commands": [
+                    {"command": "<declared command; preview only, not executed>"}
+                ],
+            },
+            "required_next_input": [
+                "review_manifest.review_unit",
+                "review_manifest.subjects",
+            ],
+            "authority_boundary": {
+                "does_not_read_files": True,
+                "does_not_execute_acceptance_commands": True,
+                "does_not_authorize_executor_run": True,
+                "does_not_authorize_commit_or_push": True,
+            },
+        }
+
+    def _tool_review_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
+        phase_raw = params.get("phase", "inspect")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        if phase not in {"inspect", "verify", "status"}:
+            raise MCPToolInputError(
+                "INVALID_REVIEW_MANIFEST_PHASE",
+                "review_manifest 只支持 inspect、verify 或 status。",
+            )
+        project_root, project_name, current_context = self._review_manifest_project_context(params)
+        if phase == "inspect":
+            if params.get("review_manifest") is None:
+                return self._review_manifest_template(current_context)
+            try:
+                inspection = inspect_review_manifest(
+                    params.get("review_manifest"),
+                    project_root=project_root,
+                    context_binding=current_context,
+                )
+            except ReviewManifestError as exc:
+                raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+            handle = self._review_manifest_store.put(
+                project_root=project_root,
+                inspection=inspection,
+            )
+            return self._review_manifest_packet(
+                handle=handle,
+                inspection=inspection,
+                phase="inspect",
+            )
+
+        review_manifest_id = params.get("review_manifest_id")
+        if not isinstance(review_manifest_id, str) or not review_manifest_id.strip():
+            raise MCPToolInputError(
+                "REVIEW_MANIFEST_ID_REQUIRED",
+                "review_manifest verify/status 必须提供 inspect 返回的 review_manifest_id。",
+            )
+        stored = self._review_manifest_store.get(review_manifest_id.strip())
+        if stored is None:
+            raise MCPToolInputError(
+                "REVIEW_MANIFEST_NOT_FOUND_OR_EXPIRED",
+                "review manifest 不存在或已过期；请重新执行 inspect。",
+            )
+        if stored.project_root != project_root:
+            raise MCPToolInputError(
+                "CONTEXT_BINDING_MISMATCH",
+                "review manifest 不属于当前 project_name 路由的项目。",
+                {
+                    "mismatches": [
+                        {
+                            "field": "project_name",
+                            "expected": stored.context_binding.get("project_name"),
+                            "actual": project_name,
+                        }
+                    ]
+                },
+            )
+        try:
+            verification = verify_stored_review_manifest(
+                stored,
+                current_context_binding=current_context,
+            )
+        except ReviewManifestError as exc:
+            raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+        packet = self._review_manifest_packet(
+            handle=stored.handle,
+            inspection=stored,
+            phase="verify" if phase == "verify" else "status",
+        )
+        packet["verification"] = verification
+        return packet
+
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
         if workflow == "operator_batch":
             return self._tool_operator_batch(params)
+        if workflow == REVIEW_MANIFEST_WORKFLOW:
+            return self._tool_review_manifest(params)
         if workflow == GATE_REVIEW_WORKFLOW:
             project_name = params.get("project_name")
             if project_name is not None:
@@ -15775,14 +16514,24 @@ class MCPPlanningBridgeServer:
     def _result(self, req_id: Any, result: dict[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
-    def _protocol_error(self, req_id: Any, code: int, error_code: str, message: str) -> dict[str, Any]:
+    def _protocol_error(
+        self,
+        req_id: Any,
+        code: int,
+        error_code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"error_code": error_code}
+        if details:
+            data["details"] = details
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "error": {
                 "code": code,
                 "message": message,
-                "data": {"error_code": error_code},
+                "data": data,
             },
         }
 

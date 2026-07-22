@@ -45,6 +45,11 @@ That is the complete seven-tool Commander surface. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
+When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
+such as “do not start/run the executor” is a hard routing constraint. ColaMeta
+uses the read-only project-status route instead of executor preflight, unless
+the request independently identifies a more specific non-executor workflow.
+
 If you want to start a controlled optimization round:
 
 ```text
@@ -630,8 +635,12 @@ ok=false
   before retrying any preview or commit-scoped action.
 
 packaged=true
-  The result was compressed into a manifest. Continue through
-  recommended_next_reads.
+  The result was compressed into a manifest. If artifact_id and resource_uri
+  are present, read resource_uri through resources/read first, then continue
+  with page_uri_template for pages 2..page_count. Verify content_sha256 after
+  reconstructing the pages. These short-lived artifacts are read-only and do
+  not grant any workflow, executor, Git, or delivery authority.
+  Otherwise, continue through recommended_next_reads.
 ```
 
 Common errors:
@@ -648,6 +657,83 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
   Call get_agent_consumer_contract and choose a profile_id from
   service_entry_profiles.
 ```
+
+### Manifest-bound independent review
+
+Use this read-only workflow when an external review contract already names the
+exact files and SHA-256 values that must be inspected. It is intentionally not
+an arbitrary `read_project_file` escape hatch, and it remains inside the seven
+Commander tools as a typed `run_mcp_workflow` family.
+It requires a Git checkout with a readable branch and HEAD.
+
+First obtain the current binding template. This reads no subject files and runs
+no validation command:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+The response includes `context_binding`. Copy its `project_name`, `branch`,
+`head`, `runner_plan`, and `current_version` exactly into an external review
+manifest, then supply the caller-owned review unit and exact subject hashes:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "inspect",
+    "project_name": "registered-project-name",
+    "review_manifest": {
+      "schema_version": "colameta.review_manifest.v1",
+      "review_unit": "fresh-independent-review-001",
+      "workflow_intent": "independent_review",
+      "project_name": "registered-project-name",
+      "branch": "<copied from context_binding>",
+      "head": "<copied full SHA from context_binding>",
+      "runner_plan": {
+        "mode": "source-only",
+        "plan_sha256": null
+      },
+      "current_version": null,
+      "subjects": [
+        {
+          "path": "docs/review-contract.yaml",
+          "sha256": "<SHA-256 of the exact current UTF-8 file bytes>"
+        }
+      ],
+      "acceptance_commands": [
+        {"command": "git diff --check", "timeout_seconds": 60}
+      ]
+    }
+  }
+}
+```
+
+For a managed project, use the template's `runner_plan` object and
+`current_version` instead of the source-only example. `acceptance_commands` are
+only previewed in this workflow; they are never run.
+
+On success, read `manifest_resource_uri` through `resources/read`, then read
+only the returned subject `resource_uri` values. Subject pages use
+`page_uri_template`; each subject resource read rechecks the project context and
+the subject hash before returning text. `phase=verify` with `review_manifest_id`
+rechecks every declared subject without returning file content.
+
+`CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
+or current version no longer matches the manifest. Stop combining evidence,
+request a fresh template, and build a new manifest. A changed subject returns
+`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`. Sensitive, private-runtime, symlinked,
+and high-risk configuration paths are denied even when a manifest names them.
+The short-lived manifest session does not authorize executor runs, validation
+runs, commits, pushes, ReviewDecision, or delivery acceptance.
 
 ## 3. Common Advanced Agent Profiles
 

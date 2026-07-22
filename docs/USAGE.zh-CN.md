@@ -48,6 +48,9 @@
 这就是完整七工具 Commander surface。consumer contract、独立 runtime/cadence 和其他底层诊断
 属于 loopback advanced endpoint；不要把它们当成私人 App 默认公开工具。
 
+使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
+除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
+
 如果要开一轮受控优化：
 
 ```text
@@ -758,7 +761,11 @@ ok=false
   先读 error_code、message、details；不要猜参数。
 
 packaged=true
-  当前结果被压成 manifest；按 recommended_next_reads 分段续读。
+  当前结果被压成 manifest。如果有 artifact_id 和 resource_uri，先通过
+  resources/read 读取 resource_uri，再按 page_uri_template 读取第 2 到
+  page_count 页；拼回后核对 content_sha256。这些短期 artifact 只读，
+  不授予 workflow、executor、Git 或 delivery authority。
+  否则按 recommended_next_reads 分段续读。
 ```
 
 最常见的错误处理：
@@ -773,6 +780,77 @@ PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
 UNKNOWN_SERVICE_ENTRY_PROFILE
   先 get_agent_consumer_contract，看 service_entry_profiles 里的 profile_id。
 ```
+
+### Manifest 绑定的独立审查
+
+当外部审查合同已经明确列出必须读取的文件及其 SHA-256 时，使用这个只读 workflow。
+它不是任意 `read_project_file` 的后门；它仍是七工具 Commander 中
+`run_mcp_workflow` 的一个 typed workflow family。
+它要求项目是可读取 branch 和 HEAD 的 Git checkout。
+
+先取得当前绑定模板。此调用不读取 subject 文件，也不运行任何验证命令：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+响应中的 `context_binding` 给出当前的 `project_name`、`branch`、`head`、
+`runner_plan`、`current_version`。把它们原样放入外部审查 manifest，再由调用方补入
+审查单元和每个 subject 的精确哈希：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "inspect",
+    "project_name": "registered-project-name",
+    "review_manifest": {
+      "schema_version": "colameta.review_manifest.v1",
+      "review_unit": "fresh-independent-review-001",
+      "workflow_intent": "independent_review",
+      "project_name": "registered-project-name",
+      "branch": "<从 context_binding 原样复制>",
+      "head": "<从 context_binding 原样复制完整 SHA>",
+      "runner_plan": {
+        "mode": "source-only",
+        "plan_sha256": null
+      },
+      "current_version": null,
+      "subjects": [
+        {
+          "path": "docs/review-contract.yaml",
+          "sha256": "<当前 UTF-8 文件字节的精确 SHA-256>"
+        }
+      ],
+      "acceptance_commands": [
+        {"command": "git diff --check", "timeout_seconds": 60}
+      ]
+    }
+  }
+}
+```
+
+managed 项目必须使用模板中实际返回的 `runner_plan` 与 `current_version`，不能套用
+source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview，绝不执行。
+
+成功后先通过 `resources/read` 读取 `manifest_resource_uri`，再只读取其中返回的
+subject `resource_uri`。大 subject 按 `page_uri_template` 分页；每次读取 subject resource
+时都会重新核对项目上下文与 subject hash。带 `review_manifest_id` 调用 `phase=verify`
+会复核所有声明的 subject，但不返回文件内容。
+
+`CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
+不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
+`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
+符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、validation、
+commit、push、ReviewDecision 或 Delivery accepted。
 
 ## 3. 五种 Advanced Agent 角色
 

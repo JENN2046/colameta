@@ -132,6 +132,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             ("prompt_to_plan", "apply_all"): "mcp:commit",
             ("prompt_to_plan", "run"): "mcp:commit",
             ("thin_governed_loop_preview", "preview"): "mcp:read",
+            ("review_manifest", "inspect"): "mcp:read",
+            ("review_manifest", "verify"): "mcp:read",
             ("gate_review_request", "inspect"): "mcp:read",
             ("gate_review_request", "status"): "mcp:read",
             ("gate_review_request", "preview"): "mcp:preview",
