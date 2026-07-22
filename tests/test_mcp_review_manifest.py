@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES, MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
 from runner.review_manifest import (
     REVIEW_MANIFEST_SCHEMA_VERSION,
@@ -80,6 +80,19 @@ def _resource_read(server: MCPPlanningBridgeServer, uri: str, *, auth_context: d
     return response
 
 
+def _resource_templates_list(server: MCPPlanningBridgeServer) -> dict:
+    response = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/templates/list",
+            "params": {},
+        }
+    )
+    assert response is not None
+    return response
+
+
 def _tool_call(server: MCPPlanningBridgeServer, arguments: dict) -> dict:
     response = server._handle_jsonrpc_request(
         {
@@ -145,6 +158,33 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["ok"] is True
     assert verified["data"]["verification"]["context_binding"] == "matched"
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
+
+
+def test_review_manifest_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+
+    listed = _resource_templates_list(server)
+    templates = listed["result"]["resourceTemplates"]
+    assert templates == [dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES]
+    assert [item["uriTemplate"] for item in templates] == [
+        "colameta://review-manifest/{review_manifest_id}",
+        "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}",
+        "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}/pages/{page}",
+    ]
+    assert all("path" not in item["uriTemplate"] for item in templates)
+    assert all("review-project" not in repr(item) for item in templates)
+
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    descriptor = inspected["data"]["subjects"][0]
+    assert descriptor["resource_uri"].startswith(
+        "colameta://review-manifest/"
+    )
+    assert descriptor["page_uri_template"].endswith("/subjects/1/pages/{page}")
 
 
 def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_path: Path) -> None:

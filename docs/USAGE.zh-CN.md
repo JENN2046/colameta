@@ -660,8 +660,9 @@ Advanced MCP 连接后先做只读校准，不要直接 run、commit、push 或�
 ```
 
 Apps 客户端可通过 `resources/list` 和 `resources/read` 发现并读取 widget
-resource。这个面板只展示服务事实、profile-aware 入口、connector health、
-preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
+resource。`resources/templates/list` 还会公开哈希绑定 review manifest 摘要、subject 和分页的
+静态 URI 形状；它不列出 live handle、路径或正文。这个面板只展示服务事实、profile-aware 入口、
+connector health、preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
 stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 面板里的 `Release Evidence` 区块可以通过 `Console` / `Submission` 读按钮刷新
 release/submission readiness，并把未完成 evidence key 的模板渲染成可扫描卡片。卡片里的
@@ -841,8 +842,9 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 managed 项目必须使用模板中实际返回的 `runner_plan` 与 `current_version`，不能套用
 source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview，绝不执行。
 
-成功后先通过 `resources/read` 读取 `manifest_resource_uri`，再只读取其中返回的
-subject `resource_uri`。大 subject 按 `page_uri_template` 分页；每次读取 subject resource
+成功后先通过 `resources/templates/list` 发现静态 manifest URI 形状，再通过 `resources/read`
+读取 `manifest_resource_uri`，再只读取其中返回的 subject `resource_uri`。大 subject 按
+`page_uri_template` 分页；每次读取 subject resource
 时都会重新核对项目上下文与 subject hash。带 `review_manifest_id` 调用 `phase=verify`
 会复核所有声明的 subject，但不返回文件内容。
 

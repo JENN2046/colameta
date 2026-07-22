@@ -165,7 +165,9 @@ manifest 当作完整业务 payload。
    `subjects[{path, sha256}]`。
 3. 带 manifest 的 inspect 在所有上下文与哈希都匹配时，返回短期
    `review_manifest_id`、`manifest_resource_uri` 和每个 subject 的 `resource_uri`。
-4. Agent 只能通过 `resources/read` 读取这些 opaque URI；每次读取都会重新核对 checkout
+4. `resources/templates/list` 会静态公开 manifest 摘要、subject 首页和后续页的 URI 形状；它不列出
+   live session ID、文件路径或正文，也不绕过 scope、上下文或哈希校验。
+5. Agent 只能通过 `resources/read` 读取这些 opaque URI；每次读取都会重新核对 checkout
    上下文，读取 subject 时还会重新核对文件 SHA-256。`phase=verify` 只复核，不返回文件正文。
 
 若任一绑定不一致，返回 `CONTEXT_BINDING_MISMATCH`；若 subject 内容变化，返回

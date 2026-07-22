@@ -240,6 +240,43 @@ MCP_REVIEW_MANIFEST_URI_RE = re.compile(
     r"^colameta://review-manifest/(?P<review_manifest_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/subjects/(?P<subject_index>[1-9][0-9]*)(?:/pages/(?P<page>[1-9][0-9]*))?)?$"
 )
+MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES: tuple[dict[str, str], ...] = (
+    {
+        "name": "colameta_review_manifest",
+        "title": "Hash-bound review manifest",
+        "description": (
+            "Read the short-lived summary for a review_manifest session returned by "
+            "run_mcp_workflow. The opaque ID must come from a successful inspect call."
+        ),
+        "uriTemplate": "colameta://review-manifest/{review_manifest_id}",
+        "mimeType": "application/json",
+    },
+    {
+        "name": "colameta_review_manifest_subject",
+        "title": "Hash-bound review subject",
+        "description": (
+            "Read page 1 of one manifest-declared subject. The server rechecks the "
+            "review context and subject SHA-256 before returning content."
+        ),
+        "uriTemplate": (
+            "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}"
+        ),
+        "mimeType": "application/json",
+    },
+    {
+        "name": "colameta_review_manifest_subject_page",
+        "title": "Hash-bound review subject page",
+        "description": (
+            "Read a later page of one manifest-declared subject. Only opaque IDs and "
+            "page numbers returned by inspect are valid."
+        ),
+        "uriTemplate": (
+            "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}"
+            "/pages/{page}"
+        ),
+        "mimeType": "application/json",
+    },
+)
 _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
     r"^colameta://(?:"
     r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
@@ -6391,6 +6428,16 @@ class MCPPlanningBridgeServer:
             ]
         }
 
+    @staticmethod
+    def _mcp_resource_templates_list_result() -> dict[str, Any]:
+        """Expose static review-manifest URI shapes without listing live handles."""
+
+        return {
+            "resourceTemplates": [
+                dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES
+            ]
+        }
+
     def _mcp_resource_read_result(self, uri: str) -> dict[str, Any] | None:
         if uri == COMMANDER_APP_WIDGET_URI:
             return {
@@ -8428,7 +8475,13 @@ class MCPPlanningBridgeServer:
 
         if (
             self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
-            and method in {"list_tools", "call_tool", "list_resources", "read_resource"}
+            and method in {
+                "list_tools",
+                "call_tool",
+                "list_resources",
+                "list_resource_templates",
+                "read_resource",
+            }
         ):
             return self._protocol_error(
                 req_id,
@@ -8475,6 +8528,10 @@ class MCPPlanningBridgeServer:
                 if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
                     return self._result(req_id, {"resources": []})
                 return self._result(req_id, self._mcp_resources_list_result())
+            if method in ("list_resource_templates", "resources/templates/list"):
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
+                    return self._result(req_id, {"resourceTemplates": []})
+                return self._result(req_id, self._mcp_resource_templates_list_result())
             if method in ("read_resource", "resources/read"):
                 if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
                     return self._protocol_error(

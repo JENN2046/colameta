@@ -298,9 +298,12 @@ need data, use:
 ```
 
 Apps clients can discover and read the widget resource through
-`resources/list` and `resources/read`. The widget only displays service facts,
-profile-aware entries, connector health, preview-first routes, and explicit
-authorization gates. It does not authorize executor runs, commits, pushes,
+`resources/list` and `resources/read`. `resources/templates/list` additionally
+advertises only the static URI shapes for hash-bound review-manifest summaries,
+subjects, and pages; it never lists live handles, paths, or content. The widget
+only displays service facts, profile-aware entries, connector health,
+preview-first routes, and explicit authorization gates. It does not authorize
+executor runs, commits, pushes,
 stable service replacement, ReviewDecision, GateEvent, or Delivery accepted.
 
 For a compact product surface map, call `get_product_console_map` or
@@ -721,8 +724,10 @@ For a managed project, use the template's `runner_plan` object and
 `current_version` instead of the source-only example. `acceptance_commands` are
 only previewed in this workflow; they are never run.
 
-On success, read `manifest_resource_uri` through `resources/read`, then read
-only the returned subject `resource_uri` values. Subject pages use
+On success, discover the static manifest URI shapes through
+`resources/templates/list`, read `manifest_resource_uri` through
+`resources/read`, then read only the returned subject `resource_uri` values.
+Subject pages use
 `page_uri_template`; each subject resource read rechecks the project context and
 the subject hash before returning text. `phase=verify` with `review_manifest_id`
 rechecks every declared subject without returning file content.
