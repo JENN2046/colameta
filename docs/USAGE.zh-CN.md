@@ -848,6 +848,27 @@ source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview�
 时都会重新核对项目上下文与 subject hash。带 `review_manifest_id` 调用 `phase=verify`
 会复核所有声明的 subject，但不返回文件内容。
 
+部分 ChatGPT 宿主暂时不会把动态 resource-template URI 路由到通用资源代理。每个 subject 因而还会
+返回仍属于既有 `run_mcp_workflow` 的 typed `read_call` 兼容入口；仅当代理拒绝 manifest URI 时使用：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "read",
+    "project_name": "registered-project-name",
+    "review_manifest_id": "<来自 inspect>",
+    "review_manifest_subject_index": 1,
+    "review_manifest_page": 1
+  }
+}
+```
+
+`read` 只返回该已声明 subject 的指定页；每次都会重新核对当前上下文和该 subject 的 SHA-256。若还有
+后续页，它会返回同一绑定下的下一页调用。它只是 ChatGPT 兼容读取路线，不是任意文件读取，也没有新增
+第八个 Commander 工具。
+
 `CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
 不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
 `REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、

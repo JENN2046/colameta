@@ -1106,7 +1106,7 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     if workflow == "thin_governed_loop_preview":
         return "mcp:read"
     if workflow == REVIEW_MANIFEST_WORKFLOW:
-        if phase in {"inspect", "verify", "status"}:
+        if phase in {"inspect", "read", "verify", "status"}:
             return "mcp:read"
         return None
     if workflow == "small_project_patch":
@@ -4257,7 +4257,8 @@ class MCPPlanningBridgeServer:
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                     "review_manifest：把独立审查输入严格绑定到 project/branch/HEAD/Runner plan/current version/"
-                    "review unit/intent 与 subject SHA-256；只返回受控 MCP resource，绝不开放任意文件读取。"
+                    "review unit/intent 与 subject SHA-256；标准资源读取之外，还提供同一绑定下的分页 read "
+                    "compatibility phase，绝不开放任意文件读取。"
                     "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                     "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
@@ -4286,8 +4287,8 @@ class MCPPlanningBridgeServer:
                         },
                         "phase": {
                             "type": "string",
-                            "enum": ["inspect", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
-                            "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，verify 重新核对当前上下文和所有 subject hash；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                            "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
+                            "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                         },
                         "preview_id": {
                             "type": "string",
@@ -4697,7 +4698,17 @@ class MCPPlanningBridgeServer:
                         },
                         "review_manifest_id": {
                             "type": "string",
-                            "description": "review_manifest verify 必填。来自 inspect 的短期只读审查会话 ID；不能用于读未声明文件或授权任何写入。",
+                            "description": "review_manifest read/verify/status 必填。来自 inspect 的短期只读审查会话 ID；不能用于读未声明文件或授权任何写入。",
+                        },
+                        "review_manifest_subject_index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "review_manifest read 必填。只能使用 inspect 返回的 subjects[].subject_index，不能改写为任意路径。",
+                        },
+                        "review_manifest_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "review_manifest read 可选。默认 1；不能超过 inspect 返回的 subject page_count。",
                         },
                     },
                     "required": ["workflow"],
@@ -6278,6 +6289,30 @@ class MCPPlanningBridgeServer:
             "expires_at": handle.expires_at,
         }
 
+    @staticmethod
+    def _review_manifest_read_call(
+        handle: ReviewManifestHandle,
+        *,
+        subject_index: int,
+        page: int,
+        project_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the bounded tool-call fallback for one declared subject page."""
+
+        arguments: dict[str, Any] = {
+            "workflow": REVIEW_MANIFEST_WORKFLOW,
+            "phase": "read",
+            "review_manifest_id": handle.review_manifest_id,
+            "review_manifest_subject_index": subject_index,
+            "review_manifest_page": page,
+        }
+        if isinstance(project_name, str) and project_name.strip():
+            arguments["project_name"] = project_name.strip()
+        return {
+            "tool": "run_mcp_workflow",
+            "arguments": arguments,
+        }
+
     def _review_manifest_subject_descriptor(
         self,
         handle: ReviewManifestHandle,
@@ -6287,6 +6322,7 @@ class MCPPlanningBridgeServer:
         sha256: str,
         byte_size: int,
         page_count: int,
+        project_name: str | None = None,
     ) -> dict[str, Any]:
         resource_uri = self._mcp_review_manifest_uri(
             handle.review_manifest_id,
@@ -6300,6 +6336,12 @@ class MCPPlanningBridgeServer:
             "page_count": page_count,
             "resource_uri": resource_uri,
             "page_uri_template": f"{resource_uri}/pages/{{page}}",
+            "read_call": self._review_manifest_read_call(
+                handle,
+                subject_index=subject_index,
+                page=1,
+                project_name=project_name,
+            ),
         }
 
     @staticmethod
@@ -9253,6 +9295,22 @@ class MCPPlanningBridgeServer:
             return tool_result
         public_tool_result = copy.deepcopy(tool_result)
         tool_name = str(public_tool_result.get("tool") or "")
+        is_review_manifest_read = (
+            tool_name == "run_mcp_workflow"
+            and isinstance(params, dict)
+            and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
+            and _policy_string_param(params, "phase") == "read"
+        )
+        review_manifest_page_content: str | None = None
+        if is_review_manifest_read:
+            raw_data = public_tool_result.get("data")
+            raw_page = raw_data.get("subject_page") if isinstance(raw_data, dict) else None
+            raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
+            if isinstance(raw_content, str):
+                # A manifest-bound subject was explicitly authorized and hashed by
+                # the read handler. Preserve its exact bytes-as-text so the
+                # returned content remains comparable to subject_page.sha256.
+                review_manifest_page_content = raw_content
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
                 tool_name == "run_mcp_workflow"
@@ -9322,6 +9380,11 @@ class MCPPlanningBridgeServer:
                         clean_data["project_name"] = project_name.strip()
                     projected["data"] = clean_data
         clean_result = self._commander_public_sanitize(projected, compact=False)
+        if review_manifest_page_content is not None and isinstance(clean_result, dict):
+            clean_data = clean_result.get("data")
+            clean_page = clean_data.get("subject_page") if isinstance(clean_data, dict) else None
+            if isinstance(clean_page, dict):
+                clean_page["content"] = review_manifest_page_content
         return clean_result if isinstance(clean_result, dict) else projected
 
     def _commander_public_gate_review_result(
@@ -16337,6 +16400,11 @@ class MCPPlanningBridgeServer:
         manifest = inspection.manifest
         context_binding = inspection.context_binding
         subjects = inspection.subjects
+        compatibility_project_name = (
+            str(context_binding.get("project_name") or "").strip()
+            if self.service_mode
+            else None
+        )
         subject_descriptors = [
             self._review_manifest_subject_descriptor(
                 handle,
@@ -16345,11 +16413,30 @@ class MCPPlanningBridgeServer:
                 sha256=subject.sha256,
                 byte_size=subject.byte_size,
                 page_count=subject.page_count,
+                project_name=compatibility_project_name,
             )
             for index, subject in enumerate(subjects, start=1)
         ]
         handle_fields = self._review_manifest_handle_fields(handle)
         manifest_resource_uri = handle_fields["manifest_resource_uri"]
+        recommended_next_reads: list[dict[str, Any]] = [
+            {
+                "kind": "mcp_resource",
+                "tool": "resources/read",
+                "arguments": {"uri": manifest_resource_uri},
+                "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
+            }
+        ]
+        if subject_descriptors:
+            fallback = subject_descriptors[0].get("read_call")
+            if isinstance(fallback, dict):
+                recommended_next_reads.append(
+                    {
+                        "kind": "mcp_tool_compatibility",
+                        **fallback,
+                        "reason": "若宿主不支持动态 resources/read URI，使用同一 manifest 绑定下的第 1 个 subject 第 1 页读取调用。",
+                    }
+                )
         return {
             "ok": True,
             "workflow": REVIEW_MANIFEST_WORKFLOW,
@@ -16376,6 +16463,7 @@ class MCPPlanningBridgeServer:
                     "subject_hash_is_reverified_on_every_read": True,
                     "context_is_reverified_on_every_read": True,
                     "resources_are_process_local_and_short_lived": True,
+                    "chatgpt_tool_read_fallback_is_hash_bound": True,
                 },
                 "validation_preview": {
                     "commands": list(manifest.get("acceptance_commands") or []),
@@ -16383,14 +16471,7 @@ class MCPPlanningBridgeServer:
                 },
                 "authority_boundary": self._review_manifest_authority_boundary(),
             },
-            "recommended_next_reads": [
-                {
-                    "kind": "mcp_resource",
-                    "tool": "resources/read",
-                    "arguments": {"uri": manifest_resource_uri},
-                    "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
-                }
-            ],
+            "recommended_next_reads": recommended_next_reads,
         }
 
     @staticmethod
@@ -16433,13 +16514,72 @@ class MCPPlanningBridgeServer:
             },
         }
 
+    def _review_manifest_read_packet(
+        self,
+        *,
+        stored: StoredReviewManifest,
+        subject_index: int,
+        subject_page: Any,
+    ) -> dict[str, Any]:
+        """Return one exact, reverified manifest subject page through the tool surface."""
+
+        page = int(subject_page.page)
+        page_count = int(subject_page.page_count)
+        compatibility_project_name = (
+            str(stored.context_binding.get("project_name") or "").strip()
+            if self.service_mode
+            else None
+        )
+        read_call = self._review_manifest_read_call(
+            stored.handle,
+            subject_index=subject_index,
+            page=page,
+            project_name=compatibility_project_name,
+        )
+        recommended_next_reads: list[dict[str, Any]] = []
+        if page < page_count:
+            next_read_call = self._review_manifest_read_call(
+                stored.handle,
+                subject_index=subject_index,
+                page=page + 1,
+                project_name=compatibility_project_name,
+            )
+            recommended_next_reads.append(
+                {
+                    "kind": "mcp_tool",
+                    **next_read_call,
+                    "reason": "继续读取同一已绑定 subject 的下一页；上下文和 SHA-256 会再次复核。",
+                }
+            )
+        return {
+            "ok": True,
+            "workflow": REVIEW_MANIFEST_WORKFLOW,
+            "phase": "read",
+            "schema_version": "colameta.review_manifest_read.v1",
+            "read_only": True,
+            "side_effects": False,
+            **self._review_manifest_handle_fields(stored.handle),
+            "review_unit": stored.context_binding["review_unit"],
+            "workflow_intent": stored.context_binding["workflow_intent"],
+            "context_binding": dict(stored.context_binding),
+            "verification": {
+                "context_binding": "matched",
+                "subject_hash": "matched",
+                "subject_index": subject_index,
+            },
+            "subject_page": subject_page.to_dict(),
+            "read_call": read_call,
+            "recommended_next_reads": recommended_next_reads,
+            "authority_boundary": self._review_manifest_authority_boundary(),
+        }
+
     def _tool_review_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
         phase_raw = params.get("phase", "inspect")
         phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
-        if phase not in {"inspect", "verify", "status"}:
+        if phase not in {"inspect", "read", "verify", "status"}:
             raise MCPToolInputError(
                 "INVALID_REVIEW_MANIFEST_PHASE",
-                "review_manifest 只支持 inspect、verify 或 status。",
+                "review_manifest 只支持 inspect、read、verify 或 status。",
             )
         project_root, project_name, current_context = self._review_manifest_project_context(params)
         if phase == "inspect":
@@ -16467,7 +16607,7 @@ class MCPPlanningBridgeServer:
         if not isinstance(review_manifest_id, str) or not review_manifest_id.strip():
             raise MCPToolInputError(
                 "REVIEW_MANIFEST_ID_REQUIRED",
-                "review_manifest verify/status 必须提供 inspect 返回的 review_manifest_id。",
+                "review_manifest read/verify/status 必须提供 inspect 返回的 review_manifest_id。",
             )
         stored = self._review_manifest_store.get(review_manifest_id.strip())
         if stored is None:
@@ -16488,6 +16628,40 @@ class MCPPlanningBridgeServer:
                         }
                     ]
                 },
+            )
+        if phase == "read":
+            subject_index = params.get("review_manifest_subject_index")
+            if (
+                isinstance(subject_index, bool)
+                or not isinstance(subject_index, int)
+                or subject_index < 1
+            ):
+                raise MCPToolInputError(
+                    "REVIEW_MANIFEST_SUBJECT_INDEX_REQUIRED",
+                    "review_manifest read 必须提供 inspect 返回的正整数 review_manifest_subject_index。",
+                )
+            page = params.get("review_manifest_page", 1)
+            if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                raise MCPToolInputError(
+                    "INVALID_REVIEW_MANIFEST_PAGE",
+                    "review_manifest read 的 review_manifest_page 必须是正整数。",
+                )
+            try:
+                verify_stored_review_context(
+                    stored,
+                    current_context_binding=current_context,
+                )
+                subject_page = read_stored_review_manifest_page(
+                    stored,
+                    subject_index=subject_index,
+                    page=page,
+                )
+            except ReviewManifestError as exc:
+                raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+            return self._review_manifest_read_packet(
+                stored=stored,
+                subject_index=subject_index,
+                subject_page=subject_page,
             )
         try:
             verification = verify_stored_review_manifest(

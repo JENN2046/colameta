@@ -732,6 +732,30 @@ Subject pages use
 the subject hash before returning text. `phase=verify` with `review_manifest_id`
 rechecks every declared subject without returning file content.
 
+Some ChatGPT hosts do not yet route dynamic resource-template URIs through
+their generic resource proxy. Each returned subject therefore also includes a
+typed `read_call` fallback inside the existing `run_mcp_workflow` tool. Call it
+only when that proxy rejects a manifest URI:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "review_manifest",
+    "phase": "read",
+    "project_name": "registered-project-name",
+    "review_manifest_id": "<from inspect>",
+    "review_manifest_subject_index": 1,
+    "review_manifest_page": 1
+  }
+}
+```
+
+`read` returns only that declared page, rechecks the current context and that
+subject's SHA-256, and returns a bound next-page call when more pages remain.
+It is a ChatGPT compatibility route, not arbitrary file access and not an
+additional Commander tool.
+
 `CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
 or current version no longer matches the manifest. Stop combining evidence,
 request a fresh template, and build a new manifest. A changed subject returns

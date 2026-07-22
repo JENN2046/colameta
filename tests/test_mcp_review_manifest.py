@@ -390,6 +390,112 @@ def test_review_manifest_subjects_are_paged_and_require_read_scope(tmp_path: Pat
     assert hashlib.sha256(content.encode("utf-8")).hexdigest() == descriptor["sha256"]
 
 
+def test_review_manifest_read_phase_returns_only_reverified_bound_pages(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = "page-bound compatibility read\n" * 900
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    descriptor = inspected["data"]["subjects"][0]
+    read_call = descriptor["read_call"]
+    assert read_call["tool"] == "run_mcp_workflow"
+    assert read_call["arguments"]["review_manifest_subject_index"] == 1
+    assert read_call["arguments"]["review_manifest_page"] == 1
+
+    pages: list[str] = []
+    for page in range(1, descriptor["page_count"] + 1):
+        result = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "review_manifest",
+                "phase": "read",
+                "review_manifest_id": inspected["data"]["review_manifest_id"],
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": page,
+            },
+        )
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["verification"] == {
+            "context_binding": "matched",
+            "subject_hash": "matched",
+            "subject_index": 1,
+        }
+        subject_page = data["subject_page"]
+        assert subject_page["page"] == page
+        assert subject_page["sha256"] == descriptor["sha256"]
+        pages.append(subject_page["content"])
+    assert "".join(pages) == content
+
+    missing_subject = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert missing_subject["ok"] is False
+    assert missing_subject["error_code"] == "REVIEW_MANIFEST_SUBJECT_INDEX_REQUIRED"
+
+    invalid_page = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+            "review_manifest_page": descriptor["page_count"] + 1,
+        },
+    )
+    assert invalid_page["ok"] is False
+    assert invalid_page["error_code"] == "REVIEW_MANIFEST_PAGE_NOT_FOUND"
+
+    (project / "docs" / "review-input.md").write_text("changed after inspect\n", encoding="utf-8")
+    changed_subject = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+    assert changed_subject["ok"] is False
+    assert changed_subject["error_code"] == "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH"
+
+
+def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = "Literal source text: /home/reviewer/example.md\n"
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    inspection_data = inspected["result"]["structuredContent"]["data"]
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspection_data["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+    subject_page = read["result"]["structuredContent"]["data"]["subject_page"]
+    assert subject_page["content"] == content
+    assert subject_page["sha256"] == inspection_data["subjects"][0]["sha256"]
+
+
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     registry = ProjectRegistry(
@@ -412,6 +518,11 @@ def test_review_manifest_routes_source_only_registered_projects_without_opening_
     )
     assert result["ok"] is True
     assert result["data"]["context_binding"]["project_name"] == "review-target"
+    read_call = result["data"]["subjects"][0]["read_call"]
+    assert read_call["arguments"]["project_name"] == "review-target"
+    read_result = server.call_tool_for_agent("run_mcp_workflow", read_call["arguments"])
+    assert read_result["ok"] is True
+    assert read_result["data"]["subject_page"]["path"] == "docs/review-input.md"
 
     denied_manifest = _manifest(project, project_name="review-target")
     denied_manifest["subjects"] = [
