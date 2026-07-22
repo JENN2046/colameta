@@ -79,6 +79,16 @@ from runner.review_manifest import (
     verify_stored_review_context,
     verify_stored_review_manifest,
 )
+from runner.project_context_binding import (
+    BASE_CONTEXT_BINDING_FIELDS,
+    OPERATION_CONTEXT_BINDING_FIELDS,
+    PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
+    ProjectContextBindingError,
+    collect_project_context_binding,
+    context_binding_sha256,
+    require_operation_context_binding,
+)
+from runner.canonical_project_state import CANONICAL_PROJECT_STATE_SCHEMA_VERSION
 from runner.operator_artifact_binding import canonical_artifact_digest
 from runner.executor_read import handle_inspect_executor_activity
 from runner.runtime_observability import (
@@ -490,7 +500,62 @@ _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
 
 
 _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
+
+# Context binding belongs at the *real* side-effect boundary, not merely at a
+# phase name that another workflow happens to reject.  In particular,
+# git_commit/apply is intentionally unsupported by the core workflow; asking
+# for a context binding before returning PHASE_NOT_SUPPORTED would obscure the
+# actual contract violation.  Keep this table aligned with the core workflow
+# phase handlers and the public policy matrix above.
+_WORKFLOW_CONTEXT_MUTATION_PHASES: dict[str, frozenset[str]] = {
+    "plan_update": frozenset({"apply"}),
+    "small_project_patch": frozenset({"apply"}),
+    "docs_update": frozenset({"apply"}),
+    "git_commit": frozenset({"commit"}),
+    "git_restore_file": frozenset({"apply"}),
+    "git_revert": frozenset({"apply"}),
+    "git_undo_version": frozenset({"apply"}),
+    "agent_dispatch": frozenset({"apply", "run"}),
+    "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
+    "operator_batch": frozenset({"execute"}),
+}
+_OPERATOR_BATCH_INTERNAL_DISPATCH: ContextVar[bool] = ContextVar(
+    "operator_batch_internal_dispatch",
+    default=False,
+)
 _normalize_run_mcp_workflow_name = normalize_workflow_name
+
+
+def _operation_context_binding_input_schema() -> dict[str, Any]:
+    """Return the exact caller-owned context contract for confirmation calls."""
+
+    return {
+        "type": "object",
+        "description": (
+            "确认性操作必填。原样回传同一 workflow 的 inspect/preview 返回的 "
+            "context_binding；服务会在副作用前重新核对项目、分支、HEAD、Runner plan、"
+            "current_version、review_unit 与 workflow_intent。"
+        ),
+        "properties": {
+            "project_name": {"type": "string", "minLength": 1, "maxLength": 128},
+            "branch": {"type": "string", "minLength": 1, "maxLength": 255},
+            "head": {"type": "string", "pattern": "^[0-9a-fA-F]{40,128}$"},
+            "runner_plan": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["managed", "source-only"]},
+                    "plan_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$"},
+                },
+                "required": ["mode", "plan_sha256"],
+                "additionalProperties": False,
+            },
+            "current_version": {"type": ["string", "null"], "maxLength": 128},
+            "review_unit": {"type": "string", "minLength": 1, "maxLength": 160},
+            "workflow_intent": {"type": "string", "minLength": 1, "maxLength": 160},
+        },
+        "required": list(OPERATION_CONTEXT_BINDING_FIELDS),
+        "additionalProperties": False,
+    }
 
 
 def _find_action_list(result: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
@@ -2675,6 +2740,7 @@ class MCPPlanningBridgeServer:
                             "type": "string",
                             "description": "可选。按已登记 managed project_name 路由目标项目。",
                         },
+                        "context_binding": _operation_context_binding_input_schema(),
                         "preview_id": {
                             "type": "string",
                             "description": "apply 类 action 必填。来自对应 preview 的 preview_id。",
@@ -2818,6 +2884,7 @@ class MCPPlanningBridgeServer:
                             "type": "string",
                             "description": "可选。按已登记 managed project_name 路由 readiness、suggest_commit_message、commit_workflow_preview、preview、commit。",
                         },
+                        "context_binding": _operation_context_binding_input_schema(),
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -4415,6 +4482,7 @@ class MCPPlanningBridgeServer:
                             "type": "string",
                             "description": "可选。service mode 下项目级 workflow 必须传入已登记 managed project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview、gate_review_request 支持按 project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
                         },
+                        "context_binding": _operation_context_binding_input_schema(),
                         "goal": {
                             "type": "string",
                             "description": "source_onboarding 项目目标。",
@@ -4914,6 +4982,7 @@ class MCPPlanningBridgeServer:
                             "type": "string",
                             "description": "可选。按已登记 managed project_name 路由所有操作。",
                         },
+                        "context_binding": _operation_context_binding_input_schema(),
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -9198,6 +9267,30 @@ class MCPPlanningBridgeServer:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
+                if (
+                    clean_key == "context_binding"
+                    and self._is_commander_public_context_binding(nested)
+                ):
+                    # This is a copyable confirmation contract, not generic
+                    # diagnostic detail.  In particular, a compact response
+                    # must not drop its HEAD and make the next call unusable.
+                    sanitized[clean_key] = self._commander_public_contract_sanitize(
+                        nested
+                    )
+                    continue
+                if (
+                    clean_key in {"canonical_state", "canonical_project_state"}
+                    and isinstance(nested, dict)
+                    and nested.get("schema_version")
+                    == CANONICAL_PROJECT_STATE_SCHEMA_VERSION
+                ):
+                    # Canonical state is deliberately public and bounded.  Its
+                    # observation timestamps are essential to distinguish a
+                    # historical receipt from a fresh observation.
+                    sanitized[clean_key] = self._commander_public_contract_sanitize(
+                        nested
+                    )
+                    continue
                 handled, contract_value = (
                     CommanderProjectionService.project_cc_s01_contract_value(
                         clean_key,
@@ -9225,6 +9318,25 @@ class MCPPlanningBridgeServer:
         if isinstance(value, str):
             return self._commander_public_string(value)
         return copy.deepcopy(value)
+
+    @staticmethod
+    def _is_commander_public_context_binding(value: Any) -> bool:
+        """Recognize the bounded binding shape before bypassing compact omit rules."""
+
+        if not isinstance(value, dict):
+            return False
+        if not all(field in value for field in BASE_CONTEXT_BINDING_FIELDS):
+            return False
+        allowed_fields = set(BASE_CONTEXT_BINDING_FIELDS) | {
+            "review_unit",
+            "workflow_intent",
+        }
+        if set(value) not in (set(BASE_CONTEXT_BINDING_FIELDS), allowed_fields):
+            return False
+        runner_plan = value.get("runner_plan")
+        if not isinstance(runner_plan, dict):
+            return False
+        return set(runner_plan) == {"mode", "plan_sha256"}
 
     def _commander_public_contract_sanitize(self, value: Any) -> Any:
         """Redact strings inside an already allowlisted CC-S01 contract tree."""
@@ -9337,6 +9449,8 @@ class MCPPlanningBridgeServer:
                     "ok", "error_code", "message", "batch_preview_id",
                     "manifest_digest", "required_scopes", "operations",
                     "expires_at", "requires_confirmation", "state", "steps",
+                    "context_binding", "context_binding_contract",
+                    "context_binding_verification",
                 }
                 projected["data"] = {
                     key: copy.deepcopy(value)
@@ -10962,6 +11076,11 @@ class MCPPlanningBridgeServer:
         routed_params = self._strip_project_name_param(params)
         routed_params.pop("project_root", None)
         original_project_name = params.get("project_name")
+        if isinstance(original_project_name, str) and original_project_name.strip():
+            # Keep the public registry identity available to the routed server
+            # only for context revalidation.  It carries no authority and is
+            # removed before any lower-level manager sees parameters.
+            routed_params["__context_binding_project_name"] = original_project_name.strip()
         result = routed_tool(routed_params)
         if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
             clean_project_name = original_project_name.strip()
@@ -13930,6 +14049,7 @@ class MCPPlanningBridgeServer:
             "plan": core_output.result.get("plan") if isinstance(core_output.result, dict) else {},
             "executor": core_output.result.get("executor") if isinstance(core_output.result, dict) else {},
             "reports": core_output.result.get("reports") if isinstance(core_output.result, dict) else {},
+            "canonical_state": fact_snapshot.canonical_state,
             "summary": fact_snapshot.summary,
             "recommended_next_actions": self._normalize_recommended_actions_for_visible_tools(
                 self._with_maintainer_review_recommendation(list(core_output.next_actions))
@@ -14045,6 +14165,24 @@ class MCPPlanningBridgeServer:
                     "risk_level": "info",
                     "requires_confirmation": True,
                 }
+            return self._fallback_analyze_action()
+
+        if tool == "manage_git_commit" and "manage_git" in visible_names:
+            params = action.get("params")
+            clean_params = dict(params) if isinstance(params, dict) else {}
+            action_name = str(clean_params.get("action") or "").strip().lower()
+            git_action = {
+                "readiness": "commit_readiness",
+                "suggest_commit_message": "commit_message",
+                "preview": "commit_preview",
+                "commit_workflow_preview": "commit_preview",
+                "commit": "commit_apply",
+            }.get(action_name)
+            if git_action:
+                clean_params["action"] = git_action
+                action["tool"] = "manage_git"
+                action["params"] = clean_params
+                return action
             return self._fallback_analyze_action()
 
         if tool in {"get_review_context", "get_git_status", "get_git_diff"}:
@@ -14176,6 +14314,357 @@ class MCPPlanningBridgeServer:
         self._record_workflow_if_needed("manage_prompt_file", action, params, result)
         return result
 
+    @staticmethod
+    def _operation_context_identity(
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> tuple[str, str] | None:
+        """Return the server-owned intent/unit pair for one public operation."""
+
+        if tool_name == "manage_validation_run":
+            return ("validation_run", "operation:validation_run")
+
+        if tool_name in {"manage_git", "manage_git_commit"}:
+            action_raw = params.get("action")
+            action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+            if action in {
+                "commit_readiness",
+                "commit_message",
+                "commit_preview",
+                "commit_apply",
+                "readiness",
+                "suggest_commit_message",
+                "commit_workflow_preview",
+                "preview",
+                "commit",
+            }:
+                intent = "git_commit"
+            elif action in {"push_status", "push_preview", "push_apply"}:
+                intent = "git_push"
+            elif action in {"pull_status", "pull_preview", "pull_apply"}:
+                intent = "git_pull"
+            elif action in {"restore_file_preview", "restore_file_apply"}:
+                intent = "git_restore_file"
+            elif action in {"revert_preview", "revert_apply"}:
+                intent = "git_revert"
+            else:
+                return None
+            return (intent, f"operation:{intent}")
+
+        if tool_name == "run_mcp_workflow":
+            workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+            if workflow in {REVIEW_MANIFEST_WORKFLOW, GATE_REVIEW_WORKFLOW}:
+                # The manifest has a caller-owned review_unit and its own
+                # immutable read-session verifier.  Gate Review has its own
+                # stricter, signed Work Item Gate contract (task/state/evidence
+                # binding plus explicit confirmation).  Do not overlay a
+                # generic Git/Runner binding on either contract.
+                return None
+            if not workflow:
+                return None
+            # These high-level workflow names are intentionally the same
+            # operation identity used by the public Git tool.  A ChatGPT user
+            # may preview through run_mcp_workflow and then confirm through
+            # manage_git, so treating the wrappers as unrelated would make a
+            # valid preview binding unusable.
+            if workflow in {"git_commit", "git_restore_file", "git_revert"}:
+                intent = workflow
+            else:
+                intent = f"workflow:{workflow}"
+            return (intent, f"operation:{intent}")
+
+        return None
+
+    @staticmethod
+    def _operation_context_required(tool_name: str, params: dict[str, Any]) -> bool:
+        if _OPERATOR_BATCH_INTERNAL_DISPATCH.get():
+            # The public operator_batch execute boundary has already verified
+            # one project binding before its ticketed, capability-gated steps
+            # are dispatched.  Requiring a caller-supplied second binding here
+            # would make an immutable ticket impossible to execute.
+            return False
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        if tool_name == "manage_validation_run":
+            return action == "run"
+        if tool_name == "manage_git":
+            return action in {
+                "commit_apply",
+                "push_apply",
+                "pull_apply",
+                "restore_file_apply",
+                "revert_apply",
+            }
+        if tool_name == "manage_git_commit":
+            return action == "commit"
+        if tool_name == "run_mcp_workflow":
+            workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+            if workflow in {REVIEW_MANIFEST_WORKFLOW, GATE_REVIEW_WORKFLOW}:
+                return False
+            phase_raw = params.get("phase")
+            phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+            return phase in _WORKFLOW_CONTEXT_MUTATION_PHASES.get(workflow, frozenset())
+        return False
+
+    @staticmethod
+    def _operation_context_has_matching_confirmation(
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> bool:
+        """Whether this operation identity has a later bound side effect.
+
+        A preview itself does not require a binding as input, but the returned
+        contract must make clear that its matching confirmation will.  Keeping
+        that signal separate from ``_operation_context_required`` avoids
+        telling ChatGPT that a read/preview call was itself a confirmation.
+        """
+
+        if MCPPlanningBridgeServer._operation_context_identity(tool_name, params) is None:
+            return False
+        if tool_name == "manage_validation_run":
+            return True
+        if tool_name in {"manage_git", "manage_git_commit"}:
+            return True
+        if tool_name == "run_mcp_workflow":
+            workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+            return workflow in _WORKFLOW_CONTEXT_MUTATION_PHASES
+        return False
+
+    @staticmethod
+    def _context_binding_project_name(params: dict[str, Any]) -> str | None:
+        for key in ("project_name", "__context_binding_project_name"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _context_binding_project_root(self, params: dict[str, Any]) -> str:
+        project_name = params.get("project_name")
+        if isinstance(project_name, str) and project_name.strip():
+            project_root, _ = self._resolve_managed_project_context(params)
+            return project_root
+        return self.project_root
+
+    def _collect_operation_context_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        identity = self._operation_context_identity(tool_name, params)
+        if identity is None:
+            return None
+        workflow_intent, review_unit = identity
+        return collect_project_context_binding(
+            self._context_binding_project_root(params),
+            project_name=self._context_binding_project_name(params),
+            review_unit=review_unit,
+            workflow_intent=workflow_intent,
+        )
+
+    def _require_operation_context_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._operation_context_required(tool_name, params):
+            return None
+        identity = self._operation_context_identity(tool_name, params)
+        if identity is None:
+            return None
+        workflow_intent, review_unit = identity
+        try:
+            return require_operation_context_binding(
+                params.get("context_binding"),
+                project_root=self._context_binding_project_root(params),
+                project_name=self._context_binding_project_name(params),
+                review_unit=review_unit,
+                workflow_intent=workflow_intent,
+            )
+        except ProjectContextBindingError as exc:
+            raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+
+    @staticmethod
+    def _strip_operation_context_binding_params(params: dict[str, Any]) -> dict[str, Any]:
+        clean = dict(params)
+        clean.pop("context_binding", None)
+        clean.pop("__context_binding_project_name", None)
+        return clean
+
+    def _attach_operation_context_binding(
+        self,
+        result: dict[str, Any],
+        *,
+        tool_name: str,
+        params: dict[str, Any],
+        verified_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+        self._attach_canonical_state_to_operation_status(result, params)
+        binding = self._collect_operation_context_binding(tool_name, params)
+        if binding is None:
+            return result
+        identity = self._operation_context_identity(tool_name, params)
+        if identity is None:
+            return result
+        result["context_binding"] = binding
+        result["context_binding_contract"] = {
+            "schema_version": PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
+            "confirmation_required": self._operation_context_has_matching_confirmation(
+                tool_name,
+                params,
+            ),
+            "current_call_requires_context_binding": self._operation_context_required(
+                tool_name,
+                params,
+            ),
+            "workflow_intent": identity[0],
+            "review_unit": identity[1],
+            "context_binding_sha256": context_binding_sha256(binding),
+        }
+        if verified_binding is not None:
+            result["context_binding_verification"] = {
+                "status": "matched",
+                "context_binding_sha256": context_binding_sha256(verified_binding),
+            }
+        self._inject_operation_context_into_next_actions(
+            result,
+            binding=binding,
+            identity=identity,
+        )
+        return result
+
+    def _attach_canonical_state_to_operation_status(
+        self,
+        result: dict[str, Any],
+        params: dict[str, Any],
+    ) -> None:
+        """Point a legacy manager-local status at the canonical state model.
+
+        Core workflows already receive this projection from
+        ``WorkflowOrchestrator``.  The public Git facade can also surface a
+        legacy manager ``unified_status`` directly, so refresh the same bounded
+        fact snapshot there instead of letting that local status masquerade as
+        global truth.  A failed supplementary observation never changes the
+        result of the requested operation.
+        """
+
+        local_status = result.get("unified_status")
+        if not isinstance(local_status, dict):
+            return
+        if isinstance(local_status.get("canonical_project_state"), dict):
+            local_status.setdefault("status_scope", "operation_local")
+            return
+        provider_raw = params.get("provider")
+        provider = (
+            provider_raw.strip().lower()
+            if isinstance(provider_raw, str)
+            and provider_raw.strip().lower() in {"pi", "codex", "opencode"}
+            else None
+        )
+        try:
+            continuation_snapshot = self._collect_continuation_snapshot_for_project(
+                self.project_root,
+                provider,
+            )
+            snapshot = WorkflowOrchestrator(
+                project_root=self.project_root,
+                source_review=self.source_review,
+                planning_bridge=self.bridge,
+                continuation_snapshot=continuation_snapshot,
+            ).build_fact_snapshot(provider=provider, include_reports=True)
+        except Exception:
+            # The manager-local status remains marked as local.  Callers can
+            # make the explicit analyze_project_state read for a fresh retry.
+            local_status["status_scope"] = "operation_local"
+            local_status["canonical_project_state"] = {
+                "schema_version": CANONICAL_PROJECT_STATE_SCHEMA_VERSION,
+                "status": "unavailable",
+                "reason_code": "canonical_snapshot_unavailable",
+            }
+            return
+        canonical = snapshot.canonical_state
+        local_status["status_scope"] = "operation_local"
+        local_status["canonical_project_state"] = {
+            "schema_version": canonical.get("schema_version"),
+            "observed_at": canonical.get("observed_at"),
+            "context_binding": canonical.get("context_binding"),
+            "freshness": canonical.get("freshness"),
+            "current_conclusion": canonical.get("current_conclusion"),
+        }
+
+    @staticmethod
+    def _add_manage_git_confirmation_next_action(
+        result: dict[str, Any],
+        *,
+        action: str,
+    ) -> None:
+        """Make a preview's public confirmation call explicit and copyable."""
+
+        apply_action = {
+            "commit_preview": "commit_apply",
+            "push_preview": "push_apply",
+            "pull_preview": "pull_apply",
+            "restore_file_preview": "restore_file_apply",
+            "revert_preview": "revert_apply",
+        }.get(action)
+        preview_id = result.get("preview_id") if isinstance(result, dict) else None
+        if (
+            not apply_action
+            or result.get("ok") is not True
+            or not isinstance(preview_id, str)
+            or not preview_id.strip()
+        ):
+            return
+        actions = result.get("next_actions")
+        if not isinstance(actions, list):
+            actions = []
+            result["next_actions"] = actions
+        if any(
+            isinstance(item, dict)
+            and item.get("tool") == "manage_git"
+            and isinstance(item.get("params"), dict)
+            and item["params"].get("action") == apply_action
+            for item in actions
+        ):
+            return
+        actions.append(
+            {
+                "tool": "manage_git",
+                "params": {"action": apply_action, "preview_id": preview_id.strip()},
+                "reason": "确认并执行已生成的受控 Git preview。",
+                "requires_confirmation": True,
+            }
+        )
+
+    def _inject_operation_context_into_next_actions(
+        self,
+        result: dict[str, Any],
+        *,
+        binding: dict[str, Any],
+        identity: tuple[str, str],
+    ) -> None:
+        for key in ("next_actions", "recommended_next_actions"):
+            actions = result.get(key)
+            if not isinstance(actions, list):
+                continue
+            for next_action in actions:
+                if not isinstance(next_action, dict):
+                    continue
+                tool = next_action.get("tool")
+                if not isinstance(tool, str):
+                    continue
+                for params_key in ("params", "arguments"):
+                    target_params = next_action.get(params_key)
+                    if not isinstance(target_params, dict):
+                        continue
+                    target_identity = self._operation_context_identity(tool, target_params)
+                    if (
+                        target_identity == identity
+                        and self._operation_context_required(tool, target_params)
+                    ):
+                        target_params.setdefault("context_binding", dict(binding))
+
     def _tool_manage_git(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
         action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
@@ -14196,13 +14685,23 @@ class MCPPlanningBridgeServer:
                 "action": action,
             }
 
+        verified_binding = self._require_operation_context_binding("manage_git", params)
+
         def _with_common_fields(result: dict[str, Any], delegated_tool: str) -> dict[str, Any]:
             if isinstance(result, dict):
                 result["delegated_tool"] = delegated_tool
                 result["action"] = action
             return result
 
-        record_and_return = lambda result, tool: (self._record_workflow_if_needed("manage_git", action, params, result), _with_common_fields(result, tool))[1]
+        def record_and_return(result: dict[str, Any], tool: str) -> dict[str, Any]:
+            self._add_manage_git_confirmation_next_action(result, action=action)
+            self._record_workflow_if_needed("manage_git", action, params, result)
+            return self._attach_operation_context_binding(
+                _with_common_fields(result, tool),
+                tool_name="manage_git",
+                params=params,
+                verified_binding=verified_binding,
+            )
 
         # --- status: delegates to get_git_status ---
         if action == "status":
@@ -14400,8 +14899,17 @@ class MCPPlanningBridgeServer:
         if action not in {"readiness", "suggest_commit_message", "commit_workflow_preview", "preview", "commit"}:
             raise MCPToolInputError("INVALID_ACTION", "action 必须是 readiness、suggest_commit_message、commit_workflow_preview、preview 或 commit。")
 
+        verified_binding = self._require_operation_context_binding("manage_git_commit", params)
         if params.get("project_name") is not None:
             return self._route_project_name_tool("manage_git_commit", params, require_managed=True)
+
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            return self._attach_operation_context_binding(
+                result,
+                tool_name="manage_git_commit",
+                params=params,
+                verified_binding=verified_binding,
+            )
 
         include_diff_summary = self._bool_param(params.get("include_diff_summary"), default=True)
         max_diff_chars = self._bounded_int_param(
@@ -14422,12 +14930,12 @@ class MCPPlanningBridgeServer:
         manager = MCPGitCommitManager(self.project_root)
 
         if action == "readiness":
-            return manager.readiness(
+            return finish(manager.readiness(
                 include_diff_summary=include_diff_summary,
                 max_diff_chars=max_diff_chars,
                 include_files=include_files,
                 exclude_files=exclude_files,
-            )
+            ))
 
         if action == "suggest_commit_message":
             result = manager.suggest_commit_message(
@@ -14439,7 +14947,7 @@ class MCPPlanningBridgeServer:
                 exclude_files=exclude_files,
             )
             self._record_workflow_if_needed("manage_git_commit", action, params, result)
-            return result
+            return finish(result)
 
         if action == "commit_workflow_preview":
             message = params.get("message")
@@ -14458,7 +14966,7 @@ class MCPPlanningBridgeServer:
                 exclude_files=exclude_files,
             )
             self._record_workflow_if_needed("manage_git_commit", action, params, result)
-            return result
+            return finish(result)
 
         if action == "preview":
             message = params.get("message")
@@ -14475,7 +14983,7 @@ class MCPPlanningBridgeServer:
                 exclude_files=exclude_files,
             )
             self._record_workflow_if_needed("manage_git_commit", action, params, result)
-            return result
+            return finish(result)
 
         if include_files is not None or exclude_files is not None:
             raise MCPToolInputError(
@@ -14496,7 +15004,7 @@ class MCPPlanningBridgeServer:
             normalized_message = None
         result = manager.commit(preview_id=preview_id.strip(), message=normalized_message)
         self._record_workflow_if_needed("manage_git_commit", action, params, result)
-        return result
+        return finish(result)
 
     def _tool_manage_git_remote(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
@@ -16084,12 +16592,24 @@ class MCPPlanningBridgeServer:
                 "INVALID_ACTION",
                 "action 必须是 inspect、preview、run 或 status。",
             )
+        verified_binding = self._require_operation_context_binding(
+            "manage_validation_run",
+            params,
+        )
         if params.get("project_name") is not None:
             return self._route_project_name_tool("manage_validation_run", params, require_managed=True)
         manager = MCPValidationRunManager(self.project_root)
-        result = manager.handle(action, params)
+        result = manager.handle(
+            action,
+            self._strip_operation_context_binding_params(params),
+        )
         self._record_workflow_if_needed("manage_validation_run", action, params, result)
-        return self._with_project_identity(result)
+        return self._attach_operation_context_binding(
+            self._with_project_identity(result),
+            tool_name="manage_validation_run",
+            params=params,
+            verified_binding=verified_binding,
+        )
 
     def _tool_manage_stage_parallel_worktrees(self, params: dict[str, Any]) -> dict[str, Any]:
         from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
@@ -16322,7 +16842,11 @@ class MCPPlanningBridgeServer:
         handler = self.tools.get(tool_name)
         if not callable(handler):
             return {"ok": False, "error_code": "OPERATOR_OPERATION_DENIED"}
-        result = handler(dict(params))
+        token = _OPERATOR_BATCH_INTERNAL_DISPATCH.set(True)
+        try:
+            result = handler(dict(params))
+        finally:
+            _OPERATOR_BATCH_INTERNAL_DISPATCH.reset(token)
         if isinstance(result, dict) and result.get("ok") is not True:
             nested = result.get("result")
             nested_code = nested.get("error_code") if isinstance(nested, dict) else None
@@ -16680,28 +17204,63 @@ class MCPPlanningBridgeServer:
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
-        if workflow == "operator_batch":
-            return self._tool_operator_batch(params)
         if workflow == REVIEW_MANIFEST_WORKFLOW:
             return self._tool_review_manifest(params)
+        if workflow not in {"operator_batch", GATE_REVIEW_WORKFLOW} and workflow not in _SUPPORTED_MCP_WORKFLOWS:
+            raise MCPToolInputError("INVALID_WORKFLOW", f"未知 workflow：{workflow}")
+
+        verified_binding = self._require_operation_context_binding(
+            "run_mcp_workflow",
+            params,
+        )
+        if workflow == "operator_batch":
+            result = self._tool_operator_batch(
+                self._strip_operation_context_binding_params(params),
+            )
+            return self._attach_operation_context_binding(
+                result,
+                tool_name="run_mcp_workflow",
+                params=params,
+                verified_binding=verified_binding,
+            )
         if workflow == GATE_REVIEW_WORKFLOW:
             project_name = params.get("project_name")
             if project_name is not None:
                 return self._route_project_name_tool("run_mcp_workflow", params, require_managed=True)
-            clean = self._strip_project_name_param(params)
+            clean = self._strip_operation_context_binding_params(
+                self._strip_project_name_param(params),
+            )
             try:
-                return MCPGateReviewWorkflow(self._tool_work_item_command).handle(clean)
+                result = MCPGateReviewWorkflow(self._tool_work_item_command).handle(clean)
             except GateReviewWorkflowError as exc:
                 raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
-        if workflow not in _SUPPORTED_MCP_WORKFLOWS:
-            raise MCPToolInputError("INVALID_WORKFLOW", f"未知 workflow：{workflow}")
+            return self._attach_operation_context_binding(
+                result,
+                tool_name="run_mcp_workflow",
+                params=params,
+                verified_binding=verified_binding,
+            )
         project_name = params.get("project_name")
         if project_name is not None:
             return self._route_project_name_tool("run_mcp_workflow", params, require_managed=True)
 
-        result = self._create_mcp_workflow_router().handle(workflow, params)
+        result = self._create_mcp_workflow_router().handle(
+            workflow,
+            self._strip_operation_context_binding_params(params),
+        )
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER:
+            next_actions = result.get("next_actions") if isinstance(result, dict) else None
+            if isinstance(next_actions, list):
+                result["next_actions"] = self._normalize_recommended_actions_for_visible_tools(
+                    next_actions
+                )
         self._record_workflow_if_needed("run_mcp_workflow", workflow, params, result)
-        return result
+        return self._attach_operation_context_binding(
+            result,
+            tool_name="run_mcp_workflow",
+            params=params,
+            verified_binding=verified_binding,
+        )
 
     def _tool_list_workflow_runs(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:

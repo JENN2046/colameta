@@ -23,6 +23,7 @@ from runner.continuation_snapshot import (
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
+from runner.canonical_project_state import build_canonical_project_state
 from runner.core_fact_snapshot import CoreFactSnapshot
 from runner.project_snapshot import ProjectSnapshotBuilder
 from runner.core_output import CoreOutput
@@ -200,7 +201,26 @@ class WorkflowOrchestrator:
                 f"未知 workflow：{workflow}。支持：{', '.join(sorted(SUPPORTED_CORE_WORKFLOWS))}",
             )
         core_result = handler(params)
-        return self._build_core_output(core_result, fact_snapshot=core_result.fact_snapshot)
+        fact_snapshot = core_result.fact_snapshot
+        if fact_snapshot is None:
+            # A workflow-local status answers only what that operation did.  It
+            # must not silently become the project-wide truth (for example,
+            # a preview manager's default working_tree_clean value).  Refresh
+            # one bounded snapshot after every workflow so callers can see the
+            # current Git/Runner/executor facts beside the local status.
+            provider = self._normalize_provider(params.get("provider"))
+            try:
+                fact_snapshot = self.build_fact_snapshot(
+                    provider=provider,
+                    include_reports=True,
+                )
+            except Exception:
+                # Core workflow success must not turn into failure solely
+                # because supplementary observation is unavailable.  The
+                # operation-local status remains explicit, and its canonical
+                # summary is simply omitted in this defensive case.
+                fact_snapshot = None
+        return self._build_core_output(core_result, fact_snapshot=fact_snapshot)
 
     def handle_request(self, core_request: CoreRequest) -> CoreOutput:
         intent = core_request.intent_type
@@ -282,6 +302,10 @@ class WorkflowOrchestrator:
             preview_ids=core_result.preview_ids,
             result=core_result.result,
         ).to_dict()
+        unified_status = self._with_canonical_state_status(
+            unified_status,
+            fact_snapshot,
+        )
 
         out = CoreOutput(
             ok=core_result.ok,
@@ -374,6 +398,10 @@ class WorkflowOrchestrator:
             preview_ids=[],
             result=legacy_result,
         ).to_dict()
+        unified_status = self._with_canonical_state_status(
+            unified_status,
+            fact_snapshot,
+        )
 
         next_actions = list(result_facts.recommended_next_actions)
 
@@ -419,6 +447,29 @@ class WorkflowOrchestrator:
             "next_step_text": next_text,
             "detail_refs": [],
         }
+
+    @staticmethod
+    def _with_canonical_state_status(
+        unified_status: dict[str, Any],
+        fact_snapshot: CoreFactSnapshot | None,
+    ) -> dict[str, Any]:
+        """Keep operation-local status distinct from canonical project truth."""
+
+        if not isinstance(fact_snapshot, CoreFactSnapshot):
+            return unified_status
+        canonical = fact_snapshot.canonical_state
+        if not isinstance(canonical, dict) or not canonical:
+            return unified_status
+        result = dict(unified_status)
+        result["status_scope"] = "operation_local"
+        result["canonical_project_state"] = {
+            "schema_version": canonical.get("schema_version"),
+            "observed_at": canonical.get("observed_at"),
+            "context_binding": canonical.get("context_binding"),
+            "freshness": canonical.get("freshness"),
+            "current_conclusion": canonical.get("current_conclusion"),
+        }
+        return result
 
     # ================================================================
     # project_status
@@ -546,6 +597,20 @@ class WorkflowOrchestrator:
         )
         recommended_next_actions = self._recommend_next_actions(mode, git, plan_status, runner, executor, working_tree_clean, reports)
 
+        canonical_state = build_canonical_project_state(
+            project_root=self.project_root,
+            project_identity=project_identity,
+            mode=mode,
+            git=git,
+            runner=runner,
+            plan=plan_status,
+            executor=executor,
+            reports=reports,
+            blockers=plan_blockers,
+            warnings=(plan_warnings + pending_warnings + direct_version_warnings)[:20],
+            partial_errors=partial_errors,
+        )
+
         core_can_commit = (
             working_tree_clean is False
             and not plan_blockers
@@ -579,6 +644,7 @@ class WorkflowOrchestrator:
             risk_level=risk_level,
             mode=mode,
             summary=summary,
+            canonical_state=canonical_state,
             unreconciled_direct_version_count=int(runner.get("unreconciled_direct_version_count", 0) or 0),
             unreconciled_direct_versions=runner.get("unreconciled_direct_versions", []),
             has_pending_versions=bool(runner.get("has_pending_versions")),
@@ -612,6 +678,7 @@ class WorkflowOrchestrator:
             "plan": plan,
             "executor": executor,
             "reports": reports,
+            "canonical_state": snapshot.canonical_state,
             "summary": snapshot.summary,
             "recommended_next_actions": list(snapshot.recommended_next_actions),
             "blockers": plan_blockers,

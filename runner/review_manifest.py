@@ -26,8 +26,10 @@ import threading
 from typing import Any, Callable
 
 from runner.path_policy import RunnerPathPolicy
-from runner.project_identity import build_project_identity
-from runner.runner_paths import resolve_project_runner_path, resolve_project_runner_plan_path
+from runner.project_context_binding import (
+    collect_project_context_binding,
+    context_binding_mismatches,
+)
 
 
 REVIEW_MANIFEST_SCHEMA_VERSION = "colameta.review_manifest.v1"
@@ -306,29 +308,10 @@ def collect_review_context_binding(
 ) -> dict[str, Any]:
     """Return the non-sensitive facts which bind a review session to a checkout."""
 
-    normalized_root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
-    identity = build_project_identity(normalized_root)
-    resolved_project_name = (
-        project_name.strip()
-        if isinstance(project_name, str) and project_name.strip()
-        else str(identity.get("project_name") or "").strip()
+    return collect_project_context_binding(
+        project_root,
+        project_name=project_name,
     )
-    plan_path = resolve_project_runner_plan_path(normalized_root)
-    plan_digest = _sha256_regular_file(plan_path, max_bytes=REVIEW_MANIFEST_MAX_FILE_BYTES)
-    plan_present = plan_digest is not None
-    return {
-        "project_name": resolved_project_name,
-        "branch": identity.get("git_branch"),
-        "head": identity.get("git_head"),
-        "runner_plan": {
-            "mode": "managed" if plan_present else "source-only",
-            "plan_sha256": plan_digest,
-        },
-        # Only this one public state field is read through a bounded,
-        # no-follow helper. Raw Runner state is never attached to the manifest
-        # or MCP response.
-        "current_version": _bounded_current_version(normalized_root) if plan_present else None,
-    }
 
 
 def inspect_review_manifest(
@@ -424,27 +407,6 @@ def inspect_review_manifest(
         subjects=tuple(subjects),
         manifest_sha256=manifest_sha256,
     )
-
-
-def context_binding_mismatches(
-    expected: dict[str, Any],
-    actual: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Return public, non-sensitive mismatch details for runtime bindings."""
-
-    mismatches: list[dict[str, Any]] = []
-    for field in ("project_name", "branch", "head", "runner_plan", "current_version"):
-        expected_value = expected.get(field)
-        actual_value = actual.get(field)
-        if expected_value != actual_value:
-            mismatches.append(
-                {
-                    "field": field,
-                    "expected": expected_value,
-                    "actual": actual_value,
-                }
-            )
-    return mismatches
 
 
 def verify_stored_review_manifest(
@@ -974,58 +936,3 @@ def _required_text(value: Any, field: str, *, max_chars: int) -> str:
 def _canonical_sha256(value: dict[str, Any]) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _sha256_regular_file(path: str, *, max_bytes: int) -> str | None:
-    try:
-        info = os.lstat(path)
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-            return None
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags)
-        with os.fdopen(fd, "rb") as handle:
-            opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
-                return None
-            digest = hashlib.sha256()
-            for chunk in iter(lambda: handle.read(64 * 1024), b""):
-                digest.update(chunk)
-            return digest.hexdigest()
-    except OSError:
-        return None
-
-
-def _bounded_current_version(project_root: str) -> str | None:
-    """Read only the public current-version field from bounded local state."""
-
-    state_path = resolve_project_runner_path(project_root, "state.json")
-    raw = _read_regular_file_bytes(state_path, max_bytes=512_000)
-    if raw is None:
-        return None
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    value = payload.get("current_version") if isinstance(payload, dict) else None
-    return value.strip() if isinstance(value, str) and value.strip() else None
-
-
-def _read_regular_file_bytes(path: str, *, max_bytes: int) -> bytes | None:
-    try:
-        info = os.lstat(path)
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-            return None
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags)
-        with os.fdopen(fd, "rb") as handle:
-            opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
-                return None
-            raw = handle.read(max_bytes + 1)
-        return raw if len(raw) <= max_bytes else None
-    except OSError:
-        return None

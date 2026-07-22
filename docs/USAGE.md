@@ -64,9 +64,10 @@ If you only need validation or regression evidence:
 
 ```text
 1. manage_validation_run action=preview
-2. manage_validation_run action=run preview_id=<preview_id>
-3. manage_validation_run action=status run_id=<run_id>
-4. Record the result as a receipt or feedback. Do not write Delivery accepted.
+2. Copy the returned context_binding unchanged.
+3. manage_validation_run action=run preview_id=<preview_id> context_binding=<copied binding>
+4. manage_validation_run action=status run_id=<run_id>
+5. Record the result as a receipt or feedback. Do not write Delivery accepted.
 ```
 
 If connector or tunnel status is still unverified:
@@ -763,6 +764,76 @@ request a fresh template, and build a new manifest. A changed subject returns
 and high-risk configuration paths are denied even when a manifest names them.
 The short-lived manifest session does not authorize executor runs, validation
 runs, commits, pushes, ReviewDecision, or delivery acceptance.
+
+### Confirmation-bound actions and canonical project state
+
+The Commander surface now carries one exact, copyable `context_binding` for
+every core-workflow confirmation boundary. This applies to real mutating
+`run_mcp_workflow` phases (`apply`, `apply_all`, `plan_apply`, `run`, `commit`,
+and `execute`) where that phase is supported by its workflow,
+`manage_validation_run action=run`, and `manage_git` apply actions.
+
+`review_manifest` keeps its own immutable hash-bound read-session verifier and
+`gate_review_request` keeps its separately signed Work Item Gate contract;
+neither is weakened or replaced by this generic binding.
+
+A prior inspect or preview returns both `context_binding` and
+`context_binding_contract`. `confirmation_required=true` means that the
+matching confirmation needs this binding; `current_call_requires_context_binding`
+distinguishes that future boundary from the read or preview currently being
+performed. For the matching confirmation, copy the entire `context_binding`
+object unchanged; generated `next_actions` already contain that copy when the
+next Commander call has the same operation identity. The server rechecks all
+seven fields immediately before the side effect:
+
+```text
+project_name
+branch
+head
+runner_plan { mode, plan_sha256 }
+current_version
+review_unit
+workflow_intent
+```
+
+The binding is operation-specific. It cannot be reused for a different
+workflow or review unit. The Git workflow family intentionally shares the
+same identity across `run_mcp_workflow workflow=git_*` and the corresponding
+`manage_git` confirmation, so a high-level Git preview can continue through
+the public Git tool. `CONTEXT_BINDING_MISMATCH` means the current checkout or
+operation identity changed; stop and create a fresh inspect/preview. If branch
+or HEAD cannot be read, the server returns `CONTEXT_BINDING_UNAVAILABLE` and
+does not perform the action. A context binding is evidence only; it grants no
+executor, validation, Git, push, stable-replacement, or delivery authority.
+
+`analyze_project_state` also returns `canonical_state` with schema
+`colameta.canonical_project_state.v1`. Use it instead of treating a local
+workflow's `unified_status` as global truth:
+
+```text
+historically_verified
+  Bounded evidence from the latest execution report; it is not a live probe.
+
+currently_observed
+  Current Git, Runner, and executor observations. Runtime and connector are
+  explicitly not_observed unless this call actually obtained those probes.
+
+freshness
+  Observation time, partial-error count, and sources that were not observed.
+
+current_conclusion
+  Conservative full-state conclusion. It separates project_checkout from
+  runtime_and_connector: an otherwise ready checkout is freshness_required
+  when those external sources have not been freshly observed. It never
+  authorizes a side effect.
+```
+
+`not_observed` is not `unavailable` and must never be promoted to healthy or
+ready. `unified_status.status_scope=operation_local` describes just the
+workflow result that produced it; its embedded canonical summary is a pointer
+to the separate project-state truth. For a runtime or external connector
+decision, use the approved read-only health path rather than inferring it from
+a historical receipt or a project-only analysis.
 
 ## 3. Common Advanced Agent Profiles
 

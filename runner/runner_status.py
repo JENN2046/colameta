@@ -67,6 +67,7 @@ class RunnerStatus:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status_scope": "operation_local",
             "phase": self.phase,
             "state": self.state,
             "blocked": self.blocked,

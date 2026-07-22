@@ -65,9 +65,10 @@
 
 ```text
 1. manage_validation_run action=preview
-2. manage_validation_run action=run preview_id=<preview_id>
-3. manage_validation_run action=status run_id=<run_id>
-4. 把通过/失败结果写成 receipt 或反馈，不直接写 Delivery accepted
+2. 原样复制返回的 context_binding
+3. manage_validation_run action=run preview_id=<preview_id> context_binding=<复制的 binding>
+4. manage_validation_run action=status run_id=<run_id>
+5. 把通过/失败结果写成 receipt 或反馈，不直接写 Delivery accepted
 ```
 
 如果 connector/tunnel 还显示 unverified：
@@ -874,6 +875,64 @@ source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview�
 `REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
 符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、validation、
 commit、push、ReviewDecision 或 Delivery accepted。
+
+### 确认性操作上下文绑定与统一项目状态
+
+Commander 现在会为每个核心 workflow 的确认性边界携带一个可原样复制的 `context_binding`。它适用于实际
+支持且有副作用的 `run_mcp_workflow` phase（`apply`、`apply_all`、`plan_apply`、`run`、`commit`、`execute`）、
+`manage_validation_run action=run` 和 `manage_git` 的各类 apply action。
+
+`review_manifest` 保留自己的不可变哈希绑定 read-session verifier；`gate_review_request` 保留自己独立签名的
+Work Item Gate 合同。通用绑定不会替代或削弱这两份专属合同。
+
+前一步 inspect 或 preview 会同时返回 `context_binding` 与 `context_binding_contract`。
+`confirmation_required=true` 表示匹配的确认调用必须携带该绑定；
+`current_call_requires_context_binding` 用来区分将来的确认边界与当前正在进行的 read 或 preview。
+进入对应确认调用时，必须把整个 `context_binding` 原样回传；同一操作身份下的生成 `next_actions` 已经自动带上
+这份绑定。服务会在副作用发生前重新核对以下七项：
+
+```text
+project_name
+branch
+head
+runner_plan { mode, plan_sha256 }
+current_version
+review_unit
+workflow_intent
+```
+
+绑定只属于一个操作身份，不能跨 workflow 或 review unit 复用。Git 家族特意让
+`run_mcp_workflow workflow=git_*` 与对应 `manage_git` 确认动作共用同一身份，因此高层 Git preview
+可以自然续到公开 Git 工具。`CONTEXT_BINDING_MISMATCH` 表示 checkout 或操作身份已变化：停止并重新
+inspect/preview。branch 或 HEAD 无法读取时会返回 `CONTEXT_BINDING_UNAVAILABLE`，不会继续执行。
+context binding 只是证据，不授予 executor、validation、Git、push、stable replacement 或 delivery
+authority。
+
+`analyze_project_state` 还会返回 schema 为
+`colameta.canonical_project_state.v1` 的 `canonical_state`。不要再把某一次 workflow 的
+`unified_status` 当作全局真相：
+
+```text
+historically_verified
+  最近 execution report 的有界历史证据；它不是 live probe。
+
+currently_observed
+  当前 Git、Runner、executor 观察。runtime 与 connector 只有在本次确实做了探测时才是当前观察；
+  否则明确显示 not_observed。
+
+freshness
+  观察时间、partial error 数量以及未观察到的 source。
+
+current_conclusion
+  保守的完整状态结论，内部会分开 project_checkout 与 runtime_and_connector。
+  即使 checkout 本身 ready，外部 source 未新鲜观察时完整结论仍是 freshness_required；
+  它绝不授予副作用权限。
+```
+
+`not_observed` 不等于 `unavailable`，更不能被提升成 healthy 或 ready。
+`unified_status.status_scope=operation_local` 只描述产生它的那一次 workflow；其中嵌入的 canonical
+summary 只是指向独立的项目状态真相。要判断 runtime 或外部 connector，走获批的只读 health 路径，
+不能从历史 receipt 或 project-only 分析中推断。
 
 ## 3. 五种 Advanced Agent 角色
 
