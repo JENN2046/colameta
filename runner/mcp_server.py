@@ -59,7 +59,9 @@ from runner.mcp_manifest_validation import (
     ManifestValidationWorkflowError,
 )
 from runner.mcp_review_manifest import (
+    MCPReviewManifestResources,
     MCPReviewManifestWorkflow,
+    REVIEW_MANIFEST_URI_RE,
     ReviewManifestWorkflowError,
 )
 from runner.mcp_validation_run import MCPValidationRunManager
@@ -279,10 +281,7 @@ MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
     minimum=60,
 )
 MCP_REVIEW_MANIFEST_MAX_ITEMS = 32
-MCP_REVIEW_MANIFEST_URI_RE = re.compile(
-    r"^colameta://review-manifest/(?P<review_manifest_id>[A-Za-z0-9_-]{16,128})"
-    r"(?:/subjects/(?P<subject_index>[1-9][0-9]*)(?:/pages/(?P<page>[1-9][0-9]*))?)?$"
-)
+MCP_REVIEW_MANIFEST_URI_RE = REVIEW_MANIFEST_URI_RE
 MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES: tuple[dict[str, str], ...] = (
     {
         "name": "colameta_review_manifest",
@@ -6485,6 +6484,9 @@ class MCPPlanningBridgeServer:
             return "resource_access_denied", "Result artifact requires the mcp:read scope."
         return None
 
+    def _review_manifest_resources(self) -> MCPReviewManifestResources:
+        return MCPReviewManifestResources(self._review_manifest_store)
+
     @staticmethod
     def _mcp_review_manifest_uri(
         review_manifest_id: str,
@@ -6492,39 +6494,23 @@ class MCPPlanningBridgeServer:
         subject_index: int | None = None,
         page: int | None = None,
     ) -> str:
-        base = f"colameta://review-manifest/{review_manifest_id}"
-        if subject_index is None:
-            return base
-        subject_uri = f"{base}/subjects/{subject_index}"
-        return subject_uri if page is None else f"{subject_uri}/pages/{page}"
+        return MCPReviewManifestResources.uri(
+            review_manifest_id,
+            subject_index=subject_index,
+            page=page,
+        )
 
     @staticmethod
     def _parse_mcp_review_manifest_uri(
         uri: str,
     ) -> tuple[str, int | None, int | None] | None:
-        matched = MCP_REVIEW_MANIFEST_URI_RE.fullmatch(uri)
-        if matched is None:
-            return None
-        review_manifest_id = matched.group("review_manifest_id")
-        subject_raw = matched.group("subject_index")
-        page_raw = matched.group("page")
-        try:
-            subject_index = int(subject_raw) if subject_raw is not None else None
-            page = int(page_raw) if page_raw is not None else None
-        except ValueError:
-            return None
-        return review_manifest_id, subject_index, page
+        return MCPReviewManifestResources.parse_uri(uri)
 
     def _review_manifest_handle_fields(
         self,
         handle: ReviewManifestHandle,
     ) -> dict[str, Any]:
-        return {
-            "review_manifest_id": handle.review_manifest_id,
-            "manifest_sha256": handle.manifest_sha256,
-            "manifest_resource_uri": self._mcp_review_manifest_uri(handle.review_manifest_id),
-            "expires_at": handle.expires_at,
-        }
+        return self._review_manifest_resources().handle_fields(handle)
 
     @staticmethod
     def _review_manifest_read_call(
@@ -6534,21 +6520,12 @@ class MCPPlanningBridgeServer:
         page: int,
         project_name: str | None = None,
     ) -> dict[str, Any]:
-        """Return the bounded tool-call fallback for one declared subject page."""
-
-        arguments: dict[str, Any] = {
-            "workflow": REVIEW_MANIFEST_WORKFLOW,
-            "phase": "read",
-            "review_manifest_id": handle.review_manifest_id,
-            "review_manifest_subject_index": subject_index,
-            "review_manifest_page": page,
-        }
-        if isinstance(project_name, str) and project_name.strip():
-            arguments["project_name"] = project_name.strip()
-        return {
-            "tool": "run_mcp_workflow",
-            "arguments": arguments,
-        }
+        return MCPReviewManifestResources.read_call(
+            handle,
+            subject_index=subject_index,
+            page=page,
+            project_name=project_name,
+        )
 
     def _review_manifest_subject_descriptor(
         self,
@@ -6561,25 +6538,15 @@ class MCPPlanningBridgeServer:
         page_count: int,
         project_name: str | None = None,
     ) -> dict[str, Any]:
-        resource_uri = self._mcp_review_manifest_uri(
-            handle.review_manifest_id,
+        return self._review_manifest_resources().subject_descriptor(
+            handle,
             subject_index=subject_index,
+            path=path,
+            sha256=sha256,
+            byte_size=byte_size,
+            page_count=page_count,
+            project_name=project_name,
         )
-        return {
-            "subject_index": subject_index,
-            "path": path,
-            "sha256": sha256,
-            "byte_size": byte_size,
-            "page_count": page_count,
-            "resource_uri": resource_uri,
-            "page_uri_template": f"{resource_uri}/pages/{{page}}",
-            "read_call": self._review_manifest_read_call(
-                handle,
-                subject_index=subject_index,
-                page=1,
-                project_name=project_name,
-            ),
-        }
 
     @staticmethod
     def _mcp_read_scoped_resource_access_error(
@@ -6611,87 +6578,17 @@ class MCPPlanningBridgeServer:
         return None
 
     def _review_manifest_resource_read_result(self, uri: str) -> dict[str, Any] | None:
-        parsed = self._parse_mcp_review_manifest_uri(uri)
-        if parsed is None:
-            return None
-        review_manifest_id, subject_index, page = parsed
-        stored = self._review_manifest_store.get(review_manifest_id)
-        if stored is None:
-            return None
-        current_context = collect_review_context_binding(
-            stored.project_root,
-            project_name=str(stored.context_binding.get("project_name") or ""),
-        )
-        verify_stored_review_context(
-            stored,
-            current_context_binding=current_context,
-        )
-        if subject_index is None:
-            return {
-                "contents": [
-                    {
-                        "uri": uri,
-                        "mimeType": "application/json",
-                        "text": json.dumps(
-                            self._review_manifest_resource_summary(stored),
-                            ensure_ascii=False,
-                        ),
-                    }
-                ]
-            }
-        subject_page = read_stored_review_manifest_page(
-            stored,
-            subject_index=subject_index,
-            page=page or 1,
-        )
-        return {
-            "contents": [
-                {
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "text": json.dumps(subject_page.to_dict(), ensure_ascii=False),
-                }
-            ]
-        }
+        return self._review_manifest_resources().read_resource(uri)
 
     def _review_manifest_resource_summary(
         self,
         stored: StoredReviewManifest,
     ) -> dict[str, Any]:
-        handle = stored.handle
-        return {
-            "schema_version": "colameta.review_manifest_resource.v1",
-            **self._review_manifest_handle_fields(handle),
-            "review_unit": stored.context_binding.get("review_unit"),
-            "workflow_intent": stored.context_binding.get("workflow_intent"),
-            "context_binding": dict(stored.context_binding),
-            "acceptance_commands_preview": list(stored.manifest.get("acceptance_commands") or []),
-            "subjects": [
-                self._review_manifest_subject_descriptor(
-                    handle,
-                    subject_index=index,
-                    path=subject.path,
-                    sha256=subject.sha256,
-                    byte_size=subject.byte_size,
-                    page_count=subject.page_count,
-                )
-                for index, subject in enumerate(stored.subjects, start=1)
-            ],
-            "read_only": True,
-            "side_effects": False,
-            "authority_boundary": self._review_manifest_authority_boundary(),
-        }
+        return self._review_manifest_resources().resource_summary(stored)
 
     @staticmethod
     def _review_manifest_authority_boundary() -> dict[str, bool]:
-        return {
-            "does_not_authorize_executor_run": True,
-            "does_not_authorize_validation_run": True,
-            "does_not_authorize_commit_or_push": True,
-            "does_not_authorize_review_decision": True,
-            "does_not_authorize_delivery_acceptance": True,
-            "does_not_read_unlisted_files": True,
-        }
+        return MCPReviewManifestResources.authority_boundary()
 
     def _mcp_resources_list_result(self) -> dict[str, Any]:
         return {
