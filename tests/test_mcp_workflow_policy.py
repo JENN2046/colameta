@@ -24,6 +24,7 @@ from runner.mcp_workflow_policy import (
         ({"workflow": "agent_dispatch", "phase": "run_preview"}, "mcp:preview"),
         ({"workflow": "prompt_to_plan", "phase": "plan_apply"}, "mcp:plan"),
         ({"workflow": "thin_governed_loop_preview", "phase": "preview"}, "mcp:read"),
+        ({"workflow": "current_facts", "phase": "preview"}, "mcp:preview"),
         ({"workflow": "review_manifest", "phase": "verify"}, "mcp:read"),
         ({"workflow": "result_artifact", "phase": "read"}, "mcp:read"),
         ({"workflow": "gate_review_request", "phase": "preview"}, "mcp:preview"),
@@ -64,5 +65,6 @@ def test_context_binding_tracks_only_real_mutation_boundaries() -> None:
         "git_undo_version": frozenset({"apply"}),
         "agent_dispatch": frozenset({"apply", "run"}),
         "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
+        "current_facts": frozenset({"apply"}),
         "operator_batch": frozenset({"execute"}),
     }

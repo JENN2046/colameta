@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 474aadefbea4dc28075225105e05c35a078c923ddd85266cad556a7f62e205ce
+  source_sha256: 122dfe6dc4c7c75c595bd5738c59814c369a1b895921ced552262eb1b0b96845
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 4
+  revision: 5
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -125,6 +125,22 @@ configuration 或 release authority。
 - stale 或缺失的 external evidence 只能得到 `freshness_required` 或 `partial`，绝不能生成
   healthy/release conclusion；
 - artifact generation 未经独立确认的 docs preview/apply 不得写入 tracked documentation。
+
+### 已采用的 P1-B current-facts 边界
+
+- `runner/mcp_current_facts.py` 负责既有 `run_mcp_workflow` compatibility surface 背后的有界
+  `current_facts` state machine：`inspect`、`preview` 和 context-bound `apply`。公开九工具保持不变。
+- `runner/current_facts_artifact.py` 只接收 `canonical_project_state`，拒绝 secret/path-like key，并渲染
+  一对脱敏 JSON/Markdown 文件，包含精确 canonical、semantic 与 snapshot SHA-256。它构建 artifact 时
+  不读取 raw runtime state、项目源码、receipt 或 taskbook 内容。
+- `inspect` 与 `preview` 通过既有 typed `read_result_artifact` recovery contract 打包 snapshot。preview
+  只存在于短期进程内，不创建 archive directory，也不会把 checkout 弄脏。
+- `apply` 写入前重新观察 semantic state，并且只写入完全一致的 preview 文件对。状态变化返回
+  `CURRENT_FACTS_PREVIEW_STALE`；没有 Git-ignore coverage 返回
+  `CURRENT_FACTS_ARCHIVE_NOT_IGNORED`。固定 archive 是
+  `.colameta/reports/current-facts/`，不是调用方指定路径，也不是 tracked docs path。
+- 确定性 fixture 覆盖 fresh、stale、partial、not-observed 和 Git/Runner conflict projection。即使本地
+  archive 写入已被明确确认，artifact 仍然只是 observation-only。
 
 ## P1-C —— 把 Stage 7--9 变成一条 fail-closed preview journey
 

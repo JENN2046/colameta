@@ -20,6 +20,11 @@ from runner.mcp_gate_review_workflow import (
     GateReviewWorkflowError,
     MCPGateReviewWorkflow,
 )
+from runner.mcp_current_facts import (
+    CURRENT_FACTS_WORKFLOW,
+    CurrentFactsWorkflowError,
+    MCPCurrentFactsWorkflow,
+)
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_review_manifest import MCPReviewManifestWorkflow, ReviewManifestWorkflowError
 from runner.mcp_workflow_migration import OPERATOR_BATCH_WORKFLOW, RESULT_ARTIFACT_WORKFLOW
@@ -48,6 +53,19 @@ class WorkflowCompatibilityHost(Protocol):
     _mcp_result_artifact_store: MCPResultArtifactStore
 
     def _mcp_result_artifact_uri(self, artifact_id: str, page: int | None = None) -> str: ...
+
+    def _store_packaged_result_artifact(
+        self,
+        tool_name: str,
+        structured_tool_result: dict[str, Any],
+    ) -> dict[str, Any] | None: ...
+
+    def _result_artifact_recommended_next_reads(
+        self,
+        artifact_fields: dict[str, Any],
+    ) -> list[dict[str, Any]]: ...
+
+    def _current_facts_analyze(self, params: dict[str, Any]) -> dict[str, Any]: ...
 
     def _result_artifact_compatibility_read_call(self, artifact_id: str, *, page: int) -> dict[str, Any]: ...
 
@@ -336,6 +354,37 @@ class MCPWorkflowCompatibilityService:
             verified_binding=verified_binding,
         )
 
+    def handle_current_facts(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Run the bounded current-facts read/archive state machine."""
+
+        phase_raw = params.get("phase")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else "inspect"
+        if params.get("project_name") is not None:
+            return self._host._route_project_name_tool(
+                "run_mcp_workflow",
+                params,
+                require_managed=phase == "apply",
+            )
+        verified_binding = self._host._require_operation_context_binding(
+            "run_mcp_workflow",
+            params,
+        )
+        clean = self._host._strip_operation_context_binding_params(params)
+        try:
+            result = MCPCurrentFactsWorkflow(self._host).handle(clean)
+        except CurrentFactsWorkflowError as exc:
+            raise WorkflowCompatibilityError(exc.error_code, exc.message) from exc
+        # Do not create a generic workflow record here: the explicit archive
+        # is the durable evidence surface, while inspect/preview must remain
+        # observational and must not make a clean checkout appear dirty before
+        # the caller can confirm the exact snapshot.
+        return self._host._attach_operation_context_binding(
+            result,
+            tool_name="run_mcp_workflow",
+            params=params,
+            verified_binding=verified_binding,
+        )
+
     def handle_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         """Dispatch the retained legacy workflow surface through one path."""
 
@@ -344,6 +393,8 @@ class MCPWorkflowCompatibilityService:
             return self.handle_result_artifact(params)
         if workflow == REVIEW_MANIFEST_WORKFLOW:
             return self.handle_review_manifest(params)
+        if workflow == CURRENT_FACTS_WORKFLOW:
+            return self.handle_current_facts(params)
         if (
             workflow not in {OPERATOR_BATCH_WORKFLOW, GATE_REVIEW_WORKFLOW}
             and workflow not in SUPPORTED_CORE_WORKFLOWS

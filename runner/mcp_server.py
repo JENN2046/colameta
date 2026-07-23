@@ -96,6 +96,7 @@ from runner.mcp_private_operator import (
     operator_authenticated_request_scope,
 )
 from runner.mcp_result_artifacts import MCPResultArtifactStore, ResultArtifactHandle
+from runner.current_facts_artifact import process_current_facts_preview_store
 from runner.review_manifest import (
     REVIEW_MANIFEST_WORKFLOW,
     ReviewManifestError,
@@ -396,6 +397,10 @@ _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
 
 _OPERATOR_BATCH_INTERNAL_DISPATCH: ContextVar[bool] = ContextVar(
     "operator_batch_internal_dispatch",
+    default=False,
+)
+_CURRENT_FACTS_INTERNAL_ANALYZE: ContextVar[bool] = ContextVar(
+    "current_facts_internal_analyze",
     default=False,
 )
 _normalize_run_mcp_workflow_name = normalize_workflow_name
@@ -1033,6 +1038,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             page_chars=MCP_RESULT_ARTIFACT_PAGE_CHARS,
             max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
         )
+        self._current_facts_preview_store = process_current_facts_preview_store()
         self._review_manifest_store = ReviewManifestStore(
             ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
             max_items=MCP_REVIEW_MANIFEST_MAX_ITEMS,
@@ -5492,9 +5498,22 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "partial_errors": partial_errors,
         }
 
-        if project_record is None:
+        if project_record is None and not _CURRENT_FACTS_INTERNAL_ANALYZE.get():
             self._record_workflow_if_needed("analyze_project_state", "analyze", routed_params, legacy)
         return legacy
+
+    def _current_facts_analyze(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Collect one canonical snapshot without creating a generic read record.
+
+        ``current_facts`` has its own explicit preview/archive evidence flow.
+        Recording the internal analysis would make the fact collection itself
+        appear as a source-tree change before its confirmation can be checked.
+        """
+        token = _CURRENT_FACTS_INTERNAL_ANALYZE.set(True)
+        try:
+            return self._tool_analyze_project_state(params)
+        finally:
+            _CURRENT_FACTS_INTERNAL_ANALYZE.reset(token)
 
     def _tool_inspect_executor_activity(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action", "")

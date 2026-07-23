@@ -7,7 +7,7 @@ p1_convergence_execution_baseline:
   status: execution_ready_after_batch_gate
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 4
+  revision: 5
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -158,6 +158,28 @@ observation; the canonical projection does not impersonate those sources.
   never a healthy/release conclusion; and
 - artifact generation cannot write tracked documentation without a separately
   confirmed docs preview/apply action.
+
+### Adopted P1-B current-facts boundary
+
+- `runner/mcp_current_facts.py` owns the bounded `current_facts` state machine
+  behind the existing `run_mcp_workflow` compatibility surface: `inspect`,
+  `preview`, and context-bound `apply`. The nine public tools remain exact.
+- `runner/current_facts_artifact.py` accepts only
+  `canonical_project_state`, rejects secret/path-like keys, and renders one
+  redacted JSON/Markdown pair with exact canonical, semantic, and snapshot
+  SHA-256 fields. It never reads raw runtime state, project source, receipt, or
+  taskbook content to construct the artifact.
+- `inspect` and `preview` package the snapshot through the existing typed
+  `read_result_artifact` recovery contract. Preview is process-local and
+  short-lived; it makes no archive directory and does not dirty the checkout.
+- `apply` re-observes semantic state before writing the exact previewed pair.
+  A changed state returns `CURRENT_FACTS_PREVIEW_STALE`; absent Git-ignore
+  coverage returns `CURRENT_FACTS_ARCHIVE_NOT_IGNORED`. The fixed archive is
+  `.colameta/reports/current-facts/`, never a caller-selected or tracked docs
+  path.
+- Deterministic fixtures cover fresh, stale, partial, not-observed, and
+  Git/Runner-conflict projections. The artifact remains observation-only even
+  when a local archive write has been explicitly confirmed.
 
 ## P1-C — Turn Stage 7--9 Into One Fail-Closed Preview Journey
 

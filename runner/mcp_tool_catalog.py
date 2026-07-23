@@ -2983,7 +2983,7 @@ def build_mcp_tool_definitions(
                 "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                 "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                 "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、review_manifest、gate_review_request、operator_batch。"
+                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、current_facts、review_manifest、gate_review_request、operator_batch。"
                 "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
                 "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
                 "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
@@ -3001,19 +3001,19 @@ def build_mcp_tool_definitions(
                             "auto_preview", "project_status", "source_onboarding",
                             "plan_update", "small_project_patch", "docs_update",
                             "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
+                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "current_facts",
                             "review_manifest", "result_artifact", "gate_review_request", "operator_batch",
                         ],
-                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                     },
                     "phase": {
                         "type": "string",
                         "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
-                        "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                        "description": "工作流阶段。inspect/read/status/verify 只读；current_facts 的 inspect 创建可恢复 artifact，preview 不写入，apply 必须同时携带同一 preview_id 和匹配 context_binding 才能写入固定 `.colameta/reports/current-facts/` runtime archive；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                     },
                     "preview_id": {
                         "type": "string",
-                        "description": "apply/commit/run 阶段必填。prompt_to_plan apply_all 使用 prompt preview_id（来自 prompt_to_plan preview）；prompt_to_plan run 使用 executor run_once_preview 返回的 preview_id。没有匹配的 stored preview 不执行任何写入或提交。不能用 preview_id 绕过安全检查。",
+                        "description": "apply/commit/run 阶段必填。prompt_to_plan apply_all 使用 prompt preview_id（来自 prompt_to_plan preview）；prompt_to_plan run 使用 executor run_once_preview 返回的 preview_id；current_facts apply 使用 current_facts preview 返回的 preview_id。没有匹配的 stored preview 不执行任何写入或提交。不能用 preview_id 绕过安全检查。",
                     },
                     "work_item_id": {
                         "type": "string",

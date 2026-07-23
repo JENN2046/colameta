@@ -961,6 +961,48 @@ current_conclusion
 summary 只是指向独立的项目状态真相。要判断 runtime 或外部 connector，走获批的只读 health 路径，
 不能从历史 receipt 或 project-only 分析中推断。
 
+### Current-facts 快照与 runtime archive
+
+使用既有的 `run_mcp_workflow` compatibility surface，并传入
+`workflow=current_facts`；这不会增加第十个公开工具。该 workflow 只从
+`canonical_project_state` 出发，因此构建快照时不会打开 raw runtime state、凭据、源码、历史 receipt
+或 taskbook。
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "current_facts",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+`inspect` 是只读操作。它通过常规 packaged-result contract 返回脱敏、版本化的 JSON/Markdown
+snapshot：`artifact_id`、`resource_uri`、`page_count`、`content_sha256` 和 `expires_at`。使用 typed
+`read_result_artifact` 读取所需的每一页；所有页面保持同一 artifact ID、SHA-256 和 expiry。artifact
+会明确写出 observation time、historical/current observation 的区别、freshness conclusion、
+canonical-state digest 以及 `observation_only` authority boundary。
+
+`preview` 只建立一个短期、进程内 archive preview，不写任何文件。它给出的 next action 同时携带 opaque
+`preview_id` 与完整 `context_binding`。只有那一次 context-bound 的
+`current_facts phase=apply` 调用（需要 `mcp:commit`）才可以把已 preview 的精确文件对写到固定 runtime
+位置：
+
+```text
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.json
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.md
+```
+
+writer 不接收调用方指定的路径，不会覆盖不同 snapshot，会拒绝经过符号链接的 archive path，并且写入前要求
+两个生成目标都已经被 Git ignore 覆盖。因此它不会静默创建 tracked documentation，也不会改写历史
+receipt/taskbook。若 preview 后当前 semantic state 已改变，apply 返回
+`CURRENT_FACTS_PREVIEW_STALE`；若没有 ignore coverage，返回
+`CURRENT_FACTS_ARCHIVE_NOT_IGNORED`。不要混用新旧 evidence，应重新 preview。创建 archive 只产生本地
+runtime evidence，不授权 executor run、validation、Git commit/push、stable replacement 或 delivery
+acceptance。
+
 ## 3. 五种 Advanced Agent 角色
 
 使用 `get_service_entry_profile` 选择入口画像：

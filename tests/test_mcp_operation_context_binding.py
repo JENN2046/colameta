@@ -182,6 +182,7 @@ def test_context_gate_covers_every_commander_side_effect_boundary(tmp_path: Path
         "git_undo_version": {"apply"},
         "agent_dispatch": {"apply", "run"},
         "prompt_to_plan": {"apply", "apply_all", "plan_apply", "run"},
+        "current_facts": {"apply"},
         "operator_batch": {"execute"},
     }
     for workflow, phases in workflow_boundaries.items():

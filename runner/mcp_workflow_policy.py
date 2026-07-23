@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
+from runner.mcp_current_facts import CURRENT_FACTS_WORKFLOW
 from runner.mcp_workflow_migration import OPERATOR_BATCH_WORKFLOW, RESULT_ARTIFACT_WORKFLOW
 from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 
@@ -31,6 +32,7 @@ WORKFLOW_CONTEXT_MUTATION_PHASES: dict[str, frozenset[str]] = {
     "git_undo_version": frozenset({"apply"}),
     "agent_dispatch": frozenset({"apply", "run"}),
     "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
+    CURRENT_FACTS_WORKFLOW: frozenset({"apply"}),
     OPERATOR_BATCH_WORKFLOW: frozenset({"execute"}),
 }
 
@@ -55,6 +57,14 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     docs_action = policy_string_param(params, "docs_action")
     if workflow == RESULT_ARTIFACT_WORKFLOW:
         return "mcp:read" if phase == "read" else None
+    if workflow == CURRENT_FACTS_WORKFLOW:
+        if phase in {"", "inspect"}:
+            return "mcp:read"
+        if phase == "preview":
+            return "mcp:preview"
+        if phase == "apply":
+            return "mcp:commit"
+        return None
     if workflow == GATE_REVIEW_WORKFLOW:
         if phase in {"inspect", "status"}:
             return "mcp:read"

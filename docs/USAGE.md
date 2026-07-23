@@ -874,6 +874,55 @@ to the separate project-state truth. For a runtime or external connector
 decision, use the approved read-only health path rather than inferring it from
 a historical receipt or a project-only analysis.
 
+### Current-facts snapshot and runtime archive
+
+Use the existing `run_mcp_workflow` compatibility surface with
+`workflow=current_facts`; it does not add a tenth public tool. The workflow
+starts only from `canonical_project_state`, so it never opens raw runtime
+state, credentials, source files, historical receipts, or taskbooks to build
+the snapshot.
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "current_facts",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+`inspect` is read-only. It returns a redacted, versioned JSON/Markdown snapshot
+through the normal packaged-result contract: `artifact_id`, `resource_uri`,
+`page_count`, `content_sha256`, and `expires_at`. Read every required page with
+the typed `read_result_artifact` tool; the returned pages retain the same
+artifact ID, SHA-256, and expiry. The artifact states its observation time,
+historical versus current observation, freshness conclusion, canonical-state
+digest, and explicit `observation_only` authority boundary.
+
+`preview` creates a short-lived, process-local archive preview without writing
+anything. Its generated next action carries both the opaque `preview_id` and
+the exact `context_binding`. Only that context-bound
+`current_facts phase=apply` call, with `mcp:commit`, may write the exact
+previewed pair beneath the fixed runtime location:
+
+```text
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.json
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.md
+```
+
+The writer accepts no caller-selected path, will not overwrite a different
+snapshot, rejects symlinked archive paths, and requires both generated targets
+to be covered by Git ignore before it writes. Thus it cannot silently create
+tracked documentation or modify a historical receipt/taskbook. If the current
+semantic state changed after preview, apply returns
+`CURRENT_FACTS_PREVIEW_STALE`; if ignore coverage is absent it returns
+`CURRENT_FACTS_ARCHIVE_NOT_IGNORED`. Re-preview instead of combining old and
+new evidence. Archive creation is local runtime evidence only: it does not
+authorize executor runs, validation, Git commits/pushes, stable replacement,
+or delivery acceptance.
+
 ## 3. Common Advanced Agent Profiles
 
 Use `get_service_entry_profile` to select an operating profile:
