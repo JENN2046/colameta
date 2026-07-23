@@ -767,6 +767,8 @@ packaged=true
   resources/read 读取 resource_uri，再按 page_uri_template 读取第 2 到
   page_count 页；拼回后核对 content_sha256。这些短期 artifact 只读，
   不授予 workflow、executor、Git 或 delivery authority。
+  resources/templates/list 只公布静态 artifact URI 形状，不会枚举 live
+  artifact ID；只能在过期前读取该 packaged response 返回的 opaque handle。
   否则按 recommended_next_reads 分段续读。
 ```
 

@@ -5,7 +5,11 @@ import hashlib
 import json
 
 from runner.mcp_result_artifacts import MCPResultArtifactStore
-from runner.mcp_server import COMMANDER_APP_WIDGET_URI, MCPPlanningBridgeServer
+from runner.mcp_server import (
+    COMMANDER_APP_WIDGET_URI,
+    MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
+    MCPPlanningBridgeServer,
+)
 
 
 def test_result_artifact_store_pages_exact_json_and_expires() -> None:
@@ -92,6 +96,120 @@ def test_actions_packaging_uses_the_same_recoverable_artifact_contract(tmp_path)
     assert manifest["packaged"] is True
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
     assert manifest["recommended_next_reads"][0]["tool"] == "resources/read"
+
+
+def test_result_artifact_templates_are_static_and_artifact_ids_remain_opaque(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    shaped = server._shape_mcp_call_result(
+        {"ok": True, "tool": "manage_files", "data": {"content": "x" * 30000}},
+        {"action": "read", "file": "CURRENT_STATE.md"},
+    )
+    artifact_id = shaped["structuredContent"]["artifact_id"]
+
+    response = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/templates/list",
+            "params": {},
+        }
+    )
+
+    assert response is not None
+    templates = response["result"]["resourceTemplates"]
+    artifact_templates = templates[: len(MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES)]
+    assert artifact_templates == [dict(item) for item in MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES]
+    assert [item["uriTemplate"] for item in artifact_templates] == [
+        "colameta://result-artifact/{artifact_id}",
+        "colameta://result-artifact/{artifact_id}/pages/{page}",
+    ]
+    assert artifact_id not in json.dumps(templates)
+
+
+def test_mcp_overflow_fallback_keeps_the_recoverable_artifact_handle(tmp_path, monkeypatch) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    raw_result = {
+        "ok": True,
+        "tool": "manage_files",
+        "data": {"content": "x" * 30000},
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_mcp_recommended_next_reads",
+        lambda *_args: [{"reason": "x" * 100000}],
+    )
+    shaped = server._shape_mcp_call_result(
+        raw_result,
+        {"action": "read", "file": "CURRENT_STATE.md"},
+    )
+
+    manifest = shaped["structuredContent"]
+    assert manifest["packaged"] is True
+    assert manifest["package_mode"] == "artifact_continuation"
+    assert manifest["artifact_id"]
+    assert manifest["recommended_next_reads"] == [
+        {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": manifest["resource_uri"]},
+            "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
+        }
+    ]
+
+    page_response = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/read",
+            "params": {"uri": manifest["resource_uri"]},
+        }
+    )
+    assert page_response is not None
+    page = json.loads(page_response["result"]["contents"][0]["text"])
+    assert page["artifact_id"] == manifest["artifact_id"]
+    assert page["content_sha256"] == manifest["content_sha256"]
+
+
+def test_actions_overflow_fallback_keeps_the_recoverable_artifact_handle(tmp_path, monkeypatch) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    raw_result = {
+        "ok": True,
+        "tool": "manage_files",
+        "data": {"content": "x" * 70000},
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_actions_recommended_next_reads",
+        lambda *_args: [{"reason": "x" * 100000}],
+    )
+    manifest = server._package_actions_rest_response(
+        "manage_files",
+        {"action": "read", "file": "CURRENT_STATE.md"},
+        raw_result,
+    )
+
+    assert manifest["packaged"] is True
+    assert manifest["package_mode"] == "artifact_continuation"
+    assert manifest["artifact_id"]
+    assert manifest["resource_uri"].startswith("colameta://result-artifact/")
+
+
+def test_unavailable_artifact_store_never_returns_a_hollow_packaged_manifest(tmp_path, monkeypatch) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path))
+    monkeypatch.setattr(server, "_store_packaged_result_artifact", lambda *_args: None)
+
+    shaped = server._shape_mcp_call_result(
+        {"ok": True, "tool": "manage_files", "data": {"content": "x" * 30000}},
+        {"action": "read", "file": "CURRENT_STATE.md"},
+    )
+
+    result = shaped["structuredContent"]
+    assert result["ok"] is False
+    assert result["packaged"] is False
+    assert result["error_code"] == "MCP_RESULT_ARTIFACT_UNAVAILABLE"
+    assert "artifact_id" not in result
 
 
 def test_result_artifacts_are_not_discoverable_and_require_read_scope_when_authenticated(tmp_path) -> None:

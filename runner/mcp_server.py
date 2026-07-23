@@ -240,6 +240,29 @@ MCP_RESULT_ARTIFACT_URI_RE = re.compile(
     r"^colameta://result-artifact/(?P<artifact_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/pages/(?P<page>[1-9][0-9]*))?$"
 )
+MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES: tuple[dict[str, str], ...] = (
+    {
+        "name": "colameta_result_artifact",
+        "title": "Paged packaged result",
+        "description": (
+            "Read page 1 of a short-lived packaged tool result. The opaque artifact "
+            "ID must come from a packaged=true tool response; live artifacts are never "
+            "listed."
+        ),
+        "uriTemplate": "colameta://result-artifact/{artifact_id}",
+        "mimeType": "application/json",
+    },
+    {
+        "name": "colameta_result_artifact_page",
+        "title": "Paged packaged result page",
+        "description": (
+            "Read a later page of a short-lived packaged tool result. Use only the "
+            "opaque artifact ID and page_uri_template returned by the originating response."
+        ),
+        "uriTemplate": "colameta://result-artifact/{artifact_id}/pages/{page}",
+        "mimeType": "application/json",
+    },
+)
 MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
     "COLAMETA_MCP_REVIEW_MANIFEST_TTL_SECONDS",
     900,
@@ -6290,6 +6313,67 @@ class MCPPlanningBridgeServer:
             "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
         }
 
+    def _result_artifact_recovery_manifest(
+        self,
+        *,
+        tool_name: str,
+        ok: bool,
+        artifact_fields: dict[str, Any],
+        original_error_code: Any = None,
+    ) -> dict[str, Any]:
+        """Return the smallest valid manifest that still preserves continuation.
+
+        A normal packaging manifest can itself overflow when a tool supplies an
+        unusually large next-read hint.  Once the original result has been
+        safely stored, this compact form is the final response-size fallback:
+        it deliberately keeps every field required to reopen and verify the
+        artifact instead of asking the client to guess a narrower retry.
+        """
+
+        manifest: dict[str, Any] = {
+            "ok": ok,
+            "tool": tool_name,
+            "packaged": True,
+            "package_mode": "artifact_continuation",
+            "message": (
+                "完整结果已保存为短期分页 artifact；请先读取 resource_uri，再按 "
+                "page_uri_template 续读并核对 content_sha256。"
+            ),
+            "omitted_fields": ["full_result"],
+            "recommended_next_reads": [
+                self._result_artifact_next_read(artifact_fields),
+            ],
+        }
+        manifest.update(artifact_fields)
+        if not ok and isinstance(original_error_code, str):
+            manifest["error_code"] = original_error_code
+        return manifest
+
+    @staticmethod
+    def _result_artifact_unavailable_result(
+        *,
+        tool_name: str,
+        error_code: str,
+        message: str,
+        recommended_next_reads: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Report an unrecoverable oversized response without a false handle.
+
+        The public invariant is that every ``packaged=true`` response has an
+        artifact ID, URI, page count, digest, and expiry.  If serialization or
+        storage cannot establish that contract, fail explicitly rather than
+        returning a hollow manifest whose suggested continuation cannot work.
+        """
+
+        return {
+            "ok": False,
+            "tool": tool_name,
+            "packaged": False,
+            "error_code": error_code,
+            "message": message,
+            "recommended_next_reads": recommended_next_reads,
+        }
+
     @staticmethod
     def _mcp_result_artifact_resource_access_error(
         auth_context: MCPAuthContext,
@@ -6541,11 +6625,12 @@ class MCPPlanningBridgeServer:
 
     @staticmethod
     def _mcp_resource_templates_list_result() -> dict[str, Any]:
-        """Expose static review-manifest URI shapes without listing live handles."""
+        """Expose static resource URI shapes without listing live handles."""
 
         return {
             "resourceTemplates": [
-                dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES
+                *[dict(item) for item in MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES],
+                *[dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES],
             ]
         }
 
@@ -9605,6 +9690,7 @@ class MCPPlanningBridgeServer:
                 },
                 mcp_meta,
             )
+        artifact_fields: dict[str, Any] | None = None
         try:
             data = structured_tool_result.get("data")
             data_keys: list[str] = []
@@ -9615,16 +9701,34 @@ class MCPPlanningBridgeServer:
                 tool_name,
                 structured_tool_result,
             )
+            if artifact_fields is None:
+                unavailable_sc = self._result_artifact_unavailable_result(
+                    tool_name=tool_name,
+                    error_code="MCP_RESULT_ARTIFACT_UNAVAILABLE",
+                    message=(
+                        "工具结果超过返回上限，但无法建立可恢复分页 artifact；"
+                        "原始结果未返回，请缩小请求范围后重试。"
+                    ),
+                    recommended_next_reads=self._mcp_default_next_reads(tool_name),
+                )
+                unavailable_text = json.dumps(unavailable_sc, ensure_ascii=False)
+                return self._attach_mcp_result_meta(
+                    {
+                        "content": [{"type": "text", "text": unavailable_text}],
+                        "structuredContent": unavailable_sc,
+                        "isError": True,
+                    },
+                    mcp_meta,
+                )
             recommended_next_reads = self._mcp_recommended_next_reads(
                 tool_name,
                 safe_params,
                 structured_tool_result,
             )
-            if artifact_fields is not None:
-                recommended_next_reads = [
-                    self._result_artifact_next_read(artifact_fields),
-                    *recommended_next_reads,
-                ]
+            recommended_next_reads = [
+                self._result_artifact_next_read(artifact_fields),
+                *recommended_next_reads,
+            ]
             manifest_sc: dict[str, Any] = {
                 "ok": bool(structured_tool_result.get("ok")),
                 "tool": tool_name,
@@ -9642,8 +9746,7 @@ class MCPPlanningBridgeServer:
                 "omitted_fields": omitted_fields,
                 "recommended_next_reads": recommended_next_reads,
             }
-            if artifact_fields is not None:
-                manifest_sc.update(artifact_fields)
+            manifest_sc.update(artifact_fields)
             if not manifest_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
                 manifest_sc["error_code"] = structured_tool_result.get("error_code")
             manifest_text = json.dumps(manifest_sc, ensure_ascii=False)
@@ -9669,8 +9772,7 @@ class MCPPlanningBridgeServer:
                 "omitted_fields": ["data"],
                 "recommended_next_reads": recommended_next_reads[:2],
             }
-            if artifact_fields is not None:
-                reduced_sc.update(artifact_fields)
+            reduced_sc.update(artifact_fields)
             if not reduced_sc["ok"] and isinstance(structured_tool_result.get("error_code"), str):
                 reduced_sc["error_code"] = structured_tool_result.get("error_code")
             reduced_text = json.dumps(reduced_sc, ensure_ascii=False)
@@ -9684,20 +9786,38 @@ class MCPPlanningBridgeServer:
         except Exception:
             pass
 
-        fallback_sc = {
-            "ok": False,
-            "tool": tool_name,
-            "packaged": True,
-            "error_code": "MCP_RESULT_SHAPING_FAILED",
-            "message": "工具结果过大且摘要失败，请按续读建议分步读取。",
-            "recommended_next_reads": self._mcp_default_next_reads(tool_name),
-        }
+        if artifact_fields is not None:
+            recovery_sc = self._result_artifact_recovery_manifest(
+                tool_name=tool_name,
+                ok=bool(structured_tool_result.get("ok")),
+                artifact_fields=artifact_fields,
+                original_error_code=structured_tool_result.get("error_code"),
+            )
+            recovery_text = json.dumps(recovery_sc, ensure_ascii=False)
+            return self._attach_mcp_result_meta(
+                {
+                    "content": [{"type": "text", "text": recovery_text}],
+                    "structuredContent": recovery_sc,
+                    "isError": is_error,
+                },
+                mcp_meta,
+            )
+
+        fallback_sc = self._result_artifact_unavailable_result(
+            tool_name=tool_name,
+            error_code="MCP_RESULT_SHAPING_FAILED",
+            message="工具结果超过返回上限且无法建立可恢复分页 artifact；请缩小请求范围后重试。",
+            recommended_next_reads=self._mcp_default_next_reads(tool_name),
+        )
         fallback_text = json.dumps(fallback_sc, ensure_ascii=False)
-        return {
-            "content": [{"type": "text", "text": fallback_text}],
-            "structuredContent": fallback_sc,
-            "isError": True,
-        }
+        return self._attach_mcp_result_meta(
+            {
+                "content": [{"type": "text", "text": fallback_text}],
+                "structuredContent": fallback_sc,
+                "isError": True,
+            },
+            mcp_meta,
+        )
 
     def _as_mcp_call_result(
         self,
@@ -10498,6 +10618,9 @@ class MCPPlanningBridgeServer:
         params: dict[str, Any],
         tool_result: dict[str, Any],
     ) -> dict[str, Any]:
+        artifact_fields: dict[str, Any] | None = None
+        ok_value = False
+        original_error_code: Any = None
         try:
             tool_result = self._commander_public_project_tool_result(tool_result, params)
             sanitized_tool_result = self._actions_sanitize_tool_result(tool_result)
@@ -10505,6 +10628,7 @@ class MCPPlanningBridgeServer:
             if response_chars <= ACTIONS_TARGET_RESPONSE_CHARS:
                 return sanitized_tool_result
             ok_value = bool(sanitized_tool_result.get("ok"))
+            original_error_code = sanitized_tool_result.get("error_code")
             data = sanitized_tool_result.get("data")
             data_keys: list[str] = []
             if isinstance(data, dict):
@@ -10514,16 +10638,25 @@ class MCPPlanningBridgeServer:
                 tool_name,
                 sanitized_tool_result,
             )
+            if artifact_fields is None:
+                return self._result_artifact_unavailable_result(
+                    tool_name=tool_name,
+                    error_code="ACTION_RESULT_ARTIFACT_UNAVAILABLE",
+                    message=(
+                        "Actions 响应超过返回上限，但无法建立可恢复分页 artifact；"
+                        "原始结果未返回，请缩小请求范围后重试。"
+                    ),
+                    recommended_next_reads=self._actions_default_next_reads(tool_name),
+                )
             recommended_next_reads = self._actions_recommended_next_reads(
                 tool_name,
                 params,
                 sanitized_tool_result,
             )
-            if artifact_fields is not None:
-                recommended_next_reads = [
-                    self._result_artifact_next_read(artifact_fields),
-                    *recommended_next_reads,
-                ]
+            recommended_next_reads = [
+                self._result_artifact_next_read(artifact_fields),
+                *recommended_next_reads,
+            ]
             summary: dict[str, Any] = {
                 "response_char_estimate": response_chars,
                 "target_response_chars": ACTIONS_TARGET_RESPONSE_CHARS,
@@ -10542,8 +10675,7 @@ class MCPPlanningBridgeServer:
                 "omitted_fields": omitted_fields,
                 "recommended_next_reads": recommended_next_reads,
             }
-            if artifact_fields is not None:
-                manifest.update(artifact_fields)
+            manifest.update(artifact_fields)
             if not ok_value and isinstance(sanitized_tool_result.get("error_code"), str):
                 manifest["error_code"] = sanitized_tool_result.get("error_code")
             if self._json_char_count(manifest) <= ACTIONS_HARD_RESPONSE_CHARS:
@@ -10562,28 +10694,31 @@ class MCPPlanningBridgeServer:
                 "omitted_fields": ["data"],
                 "recommended_next_reads": recommended_next_reads[:2],
             }
-            if artifact_fields is not None:
-                reduced_manifest.update(artifact_fields)
+            reduced_manifest.update(artifact_fields)
             if not ok_value and isinstance(sanitized_tool_result.get("error_code"), str):
                 reduced_manifest["error_code"] = sanitized_tool_result.get("error_code")
             if self._json_char_count(reduced_manifest) <= ACTIONS_HARD_RESPONSE_CHARS:
                 return reduced_manifest
-            return {
-                "ok": False,
-                "tool": tool_name,
-                "packaged": True,
-                "error_code": "ACTION_RESPONSE_TOO_LARGE",
-                "message": "响应体超过安全上限，请使用推荐的续读工具。",
-                "recommended_next_reads": self._actions_default_next_reads(tool_name),
-            }
+            return self._result_artifact_recovery_manifest(
+                tool_name=tool_name,
+                ok=ok_value,
+                artifact_fields=artifact_fields,
+                original_error_code=original_error_code,
+            )
         except Exception:
-            return {
-                "ok": False,
-                "tool": tool_name,
-                "error_code": "ACTION_RESPONSE_PACKAGING_FAILED",
-                "message": "Actions 响应包装失败，请缩小请求范围后重试。",
-                "recommended_next_reads": self._actions_default_next_reads(tool_name),
-            }
+            if artifact_fields is not None:
+                return self._result_artifact_recovery_manifest(
+                    tool_name=tool_name,
+                    ok=ok_value,
+                    artifact_fields=artifact_fields,
+                    original_error_code=original_error_code,
+                )
+            return self._result_artifact_unavailable_result(
+                tool_name=tool_name,
+                error_code="ACTION_RESPONSE_PACKAGING_FAILED",
+                message="Actions 响应包装失败，且未能建立可恢复分页 artifact；请缩小请求范围后重试。",
+                recommended_next_reads=self._actions_default_next_reads(tool_name),
+            )
 
     def project_name_required_guidance(
         self,

@@ -644,6 +644,9 @@ packaged=true
   with page_uri_template for pages 2..page_count. Verify content_sha256 after
   reconstructing the pages. These short-lived artifacts are read-only and do
   not grant any workflow, executor, Git, or delivery authority.
+  resources/templates/list advertises only the static artifact URI shapes; it
+  never lists live artifact IDs. Read only the opaque handle returned by the
+  packaged response before it expires.
   Otherwise, continue through recommended_next_reads.
 ```
 

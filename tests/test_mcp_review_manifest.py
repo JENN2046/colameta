@@ -8,7 +8,11 @@ import os
 from pathlib import Path
 import subprocess
 
-from runner.mcp_server import MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES, MCPPlanningBridgeServer
+from runner.mcp_server import (
+    MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
+    MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
+    MCPPlanningBridgeServer,
+)
 from runner.project_registry import ProjectRegistry
 from runner.review_manifest import (
     REVIEW_MANIFEST_SCHEMA_VERSION,
@@ -160,14 +164,19 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
 
 
-def test_review_manifest_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> None:
+def test_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     server = MCPPlanningBridgeServer(str(project))
 
     listed = _resource_templates_list(server)
     templates = listed["result"]["resourceTemplates"]
-    assert templates == [dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES]
+    assert templates == [
+        *[dict(item) for item in MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES],
+        *[dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES],
+    ]
     assert [item["uriTemplate"] for item in templates] == [
+        "colameta://result-artifact/{artifact_id}",
+        "colameta://result-artifact/{artifact_id}/pages/{page}",
         "colameta://review-manifest/{review_manifest_id}",
         "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}",
         "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}/pages/{page}",
