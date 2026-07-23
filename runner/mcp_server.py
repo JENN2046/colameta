@@ -43,12 +43,18 @@ from runner.mcp_git_history import MCPGitHistoryManager
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_docs import MCPProjectDocsManager
 from runner.mcp_workflow_router import MCPWorkflowRouter
+from runner.mcp_workflow_compatibility import (
+    MCPWorkflowCompatibilityService,
+    WorkflowCompatibilityError,
+)
+from runner.mcp_workflow_policy import (
+    WORKFLOW_CONTEXT_MUTATION_PHASES,
+    run_mcp_workflow_policy_scope,
+)
 from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
     GATE_REVIEW_MAX_BINDING_ID_CHARS,
     GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD,
-    GateReviewWorkflowError,
-    MCPGateReviewWorkflow,
 )
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
@@ -60,9 +66,7 @@ from runner.mcp_manifest_validation import (
 )
 from runner.mcp_review_manifest import (
     MCPReviewManifestResources,
-    MCPReviewManifestWorkflow,
     REVIEW_MANIFEST_URI_RE,
-    ReviewManifestWorkflowError,
 )
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.mcp_private_operator import (
@@ -538,24 +542,6 @@ _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
 
 _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
 
-# Context binding belongs at the *real* side-effect boundary, not merely at a
-# phase name that another workflow happens to reject.  In particular,
-# git_commit/apply is intentionally unsupported by the core workflow; asking
-# for a context binding before returning PHASE_NOT_SUPPORTED would obscure the
-# actual contract violation.  Keep this table aligned with the core workflow
-# phase handlers and the public policy matrix above.
-_WORKFLOW_CONTEXT_MUTATION_PHASES: dict[str, frozenset[str]] = {
-    "plan_update": frozenset({"apply"}),
-    "small_project_patch": frozenset({"apply"}),
-    "docs_update": frozenset({"apply"}),
-    "git_commit": frozenset({"commit"}),
-    "git_restore_file": frozenset({"apply"}),
-    "git_revert": frozenset({"apply"}),
-    "git_undo_version": frozenset({"apply"}),
-    "agent_dispatch": frozenset({"apply", "run"}),
-    "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
-    "operator_batch": frozenset({"execute"}),
-}
 _OPERATOR_BATCH_INTERNAL_DISPATCH: ContextVar[bool] = ContextVar(
     "operator_batch_internal_dispatch",
     default=False,
@@ -1122,7 +1108,7 @@ class MCPToolPolicy:
         if self.selector == "manage_files":
             return _manage_files_policy_scope(params)
         if self.selector == "run_mcp_workflow":
-            return _run_mcp_workflow_policy_scope(params)
+            return run_mcp_workflow_policy_scope(params)
         return None
 
 
@@ -1168,111 +1154,6 @@ def _manage_files_policy_scope(params: dict[str, Any]) -> str | None:
             return "mcp:preview"
         if phase == "apply":
             return "mcp:commit"
-    return None
-
-
-def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
-    workflow = _policy_string_param(params, "workflow")
-    phase = _policy_string_param(params, "phase")
-    docs_action = _policy_string_param(params, "docs_action")
-    if workflow == MCP_RESULT_ARTIFACT_WORKFLOW:
-        return "mcp:read" if phase == "read" else None
-    if workflow == GATE_REVIEW_WORKFLOW:
-        if phase in {"inspect", "status"}:
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase == "apply":
-            return "mcp:commit"
-        return None
-    if workflow == "operator_batch":
-        if phase == "status":
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase == "execute":
-            return "mcp:commit"
-        return None
-    if workflow == "auto_preview":
-        return "mcp:preview"
-    if workflow == "project_status":
-        return "mcp:read"
-    if workflow == "source_onboarding":
-        if phase in {"", "preview"}:
-            return "mcp:preview"
-        return None
-    if workflow == "plan_update":
-        if phase == "apply":
-            return "mcp:plan"
-        if phase in {"", "preview"}:
-            return "mcp:preview"
-        return None
-    if workflow == "thin_governed_loop_preview":
-        return "mcp:read"
-    if workflow == REVIEW_MANIFEST_WORKFLOW:
-        if phase in {"inspect", "read", "verify", "status"}:
-            return "mcp:read"
-        return None
-    if workflow == "small_project_patch":
-        if phase == "status":
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase in {"apply", ""}:
-            return "mcp:commit"
-        return None
-    if workflow == "docs_update":
-        if docs_action in {"index", "search", "read_section"}:
-            return "mcp:read" if phase in {"", "inspect"} else None
-        if docs_action in {"update_section_preview", "append_section_preview", "sync_docs_preview"}:
-            return "mcp:preview" if phase in {"", "preview"} else None
-        if docs_action == "apply":
-            return "mcp:commit"
-        if phase in {"", "inspect"}:
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase == "apply":
-            return "mcp:commit"
-        return None
-    if workflow == "git_commit":
-        if phase in {"inspect", "status"}:
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase in {"apply", "commit", ""}:
-            return "mcp:commit"
-        return None
-    if workflow in {"git_restore_file", "git_revert"}:
-        if phase == "preview":
-            return "mcp:preview"
-        if phase in {"apply", ""}:
-            return "mcp:commit"
-        return None
-    if workflow == "git_undo_version":
-        if phase == "inspect":
-            return "mcp:read"
-        if phase == "preview":
-            return "mcp:preview"
-        if phase in {"apply", ""}:
-            return "mcp:commit"
-        return None
-    if workflow == "agent_dispatch":
-        if phase in {"inspect", "status"}:
-            return "mcp:read"
-        if phase in {"preview", "run_preview"}:
-            return "mcp:preview"
-        if phase in {"run", "apply", ""}:
-            return "mcp:commit"
-        return None
-    if workflow == "prompt_to_plan":
-        if phase in {"preview", "plan_preview", "run_preview"}:
-            return "mcp:preview"
-        if phase == "plan_apply":
-            return "mcp:plan"
-        if phase in {"apply", "apply_all", "run"}:
-            return "mcp:commit"
-        return None
     return None
 
 
@@ -14741,7 +14622,7 @@ class MCPPlanningBridgeServer:
                 return False
             phase_raw = params.get("phase")
             phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
-            return phase in _WORKFLOW_CONTEXT_MUTATION_PHASES.get(workflow, frozenset())
+            return phase in WORKFLOW_CONTEXT_MUTATION_PHASES.get(workflow, frozenset())
         return False
 
     @staticmethod
@@ -14765,7 +14646,7 @@ class MCPPlanningBridgeServer:
             return True
         if tool_name == "run_mcp_workflow":
             workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
-            return workflow in _WORKFLOW_CONTEXT_MUTATION_PHASES
+            return workflow in WORKFLOW_CONTEXT_MUTATION_PHASES
         return False
 
     @staticmethod
@@ -17229,275 +17110,46 @@ class MCPPlanningBridgeServer:
     def _operator_batch_service_for_params(self, params: dict[str, Any]) -> OperatorBatchService:
         return self._operator_target_server(params)._operator_batch_service()
 
-    def _tool_operator_batch(self, params: dict[str, Any]) -> dict[str, Any]:
-        project_name = params.get("project_name")
-        if not isinstance(project_name, str) or not project_name.strip():
-            raise MCPToolInputError("PROJECT_NAME_REQUIRED", "operator_batch 必须指定已登记 managed project_name。")
-        target = self._operator_target_server(params)
-        return target._operator_batch_service().handle(project_name.strip(), params)
+    def _workflow_compatibility_service(self) -> MCPWorkflowCompatibilityService:
+        """Construct the stateless legacy-workflow compatibility service."""
 
-    def _tool_review_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
+        return MCPWorkflowCompatibilityService(
+            self,
+            commander_exposure_profile=MCP_EXPOSURE_PROFILE_COMMANDER,
+            result_artifact_id_re=MCP_RESULT_ARTIFACT_ID_RE,
+        )
+
+    def _workflow_compatibility_result(
+        self,
+        handler_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Translate bounded compatibility errors at the MCP transport edge."""
+
+        service = self._workflow_compatibility_service()
+        handler = getattr(service, handler_name)
         try:
-            return MCPReviewManifestWorkflow(self).handle(params)
-        except ReviewManifestWorkflowError as exc:
+            return handler(params)
+        except WorkflowCompatibilityError as exc:
             raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
 
-    @staticmethod
-    def _typed_workflow_read_call_projection(
-        value: Any,
-        *,
-        workflow: str,
-        tool_name: str,
-        drop_phase: bool,
-    ) -> Any:
-        """Project only this typed facade's continuation calls.
+    def _tool_operator_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._workflow_compatibility_result("handle_operator_batch", params)
 
-        The legacy ``run_mcp_workflow`` response keeps its historical
-        continuation shape.  A typed facade may use the same backend but must
-        return a continuation that names the same narrow tool, so a client can
-        follow it without reconstructing workflow/phase routing.
-        """
-
-        if isinstance(value, list):
-            return [
-                MCPPlanningBridgeServer._typed_workflow_read_call_projection(
-                    item,
-                    workflow=workflow,
-                    tool_name=tool_name,
-                    drop_phase=drop_phase,
-                )
-                for item in value
-            ]
-        if not isinstance(value, dict):
-            return copy.deepcopy(value)
-        projected = {
-            key: MCPPlanningBridgeServer._typed_workflow_read_call_projection(
-                nested,
-                workflow=workflow,
-                tool_name=tool_name,
-                drop_phase=drop_phase,
-            )
-            for key, nested in value.items()
-        }
-        arguments = projected.get("arguments")
-        if (
-            projected.get("tool") == "run_mcp_workflow"
-            and isinstance(arguments, dict)
-            and arguments.get("workflow") == workflow
-        ):
-            typed_arguments = dict(arguments)
-            typed_arguments.pop("workflow", None)
-            if drop_phase:
-                typed_arguments.pop("phase", None)
-            projected["tool"] = tool_name
-            projected["arguments"] = typed_arguments
-            if projected.get("kind") == "mcp_tool_compatibility":
-                projected["kind"] = "mcp_tool"
-        return projected
+    def _tool_review_manifest(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._workflow_compatibility_result("handle_review_manifest", params)
 
     def _tool_review_manifest_entry(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Typed, read-only facade for the manifest review state machine."""
-
-        result = self._tool_review_manifest(params)
-        return self._typed_workflow_read_call_projection(
-            result,
-            workflow=REVIEW_MANIFEST_WORKFLOW,
-            tool_name="review_manifest",
-            drop_phase=False,
-        )
-
-    @staticmethod
-    def _result_artifact_authority_boundary() -> dict[str, bool]:
-        return {
-            "does_not_read_project_files": True,
-            "does_not_authorize_executor_run": True,
-            "does_not_authorize_validation_run": True,
-            "does_not_authorize_commit_or_push": True,
-            "does_not_authorize_review_decision": True,
-            "does_not_authorize_delivery_acceptance": True,
-        }
-
-    def _result_artifact_read_packet(
-        self,
-        *,
-        artifact_page: Any,
-    ) -> dict[str, Any]:
-        """Expose one exact stored artifact page through its bounded read surface."""
-
-        artifact_id = str(artifact_page.artifact_id)
-        page = int(artifact_page.page)
-        page_count = int(artifact_page.page_count)
-        artifact_fields = {
-            "artifact_id": artifact_id,
-            "resource_uri": self._mcp_result_artifact_uri(artifact_id),
-            "page_uri_template": f"{self._mcp_result_artifact_uri(artifact_id)}/pages/{{page}}",
-            "page_count": page_count,
-            "content_sha256": str(artifact_page.content_sha256),
-            "expires_at": str(artifact_page.expires_at),
-        }
-        read_call = self._result_artifact_compatibility_read_call(
-            artifact_id,
-            page=page,
-        )
-        recommended_next_reads: list[dict[str, Any]] = []
-        if page < page_count:
-            next_read_call = self._result_artifact_compatibility_read_call(
-                artifact_id,
-                page=page + 1,
-            )
-            recommended_next_reads.append(
-                {
-                    "kind": "mcp_tool",
-                    **next_read_call,
-                    "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
-                }
-            )
-        return {
-            "ok": True,
-            "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
-            "phase": "read",
-            "schema_version": "colameta.result_artifact_read.v1",
-            "read_only": True,
-            "side_effects": False,
-            **artifact_fields,
-            "artifact_page": artifact_page.to_dict(),
-            "read_call": read_call,
-            "recommended_next_reads": recommended_next_reads,
-            "artifact_contract": {
-                "opaque_handle_required": True,
-                "page_content_is_exact_stored_utf8_slice": True,
-                "content_sha256_applies_to_concatenated_pages": True,
-                "expiry_is_enforced": True,
-                "standard_resource_read_remains_preferred": True,
-                "compatibility_route_is_read_only": True,
-            },
-            "authority_boundary": self._result_artifact_authority_boundary(),
-        }
+        return self._workflow_compatibility_result("handle_review_manifest_entry", params)
 
     def _tool_read_result_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Typed, read-only facade for one packaged-result continuation page."""
-
-        phase_raw = params.get("phase")
-        if phase_raw is not None:
-            phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
-            if phase != "read":
-                raise MCPToolInputError(
-                    "INVALID_RESULT_ARTIFACT_PHASE",
-                    "read_result_artifact 固定执行 read；它不是通用 artifact、文件或证据读取入口。",
-                )
-        read_params = dict(params)
-        read_params["phase"] = "read"
-        result = self._tool_result_artifact(read_params)
-        return self._typed_workflow_read_call_projection(
-            result,
-            workflow=MCP_RESULT_ARTIFACT_WORKFLOW,
-            tool_name="read_result_artifact",
-            drop_phase=True,
-        )
+        return self._workflow_compatibility_result("handle_read_result_artifact", params)
 
     def _tool_result_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Read a pre-issued packaged-result page when a host cannot route templates."""
-
-        phase_raw = params.get("phase")
-        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
-        if phase != "read":
-            raise MCPToolInputError(
-                "INVALID_RESULT_ARTIFACT_PHASE",
-                "result_artifact 只支持 read；它不是通用 artifact、文件或证据读取入口。",
-            )
-        artifact_id_raw = params.get("artifact_id")
-        if not isinstance(artifact_id_raw, str) or not artifact_id_raw.strip():
-            raise MCPToolInputError(
-                "RESULT_ARTIFACT_ID_REQUIRED",
-                "result_artifact read 必须提供 packaged response 返回的 artifact_id。",
-            )
-        artifact_id = artifact_id_raw.strip()
-        if MCP_RESULT_ARTIFACT_ID_RE.fullmatch(artifact_id) is None:
-            raise MCPToolInputError(
-                "INVALID_RESULT_ARTIFACT_ID",
-                "artifact_id 不是有效的短期 opaque result-artifact handle。",
-            )
-        page = params.get("artifact_page", 1)
-        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
-            raise MCPToolInputError(
-                "INVALID_RESULT_ARTIFACT_PAGE",
-                "artifact_page 必须是正整数。",
-            )
-        artifact_page = self._mcp_result_artifact_store.read_page(artifact_id, page)
-        if artifact_page is None:
-            # Deliberately do not distinguish unknown, evicted, expired, or
-            # out-of-range handles. This is the same fail-closed privacy shape
-            # as resources/read and prevents the workflow from becoming an
-            # artifact-enumeration surface.
-            raise MCPToolInputError(
-                "RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED",
-                "结果 artifact 不存在、已过期或页码无效；请重新执行原始只读调用。",
-            )
-        return self._result_artifact_read_packet(
-            artifact_page=artifact_page,
-        )
+        return self._workflow_compatibility_result("handle_result_artifact", params)
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
-        workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
-        if workflow == MCP_RESULT_ARTIFACT_WORKFLOW:
-            return self._tool_result_artifact(params)
-        if workflow == REVIEW_MANIFEST_WORKFLOW:
-            return self._tool_review_manifest(params)
-        if workflow not in {"operator_batch", GATE_REVIEW_WORKFLOW} and workflow not in _SUPPORTED_MCP_WORKFLOWS:
-            raise MCPToolInputError("INVALID_WORKFLOW", f"未知 workflow：{workflow}")
-
-        verified_binding = self._require_operation_context_binding(
-            "run_mcp_workflow",
-            params,
-        )
-        if workflow == "operator_batch":
-            result = self._tool_operator_batch(
-                self._strip_operation_context_binding_params(params),
-            )
-            return self._attach_operation_context_binding(
-                result,
-                tool_name="run_mcp_workflow",
-                params=params,
-                verified_binding=verified_binding,
-            )
-        if workflow == GATE_REVIEW_WORKFLOW:
-            project_name = params.get("project_name")
-            if project_name is not None:
-                return self._route_project_name_tool("run_mcp_workflow", params, require_managed=True)
-            clean = self._strip_operation_context_binding_params(
-                self._strip_project_name_param(params),
-            )
-            try:
-                result = MCPGateReviewWorkflow(self._tool_work_item_command).handle(clean)
-            except GateReviewWorkflowError as exc:
-                raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
-            return self._attach_operation_context_binding(
-                result,
-                tool_name="run_mcp_workflow",
-                params=params,
-                verified_binding=verified_binding,
-            )
-        project_name = params.get("project_name")
-        if project_name is not None:
-            return self._route_project_name_tool("run_mcp_workflow", params, require_managed=True)
-
-        result = self._create_mcp_workflow_router().handle(
-            workflow,
-            self._strip_operation_context_binding_params(params),
-        )
-        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER:
-            next_actions = result.get("next_actions") if isinstance(result, dict) else None
-            if isinstance(next_actions, list):
-                result["next_actions"] = self._normalize_recommended_actions_for_visible_tools(
-                    next_actions
-                )
-        self._record_workflow_if_needed("run_mcp_workflow", workflow, params, result)
-        return self._attach_operation_context_binding(
-            result,
-            tool_name="run_mcp_workflow",
-            params=params,
-            verified_binding=verified_binding,
-        )
+        return self._workflow_compatibility_result("handle_run_mcp_workflow", params)
 
     def _tool_list_workflow_runs(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:

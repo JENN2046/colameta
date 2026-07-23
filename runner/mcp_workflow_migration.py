@@ -309,8 +309,8 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
     REVIEW_MANIFEST_WORKFLOW: _entry(
         REVIEW_MANIFEST_WORKFLOW,
         "public_typed",
-        current_owner_module="runner.mcp_server",
-        current_owner_symbol="MCPPlanningBridgeServer._tool_review_manifest",
+        current_owner_module="runner.mcp_workflow_compatibility",
+        current_owner_symbol="MCPWorkflowCompatibilityService.handle_review_manifest",
         target_owner_module="runner.mcp_review_manifest",
         target_owner_symbol="MCPReviewManifestWorkflow",
         target_owner_status="existing",
@@ -326,8 +326,8 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
     RESULT_ARTIFACT_WORKFLOW: _entry(
         RESULT_ARTIFACT_WORKFLOW,
         "public_typed",
-        current_owner_module="runner.mcp_server",
-        current_owner_symbol="MCPPlanningBridgeServer._tool_result_artifact",
+        current_owner_module="runner.mcp_workflow_compatibility",
+        current_owner_symbol="MCPWorkflowCompatibilityService.handle_result_artifact",
         target_owner_module="runner.mcp_result_artifacts",
         target_owner_symbol="MCPResultArtifactStore",
         target_owner_status="existing",
@@ -343,8 +343,8 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
     GATE_REVIEW_WORKFLOW: _entry(
         GATE_REVIEW_WORKFLOW,
         "local_advanced",
-        current_owner_module="runner.mcp_server",
-        current_owner_symbol="MCPPlanningBridgeServer._tool_run_mcp_workflow",
+        current_owner_module="runner.mcp_workflow_compatibility",
+        current_owner_symbol="MCPWorkflowCompatibilityService.handle_gate_review",
         target_owner_module="runner.mcp_gate_review_workflow",
         target_owner_symbol="MCPGateReviewWorkflow",
         target_owner_status="existing",
@@ -359,8 +359,8 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
     OPERATOR_BATCH_WORKFLOW: _entry(
         OPERATOR_BATCH_WORKFLOW,
         "local_advanced",
-        current_owner_module="runner.mcp_server",
-        current_owner_symbol="MCPPlanningBridgeServer._tool_operator_batch",
+        current_owner_module="runner.mcp_workflow_compatibility",
+        current_owner_symbol="MCPWorkflowCompatibilityService.handle_operator_batch",
         target_owner_module="runner.mcp_private_operator",
         target_owner_symbol="OperatorBatchService",
         target_owner_status="existing",
