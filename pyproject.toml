@@ -47,7 +47,7 @@ quality = [
 include = ["runner", "runner.*", "adapters", "adapters.*", "schemas", "schemas.*", "scripts", "scripts.*"]
 
 [tool.setuptools.package-data]
-runner = ["py.typed"]
+runner = ["py.typed", "commander_widget.html"]
 schemas = ["work_item_governance/*.json"]
 
 [tool.ruff]
