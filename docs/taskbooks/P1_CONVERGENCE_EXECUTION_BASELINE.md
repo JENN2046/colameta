@@ -7,7 +7,7 @@ p1_convergence_execution_baseline:
   status: execution_ready_after_batch_gate
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 5
+  revision: 6
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -189,6 +189,24 @@ Before code changes, create one exact Stage 7--9 integration manifest: allowed
 files, current schema/hash bindings, input fixtures, public entry point, and
 negative cases. The manifest must bind the work to the existing Stage taskbooks
 without claiming that those taskbooks themselves grant implementation authority.
+
+### Adopted P1-C0 integration binding
+
+`docs/taskbooks/P1_C_STAGE_7_9_INTEGRATION_MANIFEST.md` is now the exact
+implementation-binding manifest for this slice (baseline commit `eb35e8e`,
+SHA-256 `bb16181ae45abedbf06ee4e68799a13e4adeb9c9142cf1b6063bd9d575e33519`).
+It freezes the current Master/Stage 7/Stage 8/Stage 9 paths and hashes, limits
+the public entry to `run_mcp_workflow workflow=stage_7_9_preview` with only
+`inspect` and `preview` under `mcp:read`, and names a focused new domain owner
+outside `mcp_server.py`. It requires an inspect-issued, rechecked journey
+context; exact three-stage input objects; cross-stage pack-ID and taskbook-hash
+continuity; a whitelist-only public projection; and named negative tests.
+
+The canonical valid PLAN_ADJUST path is intentionally blocked at Stage 9 until
+the human resolves Stage 8: `PLAN_ADJUST_BLOCKS_CONTINUE` is a correct safe
+readiness conclusion, not an invitation to bypass the adjustment. The manifest
+adds no public tool and grants no implementation authority to its taskbook
+inputs.
 
 ### Target
 

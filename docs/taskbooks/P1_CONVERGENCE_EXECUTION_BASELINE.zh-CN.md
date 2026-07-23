@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 122dfe6dc4c7c75c595bd5738c59814c369a1b895921ced552262eb1b0b96845
+  source_sha256: 7492721683aef9951ad14fbfe801b0ba6e63f91acf75df74d1d1406d364ca1d8
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 5
+  revision: 6
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -149,6 +149,21 @@ configuration 或 release authority。
 开始代码前，先建立一个精确的 Stage 7--9 integration manifest：allowed files、当前
 schema/hash bindings、input fixtures、public entry point 和 negative cases。manifest 必须
 把工作绑定到既有 Stage taskbook，但不能宣称 taskbook 自身已经授予实施权限。
+
+### 已采用的 P1-C0 集成绑定
+
+`docs/taskbooks/P1_C_STAGE_7_9_INTEGRATION_MANIFEST.md` 现在是这个切片的精确
+implementation-binding manifest（baseline commit `eb35e8e`，SHA-256
+`bb16181ae45abedbf06ee4e68799a13e4adeb9c9142cf1b6063bd9d575e33519`）。它冻结当前
+Master/Stage 7/Stage 8/Stage 9 的路径与 hash，把 public entry 限定为
+`run_mcp_workflow workflow=stage_7_9_preview`，只支持 `mcp:read` 下的 `inspect` 和
+`preview`，并指定一个不在 `mcp_server.py` 中的聚焦 domain owner。它要求 inspect 签发且重新核对的
+journey context、精确的三段 input object、cross-stage pack-ID/taskbook-hash continuity、
+whitelist-only public projection 和具名 negative test。
+
+规范的 PLAN_ADJUST 路径在 Stage 9 必须保持 blocked，直到人工解决 Stage 8：
+`PLAN_ADJUST_BLOCKS_CONTINUE` 是正确的安全 readiness conclusion，不是绕过 adjustment 的邀请。manifest
+不增加公开工具，也不向其中 taskbook input 授予 implementation authority。
 
 ### 目标
 
