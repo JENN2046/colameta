@@ -208,6 +208,9 @@ def test_context_gate_covers_every_commander_side_effect_boundary(tmp_path: Path
         "run_mcp_workflow", {"workflow": "review_manifest", "phase": "read"}
     ) is False
     assert server._operation_context_required(
+        "run_mcp_workflow", {"workflow": "result_artifact", "phase": "read"}
+    ) is False
+    assert server._operation_context_required(
         "run_mcp_workflow", {"workflow": "gate_review_request", "phase": "apply"}
     ) is False
     assert server._operation_context_required(

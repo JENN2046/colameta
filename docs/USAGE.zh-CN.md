@@ -767,6 +767,14 @@ packaged=true
   resources/read 读取 resource_uri，再按 page_uri_template 读取第 2 到
   page_count 页；拼回后核对 content_sha256。这些短期 artifact 只读，
   不授予 workflow、executor、Git 或 delivery authority。
+  如果宿主拒绝一个已知的动态 resource URI，改用返回的
+  mcp_tool_compatibility 调用：
+  run_mcp_workflow(workflow=result_artifact, phase=read, artifact_id=<opaque
+  artifact_id>, artifact_page=<page>)。它只返回一个已存储页，并保留同一
+  artifact_id、page_count、expires_at 与 content_sha256。只沿着它返回的
+  next-page 调用继续；按页码拼接 artifact_page.content 后再核对
+  content_sha256。该回退只需要 mcp:read，不能读取项目文件、运行 executor
+  或 validation、修改 Git，或推进 Delivery State。
   resources/templates/list 只公布静态 artifact URI 形状，不会枚举 live
   artifact ID；只能在过期前读取该 packaged response 返回的 opaque handle。
   否则按 recommended_next_reads 分段续读。

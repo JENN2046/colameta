@@ -236,6 +236,8 @@ MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
 )
 MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
 MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
+MCP_RESULT_ARTIFACT_WORKFLOW = "result_artifact"
+MCP_RESULT_ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 MCP_RESULT_ARTIFACT_URI_RE = re.compile(
     r"^colameta://result-artifact/(?P<artifact_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/pages/(?P<page>[1-9][0-9]*))?$"
@@ -1161,6 +1163,8 @@ def _run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     workflow = _policy_string_param(params, "workflow")
     phase = _policy_string_param(params, "phase")
     docs_action = _policy_string_param(params, "docs_action")
+    if workflow == MCP_RESULT_ARTIFACT_WORKFLOW:
+        return "mcp:read" if phase == "read" else None
     if workflow == GATE_REVIEW_WORKFLOW:
         if phase in {"inspect", "status"}:
             return "mcp:read"
@@ -4349,6 +4353,8 @@ class MCPPlanningBridgeServer:
                     "review_manifest：把独立审查输入严格绑定到 project/branch/HEAD/Runner plan/current version/"
                     "review unit/intent 与 subject SHA-256；标准资源读取之外，还提供同一绑定下的分页 read "
                     "compatibility phase，绝不开放任意文件读取。"
+                    "result_artifact：当宿主不支持动态 resources/read URI 时，通过同一 artifact_id 的只读分页 "
+                    "compatibility phase 读取已打包工具结果；不开放任意资源或项目文件读取。"
                     "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                     "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
@@ -4371,14 +4377,14 @@ class MCPPlanningBridgeServer:
                                 "plan_update", "small_project_patch", "docs_update",
                                 "git_commit", "git_restore_file", "git_revert", "git_undo_version",
                                 "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
-                                "review_manifest", "gate_review_request", "operator_batch",
+                                "review_manifest", "result_artifact", "gate_review_request", "operator_batch",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；仅作为不支持动态 resources/read 的宿主兼容入口。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                         },
                         "phase": {
                             "type": "string",
                             "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
-                            "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                            "description": "工作流阶段。inspect/read/status/verify 只读；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                         },
                         "preview_id": {
                             "type": "string",
@@ -4800,6 +4806,16 @@ class MCPPlanningBridgeServer:
                             "type": "integer",
                             "minimum": 1,
                             "description": "review_manifest read 可选。默认 1；不能超过 inspect 返回的 subject page_count。",
+                        },
+                        "artifact_id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{16,128}$",
+                            "description": "result_artifact read 必填。只能使用 packaged=true 响应返回的 opaque artifact_id；不是项目文件、Git object 或 Delivery evidence ID。",
+                        },
+                        "artifact_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "result_artifact read 可选。默认 1；只能读取该 artifact 的有效页码。",
                         },
                     },
                     "required": ["workflow"],
@@ -6313,6 +6329,61 @@ class MCPPlanningBridgeServer:
             "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
         }
 
+    @staticmethod
+    def _result_artifact_compatibility_read_call(
+        artifact_id: str,
+        *,
+        page: int,
+    ) -> dict[str, Any]:
+        """Return the seven-tool fallback for one opaque result-artifact page.
+
+        This intentionally accepts only the handle and a positive page number.
+        It is equivalent in authority to ``resources/read``: the artifact must
+        already exist in the process-local store and the outer tool policy
+        requires ``mcp:read``.
+        """
+
+        arguments: dict[str, Any] = {
+            "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
+            "phase": "read",
+            "artifact_id": artifact_id,
+            "artifact_page": page,
+        }
+        return {"tool": "run_mcp_workflow", "arguments": arguments}
+
+    @classmethod
+    def _result_artifact_compatibility_next_read(
+        cls,
+        artifact_fields: dict[str, Any],
+        *,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        artifact_id = artifact_fields.get("artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_fields must include artifact_id")
+        return {
+            "kind": "mcp_tool_compatibility",
+            **cls._result_artifact_compatibility_read_call(
+                artifact_id,
+                page=page,
+            ),
+            "reason": (
+                "若宿主拒绝动态 resources/read URI，则通过已有七工具表面的 "
+                "result_artifact read 读取同一短期 artifact 页。"
+            ),
+        }
+
+    def _result_artifact_recommended_next_reads(
+        self,
+        artifact_fields: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return [
+            self._result_artifact_next_read(artifact_fields),
+            self._result_artifact_compatibility_next_read(
+                artifact_fields,
+            ),
+        ]
+
     def _result_artifact_recovery_manifest(
         self,
         *,
@@ -6340,9 +6411,9 @@ class MCPPlanningBridgeServer:
                 "page_uri_template 续读并核对 content_sha256。"
             ),
             "omitted_fields": ["full_result"],
-            "recommended_next_reads": [
-                self._result_artifact_next_read(artifact_fields),
-            ],
+            "recommended_next_reads": self._result_artifact_recommended_next_reads(
+                artifact_fields,
+            ),
         }
         manifest.update(artifact_fields)
         if not ok and isinstance(original_error_code, str):
@@ -9492,6 +9563,7 @@ class MCPPlanningBridgeServer:
             return tool_result
         public_tool_result = copy.deepcopy(tool_result)
         tool_name = str(public_tool_result.get("tool") or "")
+        raw_data = public_tool_result.get("data")
         is_review_manifest_read = (
             tool_name == "run_mcp_workflow"
             and isinstance(params, dict)
@@ -9500,7 +9572,6 @@ class MCPPlanningBridgeServer:
         )
         review_manifest_page_content: str | None = None
         if is_review_manifest_read:
-            raw_data = public_tool_result.get("data")
             raw_page = raw_data.get("subject_page") if isinstance(raw_data, dict) else None
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
@@ -9508,6 +9579,32 @@ class MCPPlanningBridgeServer:
                 # the read handler. Preserve its exact bytes-as-text so the
                 # returned content remains comparable to subject_page.sha256.
                 review_manifest_page_content = raw_content
+        is_result_artifact_read = (
+            tool_name == "run_mcp_workflow"
+            and isinstance(params, dict)
+            and _policy_string_param(params, "workflow") == MCP_RESULT_ARTIFACT_WORKFLOW
+            and _policy_string_param(params, "phase") == "read"
+        )
+        result_artifact_page: dict[str, Any] | None = None
+        result_artifact_contract_fields: dict[str, Any] = {}
+        if is_result_artifact_read and isinstance(raw_data, dict):
+            raw_page = raw_data.get("artifact_page")
+            if isinstance(raw_page, dict) and isinstance(raw_page.get("content"), str):
+                # The packaged source was already Commander-projected before
+                # it entered the short-lived store. Restore this exact page
+                # after public sanitization so page concatenation remains
+                # byte-for-byte comparable to content_sha256.
+                result_artifact_page = copy.deepcopy(raw_page)
+                for field in (
+                    "artifact_id",
+                    "resource_uri",
+                    "page_uri_template",
+                    "page_count",
+                    "content_sha256",
+                    "expires_at",
+                ):
+                    if field in raw_data:
+                        result_artifact_contract_fields[field] = copy.deepcopy(raw_data[field])
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
                 tool_name == "run_mcp_workflow"
@@ -9584,6 +9681,11 @@ class MCPPlanningBridgeServer:
             clean_page = clean_data.get("subject_page") if isinstance(clean_data, dict) else None
             if isinstance(clean_page, dict):
                 clean_page["content"] = review_manifest_page_content
+        if result_artifact_page is not None and isinstance(clean_result, dict):
+            clean_data = clean_result.get("data")
+            if isinstance(clean_data, dict):
+                clean_data["artifact_page"] = result_artifact_page
+                clean_data.update(result_artifact_contract_fields)
         return clean_result if isinstance(clean_result, dict) else projected
 
     def _commander_public_gate_review_result(
@@ -9726,7 +9828,9 @@ class MCPPlanningBridgeServer:
                 structured_tool_result,
             )
             recommended_next_reads = [
-                self._result_artifact_next_read(artifact_fields),
+                *self._result_artifact_recommended_next_reads(
+                    artifact_fields,
+                ),
                 *recommended_next_reads,
             ]
             manifest_sc: dict[str, Any] = {
@@ -10654,7 +10758,9 @@ class MCPPlanningBridgeServer:
                 sanitized_tool_result,
             )
             recommended_next_reads = [
-                self._result_artifact_next_read(artifact_fields),
+                *self._result_artifact_recommended_next_reads(
+                    artifact_fields,
+                ),
                 *recommended_next_reads,
             ]
             summary: dict[str, Any] = {
@@ -10809,10 +10915,16 @@ class MCPPlanningBridgeServer:
             params = {}
         if not isinstance(params, dict):
             return self._tool_error(name, "INVALID_PARAMS", "tool 参数必须是 JSON 对象。")
+        is_unscoped_result_artifact_read = (
+            name == "run_mcp_workflow"
+            and _policy_string_param(params, "workflow") == MCP_RESULT_ARTIFACT_WORKFLOW
+            and _policy_string_param(params, "phase") == "read"
+        )
         if (
             self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
             and (self.service_mode or auth_context is not None)
             and name in PROJECT_NAME_REQUIRED_TOOLS
+            and not is_unscoped_result_artifact_read
         ):
             project_name = params.get("project_name")
             if not isinstance(project_name, str) or not project_name.strip():
@@ -14488,12 +14600,18 @@ class MCPPlanningBridgeServer:
 
         if tool_name == "run_mcp_workflow":
             workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
-            if workflow in {REVIEW_MANIFEST_WORKFLOW, GATE_REVIEW_WORKFLOW}:
+            if workflow in {
+                REVIEW_MANIFEST_WORKFLOW,
+                MCP_RESULT_ARTIFACT_WORKFLOW,
+                GATE_REVIEW_WORKFLOW,
+            }:
                 # The manifest has a caller-owned review_unit and its own
-                # immutable read-session verifier.  Gate Review has its own
-                # stricter, signed Work Item Gate contract (task/state/evidence
-                # binding plus explicit confirmation).  Do not overlay a
-                # generic Git/Runner binding on either contract.
+                # immutable read-session verifier. Result artifacts have a
+                # pre-issued opaque read handle plus expiry/SHA contract. Gate
+                # Review has its own stricter, signed Work Item Gate contract
+                # (task/state/evidence binding plus explicit confirmation).
+                # Do not overlay a generic Git/Runner binding on those
+                # dedicated contracts.
                 return None
             if not workflow:
                 return None
@@ -14534,7 +14652,11 @@ class MCPPlanningBridgeServer:
             return action == "commit"
         if tool_name == "run_mcp_workflow":
             workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
-            if workflow in {REVIEW_MANIFEST_WORKFLOW, GATE_REVIEW_WORKFLOW}:
+            if workflow in {
+                REVIEW_MANIFEST_WORKFLOW,
+                MCP_RESULT_ARTIFACT_WORKFLOW,
+                GATE_REVIEW_WORKFLOW,
+            }:
                 return False
             phase_raw = params.get("phase")
             phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
@@ -17337,8 +17459,120 @@ class MCPPlanningBridgeServer:
         packet["verification"] = verification
         return packet
 
+    @staticmethod
+    def _result_artifact_authority_boundary() -> dict[str, bool]:
+        return {
+            "does_not_read_project_files": True,
+            "does_not_authorize_executor_run": True,
+            "does_not_authorize_validation_run": True,
+            "does_not_authorize_commit_or_push": True,
+            "does_not_authorize_review_decision": True,
+            "does_not_authorize_delivery_acceptance": True,
+        }
+
+    def _result_artifact_read_packet(
+        self,
+        *,
+        artifact_page: Any,
+    ) -> dict[str, Any]:
+        """Expose one exact stored artifact page through the seven-tool surface."""
+
+        artifact_id = str(artifact_page.artifact_id)
+        page = int(artifact_page.page)
+        page_count = int(artifact_page.page_count)
+        artifact_fields = {
+            "artifact_id": artifact_id,
+            "resource_uri": self._mcp_result_artifact_uri(artifact_id),
+            "page_uri_template": f"{self._mcp_result_artifact_uri(artifact_id)}/pages/{{page}}",
+            "page_count": page_count,
+            "content_sha256": str(artifact_page.content_sha256),
+            "expires_at": str(artifact_page.expires_at),
+        }
+        read_call = self._result_artifact_compatibility_read_call(
+            artifact_id,
+            page=page,
+        )
+        recommended_next_reads: list[dict[str, Any]] = []
+        if page < page_count:
+            next_read_call = self._result_artifact_compatibility_read_call(
+                artifact_id,
+                page=page + 1,
+            )
+            recommended_next_reads.append(
+                {
+                    "kind": "mcp_tool",
+                    **next_read_call,
+                    "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
+                }
+            )
+        return {
+            "ok": True,
+            "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
+            "phase": "read",
+            "schema_version": "colameta.result_artifact_read.v1",
+            "read_only": True,
+            "side_effects": False,
+            **artifact_fields,
+            "artifact_page": artifact_page.to_dict(),
+            "read_call": read_call,
+            "recommended_next_reads": recommended_next_reads,
+            "artifact_contract": {
+                "opaque_handle_required": True,
+                "page_content_is_exact_stored_utf8_slice": True,
+                "content_sha256_applies_to_concatenated_pages": True,
+                "expiry_is_enforced": True,
+                "standard_resource_read_remains_preferred": True,
+                "compatibility_route_is_read_only": True,
+            },
+            "authority_boundary": self._result_artifact_authority_boundary(),
+        }
+
+    def _tool_result_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read a pre-issued packaged-result page when a host cannot route templates."""
+
+        phase_raw = params.get("phase")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        if phase != "read":
+            raise MCPToolInputError(
+                "INVALID_RESULT_ARTIFACT_PHASE",
+                "result_artifact 只支持 read；它不是通用 artifact、文件或证据读取入口。",
+            )
+        artifact_id_raw = params.get("artifact_id")
+        if not isinstance(artifact_id_raw, str) or not artifact_id_raw.strip():
+            raise MCPToolInputError(
+                "RESULT_ARTIFACT_ID_REQUIRED",
+                "result_artifact read 必须提供 packaged response 返回的 artifact_id。",
+            )
+        artifact_id = artifact_id_raw.strip()
+        if MCP_RESULT_ARTIFACT_ID_RE.fullmatch(artifact_id) is None:
+            raise MCPToolInputError(
+                "INVALID_RESULT_ARTIFACT_ID",
+                "artifact_id 不是有效的短期 opaque result-artifact handle。",
+            )
+        page = params.get("artifact_page", 1)
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise MCPToolInputError(
+                "INVALID_RESULT_ARTIFACT_PAGE",
+                "artifact_page 必须是正整数。",
+            )
+        artifact_page = self._mcp_result_artifact_store.read_page(artifact_id, page)
+        if artifact_page is None:
+            # Deliberately do not distinguish unknown, evicted, expired, or
+            # out-of-range handles. This is the same fail-closed privacy shape
+            # as resources/read and prevents the workflow from becoming an
+            # artifact-enumeration surface.
+            raise MCPToolInputError(
+                "RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED",
+                "结果 artifact 不存在、已过期或页码无效；请重新执行原始只读调用。",
+            )
+        return self._result_artifact_read_packet(
+            artifact_page=artifact_page,
+        )
+
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        if workflow == MCP_RESULT_ARTIFACT_WORKFLOW:
+            return self._tool_result_artifact(params)
         if workflow == REVIEW_MANIFEST_WORKFLOW:
             return self._tool_review_manifest(params)
         if workflow not in {"operator_batch", GATE_REVIEW_WORKFLOW} and workflow not in _SUPPORTED_MCP_WORKFLOWS:

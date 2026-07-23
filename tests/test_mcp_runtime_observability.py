@@ -135,6 +135,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             ("review_manifest", "inspect"): "mcp:read",
             ("review_manifest", "read"): "mcp:read",
             ("review_manifest", "verify"): "mcp:read",
+            ("result_artifact", "read"): "mcp:read",
             ("gate_review_request", "inspect"): "mcp:read",
             ("gate_review_request", "status"): "mcp:read",
             ("gate_review_request", "preview"): "mcp:preview",

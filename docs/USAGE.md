@@ -644,6 +644,15 @@ packaged=true
   with page_uri_template for pages 2..page_count. Verify content_sha256 after
   reconstructing the pages. These short-lived artifacts are read-only and do
   not grant any workflow, executor, Git, or delivery authority.
+  If the host rejects a known dynamic resource URI, use the returned
+  mcp_tool_compatibility call instead:
+  run_mcp_workflow(workflow=result_artifact, phase=read, artifact_id=<opaque
+  artifact_id>, artifact_page=<page>). It returns exactly one stored page and
+  keeps the same artifact_id, page_count, expires_at, and content_sha256.
+  Continue only through its next-page call, concatenate the returned
+  artifact_page.content values in page order, then verify content_sha256.
+  This fallback requires mcp:read and cannot read project files, run an
+  executor or validation, change Git, or advance delivery state.
   resources/templates/list advertises only the static artifact URI shapes; it
   never lists live artifact IDs. Read only the opaque handle returned by the
   packaged response before it expires.
