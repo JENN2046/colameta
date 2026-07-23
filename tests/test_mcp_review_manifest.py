@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
+    MCP_TOOL_POLICIES,
     MCPPlanningBridgeServer,
 )
 from runner.project_registry import ProjectRegistry
@@ -19,6 +21,10 @@ from runner.review_manifest import (
     ReviewManifestStore,
     collect_review_context_binding,
     inspect_review_manifest,
+)
+from runner.review_manifest_validation import (
+    canonical_manifest_validation_sha256,
+    manifest_validation_contract_from_artifact,
 )
 
 
@@ -162,6 +168,256 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["ok"] is True
     assert verified["data"]["verification"]["context_binding"] == "matched"
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
+
+
+def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert preview["ok"] is True
+    data = preview["data"]
+    assert data["scope"] == "manifest_bound"
+    assert data["strategy"] == "manifest_acceptance"
+    assert data["can_run"] is True
+    assert data["command_summary"] == ["git diff --check"]
+    contract = data["manifest_validation"]
+    assert contract["manifest_sha256"] == inspected["data"]["manifest_sha256"]
+    assert contract["subjects"] == [
+        {"path": item["path"], "sha256": item["sha256"]}
+        for item in inspected["data"]["subjects"]
+    ]
+    assert contract["command_specs"] == [{
+        "argv": ["git", "diff", "--check"],
+        "timeout_seconds": 60,
+        "continue_on_failure": False,
+    }]
+    assert len(contract["contract_sha256"]) == 64
+    run_action = data["next_actions"][0]
+    assert run_action["params"]["context_binding"] == data["context_binding"]
+
+    started = server.call_tool_for_agent("manage_validation_run", run_action["params"])
+    assert started["ok"] is True
+    run_id = started["data"]["run_id"]
+    assert started["data"]["manifest_validation"]["contract_sha256"] == contract["contract_sha256"]
+
+    final: dict | None = None
+    for _ in range(100):
+        status = server.call_tool_for_agent(
+            "manage_validation_run",
+            {"action": "status", "run_id": run_id},
+        )
+        assert status["ok"] is True
+        final = status["data"]
+        if final["status"] != "running":
+            break
+        time.sleep(0.01)
+    assert final is not None
+    assert final["status"] == "passed"
+    assert final["passed"] is True
+    assert final["manifest_validation"]["contract_sha256"] == contract["contract_sha256"]
+
+
+def test_manifest_bound_validation_rechecks_subjects_and_rejects_unsafe_commands(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert preview["ok"] is True
+    (project / "docs" / "review-input.md").write_text("changed after preview\n", encoding="utf-8")
+    blocked = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "run",
+            "preview_id": preview["data"]["preview_id"],
+            "context_binding": preview["data"]["context_binding"],
+        },
+    )
+    assert blocked["ok"] is False
+    assert blocked["error_code"] == "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH"
+
+    unsafe_manifest = _manifest(project)
+    unsafe_manifest["subjects"] = [
+        {
+            "path": "docs/review-contract.yaml",
+            "sha256": hashlib.sha256(
+                (project / "docs" / "review-contract.yaml").read_bytes()
+            ).hexdigest(),
+        }
+    ]
+    unsafe_manifest["acceptance_commands"] = [{
+        "command": "git diff --check && echo should-not-run",
+        "timeout_seconds": 60,
+    }]
+    unsafe_inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": unsafe_manifest,
+        },
+    )
+    assert unsafe_inspected["ok"] is True
+    unsafe_preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": unsafe_inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert unsafe_preview["ok"] is True
+    unsafe_data = unsafe_preview["data"]
+    assert unsafe_data["can_run"] is False
+    assert unsafe_data["blockers"] == ["MANIFEST_VALIDATION_COMMAND_REJECTED"]
+    assert unsafe_data["manifest_validation_rejections"] == [{
+        "command_index": 1,
+        "reason": "command_not_allowed",
+    }]
+    unsafe_run = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "run",
+            "preview_id": unsafe_data["preview_id"],
+            "context_binding": unsafe_data["context_binding"],
+        },
+    )
+    # Validation-manager errors remain a successful transport envelope with a
+    # bounded manager result, matching the legacy preview/run contract.
+    assert unsafe_run["ok"] is True
+    assert unsafe_run["data"]["error_code"] == "PREVIEW_BLOCKED"
+
+
+def test_manifest_validation_contract_rejects_an_out_of_policy_timeout(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert preview["ok"] is True
+
+    # Model a locally altered preview artifact whose hashes were recomputed.
+    # Structural hashing alone must not let it lower the execution timeout
+    # below the normal validation policy's 10-second floor.
+    contract = copy.deepcopy(preview["data"]["manifest_validation"])
+    contract["command_specs"][0]["timeout_seconds"] = 1
+    contract["command_specs_sha256"] = canonical_manifest_validation_sha256(
+        contract["command_specs"]
+    )
+    unsigned_contract = {
+        key: value
+        for key, value in contract.items()
+        if key != "contract_sha256"
+    }
+    contract["contract_sha256"] = canonical_manifest_validation_sha256(unsigned_contract)
+
+    assert manifest_validation_contract_from_artifact({"manifest_validation": contract}) is None
+
+
+def test_manifest_bound_validation_preview_supports_registered_source_only_projects(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(str(project), project_name="review-target")
+    assert registered["project"]["project_mode"] == "source-only"
+    server = MCPPlanningBridgeServer(str(tmp_path), service_mode=True)
+    server.project_registry = registry
+
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "project_name": "review-target",
+            "review_manifest": _manifest(project, project_name="review-target"),
+        },
+    )
+    assert inspected["ok"] is True
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "project_name": "review-target",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert preview["ok"] is True
+    data = preview["data"]
+    assert data["project_name"] == "review-target"
+    assert data["context_binding"]["project_name"] == "review-target"
+    assert data["next_actions"][0]["params"]["project_name"] == "review-target"
+
+    started = server.call_tool_for_agent(
+        "manage_validation_run",
+        data["next_actions"][0]["params"],
+    )
+    assert started["ok"] is True
+    run_id = started["data"]["run_id"]
+    final: dict | None = None
+    for _ in range(100):
+        status = server.call_tool_for_agent(
+            "manage_validation_run",
+            {
+                "action": "status",
+                "project_name": "review-target",
+                "run_id": run_id,
+            },
+        )
+        assert status["ok"] is True
+        final = status["data"]
+        if final["status"] != "running":
+            break
+        time.sleep(0.01)
+    assert final is not None
+    assert final["status"] == "passed"
+    assert final["project_name"] == "review-target"
+    assert final["manifest_validation"]["manifest_sha256"] == data["manifest_validation"]["manifest_sha256"]
+
+
+def test_commander_schema_advertises_manifest_bound_validation_preview(tmp_path: Path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    tools = {tool.name: tool for tool in server._filter_tools_by_exposure_profile(server.tool_defs)}
+    schema = tools["manage_validation_run"].input_schema
+
+    assert "review_manifest_id" in schema["properties"]
+    assert "action=preview" in schema["properties"]["review_manifest_id"]["description"]
+    assert MCP_TOOL_POLICIES["manage_validation_run"].scope_for({
+        "action": "preview",
+        "review_manifest_id": "opaque-review-manifest-handle",
+    }) == "mcp:preview"
+    assert MCP_TOOL_POLICIES["manage_validation_run"].scope_for({
+        "action": "run",
+    }) == "mcp:commit"
 
 
 def test_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> None:

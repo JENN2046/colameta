@@ -79,6 +79,10 @@ from runner.review_manifest import (
     verify_stored_review_context,
     verify_stored_review_manifest,
 )
+from runner.review_manifest_validation import (
+    build_review_manifest_validation_source,
+    manifest_validation_contract_from_artifact,
+)
 from runner.project_context_binding import (
     BASE_CONTEXT_BINDING_FIELDS,
     OPERATION_CONTEXT_BINDING_FIELDS,
@@ -4795,7 +4799,7 @@ class MCPPlanningBridgeServer:
                         },
                         "review_manifest_id": {
                             "type": "string",
-                            "description": "review_manifest read/verify/status 必填。来自 inspect 的短期只读审查会话 ID；不能用于读未声明文件或授权任何写入。",
+                            "description": "review_manifest read/verify/status 必填。来自 inspect 的短期只读审查会话 ID；也可交给 manage_validation_run action=preview，令同一会话声明的 acceptance_commands 生成独立的受控 validation preview；不能用于读未声明文件或直接授权写入。",
                         },
                         "review_manifest_subject_index": {
                             "type": "integer",
@@ -4988,7 +4992,8 @@ class MCPPlanningBridgeServer:
                 description=(
                     f"[{self.project_hint}] 通用受控验证运行工具。"
                     "GPTs 只提供 scope/target_files；Runner 本地选择验证策略。"
-                    "inspect/status 只读；preview 生成固定 argv，不运行命令；run 只执行 preview 固化命令，shell=False，输出脱敏截断。"
+                    "也可在 preview 中提供已 inspect 的 review_manifest_id：先复核其上下文和所有 subject hash，再将其声明的 acceptance_commands 固化为固定 argv。"
+                    "inspect/status 只读；preview 生成固定 argv，不运行命令；run 只执行 preview 固化命令，shell=False，执行前会再次复核 manifest-bound 输入，输出脱敏截断。"
                     "scope：inspect/status=mcp:read，preview=mcp:preview，run=mcp:commit。"
                 ),
                 input_schema={
@@ -5012,6 +5017,10 @@ class MCPPlanningBridgeServer:
                         "preview_id": {
                             "type": "string",
                             "description": "run 必填。来自 preview 的 preview_id。",
+                        },
+                        "review_manifest_id": {
+                            "type": "string",
+                            "description": "仅 action=preview 可选。来自 run_mcp_workflow review_manifest inspect；会把该短期、哈希绑定会话声明的 acceptance_commands 转为受控 validation preview。不能与 scope/target_files 混用，也不直接授权执行。",
                         },
                         "run_id": {
                             "type": "string",
@@ -16841,6 +16850,301 @@ class MCPPlanningBridgeServer:
         self._record_workflow_if_needed("manage_executor_workflow", action.strip().lower(), params, result)
         return self._with_project_identity(result)
 
+    def _stored_review_manifest_for_validation(
+        self,
+        review_manifest_id: Any,
+        params: dict[str, Any],
+    ) -> StoredReviewManifest:
+        """Resolve one stored review session without opening an arbitrary root."""
+
+        if not isinstance(review_manifest_id, str) or not review_manifest_id.strip():
+            raise MCPToolInputError(
+                "REVIEW_MANIFEST_ID_REQUIRED",
+                "manifest-bound validation preview 必须提供 inspect 返回的 review_manifest_id。",
+            )
+        stored = self._review_manifest_store.get(review_manifest_id.strip())
+        if stored is None:
+            raise MCPToolInputError(
+                "REVIEW_MANIFEST_NOT_FOUND_OR_EXPIRED",
+                "review manifest 不存在或已过期；请重新执行 inspect。",
+            )
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        resolved_root = os.path.realpath(os.path.abspath(project_root))
+        if stored.project_root != resolved_root:
+            actual_name = self._project_name_for_context(project_root, project_record, params)
+            raise MCPToolInputError(
+                "CONTEXT_BINDING_MISMATCH",
+                "review manifest 不属于当前项目路由，已停止 manifest validation。",
+                {
+                    "mismatches": [{
+                        "field": "project_name",
+                        "expected": stored.context_binding.get("project_name"),
+                        "actual": actual_name,
+                    }]
+                },
+            )
+        requested_name = params.get("project_name")
+        stored_name = stored.context_binding.get("project_name")
+        if (
+            isinstance(requested_name, str)
+            and requested_name.strip()
+            and requested_name.strip() != stored_name
+        ):
+            raise MCPToolInputError(
+                "CONTEXT_BINDING_MISMATCH",
+                "review manifest 的 project_name 与当前路由不一致。",
+                {
+                    "mismatches": [{
+                        "field": "project_name",
+                        "expected": stored_name,
+                        "actual": requested_name.strip(),
+                    }]
+                },
+            )
+        return stored
+
+    @staticmethod
+    def _manifest_validation_current_review_context(
+        stored: StoredReviewManifest,
+    ) -> dict[str, Any]:
+        return collect_review_context_binding(
+            stored.project_root,
+            project_name=str(stored.context_binding["project_name"]),
+        )
+
+    def _verify_stored_manifest_for_validation(
+        self,
+        stored: StoredReviewManifest,
+    ) -> dict[str, Any]:
+        try:
+            return verify_stored_review_manifest(
+                stored,
+                current_context_binding=self._manifest_validation_current_review_context(stored),
+            )
+        except ReviewManifestError as exc:
+            raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+
+    @staticmethod
+    def _manifest_validation_contract_mismatches(
+        contract: dict[str, Any],
+        stored: StoredReviewManifest,
+    ) -> list[str]:
+        source = build_review_manifest_validation_source(stored)
+        expected = {
+            "review_manifest_id": source["review_manifest_id"],
+            "manifest_sha256": source["manifest_sha256"],
+            "review_unit": source["review_unit"],
+            "workflow_intent": source["workflow_intent"],
+            "review_context_binding": source["review_context_binding"],
+            "subjects": source["subjects"],
+        }
+        return [
+            field
+            for field, value in expected.items()
+            if contract.get(field) != value
+        ]
+
+    def _record_manifest_validation_workflow(
+        self,
+        *,
+        project_root: str,
+        action: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """Keep a bound validation preview/run auditable at its actual project."""
+
+        if not should_record_tool("manage_validation_run", action) or not isinstance(result, dict):
+            return
+        recorded = record_tool_call(
+            project_root,
+            "manage_validation_run",
+            action,
+            self._strip_operation_context_binding_params(params),
+            result,
+        )
+        warning = recorded.get("warning")
+        if isinstance(warning, str) and warning:
+            result["workflow_record_warning"] = warning
+        workflow_id = recorded.get("workflow_id")
+        if isinstance(workflow_id, str) and workflow_id:
+            result["workflow_id"] = workflow_id
+
+    def _attach_manifest_validation_operation_context(
+        self,
+        result: dict[str, Any],
+        *,
+        stored: StoredReviewManifest,
+        verified_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Attach the normal validation-run confirmation binding to this contract."""
+
+        project_name = str(stored.context_binding["project_name"])
+        binding = collect_project_context_binding(
+            stored.project_root,
+            project_name=project_name,
+            review_unit="operation:validation_run",
+            workflow_intent="validation_run",
+        )
+        result = self._with_project_identity(result, stored.project_root)
+        result["context_binding"] = binding
+        result["context_binding_contract"] = {
+            "schema_version": PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
+            "confirmation_required": True,
+            "current_call_requires_context_binding": verified_binding is not None,
+            "workflow_intent": "validation_run",
+            "review_unit": "operation:validation_run",
+            "context_binding_sha256": context_binding_sha256(binding),
+        }
+        if verified_binding is not None:
+            result["context_binding_verification"] = {
+                "status": "matched",
+                "context_binding_sha256": context_binding_sha256(verified_binding),
+            }
+        self._inject_operation_context_into_next_actions(
+            result,
+            binding=binding,
+            identity=("validation_run", "operation:validation_run"),
+        )
+        if self.service_mode:
+            result["project_name"] = project_name
+            self._inject_project_name_into_nested_actions(result, project_name)
+        return result
+
+    def _tool_preview_manifest_bound_validation(
+        self,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        prohibited = [
+            field
+            for field in ("scope", "target_files", "preview_id", "run_id", "context_binding")
+            if params.get(field) is not None
+        ]
+        if prohibited:
+            raise MCPToolInputError(
+                "MANIFEST_VALIDATION_INPUT_COMBINATION_DENIED",
+                "manifest-bound validation preview 只能使用 review_manifest_id，不能混入 scope、target_files 或其他 preview/run 输入。",
+                {"prohibited_fields": prohibited},
+            )
+        stored = self._stored_review_manifest_for_validation(
+            params.get("review_manifest_id"),
+            params,
+        )
+        verification = self._verify_stored_manifest_for_validation(stored)
+        manager = MCPValidationRunManager(stored.project_root)
+        result = manager.preview_manifest_bound(
+            build_review_manifest_validation_source(stored),
+        )
+        result["manifest_verification"] = verification
+        self._record_manifest_validation_workflow(
+            project_root=stored.project_root,
+            action="preview",
+            params=params,
+            result=result,
+        )
+        return self._attach_manifest_validation_operation_context(
+            result,
+            stored=stored,
+        )
+
+    def _try_manifest_bound_validation_run(
+        self,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Run a manifest-derived preview only after a second full verification."""
+
+        preview_id = params.get("preview_id")
+        if not isinstance(preview_id, str) or not preview_id.strip():
+            return None
+        project_root, _project_record = self._resolve_read_only_project_context(params)
+        manager = MCPValidationRunManager(project_root)
+        artifact = manager.read(preview_id.strip())
+        if not isinstance(artifact, dict) or "manifest_validation" not in artifact:
+            return None
+        contract = manifest_validation_contract_from_artifact(artifact)
+        if contract is None:
+            raise MCPToolInputError(
+                "MANIFEST_VALIDATION_CONTRACT_INVALID",
+                "manifest-bound validation preview 合同无效或已被改变，已停止执行。",
+            )
+        lookup_params = dict(params)
+        lookup_params["review_manifest_id"] = contract["review_manifest_id"]
+        stored = self._stored_review_manifest_for_validation(
+            contract["review_manifest_id"],
+            lookup_params,
+        )
+        mismatches = self._manifest_validation_contract_mismatches(contract, stored)
+        if mismatches:
+            raise MCPToolInputError(
+                "MANIFEST_VALIDATION_CONTRACT_MISMATCH",
+                "validation preview 不再匹配其原始 review manifest，已停止执行。",
+                {"mismatched_fields": mismatches},
+            )
+        project_name = str(stored.context_binding["project_name"])
+        try:
+            verified_binding = require_operation_context_binding(
+                params.get("context_binding"),
+                project_root=stored.project_root,
+                project_name=project_name,
+                review_unit="operation:validation_run",
+                workflow_intent="validation_run",
+            )
+        except ProjectContextBindingError as exc:
+            raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
+        verification = self._verify_stored_manifest_for_validation(stored)
+        result = manager.run(self._strip_operation_context_binding_params(params))
+        result["manifest_verification"] = verification
+        self._record_manifest_validation_workflow(
+            project_root=stored.project_root,
+            action="run",
+            params=params,
+            result=result,
+        )
+        return self._attach_manifest_validation_operation_context(
+            result,
+            stored=stored,
+            verified_binding=verified_binding,
+        )
+
+    def _try_source_only_validation_status(
+        self,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Keep a manifest-validation run observable for registered source-only projects."""
+
+        if params.get("project_name") is None:
+            return None
+        project_root, project_record = self._resolve_read_only_project_context(params)
+        if not isinstance(project_record, dict) or project_record.get("project_mode") != "source-only":
+            return None
+        project_name = self._project_name_for_context(project_root, project_record, params)
+        manager = MCPValidationRunManager(project_root)
+        result = manager.status(self._strip_operation_context_binding_params(params))
+        self._record_manifest_validation_workflow(
+            project_root=project_root,
+            action="status",
+            params=params,
+            result=result,
+        )
+        result = self._with_project_identity(result, project_root)
+        result["project_name"] = project_name
+        binding = collect_project_context_binding(
+            project_root,
+            project_name=project_name,
+            review_unit="operation:validation_run",
+            workflow_intent="validation_run",
+        )
+        result["context_binding"] = binding
+        result["context_binding_contract"] = {
+            "schema_version": PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
+            "confirmation_required": True,
+            "current_call_requires_context_binding": False,
+            "workflow_intent": "validation_run",
+            "review_unit": "operation:validation_run",
+            "context_binding_sha256": context_binding_sha256(binding),
+        }
+        return result
+
     def _tool_manage_validation_run(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
         action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
@@ -16848,6 +17152,22 @@ class MCPPlanningBridgeServer:
             raise MCPToolInputError(
                 "INVALID_ACTION",
                 "action 必须是 inspect、preview、run 或 status。",
+            )
+        review_manifest_id = params.get("review_manifest_id")
+        if action == "preview" and review_manifest_id is not None:
+            return self._tool_preview_manifest_bound_validation(params)
+        if action == "run":
+            manifest_result = self._try_manifest_bound_validation_run(params)
+            if manifest_result is not None:
+                return manifest_result
+        if action == "status":
+            source_only_status = self._try_source_only_validation_status(params)
+            if source_only_status is not None:
+                return source_only_status
+        if review_manifest_id is not None:
+            raise MCPToolInputError(
+                "MANIFEST_VALIDATION_PREVIEW_REQUIRED",
+                "review_manifest_id 仅可用于 manage_validation_run action=preview；请先生成受控 validation preview。",
             )
         verified_binding = self._require_operation_context_binding(
             "manage_validation_run",

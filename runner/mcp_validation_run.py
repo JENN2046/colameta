@@ -16,6 +16,10 @@ from runner.core_confirmation import (
 from runner.current_version import load_current_version
 from runner.path_policy import RunnerPathPolicy
 from runner.plan_loader import PlanLoader
+from runner.review_manifest_validation import (
+    build_review_manifest_validation_contract,
+    normalize_review_manifest_validation_source,
+)
 from runner.runner_paths import resolve_project_runner_path
 
 
@@ -194,6 +198,106 @@ class MCPValidationRunManager:
             ] if can_run else [],
         }
 
+    def preview_manifest_bound(self, manifest_source: dict[str, Any]) -> dict[str, Any]:
+        """Freeze one inspected review manifest's declared validation contract.
+
+        The public MCP layer is responsible for re-verifying the short-lived
+        review session before it calls this method.  This manager then applies
+        the same shell-free command policy used for normal Runner acceptance
+        commands and persists only effective argv specs in the normal preview
+        store.  A later run is separately re-verified by the MCP layer.
+        """
+
+        source = normalize_review_manifest_validation_source(manifest_source)
+        if source is None:
+            return {
+                "ok": False,
+                "action": "preview",
+                "error_code": "INVALID_MANIFEST_VALIDATION_SOURCE",
+                "message": "manifest validation source 无效，未生成验证 preview。",
+            }
+
+        command_specs, rejection_details = self._manifest_bound_command_specs(
+            source["acceptance_commands"]
+        )
+        blockers: list[str] = []
+        warnings: list[str] = []
+        if rejection_details:
+            blockers.append("MANIFEST_VALIDATION_COMMAND_REJECTED")
+            warnings.append("至少一条 manifest acceptance command 未通过本地 shell-free 执行策略。")
+            # A mixed safe/unsafe declaration must not silently turn into a
+            # partial execution. The whole declared contract is rejected.
+            command_specs = []
+        if not source["acceptance_commands"]:
+            blockers.append("NO_MANIFEST_ACCEPTANCE_COMMANDS")
+            warnings.append("review manifest 没有声明 acceptance_commands。")
+        if not command_specs and not blockers:
+            blockers.append("NO_MANIFEST_VALIDATION_COMMANDS")
+            warnings.append("review manifest 没有可执行的 acceptance_commands。")
+
+        commands = [list(spec["argv"]) for spec in command_specs]
+        manifest_validation = build_review_manifest_validation_contract(
+            source,
+            command_specs,
+        )
+        target_files = [subject["path"] for subject in source["subjects"]]
+        now = _utc_now()
+        preview_id = uuid.uuid4().hex[:12]
+        artifact = {
+            "preview_id": preview_id,
+            "artifact_kind": "validation_run",
+            "project_root": self.project_root,
+            "scope": "manifest_bound",
+            "target_files": target_files,
+            "strategy": "manifest_acceptance",
+            "validation_groups": [{
+                "strategy": "manifest_acceptance",
+                "files": target_files,
+                "command_count": len(commands),
+                "manifest_sha256": manifest_validation["manifest_sha256"],
+                "contract_sha256": manifest_validation["contract_sha256"],
+            }],
+            "commands": commands,
+            "command_specs": command_specs,
+            "manifest_validation": manifest_validation,
+            "current_head": self._git_stdout(["rev-parse", "HEAD"]).strip(),
+            "created_at": _iso(now),
+            "expires_at": _iso(now + timedelta(seconds=PREVIEW_TTL_SECONDS)),
+            "blockers": blockers,
+            "warnings": warnings,
+        }
+        self._write_preview(preview_id, artifact)
+
+        can_run = not blockers and bool(commands)
+        return {
+            "ok": True,
+            "action": "preview",
+            "preview_id": preview_id,
+            "scope": artifact["scope"],
+            "target_files": target_files,
+            "strategy": artifact["strategy"],
+            "validation_groups": artifact["validation_groups"],
+            "command_summary": self._command_summary(commands),
+            "command_count": len(commands),
+            "manifest_validation": manifest_validation,
+            "manifest_validation_rejections": rejection_details,
+            "can_run": can_run,
+            "blockers": blockers,
+            "warnings": warnings,
+            "created_at": artifact["created_at"],
+            "expires_at": artifact["expires_at"],
+            "next_actions": [
+                {
+                    "tool": "manage_validation_run",
+                    "action": "run",
+                    "params": {"action": "run", "preview_id": preview_id},
+                    "reason": "使用已绑定且会在执行前重新复核的 manifest validation preview 运行一次。",
+                    "requires_confirmation": True,
+                    "risk_level": "commit",
+                }
+            ] if can_run else [],
+        }
+
     def run(self, params: dict[str, Any]) -> dict[str, Any]:
         preview_id = _validate_preview_id(params.get("preview_id"))
         if preview_id is None:
@@ -255,6 +359,14 @@ class MCPValidationRunManager:
                 "message": "preview no longer matches the authorized artifact.",
             }
         artifact = guard["payload"]
+        blockers = artifact.get("blockers")
+        if isinstance(blockers, list) and blockers:
+            return {
+                "ok": False,
+                "action": "run",
+                "error_code": "PREVIEW_BLOCKED",
+                "message": "preview 包含阻断项，不能运行；请重新生成有效 preview。",
+            }
         commands = artifact.get("commands")
         command_specs = artifact.get("command_specs")
         if not isinstance(command_specs, list) or not command_specs:
@@ -286,7 +398,7 @@ class MCPValidationRunManager:
         )
         worker.start()
 
-        return {
+        result = {
             "ok": True,
             "action": "run",
             "run_id": run_id,
@@ -302,6 +414,10 @@ class MCPValidationRunManager:
             "run_file": run_file,
             "message": "验证已启动，请用 status 轮询结果。",
         }
+        manifest_validation = artifact.get("manifest_validation")
+        if isinstance(manifest_validation, dict):
+            result["manifest_validation"] = dict(manifest_validation)
+        return result
 
     def _execute_run_worker_safe(
         self,
@@ -423,6 +539,9 @@ class MCPValidationRunManager:
             "completed_at": _iso(completed_at),
             "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
         }
+        manifest_validation = artifact.get("manifest_validation")
+        if isinstance(manifest_validation, dict):
+            run_record["manifest_validation"] = dict(manifest_validation)
         self._write_run_result(run_id, run_record)
 
     def _initial_run_record(
@@ -433,7 +552,7 @@ class MCPValidationRunManager:
         commands: list[list[str]],
         started_at: datetime,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "run_id": run_id,
             "preview_id": preview_id,
             "action": "run",
@@ -453,6 +572,10 @@ class MCPValidationRunManager:
             "completed_at": None,
             "duration_seconds": None,
         }
+        manifest_validation = artifact.get("manifest_validation")
+        if isinstance(manifest_validation, dict):
+            result["manifest_validation"] = dict(manifest_validation)
+        return result
 
     def status(self, params: dict[str, Any]) -> dict[str, Any]:
         run_id = self._validate_run_id(params.get("run_id"))
@@ -685,6 +808,53 @@ class MCPValidationRunManager:
                 "continue_on_failure": bool(getattr(command, "continue_on_failure", False)),
             })
         return result, warnings
+
+    def _manifest_bound_command_specs(
+        self,
+        acceptance_commands: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Convert manifest declarations into exact, safe executable argv specs."""
+
+        command_specs: list[dict[str, Any]] = []
+        rejections: list[dict[str, Any]] = []
+        for index, item in enumerate(acceptance_commands, start=1):
+            if not isinstance(item, dict):
+                rejections.append({"command_index": index, "reason": "invalid_declaration"})
+                continue
+            raw_command = item.get("command")
+            if not isinstance(raw_command, str) or not raw_command.strip():
+                rejections.append({"command_index": index, "reason": "invalid_declaration"})
+                continue
+            # A command that visibly embeds a known secret-shaped value is not
+            # eligible for a public preview, even if its executable is otherwise
+            # permitted. Do not echo the command text in the rejection.
+            if _redact_sensitive_text(raw_command) != raw_command:
+                rejections.append({"command_index": index, "reason": "sensitive_value"})
+                continue
+            argv, parse_error = self._parse_command_string(raw_command)
+            if parse_error:
+                rejections.append({"command_index": index, "reason": "command_not_allowed"})
+                continue
+            timeout_seconds = item.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, int)
+                or not MIN_TIMEOUT_SECONDS <= timeout_seconds <= MAX_TIMEOUT_SECONDS
+            ):
+                rejections.append({"command_index": index, "reason": "timeout_not_allowed"})
+                continue
+            continue_on_failure = item.get("continue_on_failure", False)
+            if not isinstance(continue_on_failure, bool):
+                rejections.append({"command_index": index, "reason": "invalid_declaration"})
+                continue
+            command_specs.append(
+                {
+                    "argv": argv,
+                    "timeout_seconds": timeout_seconds,
+                    "continue_on_failure": continue_on_failure,
+                }
+            )
+        return command_specs, rejections
 
     def _command_specs_for_commands(self, commands: list[list[str]]) -> list[dict[str, Any]]:
         return [

@@ -859,6 +859,22 @@ source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview�
 时都会重新核对项目上下文与 subject hash。带 `review_manifest_id` 调用 `phase=verify`
 会复核所有声明的 subject，但不返回文件内容。
 
+review_manifest workflow 本身绝不执行这些声明。若要把短期 inspect 会话转换为独立授权的
+validation preview，调用 manage_validation_run，并传 action=preview、已登记的 project_name
+和返回的 review_manifest_id 即可；已登记 source-only 项目和 managed 项目都适用。
+
+该调用会先重新核对 manifest 的项目上下文和全部 subject hash，再只接受本地 shell-free
+策略允许的命令形式，返回精确的有效 argv、manifest_validation 合同 SHA-256 和 command-spec
+SHA-256。它不会运行命令。带 review_manifest_id 时不要再传 scope 或 target_files：
+manifest 就是完整验证合同。若任一声明命令不安全、包含秘密形状的值，或 timeout 超出本地
+执行策略，整份合同会被阻断，不会只执行其中一部分。
+
+只有可运行的 preview 才会返回可原样调用的 manage_validation_run action=run next action，
+其中带有普通 context binding 和 preview ID。进入这个 commit-scoped 调用前，ColaMeta 会
+重新核对通用 validation context，并重新核对原始 manifest 的上下文和全部 subject hash，
+之后才启动固定 preview 中的命令。因此 manifest 会话只提供有界证据输入，本身不授予
+validation 执行权。
+
 部分 ChatGPT 宿主暂时不会把动态 resource-template URI 路由到通用资源代理。每个 subject 因而还会
 返回仍属于既有 `run_mcp_workflow` 的 typed `read_call` 兼容入口；仅当代理拒绝 manifest URI 时使用：
 
@@ -883,8 +899,8 @@ source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview�
 `CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
 不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
 `REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
-符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、validation、
-commit、push、ReviewDecision 或 Delivery accepted。
+符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、push、
+ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与 commit-scoped 确认。
 
 ### 确认性操作上下文绑定与统一项目状态
 

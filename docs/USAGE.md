@@ -737,6 +737,28 @@ For a managed project, use the template's `runner_plan` object and
 `current_version` instead of the source-only example. `acceptance_commands` are
 only previewed in this workflow; they are never run.
 
+The review workflow never executes the declarations itself. To convert the
+short-lived inspected session into a separately authorised validation preview,
+call manage_validation_run with action=preview, the registered project_name,
+and the returned review_manifest_id. This works for registered source-only and
+managed projects.
+
+That call first rechecks the manifest project context and every declared
+subject hash. It then accepts only shell-free, locally allowed command forms
+and returns exact effective argv specs plus manifest_validation contract and
+command-spec SHA-256 values. It does not run a command. Do not combine a
+review_manifest_id with scope or target_files: the manifest is the complete
+validation contract. If any declared command is unsafe, contains a
+secret-shaped value, or has a timeout outside the local execution policy, the
+entire contract is blocked rather than partially run.
+
+Only a runnable preview returns a copyable manage_validation_run action=run
+next action, containing both the normal context binding and the preview ID.
+Immediately before that commit-scoped call starts fixed preview commands,
+ColaMeta rechecks the generic validation context and the original manifest
+context and every subject hash. The manifest session therefore supplies bounded
+evidence input; it does not by itself grant validation execution authority.
+
 On success, discover the static manifest URI shapes through
 `resources/templates/list`, read `manifest_resource_uri` through
 `resources/read`, then read only the returned subject `resource_uri` values.
@@ -774,8 +796,9 @@ or current version no longer matches the manifest. Stop combining evidence,
 request a fresh template, and build a new manifest. A changed subject returns
 `REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`. Sensitive, private-runtime, symlinked,
 and high-risk configuration paths are denied even when a manifest names them.
-The short-lived manifest session does not authorize executor runs, validation
-runs, commits, pushes, ReviewDecision, or delivery acceptance.
+The short-lived manifest session does not authorize executor runs, commits,
+pushes, ReviewDecision, or delivery acceptance. Validation requires the
+separate preview and commit-scoped confirmation described above.
 
 ### Confirmation-bound actions and canonical project state
 
