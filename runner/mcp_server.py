@@ -68,6 +68,14 @@ from runner.mcp_review_manifest import (
     MCPReviewManifestResources,
     REVIEW_MANIFEST_URI_RE,
 )
+from runner.mcp_resources import (
+    MCPResourcesService,
+    RESULT_ARTIFACT_ID_RE,
+    RESULT_ARTIFACT_RESOURCE_TEMPLATES,
+    RESULT_ARTIFACT_URI_RE,
+    RESULT_ARTIFACT_WORKFLOW,
+    REVIEW_MANIFEST_RESOURCE_TEMPLATES,
+)
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.mcp_private_operator import (
     OPERATOR_DISPATCH_CAPABILITY,
@@ -250,35 +258,10 @@ MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
 )
 MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
 MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
-MCP_RESULT_ARTIFACT_WORKFLOW = "result_artifact"
-MCP_RESULT_ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
-MCP_RESULT_ARTIFACT_URI_RE = re.compile(
-    r"^colameta://result-artifact/(?P<artifact_id>[A-Za-z0-9_-]{16,128})"
-    r"(?:/pages/(?P<page>[1-9][0-9]*))?$"
-)
-MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES: tuple[dict[str, str], ...] = (
-    {
-        "name": "colameta_result_artifact",
-        "title": "Paged packaged result",
-        "description": (
-            "Read page 1 of a short-lived packaged tool result. The opaque artifact "
-            "ID must come from a packaged=true tool response; live artifacts are never "
-            "listed."
-        ),
-        "uriTemplate": "colameta://result-artifact/{artifact_id}",
-        "mimeType": "application/json",
-    },
-    {
-        "name": "colameta_result_artifact_page",
-        "title": "Paged packaged result page",
-        "description": (
-            "Read a later page of a short-lived packaged tool result. Use only the "
-            "opaque artifact ID and page_uri_template returned by the originating response."
-        ),
-        "uriTemplate": "colameta://result-artifact/{artifact_id}/pages/{page}",
-        "mimeType": "application/json",
-    },
-)
+MCP_RESULT_ARTIFACT_WORKFLOW = RESULT_ARTIFACT_WORKFLOW
+MCP_RESULT_ARTIFACT_ID_RE = RESULT_ARTIFACT_ID_RE
+MCP_RESULT_ARTIFACT_URI_RE = RESULT_ARTIFACT_URI_RE
+MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES = RESULT_ARTIFACT_RESOURCE_TEMPLATES
 MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
     "COLAMETA_MCP_REVIEW_MANIFEST_TTL_SECONDS",
     900,
@@ -286,43 +269,7 @@ MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
 )
 MCP_REVIEW_MANIFEST_MAX_ITEMS = 32
 MCP_REVIEW_MANIFEST_URI_RE = REVIEW_MANIFEST_URI_RE
-MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES: tuple[dict[str, str], ...] = (
-    {
-        "name": "colameta_review_manifest",
-        "title": "Hash-bound review manifest",
-        "description": (
-            "Read the short-lived summary for a review_manifest session returned by "
-            "run_mcp_workflow. The opaque ID must come from a successful inspect call."
-        ),
-        "uriTemplate": "colameta://review-manifest/{review_manifest_id}",
-        "mimeType": "application/json",
-    },
-    {
-        "name": "colameta_review_manifest_subject",
-        "title": "Hash-bound review subject",
-        "description": (
-            "Read page 1 of one manifest-declared subject. The server rechecks the "
-            "review context and subject SHA-256 before returning content."
-        ),
-        "uriTemplate": (
-            "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}"
-        ),
-        "mimeType": "application/json",
-    },
-    {
-        "name": "colameta_review_manifest_subject_page",
-        "title": "Hash-bound review subject page",
-        "description": (
-            "Read a later page of one manifest-declared subject. Only opaque IDs and "
-            "page numbers returned by inspect are valid."
-        ),
-        "uriTemplate": (
-            "colameta://review-manifest/{review_manifest_id}/subjects/{subject_index}"
-            "/pages/{page}"
-        ),
-        "mimeType": "application/json",
-    },
-)
+MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES = REVIEW_MANIFEST_RESOURCE_TEMPLATES
 _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
     r"^colameta://(?:"
     r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
@@ -6260,62 +6207,46 @@ class MCPPlanningBridgeServer:
             },
         }
 
+    def _mcp_resources_service(self) -> MCPResourcesService:
+        """Compose read-only resource contracts over this server's local stores."""
+
+        return MCPResourcesService(
+            result_artifact_store=self._mcp_result_artifact_store,
+            review_manifest_store=self._review_manifest_store,
+            commander_widget_uri=COMMANDER_APP_WIDGET_URI,
+            commander_app_title=COMMANDER_APP_TITLE,
+            commander_widget_mime_type=COMMANDER_APP_WIDGET_MIME_TYPE,
+            commander_widget_html_reader=self._commander_widget_html,
+            commander_widget_meta_reader=self._commander_widget_resource_meta,
+        )
+
     @staticmethod
     def _mcp_result_artifact_uri(artifact_id: str, page: int | None = None) -> str:
-        base = f"colameta://result-artifact/{artifact_id}"
-        return base if page is None else f"{base}/pages/{page}"
+        return MCPResourcesService.result_artifact_uri(artifact_id, page)
 
     @staticmethod
     def _parse_mcp_result_artifact_uri(uri: str) -> tuple[str, int] | None:
-        matched = MCP_RESULT_ARTIFACT_URI_RE.fullmatch(uri)
-        if matched is None:
-            return None
-        artifact_id = matched.group("artifact_id")
-        page_raw = matched.group("page")
-        try:
-            page = int(page_raw) if page_raw is not None else 1
-        except ValueError:
-            return None
-        return artifact_id, page
+        return MCPResourcesService.parse_result_artifact_uri(uri)
 
     def _store_packaged_result_artifact(
         self,
         tool_name: str,
         structured_tool_result: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Keep a short-lived, public-projected continuation for one large result."""
-
-        handle = self._mcp_result_artifact_store.put(
-            tool=tool_name,
-            payload=structured_tool_result,
+        return self._mcp_resources_service().store_packaged_result_artifact(
+            tool_name,
+            structured_tool_result,
         )
-        if handle is None:
-            return None
-        return self._result_artifact_manifest_fields(handle)
 
     def _result_artifact_manifest_fields(
         self,
         handle: ResultArtifactHandle,
     ) -> dict[str, Any]:
-        resource_uri = self._mcp_result_artifact_uri(handle.artifact_id)
-        return {
-            "artifact_id": handle.artifact_id,
-            "resource_uri": resource_uri,
-            "page_uri_template": f"{resource_uri}/pages/{{page}}",
-            "page_count": handle.page_count,
-            "content_sha256": handle.content_sha256,
-            "expires_at": handle.expires_at,
-        }
+        return self._mcp_resources_service().result_artifact_manifest_fields(handle)
 
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
-        resource_uri = artifact_fields.get("resource_uri")
-        return {
-            "kind": "mcp_resource",
-            "tool": "resources/read",
-            "arguments": {"uri": resource_uri},
-            "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可读取第 1 页，再按 page_uri_template 续读。",
-        }
+        return MCPResourcesService.result_artifact_next_read(artifact_fields)
 
     @staticmethod
     def _result_artifact_compatibility_read_call(
@@ -6323,21 +6254,10 @@ class MCPPlanningBridgeServer:
         *,
         page: int,
     ) -> dict[str, Any]:
-        """Return the generic-workflow fallback for one opaque result-artifact page.
-
-        This intentionally accepts only the handle and a positive page number.
-        It is equivalent in authority to ``resources/read``: the artifact must
-        already exist in the process-local store and the outer tool policy
-        requires ``mcp:read``.
-        """
-
-        arguments: dict[str, Any] = {
-            "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
-            "phase": "read",
-            "artifact_id": artifact_id,
-            "artifact_page": page,
-        }
-        return {"tool": "run_mcp_workflow", "arguments": arguments}
+        return MCPResourcesService.result_artifact_compatibility_read_call(
+            artifact_id,
+            page=page,
+        )
 
     @staticmethod
     def _typed_result_artifact_read_call(
@@ -6345,15 +6265,7 @@ class MCPPlanningBridgeServer:
         *,
         page: int,
     ) -> dict[str, Any]:
-        """Return the narrow public continuation for one opaque artifact page."""
-
-        return {
-            "tool": "read_result_artifact",
-            "arguments": {
-                "artifact_id": artifact_id,
-                "artifact_page": page,
-            },
-        }
+        return MCPResourcesService.typed_result_artifact_read_call(artifact_id, page=page)
 
     @classmethod
     def _result_artifact_typed_next_read(
@@ -6362,20 +6274,10 @@ class MCPPlanningBridgeServer:
         *,
         page: int = 1,
     ) -> dict[str, Any]:
-        artifact_id = artifact_fields.get("artifact_id")
-        if not isinstance(artifact_id, str) or not artifact_id:
-            raise ValueError("artifact_fields must include artifact_id")
-        return {
-            "kind": "mcp_tool",
-            **cls._typed_result_artifact_read_call(
-                artifact_id,
-                page=page,
-            ),
-            "reason": (
-                "通过 ChatGPT 可调用的 read_result_artifact 读取同一短期 artifact 页；"
-                "保留 artifact_id、页码、SHA-256 与 expiry 合同。"
-            ),
-        }
+        return MCPResourcesService.result_artifact_typed_next_read(
+            artifact_fields,
+            page=page,
+        )
 
     @classmethod
     def _result_artifact_compatibility_next_read(
@@ -6384,34 +6286,18 @@ class MCPPlanningBridgeServer:
         *,
         page: int = 1,
     ) -> dict[str, Any]:
-        artifact_id = artifact_fields.get("artifact_id")
-        if not isinstance(artifact_id, str) or not artifact_id:
-            raise ValueError("artifact_fields must include artifact_id")
-        return {
-            "kind": "mcp_tool_compatibility",
-            **cls._result_artifact_compatibility_read_call(
-                artifact_id,
-                page=page,
-            ),
-            "reason": (
-                "旧客户端兼容：通过 run_mcp_workflow 的 result_artifact read "
-                "读取同一短期 artifact 页。"
-            ),
-        }
+        return MCPResourcesService.result_artifact_compatibility_next_read(
+            artifact_fields,
+            page=page,
+        )
 
     def _result_artifact_recommended_next_reads(
         self,
         artifact_fields: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        return [
-            self._result_artifact_typed_next_read(
-                artifact_fields,
-            ),
-            self._result_artifact_next_read(artifact_fields),
-            self._result_artifact_compatibility_next_read(
-                artifact_fields,
-            ),
-        ]
+        return self._mcp_resources_service().result_artifact_recommended_next_reads(
+            artifact_fields,
+        )
 
     def _result_artifact_recovery_manifest(
         self,
@@ -6421,33 +6307,12 @@ class MCPPlanningBridgeServer:
         artifact_fields: dict[str, Any],
         original_error_code: Any = None,
     ) -> dict[str, Any]:
-        """Return the smallest valid manifest that still preserves continuation.
-
-        A normal packaging manifest can itself overflow when a tool supplies an
-        unusually large next-read hint.  Once the original result has been
-        safely stored, this compact form is the final response-size fallback:
-        it deliberately keeps every field required to reopen and verify the
-        artifact instead of asking the client to guess a narrower retry.
-        """
-
-        manifest: dict[str, Any] = {
-            "ok": ok,
-            "tool": tool_name,
-            "packaged": True,
-            "package_mode": "artifact_continuation",
-            "message": (
-                "完整结果已保存为短期分页 artifact；请先通过 read_result_artifact "
-                "读取各页并核对 content_sha256。支持动态 resources/read 的 MCP 客户端也可使用 resource_uri。"
-            ),
-            "omitted_fields": ["full_result"],
-            "recommended_next_reads": self._result_artifact_recommended_next_reads(
-                artifact_fields,
-            ),
-        }
-        manifest.update(artifact_fields)
-        if not ok and isinstance(original_error_code, str):
-            manifest["error_code"] = original_error_code
-        return manifest
+        return self._mcp_resources_service().result_artifact_recovery_manifest(
+            tool_name=tool_name,
+            ok=ok,
+            artifact_fields=artifact_fields,
+            original_error_code=original_error_code,
+        )
 
     @staticmethod
     def _result_artifact_unavailable_result(
@@ -6457,52 +6322,21 @@ class MCPPlanningBridgeServer:
         message: str,
         recommended_next_reads: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Report an unrecoverable oversized response without a false handle.
-
-        The public invariant is that every ``packaged=true`` response has an
-        artifact ID, URI, page count, digest, and expiry.  If serialization or
-        storage cannot establish that contract, fail explicitly rather than
-        returning a hollow manifest whose suggested continuation cannot work.
-        """
-
-        return {
-            "ok": False,
-            "tool": tool_name,
-            "packaged": False,
-            "error_code": error_code,
-            "message": message,
-            "recommended_next_reads": recommended_next_reads,
-        }
+        return MCPResourcesService.result_artifact_unavailable_result(
+            tool_name=tool_name,
+            error_code=error_code,
+            message=message,
+            recommended_next_reads=recommended_next_reads,
+        )
 
     @staticmethod
     def _mcp_result_artifact_resource_access_error(
         auth_context: MCPAuthContext,
     ) -> tuple[str, str] | None:
-        if not isinstance(auth_context, dict):
-            return None
-        auth_mode = auth_context.get("mode")
-        if auth_mode == "cloud-relay":
-            scopes = auth_context.get("scopes")
-            if not isinstance(scopes, list) or "mcp:read" not in scopes:
-                return "resource_access_denied", "Result artifact requires the mcp:read scope."
-            return None
-        if auth_mode not in {"oauth", "external-oauth"}:
-            return None
-        oauth_provider = auth_context.get("oauth_provider")
-        token_payload = auth_context.get("token")
-        validate_scope = getattr(oauth_provider, "validate_scope", None)
-        if not callable(validate_scope) or not isinstance(token_payload, dict):
-            return "resource_auth_invalid", "Result artifact requires a valid read-scoped OAuth token."
-        try:
-            allowed = bool(validate_scope(token_payload, "mcp:read"))
-        except Exception:
-            allowed = False
-        if not allowed:
-            return "resource_access_denied", "Result artifact requires the mcp:read scope."
-        return None
+        return MCPResourcesService.result_artifact_resource_access_error(auth_context)
 
     def _review_manifest_resources(self) -> MCPReviewManifestResources:
-        return MCPReviewManifestResources(self._review_manifest_store)
+        return self._mcp_resources_service().review_manifest_resources()
 
     @staticmethod
     def _mcp_review_manifest_uri(
@@ -6511,7 +6345,7 @@ class MCPPlanningBridgeServer:
         subject_index: int | None = None,
         page: int | None = None,
     ) -> str:
-        return MCPReviewManifestResources.uri(
+        return MCPResourcesService.review_manifest_uri(
             review_manifest_id,
             subject_index=subject_index,
             page=page,
@@ -6521,13 +6355,13 @@ class MCPPlanningBridgeServer:
     def _parse_mcp_review_manifest_uri(
         uri: str,
     ) -> tuple[str, int | None, int | None] | None:
-        return MCPReviewManifestResources.parse_uri(uri)
+        return MCPResourcesService.parse_review_manifest_uri(uri)
 
     def _review_manifest_handle_fields(
         self,
         handle: ReviewManifestHandle,
     ) -> dict[str, Any]:
-        return self._review_manifest_resources().handle_fields(handle)
+        return self._mcp_resources_service().review_manifest_handle_fields(handle)
 
     @staticmethod
     def _review_manifest_read_call(
@@ -6537,7 +6371,7 @@ class MCPPlanningBridgeServer:
         page: int,
         project_name: str | None = None,
     ) -> dict[str, Any]:
-        return MCPReviewManifestResources.read_call(
+        return MCPResourcesService.review_manifest_read_call(
             handle,
             subject_index=subject_index,
             page=page,
@@ -6555,7 +6389,7 @@ class MCPPlanningBridgeServer:
         page_count: int,
         project_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._review_manifest_resources().subject_descriptor(
+        return self._mcp_resources_service().review_manifest_subject_descriptor(
             handle,
             subject_index=subject_index,
             path=path,
@@ -6571,96 +6405,33 @@ class MCPPlanningBridgeServer:
         *,
         resource_label: str,
     ) -> tuple[str, str] | None:
-        if not isinstance(auth_context, dict):
-            return None
-        auth_mode = auth_context.get("mode")
-        if auth_mode == "cloud-relay":
-            scopes = auth_context.get("scopes")
-            if not isinstance(scopes, list) or "mcp:read" not in scopes:
-                return "resource_access_denied", f"{resource_label} requires the mcp:read scope."
-            return None
-        if auth_mode not in {"oauth", "external-oauth"}:
-            return None
-        oauth_provider = auth_context.get("oauth_provider")
-        token_payload = auth_context.get("token")
-        validate_scope = getattr(oauth_provider, "validate_scope", None)
-        if not callable(validate_scope) or not isinstance(token_payload, dict):
-            return "resource_auth_invalid", f"{resource_label} requires a valid read-scoped OAuth token."
-        try:
-            allowed = bool(validate_scope(token_payload, "mcp:read"))
-        except Exception:
-            allowed = False
-        if not allowed:
-            return "resource_access_denied", f"{resource_label} requires the mcp:read scope."
-        return None
+        return MCPResourcesService.read_scoped_resource_access_error(
+            auth_context,
+            resource_label=resource_label,
+        )
 
     def _review_manifest_resource_read_result(self, uri: str) -> dict[str, Any] | None:
-        return self._review_manifest_resources().read_resource(uri)
+        return self._mcp_resources_service().review_manifest_resource_read_result(uri)
 
     def _review_manifest_resource_summary(
         self,
         stored: StoredReviewManifest,
     ) -> dict[str, Any]:
-        return self._review_manifest_resources().resource_summary(stored)
+        return self._mcp_resources_service().review_manifest_resource_summary(stored)
 
     @staticmethod
     def _review_manifest_authority_boundary() -> dict[str, bool]:
-        return MCPReviewManifestResources.authority_boundary()
+        return MCPResourcesService.review_manifest_authority_boundary()
 
     def _mcp_resources_list_result(self) -> dict[str, Any]:
-        return {
-            "resources": [
-                {
-                    "uri": COMMANDER_APP_WIDGET_URI,
-                    "name": "colameta_commander",
-                    "title": COMMANDER_APP_TITLE,
-                    "description": "Read-only ColaMeta Commander panel for ChatGPT Apps.",
-                    "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
-                    "_meta": self._commander_widget_resource_meta(),
-                }
-            ]
-        }
+        return self._mcp_resources_service().mcp_resources_list_result()
 
     @staticmethod
     def _mcp_resource_templates_list_result() -> dict[str, Any]:
-        """Expose static resource URI shapes without listing live handles."""
-
-        return {
-            "resourceTemplates": [
-                *[dict(item) for item in MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES],
-                *[dict(item) for item in MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES],
-            ]
-        }
+        return MCPResourcesService.mcp_resource_templates_list_result()
 
     def _mcp_resource_read_result(self, uri: str) -> dict[str, Any] | None:
-        if uri == COMMANDER_APP_WIDGET_URI:
-            return {
-                "contents": [
-                    {
-                        "uri": uri,
-                        "mimeType": COMMANDER_APP_WIDGET_MIME_TYPE,
-                        "text": self._commander_widget_html(),
-                        "_meta": self._commander_widget_resource_meta(),
-                    }
-                ]
-            }
-
-        parsed = self._parse_mcp_result_artifact_uri(uri)
-        if parsed is None:
-            return None
-        artifact_id, page = parsed
-        artifact_page = self._mcp_result_artifact_store.read_page(artifact_id, page)
-        if artifact_page is None:
-            return None
-        return {
-            "contents": [
-                {
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "text": json.dumps(artifact_page.to_dict(), ensure_ascii=False),
-                }
-            ]
-        }
+        return self._mcp_resources_service().mcp_resource_read_result(uri)
 
     def _commander_widget_html(self) -> str:
         return """<!doctype html>
