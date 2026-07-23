@@ -11,7 +11,12 @@ from runner.commander_projections import CommanderProjectionService
 from runner.commander_widget import commander_widget_html
 from runner.executor_status import polling_guidance_for_profile
 from runner.full_loop_authority import build_full_loop_authority_status
-from runner.mcp_commander_public import CommanderPublicProjector
+from runner.mcp_commander_public import (
+    COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
+    COMMANDER_EXPOSED_TOOLS,
+    COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
+    CommanderPublicProjector,
+)
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
 from runner.mcp_tool_catalog import _stage_parallel_preview_input_schema
 from runner.product_console import (
@@ -44,10 +49,11 @@ COMMANDER_APP_MANIFEST_VERSION = "colameta_commander_app.v1"
 COMMANDER_APP_TITLE = "ColaMeta Commander"
 COMMANDER_APP_SERVER_INSTRUCTIONS = (
     "ColaMeta Commander is the focused ChatGPT App surface for ColaMeta project work. "
-    "Start with list_registered_projects, then use render_commander_app or analyze_project_state with a "
+    "It exposes exactly nine tools. Start with list_registered_projects, then use render_commander_app or analyze_project_state with a "
     "registered project_name. Use review_manifest for hash-bound independent review, "
     "read_result_artifact for a paged packaged-result continuation, run_mcp_workflow for planning and controlled changes, "
     "manage_validation_run for validation, and manage_git for reviewed Git operations. "
+    "Use the typed review_manifest and read_result_artifact continuations; resources/read is optional protocol compatibility, never a required ChatGPT path. "
     "The complete catalog remains available only on the loopback advanced-mode endpoint. "
     "Treat status and preview outputs as evidence only; they do not authorize executor run, commit, push, "
     "stable service replacement, ReviewDecision, GateEvent, or Delivery accepted."
@@ -99,6 +105,60 @@ class MCPCommanderAppMixin:
 
     def _commander_public_sanitize(self, value: Any, *, compact: bool) -> Any:
         return self._commander_public_projector().sanitize(value, compact=compact)
+
+    def _client_experience_partition(self) -> dict[str, Any]:
+        """Describe the deliberately different ChatGPT and Local Codex surfaces.
+
+        This is an advanced/local contract reader, not another public
+        Commander tool.  Keeping the public tool inventory as a literal tuple
+        avoids a second source of truth while giving local operators a concrete
+        compatibility boundary to test.
+        """
+
+        return {
+            "schema_version": COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
+            "shared_invariants": {
+                "canonical_state_semantics_shared": True,
+                "scope_semantics_shared": True,
+                "context_binding_semantics_shared": True,
+                "authority_boundaries_shared": True,
+                "stable_replacement_requires_separate_authorization": True,
+            },
+            "chatgpt_commander": {
+                "mcp_exposure_profile": "commander",
+                "visible_tool_count": len(COMMANDER_EXPOSED_TOOLS),
+                "visible_tools": list(COMMANDER_EXPOSED_TOOLS),
+                "default_payload_policy": "compact_public_projection",
+                "typed_read_continuations": [
+                    {
+                        "tool": "review_manifest",
+                        "phases": ["inspect", "read", "verify"],
+                        "purpose": "hash-bound declared-subject review",
+                    },
+                    {
+                        "tool": "read_result_artifact",
+                        "purpose": "paged packaged-result recovery",
+                    },
+                ],
+                "resources_read": {
+                    "required": False,
+                    "role": "optional_standard_mcp_compatibility_only",
+                    "supported_primary_path": "typed_tool_continuations",
+                },
+                "does_not_expose_local_advanced_tools": True,
+            },
+            "local_codex_loopback": {
+                "mcp_exposure_profile": "normal",
+                "default_payload_policy": "rich_local_diagnostics",
+                "advanced_tool_examples": list(COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES),
+                "capability_families": [
+                    "executor configuration and controlled execution",
+                    "deep local file and workflow diagnostics",
+                    "advanced migration and handoff context",
+                ],
+                "not_exposed_in_chatgpt_commander": True,
+            },
+        }
 
     def _commander_app_input_schema(self) -> dict[str, Any]:
         return {
@@ -1378,6 +1438,7 @@ class MCPCommanderAppMixin:
                 "render_tool_meta": ["ui.resourceUri", "openai/outputTemplate"],
                 "widget_only_meta_is_not_part_of_structured_content": True,
             },
+            "client_experience_partition": self._client_experience_partition(),
             "authority_boundary": {
                 "read_only_tools_do_not_authorize_executor_dispatch": True,
                 "read_only_tools_do_not_create_review_decision": True,

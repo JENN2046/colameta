@@ -50,6 +50,29 @@ deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
+### P1 ChatGPT contract rehearsal
+
+Before requesting a new live ChatGPT development-connector acceptance, run the
+repeatable local contract rehearsal:
+
+```bash
+.venv/bin/python scripts/chatgpt_development_acceptance.py --json
+```
+
+It creates a temporary Git fixture and verifies the exact nine-tool Commander
+inventory; a deliberate `CONTEXT_BINDING_MISMATCH` without an archive write;
+typed `review_manifest` inspect/read/verify pagination with hash continuity;
+and complete typed `read_result_artifact` recovery with stable SHA-256 and
+expiry. It invokes no `resources/read`, Connector, OAuth, tunnel, stable
+service, executor, Git write, or release action.
+
+`rehearsal_status=passed` is developer preflight only. The returned
+`p1_client_release_gate` intentionally remains `blocked`: a real release still
+needs fresh full local-validation evidence, runtime provenance, connector/OAuth
+evidence, current facts, a newly observed live ChatGPT acceptance, and a
+separately authorized exact stable-replacement target. Submission-material
+readiness and this P1 release decision are intentionally distinct.
+
 When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
 such as “do not start/run the executor” is a hard routing constraint. ColaMeta
 uses the read-only project-status route instead of executor preflight, unless

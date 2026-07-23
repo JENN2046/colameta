@@ -52,6 +52,24 @@
 consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
 私人 App 默认公开工具。
 
+### P1 ChatGPT 合同演练
+
+在要求一次新的真实 ChatGPT development-connector 验收前，先运行可重复的本地合同演练：
+
+```bash
+.venv/bin/python scripts/chatgpt_development_acceptance.py --json
+```
+
+它会创建临时 Git fixture，并检查精确的九工具 Commander inventory；故意触发且不写 archive 的
+`CONTEXT_BINDING_MISMATCH`；typed `review_manifest` 的 inspect/read/verify 分页与 hash continuity；以及
+typed `read_result_artifact` 的全页恢复、稳定 SHA-256 和 expiry。它不调用 `resources/read`，也不触碰
+Connector、OAuth、tunnel、stable service、executor、Git 写操作或 release 操作。
+
+`rehearsal_status=passed` 只是开发前置检查。返回的 `p1_client_release_gate` 会刻意保持
+`blocked`：真实 release 仍需要新鲜的完整本地验证证据、runtime provenance、connector/OAuth 证据、
+current facts、刚刚观察到的 live ChatGPT 验收，以及另行授权的精确 stable-replacement target。
+submission materials readiness 与这个 P1 release decision 是有意分开的。
+
 使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
 除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
 

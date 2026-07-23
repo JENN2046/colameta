@@ -25,6 +25,28 @@ COMMANDER_EXPOSED_TOOLS = (
     "manage_validation_run",
     "manage_git",
 )
+COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION = "commander_client_experience.v1"
+# These are deliberately examples rather than a second catalog.  The normal
+# loopback catalog remains the source of truth for Local Codex; this short list
+# documents the capability families that must not leak into the nine-tool
+# ChatGPT Commander surface.
+COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES = (
+    "get_agent_consumer_contract",
+    "get_agent_operator_flow_packet",
+    "manage_executor_config",
+    "manage_executor_workflow",
+    "manage_files",
+    "inspect_executor_activity",
+    "manage_workflow_run",
+)
+COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS = (
+    "artifact_id",
+    "resource_uri",
+    "page_uri_template",
+    "page_count",
+    "content_sha256",
+    "expires_at",
+)
 COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION = "commander_public_minimal.v1"
 COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
     {
@@ -234,18 +256,22 @@ class CommanderPublicProjector:
         )
         result_artifact_page: dict[str, Any] | None = None
         result_artifact_contract_fields: dict[str, Any] = {}
+        result_artifact_descriptor: dict[str, Any] | None = None
+        if isinstance(raw_data, dict):
+            raw_descriptor = raw_data.get("result_artifact")
+            if isinstance(raw_descriptor, dict):
+                descriptor = {
+                    field: copy.deepcopy(raw_descriptor[field])
+                    for field in COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS
+                    if field in raw_descriptor
+                }
+                if descriptor.get("artifact_id") and descriptor.get("content_sha256") and descriptor.get("expires_at"):
+                    result_artifact_descriptor = descriptor
         if is_result_artifact_read and isinstance(raw_data, dict):
             raw_page = raw_data.get("artifact_page")
             if isinstance(raw_page, dict) and isinstance(raw_page.get("content"), str):
                 result_artifact_page = copy.deepcopy(raw_page)
-                for field in (
-                    "artifact_id",
-                    "resource_uri",
-                    "page_uri_template",
-                    "page_count",
-                    "content_sha256",
-                    "expires_at",
-                ):
+                for field in COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS:
                     if field in raw_data:
                         result_artifact_contract_fields[field] = copy.deepcopy(raw_data[field])
         if public_tool_result.get("ok") is False:
@@ -334,6 +360,11 @@ class CommanderPublicProjector:
             if isinstance(clean_data, dict):
                 clean_data["artifact_page"] = result_artifact_page
                 clean_data.update(result_artifact_contract_fields)
+        if result_artifact_descriptor is not None and isinstance(clean_result, dict):
+            clean_data = clean_result.get("data")
+            if isinstance(clean_data, dict):
+                clean_data["result_artifact"] = result_artifact_descriptor
+                clean_data.update(result_artifact_descriptor)
         return clean_result if isinstance(clean_result, dict) else projected
 
     def _public_string(self, value: str) -> str:

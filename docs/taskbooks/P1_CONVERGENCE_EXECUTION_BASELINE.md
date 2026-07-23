@@ -4,10 +4,10 @@
 p1_convergence_execution_baseline:
   schema_version: colameta.p1_convergence_execution_baseline.v2
   document_type: bounded_execution_plan
-  status: execution_ready_after_batch_gate
+  status: p1_d_local_implementation_complete_external_release_evidence_pending
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 7
+  revision: 8
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -290,6 +290,34 @@ A release decision packet is `blocked` unless all of the following are true:
 
 Preparing this packet changes no service. Executing a stable replacement still
 requires a new explicit instruction.
+
+### Adopted P1-D local implementation closure
+
+- `runner/chatgpt_development_acceptance.py` now performs a temporary-fixture,
+  in-process contract rehearsal of the exact nine-tool Commander surface. It
+  proves the deliberate context-binding negative path, all-page hash-bound
+  manifest review, all-page typed result-artifact recovery, clean-checkout
+  behavior, and no `resources/read` dependency.
+- The rehearsal is explicitly labelled `local_contract_rehearsal`; it never
+  claims a live ChatGPT session, Connector/OAuth reachability, runtime
+  provenance, stable replacement, or release authorization.
+- Commander now preserves the complete safe artifact descriptor—including
+  `expires_at`—on an initial current-facts packaged response as well as on its
+  typed pages. This closes the first-page/continuation contract rather than
+  requiring a client to guess an expiry.
+- The advanced consumer contract now exposes the client-experience partition:
+  the literal nine-tool Commander tuple and its typed reads versus the normal
+  Local Codex advanced capability examples. No public tool was added.
+- `p1_client_release_gate` is included in submission-readiness output but is a
+  separately named release decision. It stays `blocked` until independently
+  verified live evidence exists; a caller cannot promote it with a supplied
+  assertion. `P1_D_CLIENT_RELEASE_GATE_MANIFEST.md` owns the exact local
+  rehearsal and external-evidence boundary.
+
+The local P1-D implementation gate is complete once the shared validation
+ladder is green. The fresh live ChatGPT development-connector acceptance and
+any stable-replacement decision remain intentionally external, separately
+authorized follow-ups.
 
 ## Delivery Cadence
 

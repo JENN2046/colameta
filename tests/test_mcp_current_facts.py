@@ -66,6 +66,7 @@ def test_current_facts_inspect_uses_a_recoverable_typed_result_artifact(tmp_path
     assert inspect["current_facts"]["authority"] == "observation_only"
     assert inspect["artifact_id"] == inspect["result_artifact"]["artifact_id"]
     assert inspect["page_count"] > 1
+    assert inspect["expires_at"] == inspect["result_artifact"]["expires_at"]
     assert inspect["recommended_next_reads"][0]["tool"] == "read_result_artifact"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
@@ -80,6 +81,7 @@ def test_current_facts_inspect_uses_a_recoverable_typed_result_artifact(tmp_path
         assert read["read_only"] is True
         assert read["side_effects"] is False
         assert read["content_sha256"] == inspect["content_sha256"]
+        assert read["expires_at"] == inspect["expires_at"]
         pages.append(read["artifact_page"]["content"])
 
     restored = "".join(pages)

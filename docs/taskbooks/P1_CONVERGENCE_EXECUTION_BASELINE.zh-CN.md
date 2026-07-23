@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 02a8b9a8e86113402ff21243ec603c4100e6c6394d5707255414eb0f98204e8e
+  source_sha256: 0ea741932fc0697dea34c737c6da124d7cb084e3ed8a08f821ec146bdebdd477
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 7
+  revision: 8
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -236,6 +236,24 @@ authority semantics；默认不共享 oversized payload。
 - decision packet 写明另行授权的 stable-replacement target。
 
 准备该 packet 不改变服务。执行 stable replacement 仍需要新的明确指令。
+
+### 已采用的 P1-D 本地实现收口
+
+- `runner/chatgpt_development_acceptance.py` 现在会在临时 fixture 中对精确九工具 Commander
+  surface 做 in-process 合同演练：故意的 context-binding 负向路径、全页 hash-bound manifest
+  review、全页 typed result-artifact recovery、clean checkout，以及不依赖 `resources/read`。
+- 演练被明确标成 `local_contract_rehearsal`；它绝不声称 live ChatGPT session、Connector/OAuth
+  可达、runtime provenance、stable replacement 或 release 已被授权。
+- Commander 现在会在 initial current-facts packaged response 以及 typed pages 中都保留完整安全的
+  artifact descriptor，包括 `expires_at`；client 不再需要猜 expiry。
+- advanced consumer contract 现在显式展示客户端体验分层：字面量九工具 Commander tuple 和 typed
+  reads，对比 normal Local Codex advanced capability examples；没有增加公开工具。
+- `p1_client_release_gate` 会出现在 submission-readiness output 中，但它是独立命名的 release
+  decision。独立验证的 live evidence 未到齐前它必须保持 `blocked`，调用方声明不能把它推进。
+  `P1_D_CLIENT_RELEASE_GATE_MANIFEST.md` 记录精确的本地演练与外部证据边界。
+
+当 shared validation ladder 通过时，本地 P1-D implementation gate 才算完成。新的真实 ChatGPT
+development-connector 验收，以及任何 stable-replacement 决策，仍然有意留作外部、另行授权的后续事项。
 
 ## 交付节奏
 

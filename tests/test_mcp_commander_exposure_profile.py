@@ -6,6 +6,10 @@ from runner.mcp_server import (
     NORMAL_EXPOSED_TOOLS,
     MCPPlanningBridgeServer,
 )
+from runner.mcp_commander_public import (
+    COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
+    COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
+)
 
 
 def _nested_keys(value: object) -> set[str]:
@@ -103,6 +107,24 @@ def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
     assert set(server._visible_tool_names()) == set(NORMAL_EXPOSED_TOOLS)
     assert len(server._visible_tool_names()) == 84
     assert "manage_files" in server._visible_tool_names()
+
+
+def test_agent_contract_makes_chatgpt_and_local_codex_surfaces_explicit(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server.call_tool_for_agent("get_agent_consumer_contract", {})
+
+    assert result["ok"] is True
+    partition = result["data"]["client_experience_partition"]
+    assert partition["schema_version"] == COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION
+    chatgpt = partition["chatgpt_commander"]
+    assert chatgpt["visible_tool_count"] == 9
+    assert tuple(chatgpt["visible_tools"]) == COMMANDER_EXPOSED_TOOLS
+    assert chatgpt["resources_read"]["required"] is False
+    local_codex = partition["local_codex_loopback"]
+    assert tuple(local_codex["advanced_tool_examples"]) == COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES
+    assert set(COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES) <= set(server._visible_tool_names())
+    assert not (set(COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES) & set(COMMANDER_EXPOSED_TOOLS))
 
 
 def test_commander_profile_can_be_selected_from_environment(monkeypatch, tmp_path) -> None:

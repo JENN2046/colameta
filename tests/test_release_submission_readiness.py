@@ -84,6 +84,10 @@ def test_release_submission_readiness_ready_when_all_local_evidence_present() ->
     assert packet["authority_boundary"]["does_not_submit_app_for_review"] is True
     assert packet["safe_next_action"]["action"] == "open_openai_dashboard_submission_form"
     assert packet["checks"]["submission_materials_manifest"]["status"] == "ready"
+    assert packet["p1_client_release_gate"]["status"] == "blocked"
+    assert packet["release_decision_status"] == "blocked"
+    assert packet["release_decision_ready"] is False
+    assert "LIVE_CHATGPT_DEVELOPMENT_ACCEPTANCE_REQUIRED" in packet["p1_client_release_gate"]["blocker_codes"]
 
 
 def test_release_submission_blocks_when_product_readiness_is_not_ready() -> None:
