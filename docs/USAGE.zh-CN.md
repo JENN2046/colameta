@@ -5,7 +5,7 @@
 它解释“日常怎么用”，不是 release 授权、稳定服务替换授权、Delivery State accepted、ReviewDecision 或 GateEvent。
 
 如果你要把一个新项目接入 ColaMeta，先看 [ColaMeta 通用 Onboarding](ONBOARDING.zh-CN.md)。
-如果要安装包/源码环境、部署七工具私人 App、安装 systemd、替换 stable、验收或回滚，读
+如果要安装包/源码环境、部署九工具私人 App、安装 systemd、替换 stable、验收或回滚，读
 [ColaMeta 安装与部署说明书](INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
 
 ## 0. 最短路径
@@ -40,13 +40,17 @@
 2. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
-5. 需要 workflow 时再用 run_mcp_workflow
-6. 有界验证用 manage_validation_run
-7. 审查后的 Git 操作用 manage_git
+5. 做哈希绑定独立审查时用 review_manifest
+6. 遇到 packaged result 时先用 resources/read；动态资源读取不可用时用 read_result_artifact
+7. 需要计划、预览或受控变更 workflow 时再用 run_mcp_workflow
+8. 有界验证用 manage_validation_run
+9. 审查后的 Git 操作用 manage_git
 ```
 
-这就是完整七工具 Commander surface。consumer contract、独立 runtime/cadence 和其他底层诊断
-属于 loopback advanced endpoint；不要把它们当成私人 App 默认公开工具。
+这就是本源码版本完整的九工具 Commander surface。对已运行的 stable 使用两个直接读取工具前，
+先核对 runtime provenance 与 `visible_tool_count`；较旧 stable 合理地仍可能只暴露七个工具。
+consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
+私人 App 默认公开工具。
 
 使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
 除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
@@ -361,7 +365,7 @@ submission confirmations
 
 如果不传 `work_item_id`，inspect 会返回最多 20 个脱敏的
 `work_item_candidates`，并在 `next_actions` 中给出只读选择调用。先选择一个候选并执行它的
-inspect，再生成 transition preview。七工具 app 不需要暴露底层 `list_work_items`。
+inspect，再生成 transition preview。九工具 app 不需要暴露底层 `list_work_items`。
 
 CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小上限 64 KiB；
 显式命令行 flag 会覆盖 manifest 中的同名 ready 状态。MCP 工具只接受结构化
@@ -614,7 +618,7 @@ operator_closeout.decision=blocked
 
 ## 2. Advanced loopback Agent 连接后先读什么
 
-本节只适用于完整 loopback advanced catalog；私人 App 使用第 0 节七工具 fast path。
+本节只适用于完整 loopback advanced catalog；私人 App 使用第 0 节九工具 fast path。
 Advanced MCP 连接后先做只读校准，不要直接 run、commit、push 或写状态。
 
 推荐首读顺序：
@@ -768,12 +772,13 @@ packaged=true
   page_count 页；拼回后核对 content_sha256。这些短期 artifact 只读，
   不授予 workflow、executor、Git 或 delivery authority。
   如果宿主拒绝一个已知的动态 resource URI，改用返回的
-  mcp_tool_compatibility 调用：
-  run_mcp_workflow(workflow=result_artifact, phase=read, artifact_id=<opaque
-  artifact_id>, artifact_page=<page>)。它只返回一个已存储页，并保留同一
-  artifact_id、page_count、expires_at 与 content_sha256。只沿着它返回的
-  next-page 调用继续；按页码拼接 artifact_page.content 后再核对
-  content_sha256。该回退只需要 mcp:read，不能读取项目文件、运行 executor
+  read_result_artifact 调用：
+  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>)。
+  它只返回一个已存储页，并保留同一 artifact_id、page_count、expires_at 与
+  content_sha256。只沿着它返回的 next-page 调用继续；按页码拼接
+  artifact_page.content 后再核对 content_sha256。返回中仍会保留旧的
+  run_mcp_workflow(workflow=result_artifact, phase=read, ...) 兼容调用，供既有
+  client 使用。该读取路线只需要 mcp:read，不能读取项目文件、运行 executor
   或 validation、修改 Git，或推进 Delivery State。
   resources/templates/list 只公布静态 artifact URI 形状，不会枚举 live
   artifact ID；只能在过期前读取该 packaged response 返回的 opaque handle。
@@ -795,18 +800,17 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 
 ### Manifest 绑定的独立审查
 
-当外部审查合同已经明确列出必须读取的文件及其 SHA-256 时，使用这个只读 workflow。
-它不是任意 `read_project_file` 的后门；它仍是七工具 Commander 中
-`run_mcp_workflow` 的一个 typed workflow family。
+当外部审查合同已经明确列出必须读取的文件及其 SHA-256 时，使用这个只读工具。
+它不是任意 `read_project_file` 的后门；`review_manifest` 是 Commander 的一等读取工具，
+旧的 `run_mcp_workflow workflow=review_manifest` 形式仍保留给既有 client。
 它要求项目是可读取 branch 和 HEAD 的 Git checkout。
 
 先取得当前绑定模板。此调用不读取 subject 文件，也不运行任何验证命令：
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "inspect",
     "project_name": "registered-project-name"
   }
@@ -819,9 +823,8 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "inspect",
     "project_name": "registered-project-name",
     "review_manifest": {
@@ -876,13 +879,12 @@ manifest 就是完整验证合同。若任一声明命令不安全、包含秘�
 validation 执行权。
 
 部分 ChatGPT 宿主暂时不会把动态 resource-template URI 路由到通用资源代理。每个 subject 因而还会
-返回仍属于既有 `run_mcp_workflow` 的 typed `read_call` 兼容入口；仅当代理拒绝 manifest URI 时使用：
+返回指向 `review_manifest` 的 typed `read_call` 兼容入口；仅当代理拒绝 manifest URI 时使用：
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "read",
     "project_name": "registered-project-name",
     "review_manifest_id": "<来自 inspect>",
@@ -893,8 +895,8 @@ validation 执行权。
 ```
 
 `read` 只返回该已声明 subject 的指定页；每次都会重新核对当前上下文和该 subject 的 SHA-256。若还有
-后续页，它会返回同一绑定下的下一页调用。它只是 ChatGPT 兼容读取路线，不是任意文件读取，也没有新增
-第八个 Commander 工具。
+后续页，它会返回同一绑定下的下一页调用。它只是窄化的 ChatGPT 兼容读取路线，不是任意文件读取；既有
+client 仍可使用旧的 generic workflow 形式。
 
 `CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
 不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
@@ -1066,11 +1068,11 @@ status 的 ID 相同，才能把它们当成同一次事实捕获的同一项决
   调用方路径本身可以是 symlink alias，只要它解析到同一个安全 canonical root。应修正部署，
   不要放宽权限或绕过 gate。
 
-### 通过七工具私人 app 请求 Work Item Gate review
+### 通过九工具私人 app 请求 Work Item Gate review
 
 当 Stage 0-6 正向结果提示“是否请求 Delivery State Gate review”时，继续使用现有
-`run_mcp_workflow`。Commander 仍然只暴露 7 个工具；`gate_review_request` 是复用现有
-Work Item Gate 后端的高层 workflow，不是第 8 个工具。
+`run_mcp_workflow`。`gate_review_request` 是复用现有 Work Item Gate 后端的高层 workflow，
+不是第 10 个 Commander 工具。
 
 先做只读检查：
 
@@ -1130,7 +1132,7 @@ apply 调用最多 26,000 字符，preview workflow 结果最多 56,000 字符�
 
 ```text
 list_registered_projects -> 目标项目 available
-analyze_project_state -> commander profile 且 visible_tool_count=7
+analyze_project_state -> commander profile 且本源码版本加载后 visible_tool_count=9
 gate_review_request/inspect -> succeeded、read_only=true、side_effects=false
 get_apps_connector_smoke_packet -> connector_closeout_ready / ready、evidence gap=0
 ```
@@ -1180,7 +1182,7 @@ get_apps_connector_smoke_packet -> connector_closeout_ready / ready、evidence g
 }
 ```
 
-执行器状态轮询工具不属于七工具 Commander。只在明确批准的本地 advanced client
+执行器状态轮询工具不属于九工具 Commander。只在明确批准的本地 advanced client
 `http://127.0.0.1:8768/mcp` 使用 `manage_executor_workflow action=status`，轮询口径按 profile
 分级：
 

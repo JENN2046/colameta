@@ -764,6 +764,109 @@ def test_review_manifest_read_phase_returns_only_reverified_bound_pages(tmp_path
     assert changed_subject["error_code"] == "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH"
 
 
+def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contract(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    tools = {tool.name: tool for tool in server._filter_tools_by_exposure_profile(server.tool_defs)}
+    assert "review_manifest" in tools
+    assert "workflow" not in tools["review_manifest"].input_schema["properties"]
+    assert tools["review_manifest"].annotations["readOnlyHint"] is True
+    assert server.get_required_scope_for_tool("review_manifest", {"phase": "inspect"}) == "mcp:read"
+
+    template = server.call_tool_for_agent("review_manifest", {"phase": "inspect"})
+    assert template["ok"] is True
+    assert template["data"]["status"] == "template_ready"
+
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    data = inspected["data"]
+    descriptor = data["subjects"][0]
+    assert data["recommended_next_reads"] == [
+        {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": data["manifest_resource_uri"]},
+            "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
+        },
+        {
+            "kind": "mcp_tool",
+            "tool": "review_manifest",
+            "arguments": {
+                "phase": "read",
+                "review_manifest_id": data["review_manifest_id"],
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": 1,
+            },
+            "reason": "若宿主不支持动态 resources/read URI，使用同一 manifest 绑定下的第 1 个 subject 第 1 页读取调用。",
+        },
+    ]
+    assert descriptor["read_call"] == {
+        "tool": "review_manifest",
+        "arguments": {
+            "phase": "read",
+            "review_manifest_id": data["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+            "review_manifest_page": 1,
+        },
+    }
+
+    read = server.call_tool_for_agent("review_manifest", descriptor["read_call"]["arguments"])
+    assert read["ok"] is True
+    assert read["data"]["verification"] == {
+        "context_binding": "matched",
+        "subject_hash": "matched",
+        "subject_index": 1,
+    }
+    assert read["data"]["read_call"]["tool"] == "review_manifest"
+
+    verified = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "verify", "review_manifest_id": data["review_manifest_id"]},
+    )
+    assert verified["ok"] is True
+    assert verified["data"]["verification"]["context_binding"] == "matched"
+    assert verified["data"]["verification"]["subject_hashes"] == "matched"
+
+
+def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(str(project), project_name="review-target")
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(str(tmp_path), service_mode=True, exposure_profile="commander")
+    server.project_registry = registry
+
+    missing_project = server.call_tool_for_agent("review_manifest", {"phase": "inspect"})
+    assert missing_project["ok"] is False
+    assert missing_project["error_code"] == "PROJECT_NAME_REQUIRED"
+
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "project_name": "review-target",
+            "review_manifest": _manifest(project, project_name="review-target"),
+        },
+    )
+    assert inspected["ok"] is True
+    data = inspected["data"]
+    assert data["context_binding"]["project_name"] == "review-target"
+    read_call = data["subjects"][0]["read_call"]
+    assert read_call["tool"] == "review_manifest"
+    assert read_call["arguments"]["project_name"] == "review-target"
+
+    read = server.call_tool_for_agent("review_manifest", read_call["arguments"])
+    assert read["ok"] is True
+    assert read["data"]["subject_page"]["path"] == "docs/review-input.md"
+
+
 def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     content = "Literal source text: /home/reviewer/example.md\n"

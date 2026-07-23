@@ -54,12 +54,21 @@ def test_packaged_mcp_result_exposes_a_paged_resource_continuation(tmp_path) -> 
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
     assert manifest["page_count"] > 1
     assert manifest["page_uri_template"].endswith("/pages/{page}")
-    assert manifest["recommended_next_reads"][:2] == [
+    assert manifest["recommended_next_reads"][:3] == [
         {
             "kind": "mcp_resource",
             "tool": "resources/read",
             "arguments": {"uri": manifest["resource_uri"]},
             "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
+        },
+        {
+            "kind": "mcp_tool",
+            "tool": "read_result_artifact",
+            "arguments": {
+                "artifact_id": manifest["artifact_id"],
+                "artifact_page": 1,
+            },
+            "reason": "若宿主拒绝动态 resources/read URI，优先通过 read_result_artifact 读取同一短期 artifact 页。",
         },
         {
             "kind": "mcp_tool_compatibility",
@@ -70,7 +79,7 @@ def test_packaged_mcp_result_exposes_a_paged_resource_continuation(tmp_path) -> 
                 "artifact_id": manifest["artifact_id"],
                 "artifact_page": 1,
             },
-            "reason": "若宿主拒绝动态 resources/read URI，则通过已有七工具表面的 result_artifact read 读取同一短期 artifact 页。",
+            "reason": "若宿主拒绝动态 resources/read URI，则通过 run_mcp_workflow 的 result_artifact read 读取同一短期 artifact 页。",
         },
     ]
 
@@ -110,7 +119,8 @@ def test_actions_packaging_uses_the_same_recoverable_artifact_contract(tmp_path)
     assert manifest["packaged"] is True
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
     assert manifest["recommended_next_reads"][0]["tool"] == "resources/read"
-    assert manifest["recommended_next_reads"][1]["tool"] == "run_mcp_workflow"
+    assert manifest["recommended_next_reads"][1]["tool"] == "read_result_artifact"
+    assert manifest["recommended_next_reads"][2]["tool"] == "run_mcp_workflow"
 
 
 def test_result_artifact_templates_are_static_and_artifact_ids_remain_opaque(tmp_path) -> None:
@@ -141,7 +151,7 @@ def test_result_artifact_templates_are_static_and_artifact_ids_remain_opaque(tmp
     assert artifact_id not in json.dumps(templates)
 
 
-def test_mcp_overflow_reduced_manifest_keeps_both_recoverable_continuations(tmp_path, monkeypatch) -> None:
+def test_mcp_overflow_reduced_manifest_keeps_resource_and_typed_recoverable_continuations(tmp_path, monkeypatch) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path))
     raw_result = {
         "ok": True,
@@ -165,7 +175,7 @@ def test_mcp_overflow_reduced_manifest_keeps_both_recoverable_continuations(tmp_
     assert manifest["artifact_id"]
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
         "resources/read",
-        "run_mcp_workflow",
+        "read_result_artifact",
     ]
 
     page_response = server._handle_jsonrpc_request(
@@ -182,7 +192,7 @@ def test_mcp_overflow_reduced_manifest_keeps_both_recoverable_continuations(tmp_
     assert page["content_sha256"] == manifest["content_sha256"]
 
 
-def test_actions_overflow_reduced_manifest_keeps_both_recoverable_continuations(tmp_path, monkeypatch) -> None:
+def test_actions_overflow_reduced_manifest_keeps_resource_and_typed_recoverable_continuations(tmp_path, monkeypatch) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path))
     raw_result = {
         "ok": True,
@@ -207,11 +217,11 @@ def test_actions_overflow_reduced_manifest_keeps_both_recoverable_continuations(
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
         "resources/read",
-        "run_mcp_workflow",
+        "read_result_artifact",
     ]
 
 
-def test_result_artifact_recovery_manifest_keeps_both_recoverable_continuations(tmp_path) -> None:
+def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path))
     artifact_fields = server._store_packaged_result_artifact(
         "manage_files",
@@ -229,6 +239,7 @@ def test_result_artifact_recovery_manifest_keeps_both_recoverable_continuations(
     assert manifest["package_mode"] == "artifact_continuation"
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
         "resources/read",
+        "read_result_artifact",
         "run_mcp_workflow",
     ]
 
@@ -305,6 +316,75 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     assert json.loads(restored) == payload
 
 
+def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continuation(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    payload = {"content": "typed result artifact\n" + ("x" * 30000)}
+    handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
+
+    assert handle is not None
+    assert "read_result_artifact" in server._visible_tool_names()
+    assert server.get_required_scope_for_tool(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id},
+    ) == "mcp:read"
+
+    pages: list[str] = []
+    for page_number in range(1, handle.page_count + 1):
+        result = server.call_tool_for_agent(
+            "read_result_artifact",
+            {"artifact_id": handle.artifact_id, "artifact_page": page_number},
+        )
+        assert result["ok"] is True
+        data = result["data"]
+        assert data["read_only"] is True
+        assert data["side_effects"] is False
+        assert data["artifact_id"] == handle.artifact_id
+        assert data["content_sha256"] == handle.content_sha256
+        pages.append(data["artifact_page"]["content"])
+        if page_number < handle.page_count:
+            assert data["recommended_next_reads"] == [
+                {
+                    "kind": "mcp_tool",
+                    "tool": "read_result_artifact",
+                    "arguments": {
+                        "artifact_id": handle.artifact_id,
+                        "artifact_page": page_number + 1,
+                    },
+                    "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
+                }
+            ]
+
+    restored = "".join(pages)
+    assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
+    assert json.loads(restored) == payload
+
+
+def test_typed_result_artifact_tool_requires_only_a_known_opaque_handle(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    tool = next(tool for tool in server.tool_defs if tool.name == "read_result_artifact")
+
+    assert "phase" not in tool.input_schema["properties"]
+    assert tool.input_schema["required"] == ["artifact_id"]
+
+    missing = server.call_tool_for_agent("read_result_artifact", {})
+    assert missing["ok"] is False
+    assert missing["error_code"] == "RESULT_ARTIFACT_ID_REQUIRED"
+
+    unknown = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": "abcdefghijklmnopqrstuvwx", "artifact_page": 1},
+    )
+    assert unknown["ok"] is False
+    assert unknown["error_code"] == "RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED"
+
+    invalid_phase = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": "abcdefghijklmnopqrstuvwx", "phase": "verify"},
+    )
+    assert invalid_phase["ok"] is False
+    assert invalid_phase["error_code"] == "INVALID_RESULT_ARTIFACT_PHASE"
+
+
 def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     handle = server._mcp_result_artifact_store.put(
@@ -361,7 +441,7 @@ def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path)
     assert invalid_phase["error_code"] == "TOOL_POLICY_DENIED"
 
 
-def test_result_artifact_compatibility_allows_external_oauth_read_without_project_name(tmp_path) -> None:
+def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_without_project_name(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     handle = server._mcp_result_artifact_store.put(
         tool="fixture",
@@ -392,6 +472,21 @@ def test_result_artifact_compatibility_allows_external_oauth_read_without_projec
     assert authorized["ok"] is True
     assert authorized["data"]["artifact_page"]["artifact_id"] == handle.artifact_id
 
+    typed_authorized = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+        auth_context={
+            "mode": "external-oauth",
+            "oauth_provider": _ScopeProvider(),
+            "token": {"scope": "mcp:read"},
+        },
+    )
+    assert typed_authorized["ok"] is True
+    assert typed_authorized["data"]["artifact_page"]["artifact_id"] == handle.artifact_id
+
     denied = server.call_tool_for_agent(
         "run_mcp_workflow",
         {
@@ -408,6 +503,21 @@ def test_result_artifact_compatibility_allows_external_oauth_read_without_projec
     )
     assert denied["ok"] is False
     assert denied["error_code"] == "INSUFFICIENT_SCOPE"
+
+    typed_denied = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+        auth_context={
+            "mode": "external-oauth",
+            "oauth_provider": _ScopeProvider(),
+            "token": {"scope": "mcp:preview"},
+        },
+    )
+    assert typed_denied["ok"] is False
+    assert typed_denied["error_code"] == "INSUFFICIENT_SCOPE"
 
 
 def test_unavailable_artifact_store_never_returns_a_hollow_packaged_manifest(tmp_path, monkeypatch) -> None:

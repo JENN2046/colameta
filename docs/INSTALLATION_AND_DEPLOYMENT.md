@@ -3,7 +3,7 @@
 [中文](INSTALLATION_AND_DEPLOYMENT.zh-CN.md)
 
 This guide covers package installation, source development, loopback services,
-the seven-tool private App surface, the repository's private-Beta systemd
+the nine-tool private App surface, the repository's private-Beta systemd
 stack, stable replacement, verification, and rollback.
 
 It is an operator runbook, not standing authorization to expose a host, change
@@ -18,7 +18,7 @@ obtain action-scoped authorization at every protected boundary.
 | Python package in a venv | Normal CLI use | No listener until started |
 | Editable source checkout | ColaMeta development and tests | Local only by default |
 | Loopback Web/MCP | One machine, local browser or local MCP client | `127.0.0.1`; local development auth |
-| Seven-tool Commander | ChatGPT/Codex private App | Commander profile; HTTPS and OAuth externally |
+| Nine-tool Commander | ChatGPT/Codex private App | Commander profile; HTTPS and OAuth externally |
 | Private-Beta systemd stack | Jenn's persistent local/private deployment | System-level units, loopback origins, managed ingress |
 
 Do not bind MCP or Web to `0.0.0.0` merely to make a local problem disappear.
@@ -108,9 +108,9 @@ also requires `--allow-external-web` and an explicit Web read token. A remote
 MCP private App requires HTTPS and OAuth; see
 [Remote HTTPS MCP Service](remote-https-mcp-service.md).
 
-## 6. Run The Seven-Tool Private App Surface
+## 6. Run The Nine-Tool Private App Surface
 
-Select the Commander exposure profile without adding an eighth tool:
+Select the Commander exposure profile:
 
 ```bash
 MCP_EXPOSURE_PROFILE=commander \
@@ -132,11 +132,13 @@ The Commander profile exposes exactly:
 2. `get_apps_connector_smoke_packet`
 3. `render_commander_app`
 4. `analyze_project_state`
-5. `run_mcp_workflow`
-6. `manage_validation_run`
-7. `manage_git`
+5. `review_manifest`
+6. `read_result_artifact`
+7. `run_mcp_workflow`
+8. `manage_validation_run`
+9. `manage_git`
 
-`gate_review_request` is a workflow inside `run_mcp_workflow`, not another
+`gate_review_request` is a workflow inside `run_mcp_workflow`, not a tenth
 tool. Start with:
 
 ```json
@@ -178,8 +180,8 @@ does not start or stop the stack. The current stack uses:
 
 ```text
 127.0.0.1:8801  stable Web
-127.0.0.1:8766  stable seven-tool Commander MCP
-127.0.0.1:8767  external-OAuth seven-tool MCP origin
+127.0.0.1:8766  stable Commander MCP
+127.0.0.1:8767  external-OAuth Commander MCP origin
 127.0.0.1:8768  loopback advanced MCP catalog
 ```
 
@@ -204,8 +206,9 @@ The bounded sequence is:
 4. fetch and detach the stable checkout at the exact authorized commit;
 5. build one local wheel and reinstall it with `--no-deps --force-reinstall`;
 6. restart only the specifically authorized services;
-7. verify service state, loopback endpoints, runtime provenance, the seven-tool
-   inventory, private App connector smoke, and `gate_review_request/inspect`;
+7. verify service state, loopback endpoints, runtime provenance, the exact
+   candidate's Commander inventory, private App connector smoke, and
+   `gate_review_request/inspect`;
 8. write a stable-replacement receipt.
 
 Do not infer replacement authority from CI, a preview, a receipt, or ordinary
@@ -233,7 +236,7 @@ service active/running
 loaded_runtime_head == authorized target
 runtime_loaded_code_stale == false
 reload_needed_for_verification == false
-Commander visible_tool_count == 7
+Commander visible_tool_count == the authorized candidate's expected inventory (9 for this source version)
 private App list_registered_projects succeeds
 connector closeout == connector_closeout_ready / ready
 gate_review_request inspect succeeds without side effects

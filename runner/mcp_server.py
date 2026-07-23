@@ -334,7 +334,8 @@ COMMANDER_APP_TITLE = "ColaMeta Commander"
 COMMANDER_APP_SERVER_INSTRUCTIONS = (
     "ColaMeta Commander is the focused ChatGPT App surface for ColaMeta project work. "
     "Start with list_registered_projects, then use render_commander_app or analyze_project_state with a "
-    "registered project_name. Use run_mcp_workflow for planning and controlled changes, "
+    "registered project_name. Use review_manifest for hash-bound independent review, "
+    "read_result_artifact for a paged packaged-result continuation, run_mcp_workflow for planning and controlled changes, "
     "manage_validation_run for validation, and manage_git for reviewed Git operations. "
     "The complete catalog remains available only on the loopback advanced-mode endpoint. "
     "Treat status and preview outputs as evidence only; they do not authorize executor run, commit, push, "
@@ -351,6 +352,8 @@ COMMANDER_EXPOSED_TOOLS = (
     "get_apps_connector_smoke_packet",
     "render_commander_app",
     "analyze_project_state",
+    "review_manifest",
+    "read_result_artifact",
     "run_mcp_workflow",
     "manage_validation_run",
     "manage_git",
@@ -474,6 +477,8 @@ NORMAL_EXPOSED_TOOLS = (
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
+    "review_manifest",
+    "read_result_artifact",
     "run_mcp_workflow",
     "manage_executor_config",
     "manage_executor_workflow",
@@ -1330,6 +1335,8 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
         "get_executor_run_report",
         "analyze_project_state",
         "inspect_executor_activity",
+        "review_manifest",
+        "read_result_artifact",
         "list_workflow_runs",
         "get_workflow_run",
     }
@@ -1690,6 +1697,8 @@ class MCPPlanningBridgeServer:
             "manage_plan_workflow": self._tool_manage_plan_workflow,
             "manage_project_docs": self._tool_manage_project_docs,
             "manage_prompt_file": self._tool_manage_prompt_file,
+            "review_manifest": self._tool_review_manifest_entry,
+            "read_result_artifact": self._tool_read_result_artifact,
             "run_mcp_workflow": self._tool_run_mcp_workflow,
             "manage_executor_config": self._tool_manage_executor_config,
             "inspect_executor_activity": self._tool_inspect_executor_activity,
@@ -4831,6 +4840,94 @@ class MCPPlanningBridgeServer:
                 output_schema=common_output_schema,
             ),
             MCPToolDef(
+                name="review_manifest",
+                title="Review Manifest",
+                description=(
+                    f"[{self.project_hint}] Use this when ChatGPT needs to perform a hash-bound, "
+                    "independent review of explicitly declared project files. "
+                    "inspect returns the exact manifest template or opens a short-lived review session; "
+                    "read returns one declared subject page only; verify rechecks the project context and every subject hash. "
+                    "It never reads an arbitrary file, executes acceptance commands, starts an executor, or writes a review decision. "
+                    "scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "phase": {
+                            "type": "string",
+                            "enum": ["inspect", "read", "verify", "status"],
+                            "description": "可选。默认 inspect；inspect 建立只读会话，read 读取一页已声明 subject，verify 复核全部绑定。",
+                        },
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。服务模式下指定已登记 managed project；manifest 内的 project_name 必须与其匹配。",
+                        },
+                        "review_manifest": {
+                            "type": "object",
+                            "description": "仅 phase=inspect 且要建立会话时提供。先调用不带它的 inspect 获取模板；随后原样填充 schema_version、review_unit、workflow_intent、project_name、branch、head、runner_plan、current_version、subjects[{path,sha256}]，以及可选 acceptance_commands。服务端严格校验，不能扩展为任意文件读取。",
+                            "additionalProperties": True,
+                        },
+                        "review_manifest_id": {
+                            "type": "string",
+                            "description": "read、verify、status 必填；来自 inspect 返回的短期 opaque 会话 ID。",
+                        },
+                        "review_manifest_subject_index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "read 必填；必须使用 inspect 返回的 subject_index。",
+                        },
+                        "review_manifest_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "read 可选，默认 1；仅限 inspect 返回的 page_count 范围。",
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
+                name="read_result_artifact",
+                title="Read Result Artifact Page",
+                description=(
+                    f"[{self.project_hint}] Use this when a previous tool response was packaged because it was too large, "
+                    "or when this host cannot call dynamic resources/read URIs. "
+                    "Reads exactly one page from the same short-lived opaque artifact and returns its stable SHA-256 and expiry; "
+                    "it cannot enumerate artifacts, read project files, or perform a side effect. scope=mcp:read。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "artifact_id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{16,128}$",
+                            "description": "必填。只能使用 packaged response 返回的 opaque artifact_id。",
+                        },
+                        "artifact_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "可选，默认 1；使用同一 artifact 的有效页码。",
+                        },
+                    },
+                    "required": ["artifact_id"],
+                    "additionalProperties": False,
+                },
+                output_schema=common_output_schema,
+                annotations={
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                    "idempotentHint": True,
+                },
+            ),
+            MCPToolDef(
                 name="manage_executor_config",
                 description=(
                     f"[{self.project_hint}] 受控执行器配置管理工具。支持 action："
@@ -6347,7 +6444,7 @@ class MCPPlanningBridgeServer:
         *,
         page: int,
     ) -> dict[str, Any]:
-        """Return the seven-tool fallback for one opaque result-artifact page.
+        """Return the generic-workflow fallback for one opaque result-artifact page.
 
         This intentionally accepts only the handle and a positive page number.
         It is equivalent in authority to ``resources/read``: the artifact must
@@ -6362,6 +6459,44 @@ class MCPPlanningBridgeServer:
             "artifact_page": page,
         }
         return {"tool": "run_mcp_workflow", "arguments": arguments}
+
+    @staticmethod
+    def _typed_result_artifact_read_call(
+        artifact_id: str,
+        *,
+        page: int,
+    ) -> dict[str, Any]:
+        """Return the narrow public continuation for one opaque artifact page."""
+
+        return {
+            "tool": "read_result_artifact",
+            "arguments": {
+                "artifact_id": artifact_id,
+                "artifact_page": page,
+            },
+        }
+
+    @classmethod
+    def _result_artifact_typed_next_read(
+        cls,
+        artifact_fields: dict[str, Any],
+        *,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        artifact_id = artifact_fields.get("artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_fields must include artifact_id")
+        return {
+            "kind": "mcp_tool",
+            **cls._typed_result_artifact_read_call(
+                artifact_id,
+                page=page,
+            ),
+            "reason": (
+                "若宿主拒绝动态 resources/read URI，优先通过 read_result_artifact "
+                "读取同一短期 artifact 页。"
+            ),
+        }
 
     @classmethod
     def _result_artifact_compatibility_next_read(
@@ -6380,7 +6515,7 @@ class MCPPlanningBridgeServer:
                 page=page,
             ),
             "reason": (
-                "若宿主拒绝动态 resources/read URI，则通过已有七工具表面的 "
+                "若宿主拒绝动态 resources/read URI，则通过 run_mcp_workflow 的 "
                 "result_artifact read 读取同一短期 artifact 页。"
             ),
         }
@@ -6391,6 +6526,9 @@ class MCPPlanningBridgeServer:
     ) -> list[dict[str, Any]]:
         return [
             self._result_artifact_next_read(artifact_fields),
+            self._result_artifact_typed_next_read(
+                artifact_fields,
+            ),
             self._result_artifact_compatibility_next_read(
                 artifact_fields,
             ),
@@ -9328,6 +9466,7 @@ class MCPPlanningBridgeServer:
                 isinstance(referenced_tool, str)
                 and referenced_tool
                 and referenced_tool not in COMMANDER_EXPOSED_TOOLS
+                and not self._is_commander_public_resource_read_reference(value)
             ):
                 return None
             sanitized: dict[str, Any] = {}
@@ -9384,6 +9523,25 @@ class MCPPlanningBridgeServer:
         if isinstance(value, str):
             return self._commander_public_string(value)
         return copy.deepcopy(value)
+
+    @staticmethod
+    def _is_commander_public_resource_read_reference(value: dict[str, Any]) -> bool:
+        """Allow only an opaque, bounded resources/read continuation through Commander.
+
+        ``resources/read`` is an MCP protocol method rather than an exposed
+        tool, so the ordinary tool-reference filter would otherwise erase the
+        recovery route.  Accept only the two process-local opaque URI families;
+        do not turn the public projection into a generic resource or file read
+        surface.
+        """
+
+        if value.get("kind") != "mcp_resource" or value.get("tool") != "resources/read":
+            return False
+        arguments = value.get("arguments")
+        if not isinstance(arguments, dict) or set(arguments) != {"uri"}:
+            return False
+        uri = arguments.get("uri")
+        return isinstance(uri, str) and _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(uri) is not None
 
     @staticmethod
     def _is_commander_public_context_binding(value: Any) -> bool:
@@ -9475,10 +9633,17 @@ class MCPPlanningBridgeServer:
         tool_name = str(public_tool_result.get("tool") or "")
         raw_data = public_tool_result.get("data")
         is_review_manifest_read = (
-            tool_name == "run_mcp_workflow"
-            and isinstance(params, dict)
-            and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
-            and _policy_string_param(params, "phase") == "read"
+            (
+                tool_name == "review_manifest"
+                and isinstance(params, dict)
+                and _policy_string_param(params, "phase") == "read"
+            )
+            or (
+                tool_name == "run_mcp_workflow"
+                and isinstance(params, dict)
+                and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
+                and _policy_string_param(params, "phase") == "read"
+            )
         )
         review_manifest_page_content: str | None = None
         if is_review_manifest_read:
@@ -9490,10 +9655,13 @@ class MCPPlanningBridgeServer:
                 # returned content remains comparable to subject_page.sha256.
                 review_manifest_page_content = raw_content
         is_result_artifact_read = (
-            tool_name == "run_mcp_workflow"
-            and isinstance(params, dict)
-            and _policy_string_param(params, "workflow") == MCP_RESULT_ARTIFACT_WORKFLOW
-            and _policy_string_param(params, "phase") == "read"
+            tool_name == "read_result_artifact"
+            or (
+                tool_name == "run_mcp_workflow"
+                and isinstance(params, dict)
+                and _policy_string_param(params, "workflow") == MCP_RESULT_ARTIFACT_WORKFLOW
+                and _policy_string_param(params, "phase") == "read"
+            )
         )
         result_artifact_page: dict[str, Any] | None = None
         result_artifact_contract_fields: dict[str, Any] = {}
@@ -9517,9 +9685,14 @@ class MCPPlanningBridgeServer:
                         result_artifact_contract_fields[field] = copy.deepcopy(raw_data[field])
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
-                tool_name == "run_mcp_workflow"
-                and isinstance(params, dict)
-                and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
+                (
+                    tool_name == "review_manifest"
+                    or (
+                        tool_name == "run_mcp_workflow"
+                        and isinstance(params, dict)
+                        and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
+                    )
+                )
                 and public_tool_result.get("error_code") == "CONTEXT_BINDING_MISMATCH"
             )
             if not is_review_manifest_mismatch:
@@ -17072,6 +17245,70 @@ class MCPPlanningBridgeServer:
             raise MCPToolInputError(exc.error_code, exc.message, exc.details) from exc
 
     @staticmethod
+    def _typed_workflow_read_call_projection(
+        value: Any,
+        *,
+        workflow: str,
+        tool_name: str,
+        drop_phase: bool,
+    ) -> Any:
+        """Project only this typed facade's continuation calls.
+
+        The legacy ``run_mcp_workflow`` response keeps its historical
+        continuation shape.  A typed facade may use the same backend but must
+        return a continuation that names the same narrow tool, so a client can
+        follow it without reconstructing workflow/phase routing.
+        """
+
+        if isinstance(value, list):
+            return [
+                MCPPlanningBridgeServer._typed_workflow_read_call_projection(
+                    item,
+                    workflow=workflow,
+                    tool_name=tool_name,
+                    drop_phase=drop_phase,
+                )
+                for item in value
+            ]
+        if not isinstance(value, dict):
+            return copy.deepcopy(value)
+        projected = {
+            key: MCPPlanningBridgeServer._typed_workflow_read_call_projection(
+                nested,
+                workflow=workflow,
+                tool_name=tool_name,
+                drop_phase=drop_phase,
+            )
+            for key, nested in value.items()
+        }
+        arguments = projected.get("arguments")
+        if (
+            projected.get("tool") == "run_mcp_workflow"
+            and isinstance(arguments, dict)
+            and arguments.get("workflow") == workflow
+        ):
+            typed_arguments = dict(arguments)
+            typed_arguments.pop("workflow", None)
+            if drop_phase:
+                typed_arguments.pop("phase", None)
+            projected["tool"] = tool_name
+            projected["arguments"] = typed_arguments
+            if projected.get("kind") == "mcp_tool_compatibility":
+                projected["kind"] = "mcp_tool"
+        return projected
+
+    def _tool_review_manifest_entry(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Typed, read-only facade for the manifest review state machine."""
+
+        result = self._tool_review_manifest(params)
+        return self._typed_workflow_read_call_projection(
+            result,
+            workflow=REVIEW_MANIFEST_WORKFLOW,
+            tool_name="review_manifest",
+            drop_phase=False,
+        )
+
+    @staticmethod
     def _result_artifact_authority_boundary() -> dict[str, bool]:
         return {
             "does_not_read_project_files": True,
@@ -17087,7 +17324,7 @@ class MCPPlanningBridgeServer:
         *,
         artifact_page: Any,
     ) -> dict[str, Any]:
-        """Expose one exact stored artifact page through the seven-tool surface."""
+        """Expose one exact stored artifact page through its bounded read surface."""
 
         artifact_id = str(artifact_page.artifact_id)
         page = int(artifact_page.page)
@@ -17138,6 +17375,27 @@ class MCPPlanningBridgeServer:
             },
             "authority_boundary": self._result_artifact_authority_boundary(),
         }
+
+    def _tool_read_result_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Typed, read-only facade for one packaged-result continuation page."""
+
+        phase_raw = params.get("phase")
+        if phase_raw is not None:
+            phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+            if phase != "read":
+                raise MCPToolInputError(
+                    "INVALID_RESULT_ARTIFACT_PHASE",
+                    "read_result_artifact 固定执行 read；它不是通用 artifact、文件或证据读取入口。",
+                )
+        read_params = dict(params)
+        read_params["phase"] = "read"
+        result = self._tool_result_artifact(read_params)
+        return self._typed_workflow_read_call_projection(
+            result,
+            workflow=MCP_RESULT_ARTIFACT_WORKFLOW,
+            tool_name="read_result_artifact",
+            drop_phase=True,
+        )
 
     def _tool_result_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read a pre-issued packaged-result page when a host cannot route templates."""

@@ -168,7 +168,7 @@ def test_git_workflow_and_manage_git_share_one_confirmation_identity(tmp_path: P
 
 
 def test_context_gate_covers_every_commander_side_effect_boundary(tmp_path: Path) -> None:
-    """Keep the public seven-tool confirmation matrix explicit and complete."""
+    """Keep the public Commander confirmation matrix explicit and complete."""
 
     server = MCPPlanningBridgeServer(str(tmp_path / "project"), exposure_profile="commander")
 

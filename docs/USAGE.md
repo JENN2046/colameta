@@ -12,7 +12,7 @@ ReviewDecision creation, or GateEvent emission.
 
 For onboarding a new local project into ColaMeta, read
 [ColaMeta Onboarding](ONBOARDING.md) first.
-For package/source installation, the seven-tool private App, systemd deployment,
+For package/source installation, the nine-tool private App, systemd deployment,
 stable replacement, verification, and rollback, read
 [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
 
@@ -36,12 +36,17 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 2. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
-5. Use run_mcp_workflow only for the requested read/preview workflow.
-6. Use manage_validation_run for bounded validation.
-7. Use manage_git for reviewed Git operations.
+5. Use review_manifest for hash-bound independent review.
+6. For a packaged result, use resources/read first; if dynamic resource reads are unavailable, use read_result_artifact.
+7. Use run_mcp_workflow for the requested plan, preview, or controlled-change workflow.
+8. Use manage_validation_run for bounded validation.
+9. Use manage_git for reviewed Git operations.
 ```
 
-That is the complete seven-tool Commander surface. Consumer contracts,
+That is the complete nine-tool Commander surface in this source version.
+Before using the two direct read tools against an already-running stable service,
+confirm its runtime provenance and `visible_tool_count`; an older stable
+deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
@@ -130,7 +135,7 @@ does not authorize executor runs, commits, pushes, stable replacement,
 ReviewDecision, GateEvent, or Delivery accepted.
 
 The following role-aware packet is an **advanced loopback** capability, not a
-seven-tool private App call. On the advanced endpoint, use
+nine-tool private App call. On the advanced endpoint, use
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` before
 choosing lower-level tools. It returns one `primary_next_action`, the gate level
 for that action, `persona_safe_next_tool`, confirmation flags, and
@@ -243,7 +248,7 @@ operator_closeout.decision=blocked
 ## 2. First Reads On The Advanced Loopback Endpoint
 
 This section applies to the complete loopback advanced catalog. The private App
-uses the seven-tool fast path in section 0. After advanced MCP connects, do
+uses the nine-tool fast path in section 0. After advanced MCP connects, do
 read-only calibration first. Do not run an executor,
 commit, push, or write project state before reading the service contract.
 
@@ -645,13 +650,15 @@ packaged=true
   reconstructing the pages. These short-lived artifacts are read-only and do
   not grant any workflow, executor, Git, or delivery authority.
   If the host rejects a known dynamic resource URI, use the returned
-  mcp_tool_compatibility call instead:
-  run_mcp_workflow(workflow=result_artifact, phase=read, artifact_id=<opaque
-  artifact_id>, artifact_page=<page>). It returns exactly one stored page and
-  keeps the same artifact_id, page_count, expires_at, and content_sha256.
-  Continue only through its next-page call, concatenate the returned
-  artifact_page.content values in page order, then verify content_sha256.
-  This fallback requires mcp:read and cannot read project files, run an
+  read_result_artifact call instead:
+  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>).
+  It returns exactly one stored page and keeps the same artifact_id, page_count,
+  expires_at, and content_sha256. Continue only through its next-page call,
+  concatenate the returned artifact_page.content values in page order, then
+  verify content_sha256. The legacy
+  run_mcp_workflow(workflow=result_artifact, phase=read, ...) call remains in
+  the response as a compatibility fallback for existing clients.
+  This read route requires mcp:read and cannot read project files, run an
   executor or validation, change Git, or advance delivery state.
   resources/templates/list advertises only the static artifact URI shapes; it
   never lists live artifact IDs. Read only the opaque handle returned by the
@@ -676,10 +683,12 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 
 ### Manifest-bound independent review
 
-Use this read-only workflow when an external review contract already names the
+Use this read-only tool when an external review contract already names the
 exact files and SHA-256 values that must be inspected. It is intentionally not
-an arbitrary `read_project_file` escape hatch, and it remains inside the seven
-Commander tools as a typed `run_mcp_workflow` family.
+an arbitrary `read_project_file` escape hatch. `review_manifest` is a
+first-class Commander read tool; the legacy
+`run_mcp_workflow workflow=review_manifest` route remains available for
+existing clients.
 It requires a Git checkout with a readable branch and HEAD.
 
 First obtain the current binding template. This reads no subject files and runs
@@ -687,9 +696,8 @@ no validation command:
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "inspect",
     "project_name": "registered-project-name"
   }
@@ -702,9 +710,8 @@ manifest, then supply the caller-owned review unit and exact subject hashes:
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "inspect",
     "project_name": "registered-project-name",
     "review_manifest": {
@@ -769,14 +776,13 @@ rechecks every declared subject without returning file content.
 
 Some ChatGPT hosts do not yet route dynamic resource-template URIs through
 their generic resource proxy. Each returned subject therefore also includes a
-typed `read_call` fallback inside the existing `run_mcp_workflow` tool. Call it
-only when that proxy rejects a manifest URI:
+typed `read_call` fallback that names `review_manifest`. Call it only when that
+proxy rejects a manifest URI:
 
 ```json
 {
-  "name": "run_mcp_workflow",
+  "name": "review_manifest",
   "arguments": {
-    "workflow": "review_manifest",
     "phase": "read",
     "project_name": "registered-project-name",
     "review_manifest_id": "<from inspect>",
@@ -788,8 +794,8 @@ only when that proxy rejects a manifest URI:
 
 `read` returns only that declared page, rechecks the current context and that
 subject's SHA-256, and returns a bound next-page call when more pages remain.
-It is a ChatGPT compatibility route, not arbitrary file access and not an
-additional Commander tool.
+It is a narrow ChatGPT compatibility route, not arbitrary file access. Existing
+clients may continue to use the legacy generic workflow form.
 
 `CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
 or current version no longer matches the manifest. Stop combining evidence,
@@ -993,12 +999,12 @@ Handle the two fail-closed errors as follows:
   the gate. A caller path may itself be a symlink alias when it resolves to the
   same safe canonical root.
 
-### Request a Work Item Gate review through the seven-tool app
+### Request a Work Item Gate review through the nine-tool app
 
 When an accepted Stage 0-6 result asks whether to request a Delivery State Gate
-review, use the existing `run_mcp_workflow` tool. This keeps the Commander app at
-exactly seven exposed tools; `gate_review_request` is a high-level workflow over
-the existing Work Item Gate backend, not an eighth tool.
+review, use the existing `run_mcp_workflow` tool. `gate_review_request` is a
+high-level workflow over the existing Work Item Gate backend, not a tenth
+Commander tool.
 
 Start with the read-only inspection:
 
@@ -1017,7 +1023,7 @@ Start with the read-only inspection:
 If `work_item_id` is omitted, inspect returns up to 20 sanitized
 `work_item_candidates` plus read-only selection calls in `next_actions`. Select
 one candidate and call its inspect action before previewing a transition. The
-seven-tool app does not need the hidden `list_work_items` tool.
+nine-tool app does not need the hidden `list_work_items` tool.
 
 Generate a signed Gate preview using the current Work Item bindings:
 
@@ -1072,7 +1078,7 @@ in this order:
 
 ```text
 list_registered_projects -> expected project is available
-analyze_project_state -> commander profile and visible_tool_count=7
+analyze_project_state -> commander profile and visible_tool_count=9 after this source version is loaded
 gate_review_request/inspect -> succeeded, read_only=true, side_effects=false
 get_apps_connector_smoke_packet -> connector_closeout_ready / ready, no evidence gaps
 ```
@@ -1551,7 +1557,7 @@ before changing provider/auth config.
 
 ## 11. Advanced Executor Status Polling
 
-The tools in this section are hidden from the seven-tool Commander endpoint.
+The tools in this section are hidden from the nine-tool Commander endpoint.
 Use an explicitly approved local advanced client, for example:
 
 ```bash

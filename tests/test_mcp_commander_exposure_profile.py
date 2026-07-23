@@ -22,13 +22,15 @@ def _nested_keys(value: object) -> set[str]:
     return set()
 
 
-def test_commander_profile_exposes_exact_seven_high_level_tools(tmp_path) -> None:
+def test_commander_profile_exposes_nine_high_level_tools_with_typed_review_reads(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
     assert tuple(server._visible_tool_names()) == COMMANDER_EXPOSED_TOOLS
-    assert len(server._visible_tool_names()) == 7
+    assert len(server._visible_tool_names()) == 9
     assert "list_registered_projects" in server._visible_tool_names()
     assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
+    assert "review_manifest" in server._visible_tool_names()
+    assert "read_result_artifact" in server._visible_tool_names()
     assert all(
         tool.output_schema and tool.annotations
         for tool in server._filter_tools_by_exposure_profile(server.tool_defs)
@@ -42,6 +44,44 @@ def test_commander_profile_allows_cached_read_only_smoke_tool(tmp_path) -> None:
 
     assert result["ok"] is True
     assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
+
+
+def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    valid_uri = "colameta://result-artifact/abcdefghijklmnop"
+
+    projected = server._commander_public_sanitize(
+        {
+            "recommended_next_reads": [
+                {
+                    "kind": "mcp_resource",
+                    "tool": "resources/read",
+                    "arguments": {"uri": valid_uri},
+                },
+                {
+                    "kind": "mcp_resource",
+                    "tool": "resources/read",
+                    "arguments": {"uri": "file:///private/path"},
+                },
+                {
+                    "kind": "mcp_tool",
+                    "tool": "manage_files",
+                    "arguments": {"action": "read", "path": "README.md"},
+                },
+            ]
+        },
+        compact=False,
+    )
+
+    assert projected == {
+        "recommended_next_reads": [
+            {
+                "kind": "mcp_resource",
+                "tool": "resources/read",
+                "arguments": {"uri": valid_uri},
+            }
+        ]
+    }
 
 
 def test_commander_profile_denies_hidden_tools_even_if_client_cached_them(tmp_path) -> None:
@@ -61,7 +101,7 @@ def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
 
     assert set(server._visible_tool_names()) == set(NORMAL_EXPOSED_TOOLS)
-    assert len(server._visible_tool_names()) == 82
+    assert len(server._visible_tool_names()) == 84
     assert "manage_files" in server._visible_tool_names()
 
 
