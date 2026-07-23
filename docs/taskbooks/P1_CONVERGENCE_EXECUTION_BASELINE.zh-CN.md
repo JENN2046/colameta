@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 8052c6f1b4143c51245d9d2e8c540ffb8a72b03e6dc49edf272715c31b4a9a22
+  source_sha256: 474aadefbea4dc28075225105e05c35a078c923ddd85266cad556a7f62e205ce
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 3
+  revision: 4
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -91,6 +91,11 @@ registry、policy 和 compatibility composition；已抽出的 family 不得仍�
 - `runner/commander_widget.html` 是由 `runner/commander_widget.py` 加载的 packaged
   application data；原有 `ui://colameta/commander/v1.html` URI 与 widget response bytes
   保持稳定。
+- `runner/mcp_commander_app.py` 负责 Commander/ChatGPT 的 product domain：manifest、
+  readiness/product-console projection、submission-evidence view 与 client-flow 组装。
+  `MCPPlanningBridgeServer` 通过继承使用该 domain，同时保留 transport、registry、policy
+  和明确的 compatibility composition。原有 server-module dependency-injection seam 被刻意
+  保留并有测试，ownership 移动不改变既有 focused integration behavior。
 
 这只是内部 ownership 拆分；不改变九个公开工具、scope、authorization boundary、connector
 configuration 或 release authority。
