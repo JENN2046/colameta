@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 9341e8f219c1141c3979aace58d5f9ff616fe0e232caaf4a4735a5f30d746e80
+  source_sha256: 8052c6f1b4143c51245d9d2e8c540ffb8a72b03e6dc49edf272715c31b4a9a22
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 2
+  revision: 3
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -81,6 +81,19 @@ registry、policy 和 compatibility composition；已抽出的 family 不得仍�
 - public schema、scope、preview/apply binding 和 context binding 均不扩大；
 - full pytest、self-hosting smoke、受影响 Python 的 compileall、Ruff 与 `git diff --check`
   全部通过。
+
+### 已采用的 P1-A 组合边界
+
+- `runner/mcp_tool_catalog.py` 负责声明式 MCP 输入/输出 schema、tool annotations，以及
+  Stage-parallel/context-binding 的 schema 片段。
+- `runner/mcp_server.py` 只组合该 catalog、追加既有 Work Item definitions，并应用冻结的
+  exposure-profile 检查；它不再重新实现 catalog 数据。
+- `runner/commander_widget.html` 是由 `runner/commander_widget.py` 加载的 packaged
+  application data；原有 `ui://colameta/commander/v1.html` URI 与 widget response bytes
+  保持稳定。
+
+这只是内部 ownership 拆分；不改变九个公开工具、scope、authorization boundary、connector
+configuration 或 release authority。
 
 ## P1-B —— 把当前事实做成真正的产品产物
 

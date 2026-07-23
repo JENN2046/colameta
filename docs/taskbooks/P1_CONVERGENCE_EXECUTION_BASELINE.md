@@ -7,7 +7,7 @@ p1_convergence_execution_baseline:
   status: execution_ready_after_batch_gate
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 2
+  revision: 3
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -105,6 +105,21 @@ families.
   widen; and
 - full pytest, self-hosting smoke, compileall for touched Python, Ruff, and
   `git diff --check` pass.
+
+### Adopted P1-A composition boundary
+
+- `runner/mcp_tool_catalog.py` owns declarative MCP input/output schemas, tool
+  annotations, and the Stage-parallel/context-binding schema fragments.
+- `runner/mcp_server.py` composes that catalog, adds the existing Work Item
+  definitions, and applies frozen exposure-profile checks; it does not recreate
+  catalog data.
+- `runner/commander_widget.html` is packaged application data loaded through
+  `runner/commander_widget.py`, while the existing `ui://colameta/commander/v1.html`
+  URI and widget response bytes remain stable.
+
+This is an internal ownership split only. It does not change the nine public
+tools, scopes, authorization boundaries, connector configuration, or release
+authority.
 
 ## P1-B — Make Current Facts A Real Product Artifact
 

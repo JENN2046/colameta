@@ -533,9 +533,29 @@ def _runtime_names(checkout: Path) -> tuple[str, ...]:
             for path in (checkout / root).rglob("*")
             if path.is_file()
             and "__pycache__" not in path.parts
-            and (path.suffix in {".py", ".json"} or path.name == "py.typed")
+            and (
+                path.suffix in {".py", ".json"}
+                or path.name == "py.typed"
+                or path.relative_to(checkout).as_posix() == "runner/commander_widget.html"
+            )
         )
     )
+
+
+def test_verified_wheel_manifest_includes_the_reviewed_commander_widget_resource(
+    exact_wheel_artifacts: tuple[Path, Path],
+) -> None:
+    checkout, wheel = exact_wheel_artifacts
+    inventory = _wheel_artifact_manifest(
+        wheel,
+        checkout=checkout,
+        expected_runtime_names=_runtime_names(checkout),
+    )
+    resource_name = "runner/commander_widget.html"
+
+    assert inventory.runtime_manifest[resource_name] == hashlib.sha256(
+        (checkout / resource_name).read_bytes()
+    ).hexdigest()
 
 
 def _assert_wheel_rejected(checkout: Path, wheel: Path, expected_code: str) -> None:

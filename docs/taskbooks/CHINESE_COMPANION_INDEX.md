@@ -20,7 +20,7 @@ chinese_companion_index:
 | `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 中文 companion 已生成，保留 packet 非授权边界。 |
 | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.md` | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.zh-CN.md` | `companion_draft` | 实施路线启动前总闸口材料中文 companion 已生成，只准备 Commander confirmation prompt，不授权实现、commit、push 或 executor。 |
 | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md` | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md` | `companion_draft` | Stage 0-6 implementation closeout readiness packet 中文 companion 已生成，只支持 push 决策审查，不授权 push、fetch、pull、executor、route transition 或 delivery state。 |
-| `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md` | `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.zh-CN.md` | `companion_draft` | P1 v2 四批强执行基线的完整中文 companion；公开 Commander 契约固定为九工具，仍不授予 commit、push、stable replacement 或外部配置权限。 |
+| `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md` | `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.zh-CN.md` | `companion_draft` | P1 四批强执行基线的完整中文 companion；公开 Commander 契约固定为九工具，仍不授予 commit、push、stable replacement 或外部配置权限。 |
 
 ---
 

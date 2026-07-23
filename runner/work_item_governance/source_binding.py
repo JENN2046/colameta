@@ -30,8 +30,9 @@ SOURCE_ARTIFACT_EVIDENCE_DIGEST_META_KEY = "authoritative_canary_source_artifact
 
 _PACKAGE_ROOTS = ("runner", "adapters", "schemas", "scripts")
 _SOURCE_SUFFIXES = (".py", ".json")
+_PACKAGED_RUNTIME_DATA_FILES = frozenset({"runner/commander_widget.html"})
 _BUILD_BINDING_FILES = ("pyproject.toml", "README.md")
-_EXPECTED_PYPROJECT_SHA256 = "032627cfef03ae29d7dce5b6a36c89bff22157082e0813314becbac69a9180e7"
+_EXPECTED_PYPROJECT_SHA256 = "132968af8dd6be5f82d8f064466e70aa91fdb48420d69d60779d55f1e2f86738"
 _EXPECTED_WHEEL_FILENAME = "colameta-0.1.2-py3-none-any.whl"
 _EXPECTED_DIST_INFO = "colameta-0.1.2.dist-info"
 _EXPECTED_ENTRY_POINTS = b"[console_scripts]\ncolameta = scripts.runner_cli:main\n"
@@ -76,6 +77,9 @@ _METADATA_HEADERS = {
 _CRITICAL_RUNTIME_FILES = frozenset(
     {
         "runner/mcp_server.py",
+        "runner/mcp_tool_catalog.py",
+        "runner/commander_widget.py",
+        "runner/commander_widget.html",
         "runner/work_item_canary_runtime.py",
         "runner/work_item_governance/activation.py",
         "runner/work_item_governance/bootstrap.py",
@@ -1028,7 +1032,11 @@ def _is_runtime_source_name(name: str) -> bool:
     path = PurePosixPath(name)
     if not path.parts or path.parts[0] not in _PACKAGE_ROOTS or ".." in path.parts:
         return False
-    return path.suffix in _SOURCE_SUFFIXES or path.name == "py.typed"
+    return (
+        path.suffix in _SOURCE_SUFFIXES
+        or path.name == "py.typed"
+        or name in _PACKAGED_RUNTIME_DATA_FILES
+    )
 
 
 def _loaded_colameta_files() -> tuple[str, ...]:
