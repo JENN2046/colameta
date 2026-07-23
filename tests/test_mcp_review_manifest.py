@@ -787,12 +787,6 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
     descriptor = data["subjects"][0]
     assert data["recommended_next_reads"] == [
         {
-            "kind": "mcp_resource",
-            "tool": "resources/read",
-            "arguments": {"uri": data["manifest_resource_uri"]},
-            "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
-        },
-        {
             "kind": "mcp_tool",
             "tool": "review_manifest",
             "arguments": {
@@ -801,7 +795,13 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
                 "review_manifest_subject_index": 1,
                 "review_manifest_page": 1,
             },
-            "reason": "若宿主不支持动态 resources/read URI，使用同一 manifest 绑定下的第 1 个 subject 第 1 页读取调用。",
+            "reason": "通过 ChatGPT 可调用的 review_manifest 读取同一绑定下的第 1 个 subject 第 1 页；上下文和 SHA-256 会复核。",
+        },
+        {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": data["manifest_resource_uri"]},
+            "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可先读取审查 manifest，再按 subjects 中返回的 resource_uri 读取完整输入。",
         },
     ]
     assert descriptor["read_call"] == {

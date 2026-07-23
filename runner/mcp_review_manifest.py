@@ -432,24 +432,25 @@ class MCPReviewManifestWorkflow:
         ]
         handle_fields = self._host._review_manifest_handle_fields(handle)
         manifest_resource_uri = handle_fields["manifest_resource_uri"]
-        recommended_next_reads: list[dict[str, Any]] = [
-            {
-                "kind": "mcp_resource",
-                "tool": "resources/read",
-                "arguments": {"uri": manifest_resource_uri},
-                "reason": "先续读审查 manifest，再仅按 subjects 中返回的 resource_uri 读取完整输入。",
-            }
-        ]
+        recommended_next_reads: list[dict[str, Any]] = []
         if subject_descriptors:
             fallback = subject_descriptors[0].get("read_call")
             if isinstance(fallback, dict):
                 recommended_next_reads.append(
                     {
-                        "kind": "mcp_tool_compatibility",
+                        "kind": "mcp_tool",
                         **fallback,
-                        "reason": "若宿主不支持动态 resources/read URI，使用同一 manifest 绑定下的第 1 个 subject 第 1 页读取调用。",
+                        "reason": "通过 ChatGPT 可调用的 review_manifest 读取同一绑定下的第 1 个 subject 第 1 页；上下文和 SHA-256 会复核。",
                     }
                 )
+        recommended_next_reads.append(
+            {
+                "kind": "mcp_resource",
+                "tool": "resources/read",
+                "arguments": {"uri": manifest_resource_uri},
+                "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可先读取审查 manifest，再按 subjects 中返回的 resource_uri 读取完整输入。",
+            }
+        )
         return {
             "ok": True,
             "workflow": REVIEW_MANIFEST_WORKFLOW,

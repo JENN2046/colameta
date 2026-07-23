@@ -63,7 +63,7 @@ def test_manage_files_read_packages_connector_sized_result_and_keeps_project() -
         structured["summary"]["target_tool_result_chars"]
         == MCP_MANAGE_FILES_READ_TARGET_CHARS
     )
-    assert structured["recommended_next_reads"][0]["tool"] == "resources/read"
+    assert structured["recommended_next_reads"][0]["tool"] == "read_result_artifact"
     next_read = next(
         item
         for item in structured["recommended_next_reads"]

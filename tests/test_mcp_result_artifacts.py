@@ -56,19 +56,19 @@ def test_packaged_mcp_result_exposes_a_paged_resource_continuation(tmp_path) -> 
     assert manifest["page_uri_template"].endswith("/pages/{page}")
     assert manifest["recommended_next_reads"][:3] == [
         {
-            "kind": "mcp_resource",
-            "tool": "resources/read",
-            "arguments": {"uri": manifest["resource_uri"]},
-            "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
-        },
-        {
             "kind": "mcp_tool",
             "tool": "read_result_artifact",
             "arguments": {
                 "artifact_id": manifest["artifact_id"],
                 "artifact_page": 1,
             },
-            "reason": "若宿主拒绝动态 resources/read URI，优先通过 read_result_artifact 读取同一短期 artifact 页。",
+            "reason": "通过 ChatGPT 可调用的 read_result_artifact 读取同一短期 artifact 页；保留 artifact_id、页码、SHA-256 与 expiry 合同。",
+        },
+        {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": manifest["resource_uri"]},
+            "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可读取第 1 页，再按 page_uri_template 续读。",
         },
         {
             "kind": "mcp_tool_compatibility",
@@ -79,7 +79,7 @@ def test_packaged_mcp_result_exposes_a_paged_resource_continuation(tmp_path) -> 
                 "artifact_id": manifest["artifact_id"],
                 "artifact_page": 1,
             },
-            "reason": "若宿主拒绝动态 resources/read URI，则通过 run_mcp_workflow 的 result_artifact read 读取同一短期 artifact 页。",
+            "reason": "旧客户端兼容：通过 run_mcp_workflow 的 result_artifact read 读取同一短期 artifact 页。",
         },
     ]
 
@@ -118,8 +118,8 @@ def test_actions_packaging_uses_the_same_recoverable_artifact_contract(tmp_path)
 
     assert manifest["packaged"] is True
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
-    assert manifest["recommended_next_reads"][0]["tool"] == "resources/read"
-    assert manifest["recommended_next_reads"][1]["tool"] == "read_result_artifact"
+    assert manifest["recommended_next_reads"][0]["tool"] == "read_result_artifact"
+    assert manifest["recommended_next_reads"][1]["tool"] == "resources/read"
     assert manifest["recommended_next_reads"][2]["tool"] == "run_mcp_workflow"
 
 
@@ -174,8 +174,8 @@ def test_mcp_overflow_reduced_manifest_keeps_resource_and_typed_recoverable_cont
     assert manifest["package_mode"] == "manifest"
     assert manifest["artifact_id"]
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
-        "resources/read",
         "read_result_artifact",
+        "resources/read",
     ]
 
     page_response = server._handle_jsonrpc_request(
@@ -216,8 +216,8 @@ def test_actions_overflow_reduced_manifest_keeps_resource_and_typed_recoverable_
     assert manifest["artifact_id"]
     assert manifest["resource_uri"].startswith("colameta://result-artifact/")
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
-        "resources/read",
         "read_result_artifact",
+        "resources/read",
     ]
 
 
@@ -238,8 +238,8 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
     assert manifest["packaged"] is True
     assert manifest["package_mode"] == "artifact_continuation"
     assert [item["tool"] for item in manifest["recommended_next_reads"]] == [
-        "resources/read",
         "read_result_artifact",
+        "resources/read",
         "run_mcp_workflow",
     ]
 

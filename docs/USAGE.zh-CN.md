@@ -41,7 +41,7 @@
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
 5. 做哈希绑定独立审查时用 review_manifest
-6. 遇到 packaged result 时先用 resources/read；动态资源读取不可用时用 read_result_artifact
+6. 在 ChatGPT 中遇到 packaged result 时用 read_result_artifact；支持资源方法的 MCP client 可用 resources/read
 7. 需要计划、预览或受控变更 workflow 时再用 run_mcp_workflow
 8. 有界验证用 manage_validation_run
 9. 审查后的 Git 操作用 manage_git
@@ -664,8 +664,8 @@ Advanced MCP 连接后先做只读校准，不要直接 run、commit、push 或�
 }
 ```
 
-Apps 客户端可通过 `resources/list` 和 `resources/read` 发现并读取 widget
-resource。`resources/templates/list` 还会公开哈希绑定 review manifest 摘要、subject 和分页的
+MCP 服务会为支持资源方法的 client 通过 `resources/list` 和 `resources/read` 发布 widget
+resource；ChatGPT 通过 tool metadata 加载 widget。`resources/templates/list` 还会公开哈希绑定 review manifest 摘要、subject 和分页的
 静态 URI 形状；它不列出 live handle、路径或正文。这个面板只展示服务事实、profile-aware 入口、
 connector health、preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
 stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
@@ -767,16 +767,15 @@ ok=false
   先读 error_code、message、details；不要猜参数。
 
 packaged=true
-  当前结果被压成 manifest。如果有 artifact_id 和 resource_uri，先通过
-  resources/read 读取 resource_uri，再按 page_uri_template 读取第 2 到
-  page_count 页；拼回后核对 content_sha256。这些短期 artifact 只读，
-  不授予 workflow、executor、Git 或 delivery authority。
-  如果宿主拒绝一个已知的动态 resource URI，改用返回的
+  当前结果被压成 manifest。在 ChatGPT 中先使用返回的
   read_result_artifact 调用：
   read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>)。
   它只返回一个已存储页，并保留同一 artifact_id、page_count、expires_at 与
   content_sha256。只沿着它返回的 next-page 调用继续；按页码拼接
-  artifact_page.content 后再核对 content_sha256。返回中仍会保留旧的
+  artifact_page.content 后再核对 content_sha256。这些短期 artifact 只读，
+  不授予 workflow、executor、Git 或 delivery authority。
+  支持资源方法的 MCP client 也可通过 resources/read 读取 resource_uri，再按
+  page_uri_template 读取第 2 到 page_count 页。返回中仍会保留旧的
   run_mcp_workflow(workflow=result_artifact, phase=read, ...) 兼容调用，供既有
   client 使用。该读取路线只需要 mcp:read，不能读取项目文件、运行 executor
   或 validation、修改 Git，或推进 Delivery State。
@@ -856,11 +855,12 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 managed 项目必须使用模板中实际返回的 `runner_plan` 与 `current_version`，不能套用
 source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview，绝不执行。
 
-成功后先通过 `resources/templates/list` 发现静态 manifest URI 形状，再通过 `resources/read`
-读取 `manifest_resource_uri`，再只读取其中返回的 subject `resource_uri`。大 subject 按
-`page_uri_template` 分页；每次读取 subject resource
-时都会重新核对项目上下文与 subject hash。带 `review_manifest_id` 调用 `phase=verify`
-会复核所有声明的 subject，但不返回文件内容。
+成功后，ChatGPT 应使用每个返回的、指向 `review_manifest` 的 typed `read_call`；它只读取
+已声明的 subject 页，并在返回内容前重新核对项目上下文与 subject hash。带
+`review_manifest_id` 调用 `phase=verify` 会复核所有声明的 subject，但不返回文件内容。
+支持资源方法的 MCP client 也可通过 `resources/templates/list` 发现静态 manifest URI 形状，
+再通过 `resources/read` 读取 `manifest_resource_uri`，并只读取其中返回的 subject
+`resource_uri`。大 subject 按 `page_uri_template` 分页。
 
 review_manifest workflow 本身绝不执行这些声明。若要把短期 inspect 会话转换为独立授权的
 validation preview，调用 manage_validation_run，并传 action=preview、已登记的 project_name
@@ -878,8 +878,7 @@ manifest 就是完整验证合同。若任一声明命令不安全、包含秘�
 之后才启动固定 preview 中的命令。因此 manifest 会话只提供有界证据输入，本身不授予
 validation 执行权。
 
-部分 ChatGPT 宿主暂时不会把动态 resource-template URI 路由到通用资源代理。每个 subject 因而还会
-返回指向 `review_manifest` 的 typed `read_call` 兼容入口；仅当代理拒绝 manifest URI 时使用：
+每个 subject 都会返回指向 `review_manifest` 的 typed `read_call`：
 
 ```json
 {
@@ -895,8 +894,8 @@ validation 执行权。
 ```
 
 `read` 只返回该已声明 subject 的指定页；每次都会重新核对当前上下文和该 subject 的 SHA-256。若还有
-后续页，它会返回同一绑定下的下一页调用。它只是窄化的 ChatGPT 兼容读取路线，不是任意文件读取；既有
-client 仍可使用旧的 generic workflow 形式。
+后续页，它会返回同一绑定下的下一页调用。它是 ChatGPT 的主读取路线，不是任意文件读取；既有
+client 仍可使用 resource 方法或旧的 generic workflow 形式。
 
 `CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
 不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回

@@ -4367,10 +4367,8 @@ class MCPPlanningBridgeServer:
                     "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                     "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                     "review_manifest：把独立审查输入严格绑定到 project/branch/HEAD/Runner plan/current version/"
-                    "review unit/intent 与 subject SHA-256；标准资源读取之外，还提供同一绑定下的分页 read "
-                    "compatibility phase，绝不开放任意文件读取。"
-                    "result_artifact：当宿主不支持动态 resources/read URI 时，通过同一 artifact_id 的只读分页 "
-                    "compatibility phase 读取已打包工具结果；不开放任意资源或项目文件读取。"
+                    "review unit/intent 与 subject SHA-256；ChatGPT 通过 typed read 分页读取，标准资源读取仅供支持它的 MCP 客户端使用，绝不开放任意文件读取。"
+                    "result_artifact：通过同一 artifact_id 的只读分页读取已打包工具结果；不开放任意资源或项目文件读取。"
                     "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                     "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                     "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
@@ -4395,7 +4393,7 @@ class MCPPlanningBridgeServer:
                                 "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview",
                                 "review_manifest", "result_artifact", "gate_review_request", "operator_batch",
                             ],
-                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；仅作为不支持动态 resources/read 的宿主兼容入口。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                            "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                         },
                         "phase": {
                             "type": "string",
@@ -4898,7 +4896,7 @@ class MCPPlanningBridgeServer:
                 title="Read Result Artifact Page",
                 description=(
                     f"[{self.project_hint}] Use this when a previous tool response was packaged because it was too large, "
-                    "or when this host cannot call dynamic resources/read URIs. "
+                    "including in ChatGPT. "
                     "Reads exactly one page from the same short-lived opaque artifact and returns its stable SHA-256 and expiry; "
                     "it cannot enumerate artifacts, read project files, or perform a side effect. scope=mcp:read。"
                 ),
@@ -6435,7 +6433,7 @@ class MCPPlanningBridgeServer:
             "kind": "mcp_resource",
             "tool": "resources/read",
             "arguments": {"uri": resource_uri},
-            "reason": "结果已保存为短期分页 artifact；先读取第 1 页，再按 page_uri_template 续读。",
+            "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可读取第 1 页，再按 page_uri_template 续读。",
         }
 
     @staticmethod
@@ -6493,8 +6491,8 @@ class MCPPlanningBridgeServer:
                 page=page,
             ),
             "reason": (
-                "若宿主拒绝动态 resources/read URI，优先通过 read_result_artifact "
-                "读取同一短期 artifact 页。"
+                "通过 ChatGPT 可调用的 read_result_artifact 读取同一短期 artifact 页；"
+                "保留 artifact_id、页码、SHA-256 与 expiry 合同。"
             ),
         }
 
@@ -6515,8 +6513,8 @@ class MCPPlanningBridgeServer:
                 page=page,
             ),
             "reason": (
-                "若宿主拒绝动态 resources/read URI，则通过 run_mcp_workflow 的 "
-                "result_artifact read 读取同一短期 artifact 页。"
+                "旧客户端兼容：通过 run_mcp_workflow 的 result_artifact read "
+                "读取同一短期 artifact 页。"
             ),
         }
 
@@ -6525,10 +6523,10 @@ class MCPPlanningBridgeServer:
         artifact_fields: dict[str, Any],
     ) -> list[dict[str, Any]]:
         return [
-            self._result_artifact_next_read(artifact_fields),
             self._result_artifact_typed_next_read(
                 artifact_fields,
             ),
+            self._result_artifact_next_read(artifact_fields),
             self._result_artifact_compatibility_next_read(
                 artifact_fields,
             ),
@@ -6557,8 +6555,8 @@ class MCPPlanningBridgeServer:
             "packaged": True,
             "package_mode": "artifact_continuation",
             "message": (
-                "完整结果已保存为短期分页 artifact；请先读取 resource_uri，再按 "
-                "page_uri_template 续读并核对 content_sha256。"
+                "完整结果已保存为短期分页 artifact；请先通过 read_result_artifact "
+                "读取各页并核对 content_sha256。支持动态 resources/read 的 MCP 客户端也可使用 resource_uri。"
             ),
             "omitted_fields": ["full_result"],
             "recommended_next_reads": self._result_artifact_recommended_next_reads(

@@ -37,7 +37,7 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
 5. Use review_manifest for hash-bound independent review.
-6. For a packaged result, use resources/read first; if dynamic resource reads are unavailable, use read_result_artifact.
+6. In ChatGPT, use read_result_artifact for a packaged result; resource-capable MCP clients may use resources/read.
 7. Use run_mcp_workflow for the requested plan, preview, or controlled-change workflow.
 8. Use manage_validation_run for bounded validation.
 9. Use manage_git for reviewed Git operations.
@@ -303,10 +303,11 @@ need data, use:
 }
 ```
 
-Apps clients can discover and read the widget resource through
-`resources/list` and `resources/read`. `resources/templates/list` additionally
-advertises only the static URI shapes for hash-bound review-manifest summaries,
-subjects, and pages; it never lists live handles, paths, or content. The widget
+The MCP server publishes the widget through `resources/list` and `resources/read`
+for clients that support resource methods; ChatGPT loads the widget through its
+tool metadata. `resources/templates/list` additionally advertises only the static
+URI shapes for hash-bound review-manifest summaries, subjects, and pages; it never
+lists live handles, paths, or content. The widget
 only displays service facts, profile-aware entries, connector health,
 preview-first routes, and explicit authorization gates. It does not authorize
 executor runs, commits, pushes,
@@ -644,18 +645,17 @@ ok=false
   before retrying any preview or commit-scoped action.
 
 packaged=true
-  The result was compressed into a manifest. If artifact_id and resource_uri
-  are present, read resource_uri through resources/read first, then continue
-  with page_uri_template for pages 2..page_count. Verify content_sha256 after
-  reconstructing the pages. These short-lived artifacts are read-only and do
-  not grant any workflow, executor, Git, or delivery authority.
-  If the host rejects a known dynamic resource URI, use the returned
-  read_result_artifact call instead:
+  The result was compressed into a manifest. In ChatGPT, use the returned
+  read_result_artifact call first:
   read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>).
   It returns exactly one stored page and keeps the same artifact_id, page_count,
   expires_at, and content_sha256. Continue only through its next-page call,
   concatenate the returned artifact_page.content values in page order, then
-  verify content_sha256. The legacy
+  verify content_sha256. These short-lived artifacts are read-only and do not
+  grant any workflow, executor, Git, or delivery authority.
+  A resource-capable MCP client may instead read resource_uri through
+  resources/read, then continue with page_uri_template for pages 2..page_count.
+  The legacy
   run_mcp_workflow(workflow=result_artifact, phase=read, ...) call remains in
   the response as a compatibility fallback for existing clients.
   This read route requires mcp:read and cannot read project files, run an
@@ -766,18 +766,16 @@ ColaMeta rechecks the generic validation context and the original manifest
 context and every subject hash. The manifest session therefore supplies bounded
 evidence input; it does not by itself grant validation execution authority.
 
-On success, discover the static manifest URI shapes through
-`resources/templates/list`, read `manifest_resource_uri` through
-`resources/read`, then read only the returned subject `resource_uri` values.
-Subject pages use
-`page_uri_template`; each subject resource read rechecks the project context and
-the subject hash before returning text. `phase=verify` with `review_manifest_id`
-rechecks every declared subject without returning file content.
+On success, ChatGPT should use each returned typed `read_call` that names
+`review_manifest`; it reads only its declared subject page and rechecks the
+project context and subject hash before returning text. `phase=verify` with
+`review_manifest_id` rechecks every declared subject without returning file
+content. A resource-capable MCP client may instead discover the static manifest
+URI shapes through `resources/templates/list`, read `manifest_resource_uri`
+through `resources/read`, then read only the returned subject `resource_uri`
+values. Subject pages use `page_uri_template`.
 
-Some ChatGPT hosts do not yet route dynamic resource-template URIs through
-their generic resource proxy. Each returned subject therefore also includes a
-typed `read_call` fallback that names `review_manifest`. Call it only when that
-proxy rejects a manifest URI:
+Each returned subject includes this typed `read_call`:
 
 ```json
 {
@@ -794,8 +792,8 @@ proxy rejects a manifest URI:
 
 `read` returns only that declared page, rechecks the current context and that
 subject's SHA-256, and returns a bound next-page call when more pages remain.
-It is a narrow ChatGPT compatibility route, not arbitrary file access. Existing
-clients may continue to use the legacy generic workflow form.
+It is ChatGPT's primary narrow read route, not arbitrary file access. Existing
+clients may continue to use resource methods or the legacy generic workflow form.
 
 `CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
 or current version no longer matches the manifest. Stop combining evidence,
