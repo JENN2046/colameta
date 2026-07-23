@@ -34,6 +34,18 @@ COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
         "analyze_project_state",
     }
 )
+COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS = frozenset(
+    {
+        "context_binding",
+        # This is an inspect-issued, exact context contract for the read-only
+        # Stage 7 -> 9 journey.  It has the same closed schema as the normal
+        # confirmation binding, including meaningful ``null`` values for a
+        # source-only runner plan/current version.  Treating it as an ordinary
+        # nested object would drop those nulls during projection and make an
+        # otherwise verbatim follow-up context impossible to validate.
+        "stage_7_9_context",
+    }
+)
 COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS = frozenset(
     {
         "audit_id",
@@ -145,7 +157,10 @@ class CommanderPublicProjector:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
-                if clean_key == "context_binding" and self._is_context_binding(nested):
+                if (
+                    clean_key in COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS
+                    and self._is_context_binding(nested)
+                ):
                     sanitized[clean_key] = self._contract_sanitize(nested)
                     continue
                 if (

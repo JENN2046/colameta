@@ -4,12 +4,12 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 7492721683aef9951ad14fbfe801b0ba6e63f91acf75df74d1d1406d364ca1d8
+  source_sha256: 02a8b9a8e86113402ff21243ec603c4100e6c6394d5707255414eb0f98204e8e
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 6
+  revision: 7
   created_at: 2026-07-24
   known_translation_gaps: []
 ```
@@ -187,6 +187,22 @@ Delivery State、commit 或 push。
 - 所有 side-effect path 都被测试为 denied；
 - public projection 能指出下一项人工决定，但不泄露 private runtime data，也不把 semantic
   drift verdict 表述成事实。
+
+### 已采用的 P1-C 实现收口
+
+- `runner/mcp_stage_7_9_preview.py` 是唯一的组合 owner。它调用既有的 Stage 7 builder、
+  Stage 8 preview 与 Stage 9 readiness report；不复制它们的 domain logic，也不把行为塞回
+  `mcp_server.py`。
+- `run_mcp_workflow workflow=stage_7_9_preview` 只公开 `inspect` 与 `preview`，scope 为
+  `mcp:read`。非法的副作用 phase 会有意到达 typed read-only handler，并返回
+  `STAGE_7_9_PHASE_NOT_SUPPORTED`，而不是误导性的通用 policy 拒绝。
+- `inspect` 返回精确的 `stage_7_9_context`，包括 source-only Runner facts 中有意义的 null。
+  公共 projection 会保留这份闭合合同，使 ChatGPT 的原样后续调用可以被复核。
+- `preview` 会核对冻结 taskbook path/hash、三个有界 input object、生成的 Stage 7 到 Stage 8
+  pack 连续性、生成的 Stage 8 到 Stage 9 preview 连续性，以及每个底层 Stage result 的
+  false side-effect claim。它唯一成功的 PLAN_ADJUST 结论是被阻断、需要人工决定的 Stage 9 状态。
+- focused tests 覆盖有效路线、公开结果脱敏、clean checkout、缺失/变化 context、taskbook/input/hash
+  mismatch、Stage 7/8/9 fail-closed，以及所有已声明的副作用 phase。
 
 ## P1-D —— 明确区分客户端体验，并设立硬 release gate
 

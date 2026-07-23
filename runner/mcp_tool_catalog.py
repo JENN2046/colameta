@@ -46,6 +46,19 @@ def _operation_context_binding_input_schema() -> dict[str, Any]:
         "additionalProperties": False,
     }
 
+
+def _stage_7_9_context_input_schema() -> dict[str, Any]:
+    """Return the exact read-journey context without implying a write gate."""
+
+    schema = _operation_context_binding_input_schema()
+    schema["description"] = (
+        "stage_7_9_preview 的 preview 必填。原样回传该 workflow inspect 返回的 "
+        "stage_7_9_context；服务会重新核对 project、branch、HEAD、Runner plan、"
+        "current_version 与固定 Stage 7--9 journey identity。它是只读 handoff 绑定，"
+        "不授权任何 apply、run、commit 或执行器。"
+    )
+    return schema
+
 def _stage_parallel_preview_input_schema(*, include_executor_results: bool = False) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "project_name": {
@@ -2977,13 +2990,16 @@ def build_mcp_tool_definitions(
                 "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
                 "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                 "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
+                "stage_7_9_preview：把 Stage 7 drift evidence、Stage 8 PLAN_ADJUST preview 与 Stage 9 "
+                "continue-readiness report 组合为一条 hash/context-bound 的只读旅程；它只指出下一项人工决策，"
+                "不 apply plan、不 continue、不启动 executor。"
                 "review_manifest：把独立审查输入严格绑定到 project/branch/HEAD/Runner plan/current version/"
                 "review unit/intent 与 subject SHA-256；ChatGPT 通过 typed read 分页读取，标准资源读取仅供支持它的 MCP 客户端使用，绝不开放任意文件读取。"
                 "result_artifact：通过同一 artifact_id 的只读分页读取已打包工具结果；不开放任意资源或项目文件读取。"
                 "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                 "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                 "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、current_facts、review_manifest、gate_review_request、operator_batch。"
+                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、stage_7_9_preview、current_facts、review_manifest、gate_review_request、operator_batch。"
                 "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
                 "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
                 "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
@@ -3001,15 +3017,15 @@ def build_mcp_tool_definitions(
                             "auto_preview", "project_status", "source_onboarding",
                             "plan_update", "small_project_patch", "docs_update",
                             "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "current_facts",
+                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "stage_7_9_preview", "current_facts",
                             "review_manifest", "result_artifact", "gate_review_request", "operator_batch",
                         ],
-                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。stage_7_9_preview 是 Stage 7 drift evidence → Stage 8 PLAN_ADJUST preview → Stage 9 continue-readiness 的 hash/context-bound 只读 journey；只生成 next-human-decision，不 apply、不 continue、不启动 executor。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                     },
                     "phase": {
                         "type": "string",
                         "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status"],
-                        "description": "工作流阶段。inspect/read/status/verify 只读；current_facts 的 inspect 创建可恢复 artifact，preview 不写入，apply 必须同时携带同一 preview_id 和匹配 context_binding 才能写入固定 `.colameta/reports/current-facts/` runtime archive；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
+                        "description": "工作流阶段。inspect/read/status/verify 只读；stage_7_9_preview 只支持 inspect（返回冻结 taskbook/hash/input template 与 stage_7_9_context）和 preview（必须回传该 context 与三段 Stage 输入，输出只读 next-human-decision），其他 phase 一律拒绝；current_facts 的 inspect 创建可恢复 artifact，preview 不写入，apply 必须同时携带同一 preview_id 和匹配 context_binding 才能写入固定 `.colameta/reports/current-facts/` runtime archive；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                     },
                     "preview_id": {
                         "type": "string",
@@ -3134,7 +3150,7 @@ def build_mcp_tool_definitions(
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "可选。service mode 下项目级 workflow 必须传入已登记 managed project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview、gate_review_request 支持按 project_name 路由。source-onboarding 仍将该字段用作 onboarding 项目名称。",
+                        "description": "可选。service mode 下项目级 workflow 必须传入已登记 project_name。project_status inspect、plan_update、prompt_to_plan、small_project_patch、thin_governed_loop_preview、stage_7_9_preview、gate_review_request 支持按 project_name 路由；stage_7_9_preview 是只读 route，不要求 managed mode。source-onboarding 仍将该字段用作 onboarding 项目名称。",
                     },
                     "context_binding": _operation_context_binding_input_schema(),
                     "goal": {
@@ -3357,6 +3373,34 @@ def build_mcp_tool_definitions(
                     "current_head": {
                         "type": "string",
                         "description": "thin_governed_loop_preview 可选。用于 evidence preview 的 HEAD 绑定；不传时读取当前 checkout HEAD。",
+                    },
+                    "stage_7_9_context": _stage_7_9_context_input_schema(),
+                    "stage_7_9_inputs": {
+                        "type": "object",
+                        "description": "stage_7_9_preview preview 必填。必须精确包含 Stage 7 drift evidence、Stage 8 PLAN_ADJUST preview、Stage 9 continue-readiness 的三个 input object。服务只返回白名单 projection，不回显原始 evidence/runtime payload。",
+                        "properties": {
+                            "stage_7_drift_evidence_inputs": {
+                                "type": "object",
+                                "description": "传给 Stage 7 drift evidence builder 的有界 evidence input。",
+                                "additionalProperties": True,
+                            },
+                            "stage_8_plan_adjustment_inputs": {
+                                "type": "object",
+                                "description": "传给 Stage 8 plan adjustment preview 的显式 PLAN_ADJUST request input。",
+                                "additionalProperties": True,
+                            },
+                            "stage_9_continue_readiness_inputs": {
+                                "type": "object",
+                                "description": "传给 Stage 9 controlled continue readiness report 的 plan/state/gate/hash input。",
+                                "additionalProperties": True,
+                            },
+                        },
+                        "required": [
+                            "stage_7_drift_evidence_inputs",
+                            "stage_8_plan_adjustment_inputs",
+                            "stage_9_continue_readiness_inputs",
+                        ],
+                        "additionalProperties": False,
                     },
                     "review_manifest": {
                         "type": "object",

@@ -15,6 +15,7 @@ from typing import Literal
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS
 from runner.mcp_current_facts import CURRENT_FACTS_WORKFLOW
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
+from runner.mcp_stage_7_9_preview import STAGE_7_9_PREVIEW_WORKFLOW
 from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 
 
@@ -324,6 +325,23 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
         compatibility_status="compatibility_only",
         regression_tests=("tests/test_current_facts_artifact.py", "tests/test_mcp_current_facts.py"),
     ),
+    STAGE_7_9_PREVIEW_WORKFLOW: _entry(
+        STAGE_7_9_PREVIEW_WORKFLOW,
+        "public_compatibility",
+        current_owner_module="runner.mcp_workflow_compatibility",
+        current_owner_symbol="MCPWorkflowCompatibilityService.handle_stage_7_9_preview",
+        target_owner_module="runner.mcp_stage_7_9_preview",
+        target_owner_symbol="MCPStage79PreviewWorkflow",
+        target_owner_status="existing",
+        public_typed_entrypoint=None,
+        local_handoff_entrypoint=None,
+        supported_phases=("inspect", "preview"),
+        required_fields=("workflow", "phase"),
+        scope_contract=("inspect:mcp:read", "preview:mcp:read"),
+        output_contract_id="stage_7_9_preview.v1",
+        compatibility_status="compatibility_only",
+        regression_tests=("tests/test_mcp_stage_7_9_preview.py",),
+    ),
     REVIEW_MANIFEST_WORKFLOW: _entry(
         REVIEW_MANIFEST_WORKFLOW,
         "public_typed",
@@ -400,6 +418,7 @@ def declared_run_mcp_workflows() -> frozenset[str]:
         {
             *SUPPORTED_CORE_WORKFLOWS,
             CURRENT_FACTS_WORKFLOW,
+            STAGE_7_9_PREVIEW_WORKFLOW,
             REVIEW_MANIFEST_WORKFLOW,
             RESULT_ARTIFACT_WORKFLOW,
             GATE_REVIEW_WORKFLOW,

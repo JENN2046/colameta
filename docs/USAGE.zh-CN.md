@@ -1003,6 +1003,63 @@ receipt/taskbook。若 preview 后当前 semantic state 已改变，apply 返回
 runtime evidence，不授权 executor run、validation、Git commit/push、stable replacement 或 delivery
 acceptance。
 
+### Stage 7--9 的 fail-closed PLAN_ADJUST 旅程
+
+当一个有界的 Stage 7 drift-evidence claim 需要交给 Stage 8 的 `PLAN_ADJUST`
+preview，并由 Stage 9 controlled-continue gate 检查时，使用这个窄的
+compatibility workflow。它仍在 `run_mcp_workflow` 内，不增加第十个公开工具，也不把
+Stage taskbook 变成 mutation authority。
+
+先调用 `inspect`。它只读取四份冻结 taskbook 的 hash 和当前 checkout identity；不会打开任意
+项目文件、启动 executor 或创建 workflow record：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+把返回的 `stage_7_9_context` 原样复制。对 source-only 项目，其中
+`runner_plan.plan_sha256: null` 和 `current_version: null` 是精确绑定的一部分，
+不能删除。响应还会给出冻结 taskbook hash 和最小的三对象输入模板。提供有界、sanitized 的
+Stage 输入后调用 `preview`：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "preview",
+    "project_name": "registered-project-name",
+    "stage_7_9_context": "<从 inspect 原样复制完整对象>",
+    "stage_7_9_inputs": {
+      "stage_7_drift_evidence_inputs": "<Stage 7 builder input>",
+      "stage_8_plan_adjustment_inputs": "<Stage 8 preview input>",
+      "stage_9_continue_readiness_inputs": "<Stage 9 readiness input>"
+    }
+  }
+}
+```
+
+wrapper 会重新核对 project/branch/HEAD/Runner plan/current-version context、冻结的
+Master/Stage 7/Stage 8/Stage 9 hash 以及跨 Stage ID。它把生成的 Stage 7 pack ID 交给
+Stage 8，并把生成的 Stage 8 preview reference 绑定进 Stage 9。一个有效但尚未解决的
+`PLAN_ADJUST` journey 会返回 `journey_status=human_decision_required` 与
+`PLAN_ADJUST_BLOCKS_CONTINUE`；这是预期的安全结论，不是失败。任何独立授权的 plan change
+之前，先人工审查 Stage 8 preview。
+
+该 workflow 只需要 `mcp:read`，且只支持 `inspect` 与 `preview`。`apply`、`run`、`commit`、
+`execute` 及其他有副作用 phase 都返回 `STAGE_7_9_PHASE_NOT_SUPPORTED`。缺输入、context
+变化、冻结 taskbook 不匹配、Stage evidence 无效或跨 Stage reference 错误，都会返回各自的
+`STAGE_7_9_*` fail-closed code。结果是紧凑的 whitelist projection：绝不回显任意 input object、
+runtime/session 数据、完整 diff 或凭据；也绝不授权 plan mutation、continue、executor、review
+decision、Git、stable replacement 或 connector/OAuth 变更。
+
 ## 3. 五种 Advanced Agent 角色
 
 使用 `get_service_entry_profile` 选择入口画像：

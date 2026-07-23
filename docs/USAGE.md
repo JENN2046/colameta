@@ -923,6 +923,71 @@ new evidence. Archive creation is local runtime evidence only: it does not
 authorize executor runs, validation, Git commits/pushes, stable replacement,
 or delivery acceptance.
 
+### Stage 7--9 fail-closed PLAN_ADJUST journey
+
+Use this narrow compatibility workflow when a bounded Stage 7 drift-evidence
+claim must be handed to a Stage 8 `PLAN_ADJUST` preview and then checked by the
+Stage 9 controlled-continue gate. It stays inside `run_mcp_workflow`; it does
+not add a tenth public tool or turn the Stage taskbooks into mutation
+authority.
+
+Start with an inspect call. It reads only the four frozen taskbook hashes and
+the current checkout identity; it does not open arbitrary project files, start
+an executor, or create a workflow record:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+Copy the returned `stage_7_9_context` unchanged. It deliberately preserves
+`runner_plan.plan_sha256: null` and `current_version: null` for a source-only
+project; those nulls are part of the exact binding, not fields to remove. The
+response also contains the frozen taskbook hashes and a minimal three-object
+input template. Supply bounded, sanitized Stage inputs and call `preview`:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "preview",
+    "project_name": "registered-project-name",
+    "stage_7_9_context": "<copy the full object from inspect>",
+    "stage_7_9_inputs": {
+      "stage_7_drift_evidence_inputs": "<Stage 7 builder input>",
+      "stage_8_plan_adjustment_inputs": "<Stage 8 preview input>",
+      "stage_9_continue_readiness_inputs": "<Stage 9 readiness input>"
+    }
+  }
+}
+```
+
+The wrapper rechecks project/branch/HEAD/Runner plan/current-version context,
+the frozen Master/Stage 7/Stage 8/Stage 9 hashes, and cross-stage IDs. It
+passes the generated Stage 7 pack ID to Stage 8 and binds the generated Stage
+8 preview reference into Stage 9. A valid unresolved `PLAN_ADJUST` journey
+returns `journey_status=human_decision_required` and
+`PLAN_ADJUST_BLOCKS_CONTINUE`; that blocked Stage 9 conclusion is the intended
+safe result. Review the Stage 8 preview before any separate authorised plan
+change.
+
+This workflow needs only `mcp:read` and supports only `inspect` and `preview`.
+`apply`, `run`, `commit`, `execute`, and related side-effect phases return
+`STAGE_7_9_PHASE_NOT_SUPPORTED`. Missing inputs, changed context, frozen
+taskbook mismatches, invalid Stage evidence, and wrong cross-stage references
+return their specific `STAGE_7_9_*` fail-closed code. The response is a compact
+whitelist projection: it never echoes arbitrary input objects, runtime/session
+data, full diffs, or credentials, and it never authorizes plan mutation,
+continue, executor work, review decisions, Git, stable replacement, or
+connector/OAuth changes.
+
 ## 3. Common Advanced Agent Profiles
 
 Use `get_service_entry_profile` to select an operating profile:

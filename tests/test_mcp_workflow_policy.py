@@ -24,6 +24,8 @@ from runner.mcp_workflow_policy import (
         ({"workflow": "agent_dispatch", "phase": "run_preview"}, "mcp:preview"),
         ({"workflow": "prompt_to_plan", "phase": "plan_apply"}, "mcp:plan"),
         ({"workflow": "thin_governed_loop_preview", "phase": "preview"}, "mcp:read"),
+        ({"workflow": "stage_7_9_preview", "phase": "preview"}, "mcp:read"),
+        ({"workflow": "stage_7_9_preview", "phase": "apply"}, "mcp:read"),
         ({"workflow": "current_facts", "phase": "preview"}, "mcp:preview"),
         ({"workflow": "review_manifest", "phase": "verify"}, "mcp:read"),
         ({"workflow": "result_artifact", "phase": "read"}, "mcp:read"),

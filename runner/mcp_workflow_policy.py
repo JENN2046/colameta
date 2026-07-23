@@ -12,6 +12,7 @@ from typing import Any
 
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
 from runner.mcp_current_facts import CURRENT_FACTS_WORKFLOW
+from runner.mcp_stage_7_9_preview import STAGE_7_9_PREVIEW_WORKFLOW
 from runner.mcp_workflow_migration import OPERATOR_BATCH_WORKFLOW, RESULT_ARTIFACT_WORKFLOW
 from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 
@@ -65,6 +66,14 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         if phase == "apply":
             return "mcp:commit"
         return None
+    if workflow == STAGE_7_9_PREVIEW_WORKFLOW:
+        # This workflow is intrinsically read-only.  Permit its declared
+        # scope through the common policy layer even for an invalid phase so
+        # the typed handler can return its precise
+        # STAGE_7_9_PHASE_NOT_SUPPORTED contract rather than a generic policy
+        # denial.  The handler has no mutation path and rejects every phase
+        # other than inspect/preview.
+        return "mcp:read"
     if workflow == GATE_REVIEW_WORKFLOW:
         if phase in {"inspect", "status"}:
             return "mcp:read"

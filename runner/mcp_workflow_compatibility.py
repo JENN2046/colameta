@@ -25,6 +25,11 @@ from runner.mcp_current_facts import (
     CurrentFactsWorkflowError,
     MCPCurrentFactsWorkflow,
 )
+from runner.mcp_stage_7_9_preview import (
+    STAGE_7_9_PREVIEW_WORKFLOW,
+    MCPStage79PreviewWorkflow,
+    Stage79PreviewError,
+)
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_review_manifest import MCPReviewManifestWorkflow, ReviewManifestWorkflowError
 from runner.mcp_workflow_migration import OPERATOR_BATCH_WORKFLOW, RESULT_ARTIFACT_WORKFLOW
@@ -49,6 +54,7 @@ class WorkflowCompatibilityError(ValueError):
 class WorkflowCompatibilityHost(Protocol):
     """Narrow host capabilities required by compatibility dispatch."""
 
+    project_root: str
     mcp_exposure_profile: str
     _mcp_result_artifact_store: MCPResultArtifactStore
 
@@ -385,6 +391,29 @@ class MCPWorkflowCompatibilityService:
             verified_binding=verified_binding,
         )
 
+    def handle_stage_7_9_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Run the read-only Stage 7 -> 8 -> 9 handoff journey.
+
+        It owns its own inspect-issued context and must never receive the
+        generic confirmation binding, because there is no later side effect to
+        confirm.  Like current-facts inspection, it also deliberately skips a
+        generic workflow record: a read-only journey must not dirty a clean
+        checkout merely by collecting its own evidence.
+        """
+
+        if params.get("project_name") is not None:
+            return self._host._route_project_name_tool(
+                "run_mcp_workflow",
+                params,
+                require_managed=False,
+            )
+        clean = dict(params)
+        clean.pop("context_binding", None)
+        try:
+            return MCPStage79PreviewWorkflow(self._host).handle(clean)
+        except Stage79PreviewError as exc:
+            raise WorkflowCompatibilityError(exc.error_code, exc.message, exc.details) from exc
+
     def handle_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         """Dispatch the retained legacy workflow surface through one path."""
 
@@ -395,6 +424,8 @@ class MCPWorkflowCompatibilityService:
             return self.handle_review_manifest(params)
         if workflow == CURRENT_FACTS_WORKFLOW:
             return self.handle_current_facts(params)
+        if workflow == STAGE_7_9_PREVIEW_WORKFLOW:
+            return self.handle_stage_7_9_preview(params)
         if (
             workflow not in {OPERATOR_BATCH_WORKFLOW, GATE_REVIEW_WORKFLOW}
             and workflow not in SUPPORTED_CORE_WORKFLOWS

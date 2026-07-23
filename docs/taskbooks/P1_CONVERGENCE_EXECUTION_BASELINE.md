@@ -7,7 +7,7 @@ p1_convergence_execution_baseline:
   status: execution_ready_after_batch_gate
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 6
+  revision: 7
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -231,6 +231,27 @@ Delivery State, commit, or push.
 - all side-effect paths are tested denied; and
 - the public projection identifies the next human decision without leaking
   private runtime data or presenting a semantic drift verdict as fact.
+
+### Adopted P1-C implementation closure
+
+- `runner/mcp_stage_7_9_preview.py` is the focused composition owner. It calls
+  the existing Stage 7 builder, Stage 8 preview, and Stage 9 readiness report;
+  it does not duplicate their domain logic or add behavior to `mcp_server.py`.
+- `run_mcp_workflow workflow=stage_7_9_preview` exposes only `inspect` and
+  `preview` under `mcp:read`. Invalid side-effect phases intentionally reach
+  the typed read-only handler and return
+  `STAGE_7_9_PHASE_NOT_SUPPORTED`, not a misleading generic policy result.
+- `inspect` returns an exact `stage_7_9_context`, including meaningful null
+  values in source-only Runner facts. The public projection preserves that
+  closed contract so an unchanged ChatGPT follow-up can be verified.
+- `preview` verifies the frozen taskbook paths/hashes, all three bounded input
+  objects, generated Stage 7-to-8 pack continuity, generated Stage 8-to-9
+  preview continuity, and the false side-effect claims of every underlying
+  Stage result. Its only successful PLAN_ADJUST conclusion is the blocked,
+  human-decision-required Stage 9 state.
+- The focused tests cover the valid route, public-result redaction, clean
+  checkout behavior, missing/changed context, taskbook/input/hash mismatch,
+  Stage 7/8/9 failure closure, and every declared side-effect phase.
 
 ## P1-D — Deliberately Different Client Experiences And A Hard Release Gate
 
