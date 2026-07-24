@@ -226,25 +226,41 @@ class CommanderPublicProjector:
         public_tool_result = copy.deepcopy(tool_result)
         tool_name = str(public_tool_result.get("tool") or "")
         raw_data = public_tool_result.get("data")
-        is_review_manifest_read = (
+        is_review_manifest = (
             (
                 tool_name == "review_manifest"
-                and isinstance(params, dict)
-                and _policy_string_param(params, "phase") == "read"
             )
             or (
                 tool_name == "run_mcp_workflow"
                 and isinstance(params, dict)
                 and _policy_string_param(params, "workflow") == REVIEW_MANIFEST_WORKFLOW
-                and _policy_string_param(params, "phase") == "read"
             )
         )
+        is_review_manifest_read = (
+            is_review_manifest
+            and isinstance(params, dict)
+            and _policy_string_param(params, "phase") == "read"
+        )
+        # ``expires_at`` is intentionally omitted by the generic public
+        # projection because most timestamps are local diagnostics.  A review
+        # manifest expiry is different: it is a required, opaque continuation
+        # contract shared by inspect, every subject page, and verify.  Preserve
+        # only this typed workflow's value after ordinary sanitization.
+        review_manifest_contract_expiry: str | None = None
+        review_manifest_page_expiry: str | None = None
+        if is_review_manifest and isinstance(raw_data, dict):
+            raw_expiry = raw_data.get("expires_at")
+            if isinstance(raw_expiry, str) and raw_expiry:
+                review_manifest_contract_expiry = raw_expiry
         review_manifest_page_content: str | None = None
         if is_review_manifest_read:
             raw_page = raw_data.get("subject_page") if isinstance(raw_data, dict) else None
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
+            raw_page_expiry = raw_page.get("expires_at") if isinstance(raw_page, dict) else None
+            if isinstance(raw_page_expiry, str) and raw_page_expiry:
+                review_manifest_page_expiry = raw_page_expiry
         is_result_artifact_read = (
             tool_name == "read_result_artifact"
             or (
@@ -352,9 +368,18 @@ class CommanderPublicProjector:
         clean_result = self.sanitize(projected, compact=False)
         if review_manifest_page_content is not None and isinstance(clean_result, dict):
             clean_data = clean_result.get("data")
-            clean_page = clean_data.get("subject_page") if isinstance(clean_data, dict) else None
-            if isinstance(clean_page, dict):
-                clean_page["content"] = review_manifest_page_content
+            if isinstance(clean_data, dict):
+                if review_manifest_contract_expiry is not None:
+                    clean_data["expires_at"] = review_manifest_contract_expiry
+                clean_page = clean_data.get("subject_page")
+                if isinstance(clean_page, dict):
+                    clean_page["content"] = review_manifest_page_content
+                    if review_manifest_page_expiry is not None:
+                        clean_page["expires_at"] = review_manifest_page_expiry
+        elif review_manifest_contract_expiry is not None and isinstance(clean_result, dict):
+            clean_data = clean_result.get("data")
+            if isinstance(clean_data, dict):
+                clean_data["expires_at"] = review_manifest_contract_expiry
         if result_artifact_page is not None and isinstance(clean_result, dict):
             clean_data = clean_result.get("data")
             if isinstance(clean_data, dict):

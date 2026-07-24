@@ -377,6 +377,77 @@ def test_commander_public_operational_tools_keep_required_continuation_fields(tm
         assert "/home/example" not in data["message"]
 
 
+def test_commander_public_review_manifest_preserves_expiry_contract(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    expiry = "2026-07-24T02:54:41.298082+00:00"
+
+    inspected = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "inspect",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+            },
+        },
+        {"phase": "inspect"},
+    )
+    assert inspected["data"]["expires_at"] == expiry
+
+    verified = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "verify",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+            },
+        },
+        {"phase": "verify"},
+    )
+    assert verified["data"]["expires_at"] == expiry
+
+    read = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "read",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+                "subject_page": {
+                    "review_manifest_id": "manifest_contract_fixture",
+                    "subject_index": 1,
+                    "page": 1,
+                    "page_count": 1,
+                    "page_char_start": 0,
+                    "page_char_end": 12,
+                    "expires_at": expiry,
+                    "content": "bounded text",
+                },
+            },
+        },
+        {"phase": "read"},
+    )
+
+    assert read["data"]["expires_at"] == expiry
+    assert read["data"]["subject_page"]["expires_at"] == expiry
+    assert read["data"]["subject_page"]["content"] == "bounded text"
+
+    mcp_read = server._as_mcp_call_result(read, {"phase": "read"})
+    mcp_data = mcp_read["structuredContent"]["data"]
+    assert mcp_data["expires_at"] == expiry
+    assert mcp_data["subject_page"]["expires_at"] == expiry
+
+
 def test_commander_public_path_redaction_covers_all_absolute_local_roots(
     tmp_path,
 ) -> None:

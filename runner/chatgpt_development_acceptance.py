@@ -229,6 +229,10 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
         review_pages: list[str] = []
         review_ranges: list[tuple[int, int]] = []
         review_expiry = inspected.get("expires_at")
+        _require(
+            isinstance(review_expiry, str) and review_expiry,
+            "review inspect omitted expiry",
+        )
         for page in range(1, page_count + 1):
             read = _tool_data(
                 commander,
@@ -245,6 +249,7 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             _require(isinstance(read_page, dict), "review read omitted subject_page")
             _require(read_page.get("review_manifest_id") == inspected["review_manifest_id"], "review handle changed")
             _require(read_page.get("sha256") == subject["sha256"], "review subject hash changed")
+            _require(read.get("expires_at") == review_expiry, "review read expiry changed")
             _require(read_page.get("expires_at") == review_expiry, "review expiry changed")
             _require(read_page.get("page") == page, "review page number changed")
             content = read_page.get("content")
@@ -269,6 +274,7 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
         )
         verification = verified.get("verification")
         _require(isinstance(verification, dict), "review verify omitted verification")
+        _require(verified.get("expires_at") == review_expiry, "review verify expiry changed")
         _require(verification.get("context_binding") == "matched", "review verify did not match context")
         _require(verification.get("subject_hashes") == "matched", "review verify did not match hashes")
 
@@ -355,6 +361,7 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             "subject_count": 1,
             "page_count": page_count,
             "subject_sha256": subject["sha256"],
+            "expires_at": review_expiry,
             "expiry_continuity": True,
             "page_ranges_contiguous": True,
             "verify_context_binding": verification["context_binding"],
