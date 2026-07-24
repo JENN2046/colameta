@@ -105,8 +105,10 @@ def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
 
     assert set(server._visible_tool_names()) == set(NORMAL_EXPOSED_TOOLS)
-    assert len(server._visible_tool_names()) == 84
+    assert len(server._visible_tool_names()) == 85
     assert "manage_files" in server._visible_tool_names()
+    assert "manage_p1_release_evidence" in server._visible_tool_names()
+    assert "manage_p1_release_evidence" not in COMMANDER_EXPOSED_TOOLS
 
 
 def test_agent_contract_makes_chatgpt_and_local_codex_surfaces_explicit(tmp_path) -> None:

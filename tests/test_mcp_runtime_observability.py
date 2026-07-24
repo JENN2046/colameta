@@ -986,6 +986,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_submission_evidence_auto_draft" in tool_defs
         assert "get_submission_evidence_fill_preview" in tool_defs
         assert "manage_submission_evidence_revision" in tool_defs
+        assert "manage_p1_release_evidence" in tool_defs
         assert "init_submission_evidence" in tool_defs
         assert "fill_submission_evidence_files" in tool_defs
         assert "mark_submission_evidence_ready_fields" in tool_defs
@@ -1024,6 +1025,8 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert tool_defs["get_submission_evidence_fill_preview"].annotations["readOnlyHint"] is True
         assert tool_defs["manage_submission_evidence_revision"].title == "Manage Submission Evidence Revision"
         assert tool_defs["manage_submission_evidence_revision"].annotations["destructiveHint"] is True
+        assert tool_defs["manage_p1_release_evidence"].title == "Manage P1 Release Evidence"
+        assert tool_defs["manage_p1_release_evidence"].annotations["destructiveHint"] is False
         assert tool_defs["init_submission_evidence"].title == "Initialize Submission Evidence"
         assert tool_defs["init_submission_evidence"].annotations["readOnlyHint"] is False
         assert tool_defs["init_submission_evidence"].annotations["destructiveHint"] is False
@@ -1075,6 +1078,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         assert "get_submission_evidence_auto_draft" in server._visible_tool_names()
         assert "get_submission_evidence_fill_preview" in server._visible_tool_names()
         assert "manage_submission_evidence_revision" in server._visible_tool_names()
+        assert "manage_p1_release_evidence" in server._visible_tool_names()
         assert "init_submission_evidence" in server._visible_tool_names()
         assert "fill_submission_evidence_files" in server._visible_tool_names()
         assert "mark_submission_evidence_ready_fields" in server._visible_tool_names()
@@ -1118,6 +1122,15 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         ) == "mcp:preview"
         assert server.get_required_scope_for_tool(
             "manage_submission_evidence_revision", {"action": "apply"}
+        ) == "mcp:commit"
+        assert server.get_required_scope_for_tool(
+            "manage_p1_release_evidence", {"action": "status"}
+        ) == "mcp:read"
+        assert server.get_required_scope_for_tool(
+            "manage_p1_release_evidence", {"action": "preview"}
+        ) == "mcp:preview"
+        assert server.get_required_scope_for_tool(
+            "manage_p1_release_evidence", {"action": "apply"}
         ) == "mcp:commit"
         assert server.get_required_scope_for_tool("init_submission_evidence", {}) == "mcp:commit"
         assert server.get_required_scope_for_tool("fill_submission_evidence_files", {}) == "mcp:commit"

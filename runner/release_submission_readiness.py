@@ -302,7 +302,7 @@ def build_release_submission_readiness(
     )
     blocker_codes, needs_attention_codes = _reason_codes(checks)
     status = BLOCKED if blocker_codes else NEEDS_ATTENTION if needs_attention_codes else READY
-    p1_client_release_gate = build_p1_client_release_gate()
+    p1_client_release_gate = build_p1_client_release_gate(project_root, now=now)
     evidence_entry_templates = _submission_evidence_entry_templates_for(
         evidence_references.get("incomplete_keys") if isinstance(evidence_references, dict) else []
     )

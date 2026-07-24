@@ -337,6 +337,7 @@ def build_mcp_tool_definitions(
     submission_evidence_fill_preview_input_schema = owner._submission_evidence_fill_preview_input_schema()
     submission_evidence_auto_draft_input_schema = owner._submission_evidence_auto_draft_input_schema()
     submission_evidence_revision_input_schema = owner._submission_evidence_revision_input_schema()
+    p1_release_evidence_input_schema = owner._p1_release_evidence_input_schema()
     init_submission_evidence_input_schema = owner._init_submission_evidence_input_schema()
     fill_submission_evidence_input_schema = owner._fill_submission_evidence_input_schema()
     mark_submission_evidence_ready_input_schema = owner._mark_submission_evidence_ready_input_schema()
@@ -573,6 +574,24 @@ def build_mcp_tool_definitions(
             annotations={
                 "readOnlyHint": False,
                 "destructiveHint": True,
+                "openWorldHint": False,
+                "idempotentHint": False,
+            },
+        ),
+        MCPToolDef(
+            name="manage_p1_release_evidence",
+            title="Manage P1 Release Evidence",
+            description=(
+                f"[{owner.project_hint}] 仅供本地/loopback operator 把 P1 release 的五类结构化观察收敛为 preview-bound runtime receipt。"
+                "外部 ChatGPT、Connector/OAuth 与 runtime 观察被明确标为 operator-attested；不接受 raw transcript、token、cookie、URL 或日志。"
+                "apply 需要 preview_id 和显式 confirm_release_evidence=true，仅写 ignored runtime receipt；它不授权 stable replacement、不会替换 stable、不会 commit/push 或修改 Connector/OAuth。"
+                "scope: inspect/status=mcp:read, preview/discard=mcp:preview, apply=mcp:commit。"
+            ),
+            input_schema=p1_release_evidence_input_schema,
+            output_schema=common_output_schema,
+            annotations={
+                "readOnlyHint": False,
+                "destructiveHint": False,
                 "openWorldHint": False,
                 "idempotentHint": False,
             },

@@ -39,6 +39,7 @@ from runner.mcp_project_memory import MCPProjectMemoryManager
 from runner.mcp_todolist import MCPTodoListManager
 from runner.mcp_project_patch import MCPProjectPatchManager
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
+from runner.p1_release_evidence import P1ReleaseEvidenceManager
 from runner.mcp_git_history import MCPGitHistoryManager
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_docs import MCPProjectDocsManager
@@ -312,6 +313,7 @@ NORMAL_EXPOSED_TOOLS = (
     "get_submission_evidence_fill_preview",
     "get_submission_evidence_auto_draft",
     "manage_submission_evidence_revision",
+    "manage_p1_release_evidence",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
@@ -526,6 +528,7 @@ PROJECT_NAME_REQUIRED_TOOLS = {
     "get_submission_evidence_fill_preview",
     "get_submission_evidence_auto_draft",
     "manage_submission_evidence_revision",
+    "manage_p1_release_evidence",
     "init_submission_evidence",
     "fill_submission_evidence_files",
     "mark_submission_evidence_ready_fields",
@@ -982,6 +985,16 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
             "apply": "mcp:commit",
         },
     )
+    policies["manage_p1_release_evidence"] = _action_policy(
+        "manage_p1_release_evidence",
+        {
+            "inspect": "mcp:read",
+            "status": "mcp:read",
+            "preview": "mcp:preview",
+            "discard": "mcp:preview",
+            "apply": "mcp:commit",
+        },
+    )
     stage_action_scopes = {"status": "mcp:read", "preview": "mcp:preview", "discard": "mcp:preview", "apply": "mcp:commit"}
     for name in (
         "manage_stage_parallel_worktrees",
@@ -1066,6 +1079,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "get_submission_evidence_fill_preview": self._tool_get_submission_evidence_fill_preview,
             "get_submission_evidence_auto_draft": self._tool_get_submission_evidence_auto_draft,
             "manage_submission_evidence_revision": self._tool_manage_submission_evidence_revision,
+            "manage_p1_release_evidence": self._tool_manage_p1_release_evidence,
             "init_submission_evidence": self._tool_init_submission_evidence,
             "fill_submission_evidence_files": self._tool_fill_submission_evidence_files,
             "mark_submission_evidence_ready_fields": self._tool_mark_submission_evidence_ready_fields,

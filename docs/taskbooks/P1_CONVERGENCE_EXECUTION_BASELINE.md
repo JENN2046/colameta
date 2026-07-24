@@ -319,6 +319,22 @@ ladder is green. The fresh live ChatGPT development-connector acceptance and
 any stable-replacement decision remain intentionally external, separately
 authorized follow-ups.
 
+### P1-E controlled release-evidence closure
+
+- `manage_p1_release_evidence` is a normal/loopback-only typed workflow. It
+  accepts a closed, sanitized evidence shape through `preview -> apply`, binds
+  all five P1 evidence groups to one exact candidate HEAD, and persists only a
+  local ignored runtime receipt after explicit operator confirmation.
+- `p1_client_release_gate` now evaluates the stored receipt rather than
+  returning a static list of generic blockers. Each non-stable check is shown
+  as passed, stale, or blocked. External ChatGPT/connector observations remain
+  labelled operator-attested, never server-observed.
+- The public Commander remains exactly nine tools. P1-E adds no public tool,
+  does not alter Connector/Auth0/tunnel settings, and cannot replace stable.
+- Even when the five evidence checks pass, the gate remains `blocked` with
+  `EXPLICIT_STABLE_REPLACEMENT_AUTHORIZATION_REQUIRED` until Jenn separately
+  authorizes an exact target through the stable-promotion boundary.
+
 ## Delivery Cadence
 
 P1-A, P1-B, P1-C, and P1-D are sequential product gates, but work inside each

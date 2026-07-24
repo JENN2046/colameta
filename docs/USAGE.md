@@ -66,12 +66,16 @@ and complete typed `read_result_artifact` recovery with stable SHA-256 and
 expiry. It invokes no `resources/read`, Connector, OAuth, tunnel, stable
 service, executor, Git write, or release action.
 
-`rehearsal_status=passed` is developer preflight only. The returned
-`p1_client_release_gate` intentionally remains `blocked`: a real release still
+`rehearsal_status=passed` is developer preflight only. A real release still
 needs fresh full local-validation evidence, runtime provenance, connector/OAuth
 evidence, current facts, a newly observed live ChatGPT acceptance, and a
-separately authorized exact stable-replacement target. Submission-material
-readiness and this P1 release decision are intentionally distinct.
+separately authorized exact stable-replacement target. The first five groups
+can only be recorded through the loopback-only,
+preview-bound `manage_p1_release_evidence` receipt flow; external observations
+remain explicitly operator-attested rather than server-observed. The returned
+`p1_client_release_gate` remains `blocked` until the separate exact stable
+authorization exists. Submission-material readiness and this P1 release
+decision are intentionally distinct.
 
 When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
 such as “do not start/run the executor” is a hard routing constraint. ColaMeta

@@ -53,5 +53,8 @@ continuity，以及全过程不调用 `resources/read`。
 current facts、真实 ChatGPT development-connector session 验收，以及另行授权的精确
 stable-replacement target。
 
-当前实现没有这些外部证据的可信 ingestion path，因此保持 fail-closed 是正确行为；它不等于
-release 失败，也不妨碍本地工程继续推进。
+P1-E 为这些声明增加 closed、preview 绑定的本地 operator receipt。它会校验 candidate binding、
+精确九工具 inventory、continuity flags、时间戳与 receipt digest，同时把外部 ChatGPT 和 Connector
+观察明确标为 operator-attested，而不是服务器自行观察。receipt 不完整或不新鲜时 gate 仍会 fail-closed；
+即使五组 evidence 都齐全，stable replacement 仍必须另行明确授权。详细 receipt contract 见
+`P1_E_RELEASE_EVIDENCE_GATE.zh-CN.md`。

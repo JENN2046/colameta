@@ -18,6 +18,7 @@ from runner.mcp_commander_public import (
     CommanderPublicProjector,
 )
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
+from runner.p1_release_evidence import P1ReleaseEvidenceManager, p1_release_evidence_input_schema
 from runner.mcp_tool_catalog import _stage_parallel_preview_input_schema
 from runner.product_console import (
     build_product_console_map,
@@ -376,6 +377,10 @@ class MCPCommanderAppMixin:
             "required": ["action"],
             "additionalProperties": False,
         }
+
+    def _p1_release_evidence_input_schema(self) -> dict[str, Any]:
+        """Local-only operator receipt schema; never part of the nine-tool App."""
+        return p1_release_evidence_input_schema()
 
     def _init_submission_evidence_input_schema(self) -> dict[str, Any]:
         return {
@@ -1902,6 +1907,26 @@ class MCPCommanderAppMixin:
             MCPSubmissionEvidenceRevisionManager,
         )(self.project_root).handle(action, params)
         self._record_workflow_if_needed("manage_submission_evidence_revision", action, params, result)
+        return result
+
+    def _tool_manage_p1_release_evidence(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Persist only a preview-bound local P1 evidence receipt.
+
+        This route intentionally remains normal/loopback-only through the
+        catalog profile filter.  It has no stable-replacement operation.
+        """
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool(
+                "manage_p1_release_evidence",
+                params,
+                require_managed=True,
+            )
+        action = str(params.get("action") or "").strip()
+        result = self._commander_app_dependency(
+            "P1ReleaseEvidenceManager",
+            P1ReleaseEvidenceManager,
+        )(self.project_root).handle(action, params)
+        self._record_workflow_if_needed("manage_p1_release_evidence", action, params, result)
         return result
 
     def _selected_auto_submission_evidence_keys(self, raw_selected: Any) -> list[str]:

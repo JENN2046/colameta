@@ -94,9 +94,13 @@ verified evidence exists for all of the following:
    scenarios; and
 6. separately authorized exact stable-replacement target.
 
-This implementation has no evidence-ingestion path for these claims. It is
-therefore correct for the gate to stay fail-closed; this is not a release
-failure and does not block local engineering work.
+P1-E adds a closed, preview-bound local operator receipt for these claims.
+It validates their candidate binding, exact nine-tool inventory, continuity
+flags, timestamps, and receipt digest, while labelling external ChatGPT and
+Connector observations as operator-attested rather than server-observed. The
+gate stays fail-closed until a receipt is fresh and complete, and it remains
+blocked until stable replacement is separately authorized. See
+`P1_E_RELEASE_EVIDENCE_GATE.md` for the receipt contract.
 
 ## Required Regression Coverage
 

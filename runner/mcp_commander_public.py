@@ -35,6 +35,7 @@ COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES = (
     "get_agent_operator_flow_packet",
     "manage_executor_config",
     "manage_executor_workflow",
+    "manage_p1_release_evidence",
     "manage_files",
     "inspect_executor_activity",
     "manage_workflow_run",

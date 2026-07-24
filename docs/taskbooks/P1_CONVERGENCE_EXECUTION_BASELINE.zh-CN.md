@@ -255,6 +255,20 @@ authority semantics；默认不共享 oversized payload。
 当 shared validation ladder 通过时，本地 P1-D implementation gate 才算完成。新的真实 ChatGPT
 development-connector 验收，以及任何 stable-replacement 决策，仍然有意留作外部、另行授权的后续事项。
 
+### P1-E 受控 release-evidence 收口
+
+- `manage_p1_release_evidence` 是仅 normal/loopback 可见的 typed workflow。它通过
+  `preview -> apply` 接收 closed、脱敏的 evidence shape，把五组 P1 evidence 全部绑定到同一精确
+  candidate HEAD，并且只有 explicit operator confirmation 后才写入本地 ignored runtime receipt。
+- `p1_client_release_gate` 现在会评估该 receipt，而不是固定返回一组泛化 blocker。每个非 stable
+  check 都会显示 passed、stale 或 blocked。外部 ChatGPT/connector 观察始终标为 operator-attested，
+  绝不伪装为服务器自行观察。
+- 公开 Commander 仍严格是九工具。P1-E 没有增加公开工具，不改变 Connector/Auth0/tunnel 设置，也不能
+  替换 stable。
+- 即使五组 evidence check 均通过，gate 仍保持 `blocked`，并给出
+  `EXPLICIT_STABLE_REPLACEMENT_AUTHORIZATION_REQUIRED`，直到 Jenn 通过 stable-promotion boundary
+  单独授权一个精确 target。
+
 ## 交付节奏
 
 P1-A、P1-B、P1-C、P1-D 是顺序产品 gate；每批内部则直冲退出闸口，不等待无关清理。

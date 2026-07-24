@@ -65,9 +65,11 @@ consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback 
 typed `read_result_artifact` 的全页恢复、稳定 SHA-256 和 expiry。它不调用 `resources/read`，也不触碰
 Connector、OAuth、tunnel、stable service、executor、Git 写操作或 release 操作。
 
-`rehearsal_status=passed` 只是开发前置检查。返回的 `p1_client_release_gate` 会刻意保持
-`blocked`：真实 release 仍需要新鲜的完整本地验证证据、runtime provenance、connector/OAuth 证据、
-current facts、刚刚观察到的 live ChatGPT 验收，以及另行授权的精确 stable-replacement target。
+`rehearsal_status=passed` 只是开发前置检查。真实 release 仍需要新鲜的完整本地验证证据、runtime
+provenance、connector/OAuth 证据、current facts、刚刚观察到的 live ChatGPT 验收，以及另行授权的
+精确 stable-replacement target。前五组证据只能通过仅 loopback 可见、preview 绑定的
+`manage_p1_release_evidence` receipt 流程记录；外部观察会明确标为 operator-attested，绝不伪装成
+服务器自行观察。没有单独的精确 stable 授权前，`p1_client_release_gate` 仍保持 `blocked`。
 submission materials readiness 与这个 P1 release decision 是有意分开的。
 
 使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
