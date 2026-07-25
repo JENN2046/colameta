@@ -3,7 +3,7 @@
 ```yaml
 chinese_companion:
   source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 9377c0978c2c9e3aac1189371a222e0dc20cdabaffa50bf2aad0c55eba2b7885
+  source_sha256: 4c2876ea53cfad5f5af704c7d26b495e47c8c3a560e453a6cd6cf222c84faa87
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
@@ -106,7 +106,8 @@ unaccepted_snapshot_hash:
 1. 确认 candidate-authoritative canonicalization policy。
 2. 确认 candidate-authoritative hash policy。
 3. 为精确 target file 生成 canonical hash receipt。
-4. 把 freeze_candidate 当成 active authority。
+4. 取得绑定精确 hash 的独立 active-status promotion 决定；`freeze_candidate`
+   本身绝不能被当成 active authority。
 
 ### Hash 新鲜度 / 失效规则
 
@@ -312,9 +313,96 @@ runtime action 或 remote mutation。
 - 是否还允许 Commander、Reviewer、Runtime、Taskbook、Executor 直接写 delivery_state；
 - 是否还允许 PLAN_ADJUST、ABORT、ReviewDecision、Runtime、Executor 直接写 `delivery_item.blocked`；
 - 是否缺少 ExecutionEnvelope、Receipt、GateEvent、CommanderDecisionRequest、AuditEvent 最小合约；
-- 是否还有 authority-laundering keyword 的直接提升捷径。
+- 是否还有 authority-laundering keyword 的直接提升捷径。2026-07-25 Master
+  草稿审查发现，原 packet 的 future-promotion 清单第 4 项错误地要求把
+  `freeze_candidate` 当成 active authority；本次 packet-only 修复已改为必须取得
+  独立、绑定精确 hash 的 active-status promotion 决定，并明确保留
+  `freeze_candidate` 的非权威边界。
 
-P0 closure 仍未授予。未来任何 P0 closure 必须由 Commander 针对每项单独、明确授权。
+这项 P0 文案已经在 packet 内纠正，但 P0 closure 仍未授予。未来任何 P0 closure
+必须由 Commander 针对每项单独、明确授权。
+
+### 5.1 外部 Master 审查处置记录 — 2026-07-25
+
+这条记录位于 `PROJECT_MASTER_TASKBOOK.md` 外部，并绑定在提交 `6f888a58`
+审查过的精确 Master raw snapshot。它只记录审查处置，不修改或取代 Master。
+
+```yaml
+external_master_review_disposition:
+  schema_version: colameta.external_master_review_disposition.v1
+  record_id: master-review-disposition-20260725-1b2d7874
+  record_status: packet_p0_wording_corrected_formal_p0_closure_and_three_p1_decisions_pending
+  recorded_at: 2026-07-25
+  review_baseline:
+    review_commit: 6f888a58b857648be01d37f317282ef586ea935e
+    target_document: PROJECT_MASTER_TASKBOOK.md
+    target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    target_embedded_status: discussion_draft
+    target_review_status: freeze_candidate_confirmed_for_exact_hash
+    target_content_changed_by_this_record: false
+  dispositions:
+    - finding_id: p0_freeze_candidate_active_authority_shortcut
+      severity: P0
+      source_refs:
+        - "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-core-rule"
+      finding_zh_CN: >
+        packet 的 future-promotion 清单错误地要求把 freeze_candidate 当成
+        active authority。
+      disposition: corrected_in_freeze_packet_only
+      correction_ref: "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+      formal_p0_closure_status: not_granted
+      active_promotion_status: not_authorized
+      master_change_required_by_this_disposition: false
+    - finding_id: p1_canonical_freeze_hash_reproducibility
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#hash-policy"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-and-canonicalization"
+        - runner/master_taskbook_hash_binding.py
+      finding_zh_CN: >
+        当前 Master 与实现还不能机械复现 candidate-authoritative canonical
+        payload 和 freeze hash；canonical receipt generation 与 canonical
+        payload hash finalization 仍处于 deferred 状态。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_review_decision_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#review-decision-specific-fields"
+      finding_zh_CN: >
+        即使 resulting action 是 gate_review_required、尚未应用 transition，
+        ReviewDecision 的 ACCEPT 与 NEEDS_FIX 最小字段仍无条件要求 transition
+        字段。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_gate_event_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#gate-event-minimum-contract"
+      finding_zh_CN: >
+        即使 blocker、correction、supersede 与 rejected event type 没有应用
+        delivery state transition，GateEvent 最小字段仍无条件要求 transition
+        字段。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+  next_decision:
+    status: pending_commander_decision
+    question_zh_CN: >
+      是否准备一个同时解决三个 open P1 合同问题的新 Master candidate，并仅在
+      candidate 存在之后计算、审查新的精确 Master hash。
+    master_candidate_preparation_authorized: false
+    master_rehash_authorized: false
+  non_authorization:
+    - does_not_mutate_or_supersede_master
+    - does_not_grant_formal_p0_closure
+    - does_not_close_or_downgrade_any_p1_finding
+    - does_not_promote_master
+    - does_not_authorize_implementation
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_release_or_deploy
+```
 
 ---
 

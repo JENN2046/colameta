@@ -157,7 +157,8 @@ not authorized by this packet:
 1. Confirm candidate-authoritative canonicalization policy.
 2. Confirm candidate-authoritative hash policy.
 3. Generate canonical hash receipt for the exact target file.
-4. Treat freeze_candidate as active authority.
+4. Obtain a separate hash-specific active-status promotion decision;
+   freeze_candidate itself must never be treated as active authority.
 ```
 
 Hash freshness / invalidation rule:
@@ -391,7 +392,7 @@ This section is a review checklist, not P0 closure. `no_known_p0` means the curr
 
 ```yaml id="p0-review-checklist"
 p0_review:
-  status: pending_non_authoritative_post_patch_review
+  status: pending_non_authoritative_post_packet_correction_review
   post_patch_review_scope:
     - hash_canonical_single_authority
     - gateevent_state_authority
@@ -439,11 +440,14 @@ p0_review:
       current_result: no_known_p0_after_patch
     - id: p0_authority_laundering_keyword_scan_after_patch
       question: Did the latest authority-laundering wording scan find a remaining direct promotion shortcut?
-      current_result: no_known_p0_after_patch
+      current_result: packet_shortcut_found_and_corrected_formal_p0_closure_not_granted
       scan_note: >
-        Search targets for old split-hash, direct-state-effect, allowed_flag_change,
-        ReviewDecision approved, review_status approved, and direct apply wording
-        returned no remaining authority shortcut matches.
+        The 2026-07-25 Master draft review found that
+        hash-receipt-required-before-promotion item 4 incorrectly instructed
+        readers to treat freeze_candidate as active authority. The packet-only
+        correction now requires a separate hash-specific active-status
+        promotion decision and explicitly preserves the non-authority boundary.
+        This correction does not grant formal P0 closure.
 ```
 
 Closure language draft:
@@ -453,6 +457,91 @@ P0 closure has not been granted. Any future P0 closure must be separately,
 explicitly, and item-by-item authorized by Commander after canonical copy
 storage, canonical hash receipt, accepted candidate policies, and
 hash-specific confirmation.
+```
+
+### 5.1 External Master Review Disposition — 2026-07-25
+
+This record is external to `PROJECT_MASTER_TASKBOOK.md` and is bound to the
+exact raw Master snapshot reviewed at commit `6f888a58`. It records review
+dispositions only; it does not modify or supersede the Master.
+
+```yaml id="external-master-review-disposition-20260725"
+external_master_review_disposition:
+  schema_version: colameta.external_master_review_disposition.v1
+  record_id: master-review-disposition-20260725-1b2d7874
+  record_status: packet_p0_wording_corrected_formal_p0_closure_and_three_p1_decisions_pending
+  recorded_at: 2026-07-25
+  review_baseline:
+    review_commit: 6f888a58b857648be01d37f317282ef586ea935e
+    target_document: PROJECT_MASTER_TASKBOOK.md
+    target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    target_embedded_status: discussion_draft
+    target_review_status: freeze_candidate_confirmed_for_exact_hash
+    target_content_changed_by_this_record: false
+  dispositions:
+    - finding_id: p0_freeze_candidate_active_authority_shortcut
+      severity: P0
+      source_refs:
+        - "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-core-rule"
+      finding: >
+        The packet's required-before-promotion list incorrectly instructed
+        readers to treat freeze_candidate as active authority.
+      disposition: corrected_in_freeze_packet_only
+      correction_ref: "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+      formal_p0_closure_status: not_granted
+      active_promotion_status: not_authorized
+      master_change_required_by_this_disposition: false
+    - finding_id: p1_canonical_freeze_hash_reproducibility
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#hash-policy"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-and-canonicalization"
+        - runner/master_taskbook_hash_binding.py
+      finding: >
+        The candidate-authoritative canonical payload and freeze hash are not
+        yet mechanically reproducible from the current Master and
+        implementation; canonical receipt generation and canonical payload
+        hash finalization remain deferred.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_review_decision_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#review-decision-specific-fields"
+      finding: >
+        ReviewDecision decision-specific minimum fields require transition
+        fields for ACCEPT and NEEDS_FIX even when the resulting action is
+        gate_review_required and no transition has yet been applied.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_gate_event_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#gate-event-minimum-contract"
+      finding: >
+        GateEvent minimum fields require transition fields for blocker,
+        correction, supersede, and rejected event types even when no delivery
+        state transition is applied.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+  next_decision:
+    status: pending_commander_decision
+    question: >
+      Whether to prepare a new Master candidate that resolves all three open
+      P1 contract findings and, only after that candidate exists, calculate and
+      review a new exact Master hash.
+    master_candidate_preparation_authorized: false
+    master_rehash_authorized: false
+  non_authorization:
+    - does_not_mutate_or_supersede_master
+    - does_not_grant_formal_p0_closure
+    - does_not_close_or_downgrade_any_p1_finding
+    - does_not_promote_master
+    - does_not_authorize_implementation
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_release_or_deploy
 ```
 
 ---
