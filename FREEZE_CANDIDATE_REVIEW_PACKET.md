@@ -1005,3 +1005,160 @@ No P1 is formally closed, and no candidate activation, replacement, Registry
 mutation, Stage rebinding, commit, push, executor run, or runtime action is
 authorized by this preparation record.
 ```
+
+---
+
+## 14. Master v1.1 Candidate 2 Independent Hash-Specific Review
+
+This section records the independently reproduced identity and technical
+contract review for `v1.1-candidate.2`. It supersedes the pending technical
+disposition for candidate 1, but it does not replace or activate the current
+Master and it does not grant formal P1 closure.
+
+```yaml id="master-candidate-2-hash-specific-review-20260725"
+master_candidate_2_hash_specific_review:
+  record_id: master-candidate-2-hash-review-20260725-b162e804
+  status: independent_hash_specific_review_passed_pending_separate_confirmation
+  reviewed_at: 2026-07-25
+  authorization_basis: user_authorized_candidate_2_preparation_and_independent_hash_specific_review
+  technical_disposition: PASS
+  blocking_findings: []
+  review_result_is_authority: false
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    current_master_unchanged: true
+    current_registry_unchanged: true
+    current_stage_bindings_unchanged: true
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    runtime_build_policy_source_sha256: 71e88b15e5dd73b74820d18e14ad7d6866c09bb76864435806ee65261767cbf1
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  local_implementation_commits:
+    candidate_2_preparation: df5d8df19613e481bdac7274c49278e69c223e51
+    pyyaml_build_metadata_binding: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    pushed: false
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    yaml_library: PyYAML
+    yaml_library_version: 6.0.3
+    parsed_yaml_block_count: 52
+    canonical_field_count: 48
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+
+  candidate_1_p1_dispositions:
+    complete_canonicalization_contract_validation:
+      status: technically_resolved_in_candidate_2
+      evidence:
+        - exact recursive validation of all reproducible_canonicalization fields
+        - derived canonicalization views are checked for conflicts
+        - canonicalization contract selectors must be hash-bound
+        - repo-relative forward-slash canonical_path is enforced
+      negative_probes:
+        source_encoding_conflict: fail_closed
+        canonical_json_conflict: fail_closed
+        payload_shape_conflict: fail_closed
+        absolute_canonical_path: fail_closed
+        derived_view_conflict: fail_closed
+        unbound_contract_selector: fail_closed
+
+    review_decision_no_action_contradiction:
+      status: technically_resolved_in_candidate_2
+      resolution: no_action_removed_from_review_decision_resulting_action_values
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+      requested_and_applied_transition_fields_forbidden: true
+
+    gate_event_conditional_transition_fields:
+      status: prior_candidate_1_fix_retained_and_reverified
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 116
+      subtests_passed: 29
+    candidate_hash_binding_module:
+      result: pass
+      passed: 15
+      subtests_passed: 13
+    r3_source_binding_and_original_failure_nodes:
+      result: pass
+      passed: 34
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2056
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+      warnings: 3
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    pre_fix_full_probe_result: failed_not_counted_as_pass
+    root_cause: stale_authoritative_canary_pyproject_digest_and_wheel_metadata_headers_after_pyyaml_pin
+    security_gate_weakened: false
+    correction_commit: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    focused_retest_result: pass
+    final_full_retest_result: pass
+
+  confirmation_boundary:
+    independent_technical_review_passed: true
+    candidate_is_eligible_for_separate_confirmation: true
+    separate_commander_confirmation_received: false
+    p1_formal_closure_granted: false
+    formal_master_generated: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+Candidate 2 review outcome:
+
+```text id="master-candidate-2-review-outcome"
+The three exact candidate hashes were independently reproduced and the two
+candidate-1 P1 findings are technically resolved in v1.1-candidate.2. The
+retained GateEvent correction also passes structural review. Candidate 2 is
+eligible for a separate confirmation decision, but no formal Master, Registry,
+Stage binding, activation, replacement, push, executor run, or runtime action
+has been authorized or generated.
+```
