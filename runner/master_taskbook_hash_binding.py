@@ -28,8 +28,11 @@ FAIL_CLOSED_RESULT_FAIL_CLOSED = "fail_closed"
 CANONICAL_PAYLOAD_SCHEMA_VERSION = "colameta.master_taskbook_canonical_payload.v1"
 CANONICALIZER_VERSION = "ColaMeta.master_taskbook_canonicalizer.v1"
 FREEZE_HASH_DOMAIN_SEPARATOR = "ColaMeta.freeze_candidate.v1"
+CANONICALIZER_ENTRYPOINT = "runner.master_taskbook_hash_binding.canonicalize_master_taskbook"
+CANONICAL_HASH_INPUT_RULE = "sha256(utf8(domain_separator + LF + canonical_json))"
 MASTER_SUMMARY_BLOCK_ID = "master-taskbook-canonical-summary"
 HASH_POLICY_BLOCK_ID = "hash-policy"
+FREEZE_PROCESS_BLOCK_ID = "freeze-process-and-canonicalization"
 YAML_FENCE_PATTERN = re.compile(
     r'^```yaml[ \t]+id="(?P<block_id>[A-Za-z0-9][A-Za-z0-9._-]*)"[ \t]*\n'
     r"(?P<body>.*?)"
@@ -135,6 +138,7 @@ def build_master_taskbook_canonical_payload(raw_content: str) -> dict[str, Any]:
     hash_policy = _required_mapping_root(blocks, HASH_POLICY_BLOCK_ID, "hash_policy")
     reproducibility = _required_mapping(hash_policy, "reproducible_canonicalization")
     _validate_reproducibility_contract(reproducibility)
+    _validate_canonicalization_views(hash_policy=hash_policy, blocks=blocks)
 
     manifest = hash_policy.get("canonical_fields")
     if not isinstance(manifest, list) or not manifest or not all(isinstance(item, str) and item for item in manifest):
@@ -153,6 +157,7 @@ def build_master_taskbook_canonical_payload(raw_content: str) -> dict[str, Any]:
             "CANONICAL_FIELD_MANIFEST_DUPLICATE",
             "hash_policy.canonical_fields must not contain duplicate normalized selectors.",
         )
+    _validate_contract_selectors_are_hash_bound(normalized_manifest)
 
     section_selectors = _required_mapping(hash_policy, "markdown_section_selectors")
     values = {
@@ -168,12 +173,7 @@ def build_master_taskbook_canonical_payload(raw_content: str) -> dict[str, Any]:
         )
         for selector in normalized_manifest
     }
-    canonical_path = master.get("canonical_path")
-    if not isinstance(canonical_path, str) or not canonical_path.strip():
-        raise MasterTaskbookHashBindingError(
-            "CANONICAL_SOURCE_PATH_INVALID",
-            "master_taskbook.canonical_path must be a non-empty string.",
-        )
+    canonical_path = _validate_canonical_source_path(master.get("canonical_path"))
 
     return {
         "schema_version": CANONICAL_PAYLOAD_SCHEMA_VERSION,
@@ -322,22 +322,6 @@ def _required_mapping(value: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _validate_reproducibility_contract(contract: dict[str, Any]) -> None:
-    expected = {
-        "payload_schema_version": CANONICAL_PAYLOAD_SCHEMA_VERSION,
-        "canonicalizer_version": CANONICALIZER_VERSION,
-        "domain_separator": FREEZE_HASH_DOMAIN_SEPARATOR,
-    }
-    mismatches = {
-        key: {"expected": expected_value, "actual": contract.get(key)}
-        for key, expected_value in expected.items()
-        if contract.get(key) != expected_value
-    }
-    if mismatches:
-        raise MasterTaskbookHashBindingError(
-            "CANONICALIZER_CONTRACT_MISMATCH",
-            "Master canonicalization contract does not match the installed canonicalizer.",
-            details={"mismatches": mismatches},
-        )
     parser_contract = _required_mapping(contract, "yaml_parser_contract")
     parser_expected = {
         "library": "PyYAML",
@@ -355,6 +339,325 @@ def _validate_reproducibility_contract(contract: dict[str, Any]) -> None:
             "Master YAML parser contract does not match the installed canonicalizer dependency.",
             details={"mismatches": parser_mismatches},
         )
+    _assert_exact_contract(
+        actual=contract,
+        expected=_expected_reproducibility_contract(),
+        error_code="CANONICALIZER_CONTRACT_MISMATCH",
+        message="Master canonicalization contract does not exactly match the installed canonicalizer.",
+        root_path="hash_policy.reproducible_canonicalization",
+    )
+
+
+def _expected_reproducibility_contract() -> dict[str, Any]:
+    return {
+        "status": "mechanically_reproducible_candidate_contract",
+        "payload_schema_version": CANONICAL_PAYLOAD_SCHEMA_VERSION,
+        "canonicalizer_version": CANONICALIZER_VERSION,
+        "implementation_entrypoint": CANONICALIZER_ENTRYPOINT,
+        "domain_separator": FREEZE_HASH_DOMAIN_SEPARATOR,
+        "hash_input_rule": CANONICAL_HASH_INPUT_RULE,
+        "source_encoding": "utf-8",
+        "source_line_ending_normalization": "lf",
+        "source_unicode_normalization": "NFC",
+        "yaml_parser_contract": {
+            "library": "PyYAML",
+            "version": str(yaml.__version__),
+            "loader": "safe_yaml",
+            "duplicate_mapping_keys": "fail_closed",
+            "fenced_block_id_uniqueness": "fail_closed",
+            "required_block_missing_or_ambiguous": "fail_closed",
+        },
+        "selector_resolution": {
+            "master_taskbook_prefix_source_block": MASTER_SUMMARY_BLOCK_ID,
+            "hash_policy_prefix_source_block": HASH_POLICY_BLOCK_ID,
+            "yaml_block_prefix": "exact_fenced_yaml_block_id",
+            "markdown_section_prefix": "exact_heading_from_hash_policy.markdown_section_selectors",
+            "wildcard_list_order": "preserve_source_order",
+            "missing_selector": "fail_closed",
+        },
+        "payload_shape": [
+            "schema_version",
+            "canonicalizer_version",
+            "source_document",
+            "field_manifest",
+            "field_values",
+        ],
+        "field_manifest_rule": (
+            "Copy hash_policy.canonical_fields in declared order into field_manifest; "
+            "resolve every selector exactly once; include each normalized value under "
+            "its full selector key. Missing, duplicate, ambiguous, or unsupported "
+            "selectors fail closed.\n"
+        ),
+        "scalar_normalization": {
+            "strings": "normalize_line_endings_then_NFC_then_trim_surrounding_whitespace",
+            "dates_and_datetimes": "ISO-8601",
+            "non_finite_numbers": "fail_closed",
+            "nulls": "preserve",
+        },
+        "canonical_json": {
+            "encoding": "utf-8",
+            "ensure_ascii": False,
+            "mapping_key_order": "utf8_byte_lexicographic",
+            "separators": "comma_and_colon_without_surrounding_whitespace",
+            "list_order": "preserve",
+            "trailing_newline": False,
+            "non_finite_numbers": "fail_closed",
+        },
+        "evidence_boundary": {
+            "raw_snapshot_sha256_is_exact_file_identity": True,
+            "canonical_payload_sha256_is_payload_identity": True,
+            "freeze_content_hash_is_domain_separated_payload_identity": True,
+            "generated_hashes_are_authority": False,
+            "canonical_receipt_generated_by_hash_calculation": False,
+        },
+    }
+
+
+def _validate_canonicalization_views(*, hash_policy: dict[str, Any], blocks: dict[str, Any]) -> None:
+    canonical_payload_authority = _required_mapping(hash_policy, "canonical_payload_authority")
+    _assert_contract_subset(
+        actual=canonical_payload_authority,
+        expected={
+            "single_source_of_truth": "hash_policy.canonical_fields",
+            "hash_input_manifest": "hash_policy.canonical_fields",
+            "derived_payload_views": [
+                "freeze_process_and_canonicalization.derived_hashable_payload_view",
+                "freeze_process_and_canonicalization.derived_excluded_payload_view",
+            ],
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="Canonical payload authority points to a conflicting manifest or derived view.",
+        root_path="hash_policy.canonical_payload_authority",
+    )
+    _assert_exact_contract(
+        actual=_required_mapping(hash_policy, "canonicalization"),
+        expected={
+            "normalize_unicode": "NFC",
+            "trim_surrounding_whitespace": True,
+            "normalize_line_endings": "lf",
+            "sort_mapping_keys": "utf8_byte_lexicographic",
+            "preserve_list_order": True,
+            "reject_duplicate_yaml_mapping_keys": True,
+            "canonical_json_separators": "comma_and_colon_without_surrounding_whitespace",
+            "canonical_json_trailing_newline": False,
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="The hash policy canonicalization view conflicts with the installed canonicalizer.",
+        root_path="hash_policy.canonicalization",
+    )
+    _assert_contract_subset(
+        actual=_required_mapping(hash_policy, "canonical_field_path_style"),
+        expected={
+            "style": "machine_readable_source_paths_only",
+            "allowed_prefixes": [
+                "master_taskbook.",
+                "markdown_section.",
+                "yaml_block.",
+                "hash_policy.",
+            ],
+            "wildcard_list_selectors_allowed": True,
+            "forbidden_styles": [
+                "bare_concept_name",
+                "ambiguous_heading_label",
+                "runtime_status_note",
+            ],
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="Canonical field path policy conflicts with the installed selector resolver.",
+        root_path="hash_policy.canonical_field_path_style",
+    )
+
+    freeze_process = _required_mapping_root(
+        blocks,
+        FREEZE_PROCESS_BLOCK_ID,
+        "freeze_process_and_canonicalization",
+    )
+    _assert_exact_contract(
+        actual=_required_mapping(freeze_process, "canonical_hash"),
+        expected={
+            "name": "freeze_content_hash",
+            "algorithm": "sha256",
+            "payload_schema_version": CANONICAL_PAYLOAD_SCHEMA_VERSION,
+            "canonicalizer_version": CANONICALIZER_VERSION,
+            "implementation_entrypoint": CANONICALIZER_ENTRYPOINT,
+            "domain_separator": FREEZE_HASH_DOMAIN_SEPARATOR,
+            "input_rule": CANONICAL_HASH_INPUT_RULE,
+            "canonicalization_rules": [
+                "use UTF-8",
+                "normalize line endings to LF",
+                "normalize unicode to NFC",
+                "sort mapping keys by byte order",
+                "omit undefined fields",
+                "preserve explicit null fields",
+                "preserve all list order from the resolved source selector",
+                "reject duplicate YAML mapping keys and duplicate fenced block ids",
+                "resolve Markdown sections only through exact heading mappings",
+                "emit comma and colon JSON separators without surrounding whitespace",
+                "emit no trailing newline in canonical_json",
+                "use repo-relative forward-slash paths",
+                "hash EvidencePackage digests or references, not raw long logs",
+                "never include secrets or credentials",
+            ],
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="The freeze-process canonical hash view conflicts with the installed canonicalizer.",
+        root_path="freeze_process_and_canonicalization.canonical_hash",
+    )
+    _assert_contract_subset(
+        actual=_required_mapping(freeze_process, "hash_input_authority"),
+        expected={
+            "single_source_of_truth": "hash_policy.canonical_fields",
+            "derived_views_are_authoritative": False,
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="Freeze-process hash input authority conflicts with the canonical field manifest.",
+        root_path="freeze_process_and_canonicalization.hash_input_authority",
+    )
+    _assert_exact_contract(
+        actual=_required_mapping(freeze_process, "derived_hashable_payload_view"),
+        expected={
+            "source_manifest": "hash_policy.canonical_fields",
+            "envelope_fields": [
+                "schema_version",
+                "canonicalizer_version",
+                "source_document",
+                "field_manifest",
+                "field_values",
+            ],
+            "field_values_key_rule": "full_selector_string",
+            "authority_status": "derived_non_authoritative_view",
+        },
+        error_code="CANONICALIZER_DERIVED_VIEW_MISMATCH",
+        message="Derived hashable payload view conflicts with the canonical payload shape.",
+        root_path="freeze_process_and_canonicalization.derived_hashable_payload_view",
+    )
+
+
+def _validate_contract_selectors_are_hash_bound(manifest: list[str]) -> None:
+    required_selectors = {
+        "hash_policy.canonical_payload_authority",
+        "hash_policy.reproducible_canonicalization",
+        "hash_policy.canonical_field_path_style",
+        "hash_policy.canonicalization",
+        "yaml_block.freeze-process-and-canonicalization",
+    }
+    missing = sorted(required_selectors - set(manifest))
+    if missing:
+        raise MasterTaskbookHashBindingError(
+            "CANONICALIZER_CONTRACT_NOT_HASH_BOUND",
+            "Every canonicalization contract and derived view must be bound by canonical_fields.",
+            details={"missing_selectors": missing},
+        )
+
+
+def _validate_canonical_source_path(value: Any) -> str:
+    if not isinstance(value, str):
+        raise MasterTaskbookHashBindingError(
+            "CANONICAL_SOURCE_PATH_INVALID",
+            "master_taskbook.canonical_path must be a string.",
+        )
+    normalized = _normalize_string(value)
+    path_parts = normalized.split("/")
+    invalid = (
+        not normalized
+        or value != normalized
+        or normalized.startswith("/")
+        or "\\" in normalized
+        or re.match(r"^[A-Za-z]:", normalized) is not None
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        or any(part in {"", ".", ".."} for part in path_parts)
+    )
+    if invalid:
+        raise MasterTaskbookHashBindingError(
+            "CANONICAL_SOURCE_PATH_NOT_REPO_RELATIVE",
+            "master_taskbook.canonical_path must be a normalized repo-relative forward-slash path.",
+        )
+    return normalized
+
+
+def _assert_exact_contract(
+    *,
+    actual: Any,
+    expected: Any,
+    error_code: str,
+    message: str,
+    root_path: str,
+) -> None:
+    mismatches = _contract_mismatches(actual=actual, expected=expected, path=root_path)
+    if mismatches:
+        raise MasterTaskbookHashBindingError(
+            error_code,
+            message,
+            details={"mismatches": mismatches},
+        )
+
+
+def _assert_contract_subset(
+    *,
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    error_code: str,
+    message: str,
+    root_path: str,
+) -> None:
+    selected = {key: actual[key] for key in expected if key in actual}
+    mismatches = _contract_mismatches(actual=selected, expected=expected, path=root_path)
+    if mismatches:
+        raise MasterTaskbookHashBindingError(
+            error_code,
+            message,
+            details={"mismatches": mismatches},
+        )
+
+
+def _contract_mismatches(*, actual: Any, expected: Any, path: str) -> dict[str, dict[str, Any]]:
+    if type(actual) is not type(expected):
+        return {
+            path: {
+                "reason": "type_mismatch",
+                "expected_type": type(expected).__name__,
+                "actual_type": type(actual).__name__,
+            }
+        }
+    if isinstance(expected, dict):
+        mismatches: dict[str, dict[str, Any]] = {}
+        expected_keys = set(expected)
+        actual_keys = set(actual)
+        for key in sorted(expected_keys - actual_keys, key=str):
+            mismatches[f"{path}.{key}"] = {"reason": "missing_field"}
+        for key in sorted(actual_keys - expected_keys, key=str):
+            mismatches[f"{path}.{key}"] = {"reason": "unexpected_field"}
+        for key in sorted(expected_keys & actual_keys, key=str):
+            mismatches.update(
+                _contract_mismatches(
+                    actual=actual[key],
+                    expected=expected[key],
+                    path=f"{path}.{key}",
+                )
+            )
+        return mismatches
+    if isinstance(expected, list):
+        if len(actual) != len(expected):
+            return {
+                path: {
+                    "reason": "list_length_mismatch",
+                    "expected_length": len(expected),
+                    "actual_length": len(actual),
+                }
+            }
+        mismatches = {}
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected, strict=True)):
+            mismatches.update(
+                _contract_mismatches(
+                    actual=actual_item,
+                    expected=expected_item,
+                    path=f"{path}[{index}]",
+                )
+            )
+        return mismatches
+    if actual != expected:
+        return {path: {"reason": "value_mismatch"}}
+    return {}
 
 
 def _resolve_canonical_selector(
