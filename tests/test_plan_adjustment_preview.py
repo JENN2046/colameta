@@ -40,7 +40,7 @@ class PlanAdjustmentPreviewTests(unittest.TestCase):
             "commander_decision_request": self.commander_request_for_decision("PLAN_ADJUST"),
             "master_taskbook_ref": {
                 "path": "PROJECT_MASTER_TASKBOOK.md",
-                "sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+                "sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
             },
             "affected_stage_refs": [
                 {
@@ -73,7 +73,7 @@ class PlanAdjustmentPreviewTests(unittest.TestCase):
 
         assert result["preview_status"] == PLAN_ADJUSTMENT_PREVIEW_AVAILABLE
         assert result["source_orientation"]["is_plan_adjust_oriented"] is True
-        assert result["master_taskbook_hash"] == "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
+        assert result["master_taskbook_hash"] == "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63"
         assert result["drift_evidence_ref"] == {"drift_evidence_pack_id": "drift-evidence-pack-example"}
         assert result["apply_allowed"] is False
         assert result["apply_gate_status"]["apply_allowed"] is False

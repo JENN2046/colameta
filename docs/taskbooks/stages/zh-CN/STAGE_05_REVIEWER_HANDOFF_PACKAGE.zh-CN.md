@@ -3,7 +3,7 @@
 ```yaml id="stage-05-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md
-  source_sha256: 532d36ab5c99d37c1a88b094fbe9c37bdc342e17e572447468a0918afbdce43c
+  source_sha256: dc440a858905660fb8360162e512b8ed9796503d7c79b58268f1258bf125e7bf
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:

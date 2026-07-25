@@ -3,7 +3,7 @@
 ```yaml id="stage-09-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md
-  source_sha256: 5bfe6e4632748bd33f5a763963bc54b5e546bd3349ad536ec5b693522c7d696d
+  source_sha256: be200dcb5b8b3c3df7703b8f989f23fe2c807c58e84e86f93a7349d17dc04d0a
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:

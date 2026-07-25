@@ -52,7 +52,7 @@ final-version closeout. Stage 9 is the missing long-run continuation layer.
 ```yaml id="binding"
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
-  master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
   master_taskbook_stage_section: "23. Stage 9: Controlled Continue And Long-Run Trace"
   upstream_stage_dependency:
     - stage_06_review_feedback_intake

@@ -7,7 +7,7 @@ stage_taskbook_index:
   status: discussion_draft
   authority_status: planning_reference_only
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
-  master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
   review_packet_path: FREEZE_CANDIDATE_REVIEW_PACKET.md
   master_review_status: freeze_candidate_confirmed_for_exact_hash
 ```

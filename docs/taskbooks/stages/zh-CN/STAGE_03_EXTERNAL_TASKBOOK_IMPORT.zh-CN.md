@@ -3,7 +3,7 @@
 ```yaml id="stage-03-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_03_EXTERNAL_TASKBOOK_IMPORT.md
-  source_sha256: c5402734ef6990687a6a03ec6b17769f598ff0319b350b6a2371144985ece7ff
+  source_sha256: 2adb368816294d0f14353d9b607aac933ffd3ae61a8d850df45e5289386e16f5
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:

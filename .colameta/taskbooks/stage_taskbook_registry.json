@@ -1,6 +1,6 @@
 {
   "ahead_behind_from_local_refs": {
-    "ahead": 54,
+    "ahead": 34,
     "behind": 0,
     "source": "git rev-list --left-right --count origin/main...HEAD"
   },
@@ -19,8 +19,8 @@
     "requires_separate_hash_specific_authorization": true,
     "stage_taskbook_mutation_allowed": false
   },
-  "observed_git_head": "ea1ab5614e1f52f6757dcea282e12449075c49be",
-  "observed_origin_main_local_tracking_ref": "018ff63b76872504407c537cd46e1e8a2ee5c22e",
+  "observed_git_head": "c4b13b30f8c0bd7b19d94944cee1593aa3374284",
+  "observed_origin_main_local_tracking_ref": "e167fa645a000779297918d1b895eabe0756aa55",
   "project": "ColaMeta",
   "record_key": "stage_id",
   "records": {
@@ -43,7 +43,7 @@
       },
       "master_taskbook_ref": {
         "path": "PROJECT_MASTER_TASKBOOK.md",
-        "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+        "raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
         "review_status": "freeze_candidate_confirmed_for_exact_hash"
       },
       "non_goals_summary": [
@@ -53,7 +53,7 @@
         "no dashboard requirement",
         "no commit or push authorization"
       ],
-      "observed_git_head": "ea1ab5614e1f52f6757dcea282e12449075c49be",
+      "observed_git_head": "c4b13b30f8c0bd7b19d94944cee1593aa3374284",
       "source_version_taskbook_ref": {
         "path": "docs/taskbooks/versions/stage-02/VERSION_STAGE_02_V2_2_STAGE_TASKBOOK_REGISTRY_V1.md",
         "raw_snapshot_sha256": "d43c791d76df839b0fa361955dc6208af9cce24a7594d045feb4062892f69050",
@@ -62,7 +62,7 @@
       "stage_id": "stage_02_stage_taskbook_management",
       "stage_name": "Stage Taskbook Management",
       "stage_taskbook_path": "docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md",
-      "stage_taskbook_raw_snapshot_sha256": "b0e1a55121503df4116d9c49031eb07729858c483cc73e6c97730eca0a067876",
+      "stage_taskbook_raw_snapshot_sha256": "380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd",
       "supports_project_goal": true,
       "validator_result": {
         "creates_review_decision": false,
@@ -71,12 +71,12 @@
         "fail_closed_violations": [],
         "master_taskbook_ref": {
           "path": "PROJECT_MASTER_TASKBOOK.md",
-          "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
+          "raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63"
         },
         "required_field_violations": [],
         "stage_id": "stage_02_stage_taskbook_management",
         "stage_name": "Stage Taskbook Management",
-        "stage_taskbook_hash": "b0e1a55121503df4116d9c49031eb07729858c483cc73e6c97730eca0a067876",
+        "stage_taskbook_hash": "380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd",
         "stage_taskbook_path": "docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md",
         "supports_project_goal": true,
         "validation_result": "passed",

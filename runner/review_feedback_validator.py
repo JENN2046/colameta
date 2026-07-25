@@ -129,8 +129,8 @@ def assert_review_feedback_validator_result_contract(result: dict[str, Any]) -> 
 def example_validation_context() -> dict[str, Any]:
     return {
         "review_feedback_schema_ref": {"schema_version": EXPECTED_REVIEW_FEEDBACK_SCHEMA_VERSION},
-        "expected_master_taskbook_hash": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
-        "expected_stage_taskbook_hash": "c83c979d447a4ec645d380b6c1dc206730d12d5d644c08582b3cfd04f3e0009d",
+        "expected_master_taskbook_hash": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
+        "expected_stage_taskbook_hash": "feef78fc63ddd9332f011bc0149c2056eb51033fb437023e7702e7c51b24bdd6",
         "expected_version_taskbook_ref": {"version_id": "stage_06_v6_1_review_feedback_schema_v1"},
         "expected_reviewer_handoff_package_ref": {"handoff_package_id": "handoff-package-example"},
         "expected_workspace_snapshot_ref": {"head": "a134b57"},

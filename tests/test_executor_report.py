@@ -27,8 +27,8 @@ class ExecutorReportTests(unittest.TestCase):
             "execution_envelope_ref": {"envelope_id": "execution-envelope-example"},
             "run_preview_ref": {"run_preview_id": "run-preview-example"},
             "version_taskbook_ref": {"version_id": "stage_04_v4_3_taskbook_bound_local_execution_receipt_v1"},
-            "master_taskbook_hash": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
-            "stage_taskbook_hash": "05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41",
+            "master_taskbook_hash": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
+            "stage_taskbook_hash": "af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff",
             "started_at": "2026-06-30T00:00:00+08:00",
             "completed_at": "2026-06-30T00:01:00+08:00",
             "execution_result": "executed",
@@ -52,8 +52,8 @@ class ExecutorReportTests(unittest.TestCase):
             "source_provenance": {"source_type": "manual_report", "source_ref": "external-report"},
             "source_receipt_hash": "a" * 64,
             "version_taskbook_ref": {"version_id": "stage_04_v4_4_imported_execution_receipt_v1"},
-            "master_taskbook_hash": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
-            "stage_taskbook_hash": "05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41",
+            "master_taskbook_hash": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
+            "stage_taskbook_hash": "af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff",
             "claimed_execution_envelope_ref": {"envelope_id": "external-envelope-claim"},
             "claimed_commands": [{"claim_status": "claimed", "command": "python -m unittest tests.test_example"}],
             "claimed_touched_files": [{"claim_status": "claimed", "path": "runner/example.py"}],
@@ -71,8 +71,8 @@ class ExecutorReportTests(unittest.TestCase):
         return build_executor_report(
             executor_report_id="executor-report-example",
             version_taskbook_ref={"version_id": "stage_04_v4_5_taskbook_bound_executor_report_v1"},
-            master_taskbook_hash="1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
-            stage_taskbook_hash="05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41",
+            master_taskbook_hash="895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
+            stage_taskbook_hash="af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff",
             receipt_records=records,
         )
 

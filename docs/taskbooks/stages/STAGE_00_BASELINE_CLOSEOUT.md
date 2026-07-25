@@ -31,12 +31,12 @@ Stage 0 当前是 `active_closeout`，但这份 Stage Taskbook 文件本身仍�
 ```yaml id="master-binding"
 master_binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
-  master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
   review_packet_path: FREEZE_CANDIDATE_REVIEW_PACKET.md
   master_review_status: freeze_candidate_confirmed_for_exact_hash
   master_taskbook_ref:
     path: PROJECT_MASTER_TASKBOOK.md
-    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
     review_status: freeze_candidate_confirmed_for_exact_hash
   project_final_goal_ref: master_taskbook.project_final_goal
   supports_project_goal: true
