@@ -5,6 +5,8 @@ from pathlib import Path
 import unittest
 
 from runner.master_taskbook_hash_binding import (
+    CANONICALIZER_VERSION,
+    CANONICAL_PAYLOAD_SCHEMA_VERSION,
     FAIL_CLOSED_RESULT_FAIL_CLOSED,
     FAIL_CLOSED_RESULT_PASS,
     FORBIDDEN_HASH_BINDING_RESULT_FIELDS,
@@ -12,7 +14,10 @@ from runner.master_taskbook_hash_binding import (
     HASH_BINDING_RESULT_MATCH,
     HASH_BINDING_RESULT_MISMATCH,
     HASH_BINDING_RESULT_MISSING_INPUT,
+    MasterTaskbookHashBindingError,
     bind_master_hashes,
+    canonicalize_master_taskbook,
+    parse_master_taskbook_yaml_blocks,
 )
 from runner.master_taskbook_reader import read_master_taskbook
 from runner.master_taskbook_registry import load_master_taskbook_registry, sha256_file
@@ -21,6 +26,9 @@ from runner.master_taskbook_validator import validate_master_taskbook_required_f
 
 MASTER_SHA = "1" * 64
 OTHER_SHA = "2" * 64
+CANDIDATE_RAW_SHA256 = "40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528"
+CANDIDATE_CANONICAL_PAYLOAD_SHA256 = "77da1b70bb448dcd62e54965e7a3563c3d2935e0543c9e3b85c20572e6eb0fee"
+CANDIDATE_FREEZE_CONTENT_HASH = "387dce1306628aaef5ab7d37a5a13f44489f0212466cc42527f2e54ab5465acb"
 
 
 class MasterTaskbookHashBindingTests(unittest.TestCase):
@@ -167,6 +175,143 @@ class MasterTaskbookHashBindingTests(unittest.TestCase):
         assert result["validator_input_raw_content_sha256"] == master_before
         assert sha256_file(master) == master_before
         assert sha256_file(registry) == registry_before
+
+    def test_candidate_canonical_hash_is_deterministic_and_ignores_declared_runtime_state(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        candidate = project / "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md"
+        raw_bytes = candidate.read_bytes()
+        raw = raw_bytes.decode("utf-8")
+
+        first = canonicalize_master_taskbook(raw_bytes)
+        second = canonicalize_master_taskbook(raw)
+        crlf = canonicalize_master_taskbook(raw.replace("\n", "\r\n"))
+        runtime_only = canonicalize_master_taskbook(
+            raw.replace('    observed_at: "2026-06-28"', '    observed_at: "2099-01-01"', 1)
+        )
+        governance_change = canonicalize_master_taskbook(
+            raw.replace("  version: v1.1-candidate.1", "  version: v1.1-candidate.2", 1)
+        )
+
+        assert first["canonicalization_status"] == "computed_evidence_only"
+        assert first["raw_snapshot_sha256"] == sha256_file(candidate) == CANDIDATE_RAW_SHA256
+        assert first["canonical_payload_sha256"] == CANDIDATE_CANONICAL_PAYLOAD_SHA256
+        assert first["freeze_content_hash"] == CANDIDATE_FREEZE_CONTENT_HASH
+        assert first["canonical_payload"]["source_document"] == "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md"
+        assert first["canonical_payload_field_count"] == 48
+        assert first["yaml_library"] == "PyYAML"
+        assert first["yaml_library_version"] == "6.0.3"
+        assert first["canonical_json"] == second["canonical_json"]
+        assert first["canonical_payload_sha256"] == second["canonical_payload_sha256"]
+        assert first["freeze_content_hash"] == second["freeze_content_hash"]
+        assert first["freeze_content_hash"] == crlf["freeze_content_hash"]
+        assert first["raw_snapshot_sha256"] != crlf["raw_snapshot_sha256"]
+        assert first["freeze_content_hash"] == runtime_only["freeze_content_hash"]
+        assert first["raw_snapshot_sha256"] != runtime_only["raw_snapshot_sha256"]
+        assert first["freeze_content_hash"] != governance_change["freeze_content_hash"]
+        assert first["canonicalization_result_is_authority"] is False
+        assert first["canonical_receipt_generated"] is False
+
+    def test_canonicalizer_fails_closed_on_missing_selector_and_duplicate_block_id(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        raw = (project / "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md").read_text(encoding="utf-8")
+        missing_selector = raw.replace(
+            "    - master_taskbook.project_final_goal\n",
+            "    - master_taskbook.missing_required_field\n",
+            1,
+        )
+
+        with self.assertRaises(MasterTaskbookHashBindingError) as missing:
+            canonicalize_master_taskbook(missing_selector)
+        assert missing.exception.error_code == "CANONICAL_SELECTOR_PATH_MISSING"
+
+        duplicate = raw + '\n```yaml id="hash-policy"\nhash_policy: {}\n```\n'
+        with self.assertRaises(MasterTaskbookHashBindingError) as duplicated:
+            canonicalize_master_taskbook(duplicate)
+        assert duplicated.exception.error_code == "CANONICAL_YAML_BLOCK_ID_DUPLICATE"
+
+        normalized_key_collision = raw.replace(
+            "  canonical_payload_authority:\n",
+            "  canonical_payload_authority:\n    collision: one\n    ' collision ': two\n",
+            1,
+        )
+        with self.assertRaises(MasterTaskbookHashBindingError) as collision:
+            canonicalize_master_taskbook(normalized_key_collision)
+        assert collision.exception.error_code == "CANONICAL_MAPPING_KEY_COLLISION"
+
+        with self.assertRaises(MasterTaskbookHashBindingError) as invalid_utf8:
+            canonicalize_master_taskbook(b"\xff")
+        assert invalid_utf8.exception.error_code == "CANONICAL_SOURCE_NOT_UTF8"
+
+        parser_version_mismatch = raw.replace("      version: 6.0.3\n", "      version: 6.0.2\n", 1)
+        with self.assertRaises(MasterTaskbookHashBindingError) as parser_version:
+            canonicalize_master_taskbook(parser_version_mismatch)
+        assert parser_version.exception.error_code == "CANONICALIZER_RUNTIME_DEPENDENCY_MISMATCH"
+
+    def test_candidate_p1_contract_fields_are_conditionally_required(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        raw = (project / "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md").read_text(encoding="utf-8")
+        blocks = parse_master_taskbook_yaml_blocks(raw)
+
+        gate = blocks["gate-event-minimum-contract"]["gate_event_minimum_contract"]
+        assert "from_state" not in gate["always_required_fields"]
+        assert "to_state" not in gate["always_required_fields"]
+        assert "transition_outcome" not in gate["always_required_fields"]
+        assert gate["conditional_required_fields"]["transition_applied"]["required_fields"] == [
+            "prior_state_version",
+            "resulting_state_version",
+            "from_state",
+            "to_state",
+            "transition_outcome",
+        ]
+        assert "from_state" in gate["conditional_required_fields"]["transition_rejected"]["forbidden_fields"]
+        assert "transition_outcome" in gate["conditional_required_fields"]["transition_rejected"]["forbidden_fields"]
+        assert "transition_outcome" in gate["conditional_required_fields"]["blocker_change"]["forbidden_fields"]
+        assert "from_state" in gate["conditional_required_fields"]["correction_recorded"]["forbidden_fields"]
+        event_types = set(gate["event_type_values"])
+        branch_event_types = [
+            event_type
+            for branch in gate["conditional_required_fields"].values()
+            for event_type in branch["event_types"]
+        ]
+        assert set(branch_event_types) == event_types
+        assert len(branch_event_types) == len(set(branch_event_types))
+        for branch in gate["conditional_required_fields"].values():
+            assert not (set(branch["required_fields"]) & set(branch["forbidden_fields"]))
+        for branch_name in (
+            "transition_rejected",
+            "blocker_change",
+            "correction_recorded",
+            "supersede_recorded",
+        ):
+            forbidden = set(gate["conditional_required_fields"][branch_name]["forbidden_fields"])
+            assert {"from_state", "to_state", "transition_outcome"} <= forbidden
+
+        review = blocks["review-decision-specific-fields"]["review_decision_specific_fields"]
+        accept_pending = review["ACCEPT"]["resulting_action_branches"]["gate_review_required"]
+        accept_applied = review["ACCEPT"]["resulting_action_branches"]["state_transition_applied"]
+        needs_fix_pending = review["NEEDS_FIX"]["resulting_action_branches"]["gate_review_required"]
+        assert "transition_id" in accept_pending["forbidden_fields"]
+        assert "resulting_gate_event_ref" in accept_pending["forbidden_fields"]
+        assert "requested_transition_outcome" in accept_pending["required_fields"]
+        assert "resulting_gate_event_ref" in accept_applied["required_fields"]
+        assert "transition_id" in needs_fix_pending["forbidden_fields"]
+        assert "transition_id" in review["PLAN_ADJUST"]["forbidden_fields"]
+        assert "transition_id" in review["ABORT"]["forbidden_fields"]
+        applied_transition_fields = {
+            "gate_actor_id",
+            "transition_id",
+            "resulting_gate_event_ref",
+            "from_state",
+            "to_state",
+            "transition_outcome",
+        }
+        for decision in ("ACCEPT", "NEEDS_FIX"):
+            pending = review[decision]["resulting_action_branches"]["gate_review_required"]
+            applied = review[decision]["resulting_action_branches"]["state_transition_applied"]
+            assert applied_transition_fields <= set(pending["forbidden_fields"])
+            assert applied_transition_fields <= set(applied["required_fields"])
+            assert not (set(pending["required_fields"]) & set(pending["forbidden_fields"]))
+            assert not (set(applied["required_fields"]) & set(applied["forbidden_fields"]))
 
 
 if __name__ == "__main__":

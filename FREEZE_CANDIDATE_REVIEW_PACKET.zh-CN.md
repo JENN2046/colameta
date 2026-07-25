@@ -3,7 +3,7 @@
 ```yaml
 chinese_companion:
   source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 4c2876ea53cfad5f5af704c7d26b495e47c8c3a560e453a6cd6cf222c84faa87
+  source_sha256: 2eafa75caf92093f4504c181be10b37f14ed1212b361d35ef9efdf9e84a09da4
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
@@ -532,7 +532,7 @@ update authorization 推导。
 - 记录的 candidate-authority-for-review-only 之外的 policy acceptance；
 - P0 review closure；
 - active status promotion；
-- post-patch P1 findings 已解决或正式处置；
+- post-patch P1 findings 已针对现行 Master 或新候选正式关闭；
 - local baseline commit `f3b7420` 已 push 或远端接受；
 - post-baseline packet reconciliation 后 canonical copy storage 已最终化；
 - freeze-confirmed hash 是 active authority 或 implementation authority。
@@ -636,7 +636,113 @@ git action、runtime action、executor action、remote mutation 或 implementati
 
 ---
 
-## 13. 术语与翻译缺口
+## 13. 并列 Master v1.1 候选准备记录
+
+本节镜像英文审查包中新追加的并列候选准备证据。它只说明三个 P1 已在新候选中
+得到合同层修正并通过本地验证；它不替换、修改、使现行 Master 失效，也不更新
+现行 Registry。
+
+```yaml id="master-candidate-preparation-20260725-zh"
+master_candidate_preparation:
+  record_id: master-candidate-preparation-20260725-40c6af59
+  status: discussion_draft_candidate_prepared_pending_hash_specific_review
+  prepared_at: 2026-07-25
+  authorization_basis: user_authorized_new_master_candidate_for_three_p1_findings
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    external_review_status: freeze_candidate_confirmed_for_exact_hash
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    registry_record_unchanged_for_candidate: true
+    registered_master_reference_unchanged: true
+    current_hash_specific_status_remains_bound_to_current_exact_hash: true
+    candidate_replaces_current_master: false
+
+  candidate:
+    id: colameta-master-v1.1-p1-contract-convergence-candidate.1
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: e38edbd324045bda79b04abba73ea67ef76fcd531e733eb56cff04076b7d4689
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 77da1b70bb448dcd62e54965e7a3563c3d2935e0543c9e3b85c20572e6eb0fee
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: 387dce1306628aaef5ab7d37a5a13f44489f0212466cc42527f2e54ab5465acb
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  p1_candidate_dispositions:
+    canonical_payload_and_freeze_hash_reproducibility:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        候选现在只有一份 selector manifest，并固定 fenced-block、heading、scalar、
+        canonical JSON、PyYAML 6.0.3、domain separator 与 fail-closed 可执行规范化器。
+    review_decision_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        ReviewDecision 由 decision 与 resulting_action 联合选分支；
+        gate_review_required 禁止 applied transition 字段，
+        state_transition_applied 必须绑定 GateEvent。
+    gate_event_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        每种 GateEvent event_type 只匹配一个条件分支；rejected、blocker、
+        correction、supersede 事件禁止 applied from_state、to_state 和
+        transition_outcome。
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 126
+      subtests_passed: 16
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2051
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 142
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_changed_scope: pass
+    bandit_medium_or_high_findings: 0
+    non_ci_full_probe:
+      result: failed_environment_precondition_not_counted_as_pass
+      passed: 2052
+      skipped: 2
+      failure: CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE
+      classification: >-
+        一个 frozen R3 exact-toolchain 测试拒绝生成的预导入字节码；仓库 CI
+        明确从普通矩阵 deselect 该测试和另外两个相关专用测试。
+
+  review_boundary:
+    prior_hash_review_status_transfers_to_candidate: false
+    new_hash_specific_review_required: true
+    p1_formal_closure_granted: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    commit_authorized_by_this_record: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+中文结论：新候选已经可以进入独立、绑定精确 hash 的审查。现行 Master 仍是
+`PROJECT_MASTER_TASKBOOK.md`，raw SHA-256 仍为
+`1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34`。
+三个 P1 尚未正式关闭；本记录不授权候选激活/替换、Registry mutation、Stage rebinding、
+commit、push、executor run 或 runtime action。
+
+---
+
+## 14. 术语与翻译缺口
 
 | 术语 | 中文含义 |
 | --- | --- |

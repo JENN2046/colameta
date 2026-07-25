@@ -17,6 +17,7 @@ chinese_companion_index:
 | Source | 中文 Companion | 当前状态 | 备注 |
 | --- | --- | --- | --- |
 | `PROJECT_MASTER_TASKBOOK.md` | `PROJECT_MASTER_TASKBOOK.zh-CN.md` | `companion_draft` | Master 中文 companion 已生成，保留英文 hash 权威边界。 |
+| `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md` | `companion_draft` | 三个 P1 合同收敛的并列 Master 候选中文 companion；不替换现行 Master，且新 hash 仍待独立审查。 |
 | `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 中文 companion 已生成，保留 packet 非授权边界。 |
 | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.md` | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.zh-CN.md` | `companion_draft` | 实施路线启动前总闸口材料中文 companion 已生成，只准备 Commander confirmation prompt，不授权实现、commit、push 或 executor。 |
 | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md` | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md` | `companion_draft` | Stage 0-6 implementation closeout readiness packet 中文 companion 已生成，只支持 push 决策审查，不授权 push、fetch、pull、executor、route transition 或 delivery state。 |
@@ -135,6 +136,7 @@ current_execution_principle:
     - docs/taskbooks/CHINESE_COMPANION_INDEX.md
   completed_draft_batch:
     - PROJECT_MASTER_TASKBOOK.zh-CN.md
+    - PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md
     - docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md
     - docs/taskbooks/stages/zh-CN/*.zh-CN.md

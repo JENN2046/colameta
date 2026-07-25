@@ -731,7 +731,7 @@ packet_cannot_prove:
   - policy acceptance beyond the recorded candidate-authority-for-review-only scope
   - P0 review closure
   - active status promotion
-  - that post-patch P1 findings are resolved or formally dispositioned
+  - that post-patch P1 findings are formally closed for either the current Master or a new candidate
   - that local baseline commit f3b7420 has been pushed or accepted remotely
   - that canonical copy storage is final after post-baseline packet reconciliation
   - that the freeze-confirmed hash is active authority or implementation authority
@@ -869,4 +869,139 @@ Not allowed:
 None of these next-step labels authorize file creation, status promotion,
 canonicalization, P0 closure, git action, runtime action, executor action,
 remote mutation, or implementation work.
+```
+
+---
+
+## 13. Side-by-Side Master v1.1 Candidate Preparation
+
+This section records preparation evidence for a new, side-by-side Master
+candidate that addresses the three open P1 contract findings. It does not
+replace, mutate, invalidate, or re-register the current Master.
+
+```yaml id="master-candidate-preparation-20260725"
+master_candidate_preparation:
+  record_id: master-candidate-preparation-20260725-40c6af59
+  status: discussion_draft_candidate_prepared_pending_hash_specific_review
+  prepared_at: 2026-07-25
+  authorization_basis: user_authorized_new_master_candidate_for_three_p1_findings
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    external_review_status: freeze_candidate_confirmed_for_exact_hash
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    registry_record_unchanged_for_candidate: true
+    registered_master_reference_unchanged: true
+    current_hash_specific_status_remains_bound_to_current_exact_hash: true
+    candidate_replaces_current_master: false
+
+  candidate:
+    id: colameta-master-v1.1-p1-contract-convergence-candidate.1
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
+    raw_snapshot_command: sha256sum PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: e38edbd324045bda79b04abba73ea67ef76fcd531e733eb56cff04076b7d4689
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 77da1b70bb448dcd62e54965e7a3563c3d2935e0543c9e3b85c20572e6eb0fee
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: 387dce1306628aaef5ab7d37a5a13f44489f0212466cc42527f2e54ab5465acb
+    reproduction_input: Path(candidate.path).read_bytes()
+    reproduction_command: >-
+      .venv/bin/python -c 'import json; from pathlib import Path; from
+      runner.master_taskbook_hash_binding import canonicalize_master_taskbook;
+      r=canonicalize_master_taskbook(Path("PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md").read_bytes());
+      print(json.dumps({k:r[k] for k in
+      ("raw_snapshot_sha256","canonical_payload_sha256","freeze_content_hash",
+      "canonical_payload_field_count")},sort_keys=True))'
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  p1_candidate_dispositions:
+    canonical_payload_and_freeze_hash_reproducibility:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#hash-policy"
+        - runner/master_taskbook_hash_binding.py
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        The candidate declares one selector manifest, exact fenced-block and
+        heading resolution, deterministic scalar and JSON normalization,
+        a pinned safe YAML parser, a domain separator, and a fail-closed
+        executable canonicalizer.
+    review_decision_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#review-decision-specific-fields"
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        ReviewDecision fields are selected by decision and resulting_action;
+        gate_review_required forbids applied transition fields, while
+        state_transition_applied requires a bound GateEvent and applied fields.
+    gate_event_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#gate-event-minimum-contract"
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        Every GateEvent event_type maps to exactly one conditional branch;
+        rejected, blocker, correction, and supersede events forbid applied
+        from_state, to_state, and transition_outcome fields.
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 126
+      subtests_passed: 16
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2051
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 142
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_changed_scope: pass
+    bandit_changed_scope:
+      medium_or_high_findings: 0
+      retained_preexisting_low_finding: B105_false_positive_for_result_value_pass
+    non_ci_full_probe:
+      result: failed_environment_precondition_not_counted_as_pass
+      passed: 2052
+      skipped: 2
+      failure: CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE
+      classification: >-
+        One frozen R3 exact-toolchain test rejected generated pre-import
+        bytecode. Repository CI explicitly deselects this test and two related
+        frozen-toolchain tests from the ordinary matrix.
+
+  review_boundary:
+    prior_hash_review_status_transfers_to_candidate: false
+    new_hash_specific_review_required: true
+    p1_formal_closure_granted: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    commit_authorized_by_this_record: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+Candidate preparation outcome:
+
+```text id="master-candidate-preparation-outcome"
+The side-by-side candidate is ready for independent, hash-specific review.
+The current Master remains PROJECT_MASTER_TASKBOOK.md at raw SHA-256
+1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34.
+No P1 is formally closed, and no candidate activation, replacement, Registry
+mutation, Stage rebinding, commit, push, executor run, or runtime action is
+authorized by this preparation record.
 ```
