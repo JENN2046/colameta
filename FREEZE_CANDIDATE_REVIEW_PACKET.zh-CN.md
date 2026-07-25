@@ -3,7 +3,7 @@
 ```yaml
 chinese_companion:
   source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 9723c1d47c440f5b99e13c9a7e0bb0567ec94b728df2da695cceef7bfa36df6c
+  source_sha256: ae654fad12946d1359bfe99bb1907541c8548686f5e5f64c74336a6bc95738ec
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
@@ -944,3 +944,165 @@ master_candidate_2_exact_hash_confirmation:
 
 确认结论：v1.1-candidate.2 的另行精确哈希确认门槛已满足。正式 Master、Registry 和
 Stage binding 的物化仍是独立的后续决策，本记录没有授权或执行该步骤。
+
+---
+
+## 17. Master v1.1 正式物化与绑定记录
+
+本追加记录保存从已复审、已确认的 candidate.2 到正式 Master 路径、当前 Registry
+记录和当前 Stage 0--9 绑定的单独授权物化。历史 Version Taskbook 与 evidence report
+保留原始哈希，没有被改写。
+
+```yaml id="master-v1-1-formal-materialization-20260725-zh"
+master_v1_1_formal_materialization:
+  record_id: master-v1-1-formal-materialization-20260725-895b91af
+  status: formal_master_registry_and_stage_bindings_prepared_local_not_pushed
+  prepared_at: 2026-07-25
+  authorization_basis: current_explicit_user_instruction_separately_authorizing_formal_master_registry_and_stage_binding_preparation
+  materialization_base_head: c4b13b30f8c0bd7b19d94944cee1593aa3374284
+
+  confirmed_source_candidate:
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    independent_review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+    exact_hash_confirmation_record_ref: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+
+  deterministic_formalization:
+    formal_path: PROJECT_MASTER_TASKBOOK.md
+    formal_id: colameta_master_taskbook_v1_1
+    formal_version: v1.1
+    formal_status: freeze_candidate
+    canonical_path: PROJECT_MASTER_TASKBOOK.md
+    retained_candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    changes:
+      - formal_title_id_version_and_canonical_path
+      - candidate_review_confirmation_and_formalization_lineage
+      - discussion_draft_to_reference_only_freeze_candidate_status
+      - activation_and_next_step_text_reconciled_to_formal_state
+    p1_contract_semantics_changed_from_confirmed_candidate: false
+    active_authority_added: false
+
+  exact_formal_master_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    chinese_companion_sha256: e715fcacd629aa9eaf32d1b06fc086f1ae91931d59d8c51dccd3240167df0b29
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+    independent_reference_implementation_imported_runner: false
+    all_three_hashes_independently_reproduced: true
+
+  registry_artifacts:
+    master_registry:
+      path: .colameta/taskbooks/master_taskbook_registry.json
+      raw_snapshot_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+      bound_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+      review_status: freeze_candidate_confirmed_for_exact_hash
+      review_status_is_reference_only: true
+    stage_registry:
+      path: .colameta/taskbooks/stage_taskbook_registry.json
+      raw_snapshot_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+      registered_stage_id: stage_02_stage_taskbook_management
+      registered_stage_raw_snapshot_sha256: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+    stage_schema:
+      path: .colameta/taskbooks/stage_taskbook_schema.json
+      raw_snapshot_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+      required_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+
+  stage_binding_set:
+    binding_count: 10
+    manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    bindings:
+      docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md: e97d1d1990b19744d4d3a083271ae34ee3fcb9b7e423c6ab10f3075554c3c700
+      docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md: d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af
+      docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+      docs/taskbooks/stages/STAGE_03_EXTERNAL_TASKBOOK_IMPORT.md: 2adb368816294d0f14353d9b607aac933ffd3ae61a8d850df45e5289386e16f5
+      docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md: af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff
+      docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md: dc440a858905660fb8360162e512b8ed9796503d7c79b58268f1258bf125e7bf
+      docs/taskbooks/stages/STAGE_06_REVIEW_FEEDBACK_INTAKE.md: feef78fc63ddd9332f011bc0149c2056eb51033fb437023e7702e7c51b24bdd6
+      docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md: 84a1f9d50115e5e4f3cb40971769e6de55ff74b2435f216fdb72de4786ce163b
+      docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md: 79af36185ac96aa7d4c89d168583fb326c0a728b3a2dfe0fba5e9f32d7cb94a7
+      docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md: be200dcb5b8b3c3df7703b8f989f23fe2c807c58e84e86f93a7349d17dc04d0a
+    chinese_companion_source_hashes_match: true
+
+  live_binding_consumers:
+    updated_runner_modules:
+      - runner/drift_evidence_schema.py
+      - runner/execution_envelope.py
+      - runner/external_taskbook_validator.py
+      - runner/master_taskbook_registry.py
+      - runner/mcp_stage_7_9_preview.py
+      - runner/review_feedback_schema.py
+      - runner/review_feedback_validator.py
+      - runner/stage_taskbook_registry.py
+      - runner/thin_governed_loop.py
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    historical_version_and_evidence_hashes_rewritten: false
+
+  validation_evidence:
+    master_registry_stage_contracts:
+      result: pass
+      passed: 118
+      subtests_passed: 29
+    expanded_binding_consumers:
+      result: pass
+      passed: 314
+      subtests_passed: 51
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2055
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+      warnings: 3
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    first_expanded_binding_probe_result: failed_not_counted_as_pass
+    failed_tests: 18
+    root_cause: secondary_stage_taskbook_hash_consumers_still_bound_to_pre_materialization_stage_hashes
+    correction: stage_3_4_6_7_8_9_consumer_bindings_updated_to_their_post_materialization_hashes
+    focused_retest_result: pass
+    security_gate_weakened: false
+
+  stage_schema_baseline:
+    stage_02_current_registry_record_validation: passed
+    other_stage_taskbook_validation_shapes_changed_by_rebinding: false
+    pre_existing_non_stage_02_schema_fail_closed_results_remain: true
+    structural_stage_reauthoring_in_scope: false
+
+  authority_boundary:
+    formal_master_generated: true
+    master_registry_updated: true
+    stage_registry_updated: true
+    current_stage_bindings_updated: true
+    source_candidate_exact_hashes_confirmed: true
+    formal_output_hashes_generated_and_independently_reproduced: true
+    formal_output_hashes_separately_confirmed_after_generation: false
+    p1_formal_closure_granted: false
+    active_status_promotion_authorized: false
+    active_execution_authority: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+物化结论：正式 v1.1 Master、当前 Master/Stage Registry 和当前 Stage 0--9
+哈希绑定已经从已复审、已确认的 candidate.2 在本地完成准备。正式输出三哈希已独立
+复现，但尚未获得生成后的新一轮精确哈希确认。本记录不授予 active promotion、
+P1 formal closure、push、executor run 或 runtime action。

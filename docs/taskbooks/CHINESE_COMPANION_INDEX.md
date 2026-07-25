@@ -16,10 +16,10 @@ chinese_companion_index:
 
 | Source | 中文 Companion | 当前状态 | 备注 |
 | --- | --- | --- | --- |
-| `PROJECT_MASTER_TASKBOOK.md` | `PROJECT_MASTER_TASKBOOK.zh-CN.md` | `companion_draft` | Master 中文 companion 已生成，保留英文 hash 权威边界。 |
+| `PROJECT_MASTER_TASKBOOK.md` | `PROJECT_MASTER_TASKBOOK.zh-CN.md` | `companion_draft` | 正式 v1.1 Master 已从已复审、已确认的 candidate.2 物化为 reference-only freeze candidate；中文 companion 绑定正式英文 raw hash，不授予 active authority。 |
 | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md` | `companion_draft` | 第一版三个 P1 合同收敛候选；独立 hash-specific 审查确认 hash 身份，但留下两个 P1，不替换现行 Master。 |
-| `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md` | `companion_draft` | candidate.1 两个剩余 P1 的并列修订候选；三组新 hash 已完成独立 hash-specific 技术复审并获得另行确认，现仅具备正式物化考虑资格，且不替换现行 Master。 |
-| `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 中文 companion 已生成，保留 packet 非授权边界。 |
+| `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md` | `companion_draft` | candidate.1 两个剩余 P1 的修订候选；三组 hash 已独立复审并确认，现作为正式 v1.1 Master 的不可变物化来源保留。 |
+| `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 已追加 candidate.2 确认与正式 Master/Registry/Stage 绑定物化记录，继续保留非 active、非 push、非 runtime 授权边界。 |
 | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.md` | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.zh-CN.md` | `companion_draft` | 实施路线启动前总闸口材料中文 companion 已生成，只准备 Commander confirmation prompt，不授权实现、commit、push 或 executor。 |
 | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md` | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md` | `companion_draft` | Stage 0-6 implementation closeout readiness packet 中文 companion 已生成，只支持 push 决策审查，不授权 push、fetch、pull、executor、route transition 或 delivery state。 |
 | `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md` | `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.zh-CN.md` | `companion_draft` | P1-A 至 P1-D 收敛基线及 P1-E evidence gate 对账的完整中文 companion；本地实现已记录到 P1-E，fresh development acceptance 仍 pending，且不授予 commit、push、stable replacement 或外部配置权限。 |
