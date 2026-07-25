@@ -3,11 +3,11 @@
 ```yaml
 chinese_companion:
   source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: ae654fad12946d1359bfe99bb1907541c8548686f5e5f64c74336a6bc95738ec
+  source_sha256: d4fb1cacae7c5afe2474d04c773850d40b38046c0bc67baee2d9c32e18d6f974
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  reconciled_at: 2026-07-25
+  reconciled_at: 2026-07-26
   known_translation_gaps: []
 ```
 
@@ -1106,3 +1106,147 @@ master_v1_1_formal_materialization:
 哈希绑定已经从已复审、已确认的 candidate.2 在本地完成准备。正式输出三哈希已独立
 复现，但尚未获得生成后的新一轮精确哈希确认。本记录不授予 active promotion、
 P1 formal closure、push、executor run 或 runtime action。
+
+---
+
+## 18. Master v1.1 正式三哈希复审与确认
+
+本追加记录保存对上一条物化记录所生成正式 Master 的单独、hash-specific 复审与确认。
+正式 Master 字节、Registry 记录和 Stage 绑定都是本次复审输入，本记录没有修改它们。
+
+```yaml id="master-v1-1-formal-exact-hash-confirmation-20260726-zh"
+master_v1_1_formal_exact_hash_confirmation:
+  record_id: master-v1-1-formal-hash-confirmation-20260726-895b91af
+  status: exact_formal_hashes_independently_reviewed_and_confirmed_reference_only
+  reviewed_at: 2026-07-26
+  confirmed_at: 2026-07-26
+  authorization_basis: current_explicit_user_instruction_for_separate_formal_three_hash_review_and_confirmation
+  technical_disposition: PASS
+  blocking_findings: []
+  technical_review_result_is_authority: false
+  commander_confirmation_received: true
+
+  exact_review_target:
+    path: PROJECT_MASTER_TASKBOOK.md
+    review_base_head: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    materialization_commit: f36c5644530ca3308637f2ea593c9df7b529f1d2
+    materialization_record_commit: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    worktree_bytes_match_review_base_head: true
+    formal_master_bytes_changed_by_this_review: false
+    formal_master_status: freeze_candidate
+
+  exact_formal_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_source_document: PROJECT_MASTER_TASKBOOK.md
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+    head_object_matches_worktree_bytes: true
+    production_and_independent_implementations_match_all_three_hashes: true
+
+  hash_and_contract_review:
+    complete_canonicalization_contract_validation:
+      result: pass
+      repo_relative_forward_slash_canonical_path_enforced: true
+      canonical_source_document_matches_formal_path: true
+      canonicalization_contract_selectors_hash_bound: true
+      negative_probe_count: 19
+      all_negative_probes_fail_closed: true
+    review_decision_no_action_contradiction:
+      result: pass
+      no_action_absent_from_review_decision_resulting_action_values: true
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+    gate_event_conditional_transition_fields:
+      result: pass
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  candidate_to_formal_review:
+    source_candidate_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    source_candidate_raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    same_yaml_block_id_set: true
+    yaml_block_count: 52
+    p1_contract_blocks_unchanged:
+      - hash-policy
+      - gate-event-minimum-contract
+      - review-decision-record-minimum
+      - review-decision-specific-fields
+    freeze_contract_unchanged_except_authorized_status_transition: true
+    candidate_status: discussion_draft
+    formal_status: freeze_candidate
+    formal_identity_and_lineage_match_authorized_transform: true
+    active_execution_authority_added: false
+
+  registry_and_stage_binding_review:
+    master_registry_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+    stage_registry_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+    stage_schema_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+    stage_binding_count: 10
+    stage_binding_manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    registry_review_status_is_reference_only: true
+    active_execution_authority: false
+    delivery_state_authority: false
+    route_transition_authority: false
+
+  validation_evidence:
+    exact_formal_hash_regression:
+      result: pass
+      passed: 16
+      subtests_passed: 13
+    master_registry_stage_binding_suite:
+      result: pass
+      passed: 116
+      subtests_passed: 24
+      warnings: 3
+    compileall: pass
+    git_diff_check: pass
+
+  probe_correction_record:
+    initial_freeze_block_full_equality_probe:
+      result: failed_not_counted_as_pass
+      root_cause: expected_authorized_candidate_to_formal_status_transition
+      corrected_probe: freeze_contract_equal_after_removing_exact_status_field_then_verify_expected_status_transition
+      corrected_result: pass
+    initial_registry_boundary_probe:
+      result: script_error_not_counted_as_pass
+      root_cause: probe_assumed_a_nonexistent_field_instead_of_using_the_registry_contract
+      corrected_probe: validate_all_actual_master_and_stage_registry_authority_fields
+      corrected_result: pass
+    security_gate_weakened: false
+
+  confirmation_boundary:
+    exact_formal_hashes_confirmed: true
+    confirmation_applies_to_exact_three_hashes_only: true
+    three_p1_contracts_technically_confirmed_pass: true
+    p1_formal_closure_granted: false
+    formal_master_status_remains_freeze_candidate: true
+    active_status_promotion_authorized: false
+    push_authorized: false
+    registry_or_stage_binding_mutation_authorized_by_confirmation: false
+    executor_or_runtime_action_authorized: false
+    next_decisions_require_separate_instruction:
+      - active_status_promotion
+      - git_push
+```
+
+确认结论：正式 Master 的 raw snapshot、canonical payload 与 freeze-content 三个精确
+哈希已通过独立 hash-specific 复审，并获得 reference-only freeze candidate 范围内的
+单独确认。本确认不把 Master 提升为 active，不授予 P1 formal closure 或 push，不修改
+Registry/Stage 绑定，也不授权 executor 或 runtime action。

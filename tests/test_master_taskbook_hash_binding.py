@@ -32,6 +32,9 @@ CANDIDATE_1_FREEZE_CONTENT_HASH = "387dce1306628aaef5ab7d37a5a13f44489f0212466cc
 CANDIDATE_2_RAW_SHA256 = "b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b"
 CANDIDATE_2_CANONICAL_PAYLOAD_SHA256 = "34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015"
 CANDIDATE_2_FREEZE_CONTENT_HASH = "ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190"
+FORMAL_MASTER_RAW_SHA256 = "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63"
+FORMAL_MASTER_CANONICAL_PAYLOAD_SHA256 = "217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab"
+FORMAL_MASTER_FREEZE_CONTENT_HASH = "3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae"
 
 
 class MasterTaskbookHashBindingTests(unittest.TestCase):
@@ -178,6 +181,33 @@ class MasterTaskbookHashBindingTests(unittest.TestCase):
         assert result["validator_input_raw_content_sha256"] == master_before
         assert sha256_file(master) == master_before
         assert sha256_file(registry) == registry_before
+
+    def test_formal_master_v1_1_exact_hashes_remain_reproducible(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        master = project / "PROJECT_MASTER_TASKBOOK.md"
+        raw_bytes = master.read_bytes()
+        raw = raw_bytes.decode("utf-8")
+
+        first = canonicalize_master_taskbook(raw_bytes)
+        second = canonicalize_master_taskbook(raw)
+        crlf = canonicalize_master_taskbook(raw.replace("\n", "\r\n"))
+        runtime_only = canonicalize_master_taskbook(
+            raw.replace('    observed_at: "2026-06-28"', '    observed_at: "2099-01-01"', 1)
+        )
+
+        assert first["raw_snapshot_sha256"] == sha256_file(master) == FORMAL_MASTER_RAW_SHA256
+        assert first["canonical_payload_sha256"] == FORMAL_MASTER_CANONICAL_PAYLOAD_SHA256
+        assert first["freeze_content_hash"] == FORMAL_MASTER_FREEZE_CONTENT_HASH
+        assert first["canonical_payload"]["source_document"] == "PROJECT_MASTER_TASKBOOK.md"
+        assert first["canonical_payload_field_count"] == 48
+        assert first["canonical_json"] == second["canonical_json"]
+        assert first["freeze_content_hash"] == second["freeze_content_hash"]
+        assert first["freeze_content_hash"] == crlf["freeze_content_hash"]
+        assert first["raw_snapshot_sha256"] != crlf["raw_snapshot_sha256"]
+        assert first["freeze_content_hash"] == runtime_only["freeze_content_hash"]
+        assert first["raw_snapshot_sha256"] != runtime_only["raw_snapshot_sha256"]
+        assert first["canonicalization_result_is_authority"] is False
+        assert first["canonical_receipt_generated"] is False
 
     def test_historical_candidate_1_exact_hashes_remain_reproducible(self) -> None:
         project = Path(__file__).resolve().parents[1]
