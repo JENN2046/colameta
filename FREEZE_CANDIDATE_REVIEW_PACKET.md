@@ -19,8 +19,9 @@ freeze_candidate_review_packet:
   target_review_status: freeze_candidate_confirmed_for_exact_hash
   project: ColaMeta
   observed_at: "2026-06-29"
+  reconciled_at: "2026-07-25"
   workspace: /home/jenn/src/colameta-dev
-  packet_sync_status: post_canonical_hash_receipt_draft_commit_reconciliation
+  packet_sync_status: post_p1_convergence_mainline_baseline_reconciliation
   synced_after_master_updates:
     - hash_canonical_single_authority_patch
     - gateevent_commander_blocked_accepted_state_authority_patch
@@ -33,6 +34,15 @@ freeze_candidate_review_packet:
     commit: 9fea935
     subject: "docs: add canonical hash receipt draft"
     status: created_locally_not_pushed
+  mainline_baseline_reconciliation:
+    observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+    observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+    reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+    local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+    remote_fetch_performed: false
+    local_implementation_commits_ahead_of_tracking_ref: 27
+    local_implementation_commits_behind_tracking_ref: 0
+    reconciliation_delivery_commit_self_recorded: false
 
   non_authorization:
     - does_not_promote_target_to_active
@@ -88,13 +98,18 @@ in this packet as an external confirmation record for that exact hash.
 
 ```yaml id="repository-reality-snapshot"
 repository_reality:
-  branch: main
-  observed_committed_head_before_this_readiness_edit: 9fea935
-  observed_committed_head_subject: "docs: add canonical hash receipt draft"
-  origin_main: 1caa0b2
-  origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 6
+  observed_at: 2026-07-25
+  source_branch: main
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+  reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+  local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+  local_origin_main_subject: "Merge pull request #182 from JENN2046/agent/stable-b660f7b-receipt"
+  remote_fetch_performed: false
+  ahead_local_origin_main_ref: 27
+  behind_local_origin_main_ref: 0
   tracked_remote_sync_status: local_ahead_remote
+  reconciliation_delivery_commit: intentionally_not_self_recorded
   baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
@@ -464,6 +479,47 @@ PROJECT_MASTER_TASKBOOK.md. Freeze-candidate review of the Master Taskbook
 does not authorize pushing v1.10, starting a new executor run, or entering the
 Master Taskbook Registry V1 implementation route.
 ```
+
+---
+
+### 6.1 2026-07-25 Mainline Baseline Reconciliation
+
+```yaml id="p1-mainline-baseline-reconciliation"
+p1_mainline_baseline_reconciliation:
+  observed_at: 2026-07-25
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  exact_master_taskbook_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_content_changed: false
+  master_registry_or_stage_taskbook_content_changed: false
+  p1_local_implementation_status: p1_e_implementation_verified_fresh_development_acceptance_pending
+  exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
+  fresh_development_acceptance_status: pending
+  formal_p0_closure_status: not_granted
+  stable_replacement_authority: false
+  push_authority: false
+```
+
+The 27 local commits between the locally stored `origin/main` tracking ref and
+the observed base HEAD group into the typed-read/runtime foundation and P1-A
+through P1-E. This packet records that implementation-history convergence only.
+It does not self-record the later documentation commit and does not claim that
+the resulting documentation commit has passed the complete candidate
+validation ladder.
+
+The earlier production-readiness review findings have the following
+non-authoritative implementation dispositions:
+
+| Severity | Finding | Implementation evidence | Disposition |
+| --- | --- | --- | --- |
+| P0 | Enforce configured external-OAuth scopes server-side. | `e7fdabb18f95585f0b029aac68b53d020d122468`; `docs/production-readiness/remote-mcp-rc-hardening-20260706.zh-CN.md` | `resolved_in_implementation_review_closure_pending` |
+| P0 | Keep remote-public external OAuth read/preview-only and deny commit/plan before handler execution. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | Enforce a hard request-body cap for MCP and OAuth endpoints. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | Enforce Git branch and remote policy, including apply-time recheck. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+
+These dispositions mean that implementation evidence exists for renewed
+review. They are not formal P0 closure, do not accept P1-E live evidence, and
+do not promote the Master, Registry, Stage taskbooks, release gate, or Delivery
+State.
 
 ---
 

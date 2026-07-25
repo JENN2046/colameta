@@ -4,9 +4,13 @@
 p1_d_client_release_gate:
   schema_version: colameta.p1_d_client_release_gate_manifest.v1
   document_type: implementation_binding_manifest
-  status: implementation_ready
+  status: local_implementation_complete_external_acceptance_pending
   created_at: 2026-07-24
   baseline_commit: 7e18f29
+  reconciled_at: 2026-07-25
+  observed_implementation_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  p1_e_evidence_gate_status: implementation_verified_pending_fresh_development_acceptance
+  exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
   public_commander_tool_count: 9
   public_tool_additions: forbidden
   external_configuration_authority: false
@@ -101,6 +105,12 @@ Connector observations as operator-attested rather than server-observed. The
 gate stays fail-closed until a receipt is fresh and complete, and it remains
 blocked until stable replacement is separately authorized. See
 `P1_E_RELEASE_EVIDENCE_GATE.md` for the receipt contract.
+
+The 2026-07-25 governance reconciliation records that the local P1-D
+implementation and the P1-E evidence evaluator are present at the observed
+pre-edit implementation HEAD. It does not claim a fresh live ChatGPT session,
+current public-runtime provenance, Connector/OAuth acceptance, a complete
+exact-candidate validation ladder, or stable-replacement authority.
 
 ## Required Regression Coverage
 

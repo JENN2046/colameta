@@ -1,15 +1,18 @@
-# P1-E Release Evidence Gate
+# P1-E Release Evidence Gate 中文 Companion
 
 ```yaml
-p1_e_release_evidence_gate:
-  schema_version: colameta.p1_e_release_evidence_gate_manifest.v1
-  document_type: implementation_binding_manifest
-  status: implementation_verified_pending_fresh_development_acceptance
+p1_e_release_evidence_gate_zh_cn:
+  document_type: chinese_companion
+  source_document_ref: docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.md
+  source_sha256: e72b2023973352d3405666bafc822d837cc2a644ae68b83360725af3b75f8ec5
+  source_schema_version: colameta.p1_e_release_evidence_gate_manifest.v1
+  source_status: implementation_verified_pending_fresh_development_acceptance
+  translation_status: companion_draft
+  authority_status: planning_reference_only
+  source_authority_boundary: english_source_remains_authoritative
   created_at: 2026-07-24
-  public_commander_tool_count: 9
-  public_tool_additions: forbidden
-  stable_replacement_authority: false
-  release_authority: false
+  reconciled_at: 2026-07-25
+  known_translation_gaps: []
 ```
 
 ## 目的
@@ -94,3 +97,12 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q \
   tests/test_mcp_commander_exposure_profile.py \
   tests/test_release_submission_readiness.py
 ```
+
+## 术语说明
+
+| 术语 | 中文含义 |
+| --- | --- |
+| operator-attested | 由 operator 按闭合字段声明的外部观察，不是服务器自行观察。 |
+| preview-bound receipt | 必须与短时 preview 和精确候选绑定后才能写入的本地回执。 |
+| exact candidate | 所有证据共同绑定的精确 Git commit。 |
+| freshness re-evaluation | 每次读取时重新判断观察时间、候选绑定和连续性是否仍有效。 |

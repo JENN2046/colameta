@@ -2,10 +2,13 @@
 
 ```yaml
 chinese_companion:
-  source_document: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 4199671538a07d3422ef510f1ad8718724b587e24cfa9014ccb6f2a1e0ef1236
+  source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
+  source_sha256: 9377c0978c2c9e3aac1189371a222e0dc20cdabaffa50bf2aad0c55eba2b7885
   translation_status: companion_draft
   authority_status: planning_reference_only
+  source_authority_boundary: english_source_remains_authoritative
+  reconciled_at: 2026-07-25
+  known_translation_gaps: []
 ```
 
 `Freeze Candidate Review Packet` = 冻结候选审查包。中文意思是：这份文件记录
@@ -48,21 +51,28 @@ proposed_review_target:
 
 ```yaml
 repository_reality:
-  branch: main
-  observed_committed_head_before_this_readiness_edit: 9fea935
-  observed_committed_head_subject: "docs: add canonical hash receipt draft"
-  origin_main: 1caa0b2
-  origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 6
+  observed_at: 2026-07-25
+  source_branch: main
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+  reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+  local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+  local_origin_main_subject: "Merge pull request #182 from JENN2046/agent/stable-b660f7b-receipt"
+  remote_fetch_performed: false
+  ahead_local_origin_main_ref: 27
+  behind_local_origin_main_ref: 0
   tracked_remote_sync_status: local_ahead_remote
+  reconciliation_delivery_commit: intentionally_not_self_recorded
   baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
   remote_push_authorized_by_this_packet: false
 ```
 
-中文解释：当时本地 `main` 已领先 `origin/main`。Master 和 packet 已在本地 baseline
-commit 中被跟踪，但 packet 不授权 push、PR、release、tag、deploy 或任何外部写入。
+中文解释：2026-07-25 的对账以本地 `main` 的 `05575ad...` 为编辑前观察基线，并在独立
+worktree 分支中修改文档；本地保存的 `origin/main` tracking ref 是 `e167fa...`，未执行 fetch。
+观察基线领先该本地 tracking ref 27 个提交、落后 0 个。Master 和 packet 已被 Git 跟踪，
+但 packet 不授权 push、PR、release、tag、deploy 或任何外部写入。
 
 ---
 
@@ -328,6 +338,41 @@ v1_10_local_status:
 
 ---
 
+### 6.1 2026-07-25 主线基线对账
+
+```yaml
+p1_mainline_baseline_reconciliation:
+  observed_at: 2026-07-25
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  exact_master_taskbook_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_content_changed: false
+  master_registry_or_stage_taskbook_content_changed: false
+  p1_local_implementation_status: p1_e_implementation_verified_fresh_development_acceptance_pending
+  exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
+  fresh_development_acceptance_status: pending
+  formal_p0_closure_status: not_granted
+  stable_replacement_authority: false
+  push_authority: false
+```
+
+本地保存的 `origin/main` tracking ref 到编辑前观察基线之间共有 27 个提交，分为
+typed-read/runtime 基础和 P1-A 至 P1-E。本 packet 只对账这段实现历史；它不会把随后产生的
+文档提交自我写入，也不声称文档提交已经跑完完整 candidate validation ladder。
+
+此前 production-readiness 审查发现项的非权威实现处置如下：
+
+| 严重级别 | 发现项 | 实现证据 | 处置 |
+| --- | --- | --- | --- |
+| P0 | 服务端强制执行 configured external-OAuth scope。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；`docs/production-readiness/remote-mcp-rc-hardening-20260706.zh-CN.md` | `resolved_in_implementation_review_closure_pending` |
+| P0 | remote-public external OAuth 仅允许 read/preview，并在 handler 前拒绝 commit/plan。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | 为 MCP 与 OAuth endpoint 设置 request body 硬上限。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | 强制 Git branch/remote policy，并在 apply 时重新检查。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+
+这些处置只表示已有实现证据，可进入重新审查；它们不是正式 P0 closure，不接受 P1-E
+真实验收证据，也不提升 Master、Registry、Stage taskbook、release gate 或 Delivery State。
+
+---
+
 ## 7. Commander 确认与草稿更新边界
 
 本节只记录 review-route language。它不是 Commander freeze decision，不是 canonical receipt，
@@ -500,3 +545,16 @@ push、PR、tag、release、deploy、executor run、service restart 或 route tr
 
 以上 next-step label 不授权 file creation、status promotion、canonicalization、P0 closure、
 git action、runtime action、executor action、remote mutation 或 implementation work。
+
+---
+
+## 13. 术语与翻译缺口
+
+| 术语 | 中文含义 |
+| --- | --- |
+| tracking ref | 本地保存的远端引用；未执行 fetch 时不能冒充远端实时状态。 |
+| reconciliation | 将当前可验证事实回填到治理文档，不等于状态提升或验收。 |
+| implementation disposition | 对发现项已有实现证据的记录，不等于正式审查关闭。 |
+| exact-candidate validation | 针对一个精确 commit 在干净环境中运行的完整候选验证。 |
+
+已知翻译缺口：无。英文源文件仍是权威来源；中文 companion 不产生新的授权。

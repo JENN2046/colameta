@@ -4,10 +4,10 @@
 p1_convergence_execution_baseline:
   schema_version: colameta.p1_convergence_execution_baseline.v2
   document_type: bounded_execution_plan
-  status: p1_d_local_implementation_complete_external_release_evidence_pending
+  status: p1_e_implementation_verified_fresh_development_acceptance_pending
   authority_status: planning_reference_only
   created_at: 2026-07-24
-  revision: 8
+  revision: 9
   execution_style: decisive_batched_delivery
   baseline_branch: main
   baseline_head: 20ecb3b4f043f752f66ea5228accdcf64ceb1a98
@@ -21,6 +21,12 @@ p1_convergence_execution_baseline:
   push_authority: false
   stable_replacement_authority: false
   external_configuration_authority: false
+  reconciliation:
+    observed_at: 2026-07-25
+    observed_implementation_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+    implementation_scope: p1_a_through_p1_e_local_convergence
+    exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
+    fresh_development_acceptance_status: pending
 ```
 
 ## Decision
@@ -334,6 +340,28 @@ authorized follow-ups.
 - Even when the five evidence checks pass, the gate remains `blocked` with
   `EXPLICIT_STABLE_REPLACEMENT_AUTHORIZATION_REQUIRED` until Jenn separately
   authorizes an exact target through the stable-promotion boundary.
+
+### 2026-07-25 governance reconciliation
+
+The local implementation history observed immediately before this
+documentation-only reconciliation reaches P1-E at
+`05575ad90cd40f44819aed31dda185ec7aa5c1f8`. The implementation groups are:
+
+- typed-read and runtime-convergence foundation: `25a9585` through `20ecb3b`;
+- P1-A composition-root extraction: `4aef920` through `34a0382`;
+- P1-B current-facts artifact workflow: `eb35e8e`;
+- P1-C Stage 7--9 manifest and preview journey: `ddd2bea` through `7e18f29`;
+- P1-D client release gate and continuity fix: `29b2bd4` through `5dd354a`;
+  and
+- P1-E release-evidence evaluation: `05575ad`.
+
+This is an implementation-history reconciliation, not an exact-candidate
+acceptance result. The documentation reconciliation commit is intentionally
+outside the observed implementation HEAD, so the complete validation ladder
+must be rerun on a clean exact candidate. Fresh public runtime provenance,
+sanitized Connector/OAuth reachability, and a new ChatGPT development-
+connector acceptance remain pending. No P0 closure, stable replacement,
+external configuration, push, release, or deployment authority is created.
 
 ## Delivery Cadence
 
