@@ -3,7 +3,7 @@
 ```yaml
 chinese_companion:
   source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 1e3f1537f58c05c1ca3795de8ff9b0e1f8a2f6930df673bd7abcae16cc1245c4
+  source_sha256: 9723c1d47c440f5b99e13c9a7e0bb0567ec94b728df2da695cceef7bfa36df6c
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
@@ -890,3 +890,57 @@ master_candidate_2_hash_specific_review:
 candidate.1 留下的两个 P1 在 candidate.2 中技术审查通过，GateEvent 修正也复审通过。
 candidate.2 现在仅具备进入另行确认的资格；本记录没有生成或授权正式 Master、Registry、
 Stage binding、activation、replacement、push、executor run 或 runtime action。
+
+---
+
+## 16. Master v1.1 Candidate 2 精确哈希确认
+
+本追加记录保存独立 hash-specific 复审之后另行给出的确认。确认仅绑定到下列三组
+精确候选哈希。它满足未来考虑正式物化提案的前置门槛，但本身不授权或执行正式物化。
+
+```yaml id="master-candidate-2-exact-hash-confirmation-20260725-zh"
+master_candidate_2_exact_hash_confirmation:
+  record_id: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+  status: exact_hashes_confirmed_formalization_not_authorized
+  confirmed_at: 2026-07-25
+  confirmation_source: current_explicit_user_instruction
+  confirmation_scope: confirm_the_three_exact_hashes_above
+  review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+  review_record_commit: ede2db1218b0bad138537ed3b14b86c47e38dc24
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+
+  confirmation_preconditions:
+    independent_hash_specific_review_passed: true
+    blocking_findings: []
+    exact_hashes_reverified_before_recording: true
+    candidate_raw_snapshot_unchanged_since_review: true
+
+  confirmation_effect:
+    separate_commander_confirmation_received: true
+    exact_hash_confirmation_gate: satisfied
+    candidate_eligible_for_formalization_consideration: true
+    prior_pending_confirmation_status_superseded: true
+
+  non_authorization:
+    - does_not_change_candidate_embedded_status
+    - does_not_grant_p1_formal_closure
+    - does_not_generate_or_replace_formal_master
+    - does_not_update_master_registry
+    - does_not_update_stage_registry_or_stage_bindings
+    - does_not_authorize_activation_or_runtime_action
+    - does_not_authorize_push
+    - does_not_make_candidate_active_authority
+
+  next_decision_required:
+    - separate_instruction_to_prepare_formal_master_registry_and_stage_bindings
+```
+
+确认结论：v1.1-candidate.2 的另行精确哈希确认门槛已满足。正式 Master、Registry 和
+Stage binding 的物化仍是独立的后续决策，本记录没有授权或执行该步骤。

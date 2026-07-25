@@ -1162,3 +1162,65 @@ eligible for a separate confirmation decision, but no formal Master, Registry,
 Stage binding, activation, replacement, push, executor run, or runtime action
 has been authorized or generated.
 ```
+
+---
+
+## 15. Master v1.1 Candidate 2 Exact-Hash Confirmation
+
+This append-only record captures the separate confirmation issued after the
+independent hash-specific review. The confirmation is bound only to the three
+exact candidate hashes below. It satisfies the prerequisite for considering a
+future formalization proposal; it does not itself authorize or perform that
+formalization.
+
+```yaml id="master-candidate-2-exact-hash-confirmation-20260725"
+master_candidate_2_exact_hash_confirmation:
+  record_id: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+  status: exact_hashes_confirmed_formalization_not_authorized
+  confirmed_at: 2026-07-25
+  confirmation_source: current_explicit_user_instruction
+  confirmation_scope: confirm_the_three_exact_hashes_above
+  review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+  review_record_commit: ede2db1218b0bad138537ed3b14b86c47e38dc24
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+
+  confirmation_preconditions:
+    independent_hash_specific_review_passed: true
+    blocking_findings: []
+    exact_hashes_reverified_before_recording: true
+    candidate_raw_snapshot_unchanged_since_review: true
+
+  confirmation_effect:
+    separate_commander_confirmation_received: true
+    exact_hash_confirmation_gate: satisfied
+    candidate_eligible_for_formalization_consideration: true
+    prior_pending_confirmation_status_superseded: true
+
+  non_authorization:
+    - does_not_change_candidate_embedded_status
+    - does_not_grant_p1_formal_closure
+    - does_not_generate_or_replace_formal_master
+    - does_not_update_master_registry
+    - does_not_update_stage_registry_or_stage_bindings
+    - does_not_authorize_activation_or_runtime_action
+    - does_not_authorize_push
+    - does_not_make_candidate_active_authority
+
+  next_decision_required:
+    - separate_instruction_to_prepare_formal_master_registry_and_stage_bindings
+```
+
+Confirmation outcome:
+
+```text id="master-candidate-2-exact-hash-confirmation-outcome"
+The separate exact-hash confirmation gate for v1.1-candidate.2 is satisfied.
+Formal Master, Registry, and Stage binding materialization remains a distinct
+future decision and has not been authorized or performed by this record.
+```
