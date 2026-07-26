@@ -8,6 +8,7 @@ from runner.canonical_project_state import (
     CANONICAL_PROJECT_STATE_SCHEMA_VERSION,
     build_canonical_project_state,
 )
+from runner.project_snapshot import ProjectSnapshotBuilder
 
 
 def _make_git_checkout(tmp_path: Path) -> tuple[Path, str]:
@@ -182,3 +183,86 @@ def test_canonical_state_marks_full_conclusion_ready_with_fresh_external_observa
         },
         "authorization": "observation_only",
     }
+
+    current = _state(
+        project,
+        head,
+        delivery_clean=True,
+        runtime_observation={
+            "status": "current",
+            "observed_at": "2026-07-22T01:02:00Z",
+        },
+        connector_observation={
+            "status": "healthy",
+            "observed_at": "2026-07-22T01:02:01Z",
+        },
+    )
+    assert current["freshness"]["current_observation"] == "current"
+    assert current["current_conclusion"]["status"] == "ready"
+
+
+def test_canonical_state_never_projects_noncurrent_external_status_as_ready(
+    tmp_path: Path,
+) -> None:
+    project, head = _make_git_checkout(tmp_path)
+
+    for status in ("stale", "degraded", "unhealthy", "error"):
+        state = _state(
+            project,
+            head,
+            delivery_clean=True,
+            runtime_observation={"status": status},
+            connector_observation={"status": "healthy"},
+        )
+        assert state["freshness"]["current_observation"] == (
+            "freshness_required"
+        )
+        assert state["current_conclusion"]["status"] == (
+            "freshness_required"
+        )
+        assert state["current_conclusion"]["reasons"] == [
+            "runtime_current_observation_not_healthy"
+        ]
+
+    partial = _state(
+        project,
+        head,
+        delivery_clean=True,
+        runtime_observation={"status": "partial"},
+        connector_observation={"status": "healthy"},
+    )
+    assert partial["freshness"]["current_observation"] == "partial"
+    assert partial["current_conclusion"]["status"] == "partial_observation"
+    assert partial["current_conclusion"]["reasons"] == [
+        "runtime_partial_observation"
+    ]
+
+
+def test_project_snapshot_projects_scalar_runner_status(
+    tmp_path: Path,
+) -> None:
+    class PlanningBridgeFixture:
+        @staticmethod
+        def get_runner_status(_project_root: str) -> dict[str, object]:
+            return {
+                "ok": True,
+                "runner_status": "READY",
+                "current_version": "v1.19",
+                "current_version_status": "PASSED",
+                "pending_count": 0,
+                "pending_versions": [],
+            }
+
+    partial_errors: list[dict[str, str]] = []
+    runner = ProjectSnapshotBuilder(
+        str(tmp_path),
+        planning_bridge=PlanningBridgeFixture(),
+    )._build_runner_status(
+        mode="runner_managed",
+        partial_errors=partial_errors,
+    )
+
+    assert partial_errors == []
+    assert runner["runner_status"] == "READY"
+    assert runner["current_version"] == "v1.19"
+    assert runner["current_version_status"] == "PASSED"

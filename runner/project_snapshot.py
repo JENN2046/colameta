@@ -246,7 +246,11 @@ class ProjectSnapshotBuilder:
         }
         try:
             runner_raw = self.planning_bridge.get_runner_status(self.project_root)
-            runner["runner_status"] = runner_raw
+            runner["runner_status"] = (
+                runner_raw.get("runner_status")
+                if isinstance(runner_raw, dict)
+                else None
+            )
             if isinstance(runner_raw, dict) and runner_raw.get("ok"):
                 if mode != "source_only":
                     runner["has_runner_state"] = True

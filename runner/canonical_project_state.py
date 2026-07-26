@@ -78,11 +78,19 @@ def build_canonical_project_state(
         for name, observation in (("runtime", runtime), ("connector", connector))
         if observation.get("status") == "not_observed"
     ]
+    external_freshness_reasons = _external_freshness_reasons(
+        runtime,
+        connector,
+    )
+    external_partial = any(
+        observation.get("status") == "partial"
+        for observation in (runtime, connector)
+    )
     freshness_status = (
         "partial"
-        if partial_errors
+        if partial_errors or external_partial
         else "freshness_required"
-        if unobserved
+        if external_freshness_reasons
         else "current"
     )
     return {
@@ -227,9 +235,11 @@ def _external_observation(value: dict[str, Any] | None) -> dict[str, Any]:
             "observed_at": None,
             "reason_code": "not_requested",
         }
-    status = _optional_text(value.get("status")) or _optional_text(value.get("state"))
+    status = _optional_text(value.get("status")) or _optional_text(
+        value.get("state")
+    )
     return {
-        "status": status or "unavailable",
+        "status": status.lower() if status else "unavailable",
         "observed_at": _optional_text(value.get("observed_at"))
         or _optional_text(value.get("last_observed_at")),
         "reason_code": _optional_text(value.get("reason_code")),
@@ -276,7 +286,16 @@ def _current_conclusion(
         project_status = "ready"
 
     external_reasons = _external_freshness_reasons(runtime, connector)
-    external_status = "freshness_required" if external_reasons else "observed"
+    external_status = (
+        "partial_observation"
+        if any(
+            observation.get("status") == "partial"
+            for observation in (runtime, connector)
+        )
+        else "freshness_required"
+        if external_reasons
+        else "observed"
+    )
     # Immediate project blockers retain their priority.  For an otherwise
     # usable checkout, missing runtime/connector evidence becomes the overall
     # conclusion instead of being silently flattened into "unverified".
@@ -289,8 +308,11 @@ def _current_conclusion(
     }:
         status = project_status
         overall_reasons = reasons
-    elif external_status == "freshness_required":
-        status = "freshness_required"
+    elif external_status in {
+        "freshness_required",
+        "partial_observation",
+    }:
+        status = external_status
         overall_reasons = [*reasons, *external_reasons]
     else:
         status = project_status
@@ -325,6 +347,10 @@ def _external_freshness_reasons(
             reasons.append(f"{name}_not_observed")
         elif status in {None, "unavailable", "unknown"}:
             reasons.append(f"{name}_current_observation_unavailable")
+        elif status == "partial":
+            reasons.append(f"{name}_partial_observation")
+        elif status not in {"healthy", "current"}:
+            reasons.append(f"{name}_current_observation_not_healthy")
     return reasons
 
 
