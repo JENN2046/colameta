@@ -375,6 +375,40 @@ def test_validation_result_status_enforces_closed_terminal_and_running_schemas(
     assert invalid_running["integrity_classification"] == "integrity_failure"
 
 
+def test_validation_result_status_binds_intrinsic_run_identity_and_action(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    manager, run_id, _final, path = _completed_manifest_validation(project)
+    terminal = json.loads(path.read_text(encoding="utf-8"))
+
+    alias_run_id = "validation_run_alias_123"
+    alias_path = path.with_name(f"{alias_run_id}.json")
+    alias_path.write_bytes(path.read_bytes())
+    aliased = manager.status({"run_id": alias_run_id})
+    assert aliased["ok"] is False
+    assert aliased["error_code"] == "RUN_RESULT_INVALID"
+    assert aliased["integrity_classification"] == "integrity_failure"
+
+    for field, value in (
+        ("run_id", f" {run_id} "),
+        ("preview_id", None),
+        ("preview_id", f" {terminal['preview_id']} "),
+        ("preview_id", "invalid/preview"),
+        ("action", "inspect"),
+    ):
+        invalid = copy.deepcopy(terminal)
+        invalid[field] = value
+        invalid["validation_result_sha256"] = (
+            canonical_validation_result_sha256(invalid)
+        )
+        path.write_text(json.dumps(invalid), encoding="utf-8")
+        status = manager.status({"run_id": run_id})
+        assert status["ok"] is False
+        assert status["error_code"] == "RUN_RESULT_INVALID"
+        assert status["integrity_classification"] == "integrity_failure"
+
+
 def test_manifest_bound_validation_rechecks_subjects_and_rejects_unsafe_commands(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     server = MCPPlanningBridgeServer(str(project))

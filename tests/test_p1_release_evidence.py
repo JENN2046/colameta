@@ -689,6 +689,63 @@ def test_p1_rejects_nonexact_python_executable_with_rebound_digests(
         )
 
 
+def test_p1_rejects_aliased_run_identity_and_rebound_result_semantics(
+    tmp_path: Path,
+) -> None:
+    project, head = _git_fixture(tmp_path)
+    now = datetime(2026, 7, 24, 5, 0, tzinfo=timezone.utc)
+    manager = P1ReleaseEvidenceManager(str(project), now_fn=lambda: now)
+
+    observations = _observations(project, head, now)
+    reference = observations["full_local_validation"]["validation_run"]
+    source_path = (
+        project
+        / ".colameta"
+        / "runtime"
+        / "validation-runs"
+        / f"{reference['run_id']}.json"
+    )
+    alias_run_id = "validation_run_alias_123"
+    alias_path = source_path.with_name(f"{alias_run_id}.json")
+    alias_path.write_bytes(source_path.read_bytes())
+    reference["run_id"] = alias_run_id
+    aliased = manager.handle(
+        "preview",
+        {"candidate_head": head, **observations},
+    )
+    assert (
+        aliased["error_code"]
+        == "P1_VALIDATION_RESULT_SCHEMA_INVALID"
+    )
+
+    for field, value in (
+        ("action", "inspect"),
+        ("scope", "changed_files"),
+        ("strategy", "unrelated"),
+    ):
+        observations = _observations(project, head, now)
+        reference, path, result = _validation_result(project, head, now)
+        result[field] = value
+        result["validation_result_sha256"] = (
+            canonical_validation_result_sha256(result)
+        )
+        path.write_text(json.dumps(result), encoding="utf-8")
+        reference["validation_result_sha256"] = str(
+            result["validation_result_sha256"]
+        )
+        observations["full_local_validation"]["validation_run"] = reference
+
+        rejected = manager.handle(
+            "preview",
+            {"candidate_head": head, **observations},
+        )
+
+        assert (
+            rejected["error_code"]
+            == "P1_VALIDATION_RESULT_SCHEMA_INVALID"
+        )
+
+
 def test_p1_reverifies_one_run_id_source_across_preview_apply_and_status(
     tmp_path: Path,
     monkeypatch,

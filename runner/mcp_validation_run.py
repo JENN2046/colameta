@@ -803,6 +803,14 @@ class MCPValidationRunManager:
                 "P1_VALIDATION_RESULT_NOT_PASSED",
                 "The validation result did not pass.",
             )
+        if (
+            data.get("scope") != "manifest_bound"
+            or data.get("strategy") != "manifest_acceptance"
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The validation result is not a manifest-bound acceptance run.",
+            )
 
         contract = data.get("manifest_validation")
         if not isinstance(contract, dict):
@@ -1514,6 +1522,17 @@ class MCPValidationRunManager:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None, "RUN_RESULT_INVALID"
         if not isinstance(data, dict):
+            return None, "RUN_RESULT_INVALID"
+        persisted_run_id = data.get("run_id")
+        persisted_preview_id = data.get("preview_id")
+        normalized_preview_id = _validate_preview_id(persisted_preview_id)
+        if (
+            persisted_run_id != run_id
+            or self._validate_run_id(persisted_run_id) != run_id
+            or normalized_preview_id is None
+            or normalized_preview_id != persisted_preview_id
+            or data.get("action") != "run"
+        ):
             return None, "RUN_RESULT_INVALID"
 
         status = data.get("status")
