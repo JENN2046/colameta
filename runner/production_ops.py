@@ -1026,7 +1026,7 @@ def _dns_proxy_operator_hint(symptom: str) -> dict[str, Any]:
         "safe_checks": [
             "getent ahosts <host>",
             "DoH lookup through a pinned public resolver IP",
-            "systemctl --user status cloudflared-colameta-mcp-prod.service --no-pager",
+            "sudo systemctl status cloudflared-colameta-mcp-prod.service --no-pager",
             "remote_https_mcp_preflight.py https://colameta-mcp.skmt617.top",
         ],
         "watch_for": [
@@ -1037,7 +1037,7 @@ def _dns_proxy_operator_hint(symptom: str) -> dict[str, Any]:
         "safe_remediation": [
             "Prefer durable DNS/proxy policy that bypasses fake-IP handling for MCP, Cloudflare tunnel edge, and issuer hosts.",
             "Use a scoped /etc/hosts override only as an operator-controlled temporary workaround.",
-            "Restart the affected local service only after DNS answers are public and documented.",
+            "Restart the affected system service only after DNS answers are public and documented.",
         ],
     }
 

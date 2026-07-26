@@ -41,14 +41,50 @@ def test_long_running_services_have_restart_stop_and_log_boundaries() -> None:
         assert "PartOf=colameta-private-beta.target" in unit
 
 
-def test_cloudflared_is_ordered_without_stop_propagation_from_origin() -> None:
+def test_cloudflared_is_ordered_without_stop_propagation_and_auto_negotiates_transport() -> None:
     unit = _read("cloudflared-colameta-mcp-prod.service")
 
     assert "After=network-online.target colameta-mcp-remote.service" in unit
     assert "Wants=network-online.target colameta-mcp-remote.service" in unit
     assert "Requires=colameta-mcp-remote.service" not in unit
-    assert "--protocol quic" in unit
+    assert "--protocol auto" in unit
+    assert "--protocol quic" not in unit
     assert "--protocol http2" not in unit
+    assert "BindReadOnlyPaths=" not in unit
+    assert "edge-hosts" not in unit
+    assert "/etc/hosts" not in unit
+
+
+def test_cloudflared_runbook_targets_the_system_manager() -> None:
+    runbook = Path("docs/dns-proxy-tunnel-runbook.zh-CN.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sudo systemctl restart cloudflared-colameta-mcp-prod.service" in runbook
+    assert "sudo systemctl status cloudflared-colameta-mcp-prod.service" in runbook
+    assert "systemctl --user restart cloudflared-colameta-mcp-prod.service" not in runbook
+    assert "systemctl --user status cloudflared-colameta-mcp-prod.service" not in runbook
+
+
+def test_cloudflared_credentials_refresh_is_scoped_reversible_and_secret_safe() -> None:
+    script = Path("scripts/refresh_cloudflared_tunnel_credentials.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "set +x" in script
+    assert "umask 077" in script
+    assert '[[ "$(id -un)" == "jenn" ]]' in script
+    assert 'credentials_dir_expected="/home/jenn/.cloudflared"' in script
+    assert '[[ -f "$credentials_file" && ! -L "$credentials_file" ]]' in script
+    assert 'tunnel token \\' in script
+    assert '--cred-file "$fresh_credentials"' in script
+    assert ">/dev/null 2>&1" in script
+    assert 'cp --preserve=mode,timestamps "$credentials_file" "$backup_credentials"' in script
+    assert 'mv -- "$fresh_credentials" "$credentials_file"' in script
+    assert 'sudo systemctl stop "$service_name"' in script
+    assert 'sudo systemctl start "$service_name"' in script
+    assert "remote_https_mcp_preflight.py" in script
+    assert "service install" not in script
 
 
 def test_local_health_failure_has_rate_limited_recovery() -> None:

@@ -24,6 +24,17 @@ REMOTE_MCP_AUTH_MODES = {"oauth", "external-oauth"}
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 _FULL_HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _NUMERIC_IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[0-9]+)$")
+_SAFE_ERROR_CLASSIFICATION_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+_ERROR_CLASSIFICATION_BOOLEAN_FIELDS = (
+    "cloudflare_error",
+    "owner_action_required",
+    "retryable",
+)
+_ERROR_CLASSIFICATION_VALUE_FIELDS = (
+    "error_code",
+    "error_name",
+    "error_category",
+)
 _SECRET_LIKE_PUBLIC_URL_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_.+/=\-]{8,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9_.+/=\-]{8,}"),
@@ -551,13 +562,43 @@ def run_preflight(
         expected_head=expected_runtime_head,
     )
     report["responses"] = {
-        key: {"status": status, "keys": sorted(payload.keys())}
+        key: _response_summary(status, payload)
         for key, (status, payload) in payloads.items()
     }
     report["healthz_runtime"] = _health_runtime_evidence(payloads["healthz"][1])
     report["failures"] = failures
     report["ok"] = not failures
     return report
+
+
+def _response_summary(status: int, payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": status,
+        "keys": sorted(payload.keys()),
+    }
+    classification = _sanitized_error_classification(payload)
+    if classification:
+        summary["error_classification"] = classification
+    return summary
+
+
+def _sanitized_error_classification(payload: dict[str, Any]) -> dict[str, Any]:
+    classification: dict[str, Any] = {}
+    for field in _ERROR_CLASSIFICATION_BOOLEAN_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, bool):
+            classification[field] = value
+    for field in _ERROR_CLASSIFICATION_VALUE_FIELDS:
+        value = payload.get(field)
+        if type(value) is int and 0 <= value <= 999999:
+            classification[field] = value
+        elif (
+            isinstance(value, str)
+            and _SAFE_ERROR_CLASSIFICATION_TEXT_RE.fullmatch(value)
+            and not _contains_secret_like_public_url_text(value)
+        ):
+            classification[field] = value
+    return classification
 
 
 def _validate_health_runtime(health_payload: dict[str, Any], expected_head: str) -> list[str]:

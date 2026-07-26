@@ -890,6 +890,13 @@ class ProductionOpsTests(unittest.TestCase):
         assert check["operator_hint"]["runbook"] == "docs/dns-proxy-tunnel-runbook.zh-CN.md"
         assert "cloudflared edge DNS" in check["operator_hint"]["symptom"]
         assert "198.18.0.0/15 fake-IP DNS answers" in check["operator_hint"]["watch_for"]
+        assert (
+            "sudo systemctl status cloudflared-colameta-mcp-prod.service --no-pager"
+            in check["operator_hint"]["safe_checks"]
+        )
+        assert not any(
+            "systemctl --user" in item for item in check["operator_hint"]["safe_checks"]
+        )
         assert packet["checks"]["secret_redaction"]["status"] == "ready"
         assert "SECRET_LIKE_CONTENT_DETECTED" not in packet["blocker_codes"]
 
