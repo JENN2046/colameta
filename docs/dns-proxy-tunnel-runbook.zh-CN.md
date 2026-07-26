@@ -193,7 +193,10 @@ service。它通过现有 Cloudflare 登录证书为精确命名 tunnel 获取�
 在同一私有配置目录保留权限为 `0600` 的旧凭据备份，原子替换后只重启
 `cloudflared-colameta-mcp-prod.service`，最后检查本地 readiness 并运行公网
 remote HTTPS MCP preflight。若新凭据无法生成，脚本不会停止当前服务或替换旧
-凭据；若替换后的 systemd 启动失败，脚本会恢复备份。
+凭据。新凭据只有在本地 readiness、托管 systemd unit active 检查和公网
+preflight 全部通过后才会提交；在验证期间发生超时、unit inactive、preflight
+失败或 `HUP`/`INT`/`TERM` 中断时，脚本会停止未验证实例、恢复备份并使用旧凭据
+重启服务。若自动回滚自身失败，脚本会返回失败并保留备份供运维恢复。
 
 ## 6. 重跑 preflight / ops-check / connector smoke
 

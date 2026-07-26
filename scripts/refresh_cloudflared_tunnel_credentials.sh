@@ -19,13 +19,19 @@ refresh_dir=""
 fresh_credentials=""
 rollback_credentials=""
 service_stopped="no"
+credential_state="original"
 
 fail() {
   printf 'credential_refresh=%s\n' "$1"
   exit 1
 }
 
-restore_backup_and_restart() {
+rollback_applied_credentials() {
+  [[ "$credential_state" == "applied_unvalidated" ]] || return 0
+  service_stopped="yes"
+  if ! sudo systemctl stop "$service_name"; then
+    return 1
+  fi
   rollback_credentials="$refresh_dir/rollback.json"
   if ! cp --preserve=mode,timestamps "$backup_credentials" "$rollback_credentials"; then
     return 1
@@ -37,6 +43,7 @@ restore_backup_and_restart() {
     return 1
   fi
   rollback_credentials=""
+  credential_state="original"
   if ! sudo systemctl start "$service_name"; then
     return 1
   fi
@@ -44,6 +51,15 @@ restore_backup_and_restart() {
 }
 
 cleanup() {
+  exit_status=$?
+  trap - EXIT
+  trap '' HUP INT TERM
+  set +e
+  if [[ "$credential_state" == "applied_unvalidated" ]]; then
+    if ! rollback_applied_credentials >/dev/null 2>&1; then
+      printf 'credential_refresh_cleanup=rollback_failed\n'
+    fi
+  fi
   if [[ -n "$fresh_credentials" && -f "$fresh_credentials" ]]; then
     rm -f -- "$fresh_credentials"
   fi
@@ -53,9 +69,13 @@ cleanup() {
   if [[ -n "$refresh_dir" && -d "$refresh_dir" ]]; then
     rmdir -- "$refresh_dir" 2>/dev/null || true
   fi
-  if [[ "$service_stopped" == "yes" ]]; then
+  if [[
+    "$service_stopped" == "yes" &&
+      "$credential_state" != "applied_unvalidated"
+  ]]; then
     sudo systemctl start "$service_name" >/dev/null 2>&1 || true
   fi
+  exit "$exit_status"
 }
 
 trap cleanup EXIT
@@ -114,18 +134,19 @@ cp --preserve=mode,timestamps "$credentials_file" "$backup_credentials"
 chmod 0600 "$backup_credentials"
 printf 'credentials_backup=retained\n'
 
+service_stopped="yes"
 if ! sudo systemctl stop "$service_name"; then
   fail "service_stop_failed"
 fi
-service_stopped="yes"
 
+credential_state="applied_unvalidated"
 if ! mv -- "$fresh_credentials" "$credentials_file"; then
   fail "atomic_replace_failed"
 fi
 fresh_credentials=""
 
 if ! sudo systemctl start "$service_name"; then
-  if ! restore_backup_and_restart; then
+  if ! rollback_applied_credentials; then
     fail "service_start_failed_rollback_restart_failed"
   fi
   fail "service_start_failed_rolled_back"
@@ -145,30 +166,42 @@ for _attempt in {1..30}; do
   sleep 1
 done
 
-printf 'service_active=%s\n' "$(
-  if sudo systemctl is-active --quiet "$service_name"; then
-    printf 'yes'
-  else
-    printf 'no'
-  fi
-)"
+service_active="no"
+if sudo systemctl is-active --quiet "$service_name"; then
+  service_active="yes"
+fi
+printf 'service_active=%s\n' "$service_active"
 printf 'tunnel_ready_http=%s\n' "$ready_http"
 
 if [[ "$ready_http" != "200" ]]; then
-  service_stopped="yes"
-  if ! sudo systemctl stop "$service_name"; then
-    fail "applied_not_ready_rollback_stop_failed"
-  fi
-  if ! restore_backup_and_restart; then
+  if ! rollback_applied_credentials; then
     fail "applied_not_ready_rollback_restart_failed"
   fi
   fail "applied_not_ready"
 fi
 
-if "$python_bin" "$preflight_script" "$public_base_url"; then
-  printf 'public_preflight=pass\n'
-  printf 'credential_refresh=ok\n'
-else
+if [[ "$service_active" != "yes" ]]; then
+  if ! rollback_applied_credentials; then
+    fail "applied_service_inactive_rollback_restart_failed"
+  fi
+  fail "applied_service_inactive"
+fi
+
+if ! "$python_bin" "$preflight_script" "$public_base_url"; then
   printf 'public_preflight=fail\n'
+  if ! rollback_applied_credentials; then
+    fail "applied_public_preflight_failed_rollback_restart_failed"
+  fi
   fail "applied_public_preflight_failed"
 fi
+
+if ! sudo systemctl is-active --quiet "$service_name"; then
+  if ! rollback_applied_credentials; then
+    fail "applied_service_inactive_after_preflight_rollback_restart_failed"
+  fi
+  fail "applied_service_inactive_after_preflight"
+fi
+
+printf 'public_preflight=pass\n'
+credential_state="validated"
+printf 'credential_refresh=ok\n'

@@ -92,9 +92,11 @@ def test_cloudflared_readiness_failure_restores_backup_before_reporting() -> Non
         encoding="utf-8"
     )
 
-    helper_start = script.index("restore_backup_and_restart()")
+    helper_start = script.index("rollback_applied_credentials()")
     helper_end = script.index("\n}\n\ncleanup()", helper_start)
     helper = script[helper_start:helper_end]
+    assert 'credential_state" == "applied_unvalidated"' in helper
+    assert 'sudo systemctl stop "$service_name"' in helper
     assert (
         'cp --preserve=mode,timestamps "$backup_credentials" "$rollback_credentials"'
         in helper
@@ -106,16 +108,86 @@ def test_cloudflared_readiness_failure_restores_backup_before_reporting() -> Non
     )
 
     branch_start = script.index('if [[ "$ready_http" != "200" ]]; then')
-    branch_end = script.index('\nif "$python_bin" "$preflight_script"', branch_start)
+    branch_end = script.index(
+        '\nif ! "$python_bin" "$preflight_script"', branch_start
+    )
     readiness_failure = script[branch_start:branch_end]
-    assert 'service_stopped="yes"' in readiness_failure
-    assert 'sudo systemctl stop "$service_name"' in readiness_failure
-    assert "restore_backup_and_restart" in readiness_failure
+    assert "rollback_applied_credentials" in readiness_failure
     assert 'fail "applied_not_ready_rollback_restart_failed"' in readiness_failure
     assert (
-        readiness_failure.index('sudo systemctl stop "$service_name"')
-        < readiness_failure.index("restore_backup_and_restart")
+        readiness_failure.index("rollback_applied_credentials")
         < readiness_failure.index('fail "applied_not_ready"')
+    )
+
+
+def test_cloudflared_interrupts_roll_back_until_validation_is_committed() -> None:
+    script = Path("scripts/refresh_cloudflared_tunnel_credentials.sh").read_text(
+        encoding="utf-8"
+    )
+
+    cleanup_start = script.index("cleanup()")
+    cleanup_end = script.index("\n}\n\ntrap cleanup EXIT", cleanup_start)
+    cleanup = script[cleanup_start:cleanup_end]
+    assert 'trap \'\' HUP INT TERM' in cleanup
+    assert 'credential_state" == "applied_unvalidated"' in cleanup
+    assert "rollback_applied_credentials" in cleanup
+    assert "trap 'exit 130' HUP INT TERM" in script
+
+    replace_position = script.index('mv -- "$fresh_credentials" "$credentials_file"')
+    pending_position = script.rindex(
+        'credential_state="applied_unvalidated"', 0, replace_position
+    )
+    validation_position = script.index(
+        'credential_state="validated"', replace_position
+    )
+    public_preflight_position = script.index(
+        '"$python_bin" "$preflight_script" "$public_base_url"', replace_position
+    )
+    success_position = script.index(
+        "printf 'credential_refresh=ok", public_preflight_position
+    )
+    preflight_failure_rollback = script.index(
+        "rollback_applied_credentials", public_preflight_position
+    )
+    assert pending_position < replace_position < public_preflight_position
+    assert public_preflight_position < preflight_failure_rollback
+    assert public_preflight_position < validation_position < success_position
+
+
+def test_cloudflared_inactive_service_rolls_back_before_public_preflight() -> None:
+    script = Path("scripts/refresh_cloudflared_tunnel_credentials.sh").read_text(
+        encoding="utf-8"
+    )
+
+    service_probe = script.index(
+        'if sudo systemctl is-active --quiet "$service_name"'
+    )
+    service_report = script.index(
+        "printf 'service_active=%s", service_probe
+    )
+    readiness_end = script.index(
+        'if [[ "$ready_http" != "200" ]]; then', service_report
+    )
+    public_preflight = script.index(
+        'if ! "$python_bin" "$preflight_script" "$public_base_url"', readiness_end
+    )
+    active_check = script.index(
+        'if [[ "$service_active" != "yes" ]]', readiness_end
+    )
+    inactive_rollback = script.index(
+        "rollback_applied_credentials", active_check, public_preflight
+    )
+    inactive_failure = script.index(
+        'fail "applied_service_inactive"', inactive_rollback, public_preflight
+    )
+    assert (
+        service_probe
+        < service_report
+        < readiness_end
+        < active_check
+        < inactive_rollback
+        < inactive_failure
+        < public_preflight
     )
 
 
