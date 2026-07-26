@@ -15,7 +15,11 @@ boundary:
 - `colameta-mcp-advanced.service`: loopback-only advanced MCP on
   `127.0.0.1:8768`, retaining the complete 82-tool normal profile;
 - `cloudflared-colameta-mcp-prod.service`: public tunnel, ordered after the
-  OAuth origin without stop propagation during an origin restart;
+  OAuth origin without stop propagation during an origin restart; transport is
+  set to `auto` so `cloudflared` prefers QUIC and can fall back to HTTP/2 when
+  UDP connectivity is unavailable. The unit does not bind a custom
+  `/etc/hosts`; edge selection remains dynamic once the host proxy/TUN policy
+  provides a durable direct path to Cloudflare's tunnel edge ranges;
 - `colameta-tunnel-client.service`: managed tunnel used by the existing
   ChatGPT Apps connector, ordered after the local MCP service;
 - `colameta-local-healthcheck.timer`: one-minute local endpoint checks with a

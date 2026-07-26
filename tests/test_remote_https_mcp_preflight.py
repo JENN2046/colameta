@@ -364,6 +364,72 @@ def test_run_preflight_pins_validated_dns_answers(monkeypatch: pytest.MonkeyPatc
     assert captured_pins == [expected_pin, expected_pin, expected_pin, expected_pin]
 
 
+def test_run_preflight_reports_only_allowlisted_error_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float = 5.0,
+        pinned_https_addresses: tuple[object, ...] = (),
+    ) -> tuple[int, dict[str, object]]:
+        return 530, {
+            "cloudflare_error": True,
+            "error_code": 1033,
+            "error_name": "cloudflare_tunnel_error",
+            "error_category": "tunnel",
+            "owner_action_required": True,
+            "retryable": False,
+            "detail": "must-not-be-emitted",
+            "ray_id": "must-not-be-emitted-either",
+        }
+
+    monkeypatch.setattr(remote_preflight, "fetch_json", fake_fetch_json)
+
+    report = run_preflight("https://mcp.example.com")
+
+    response = report["responses"]["healthz"]
+    assert response["status"] == 530
+    assert response["error_classification"] == {
+        "cloudflare_error": True,
+        "owner_action_required": True,
+        "retryable": False,
+        "error_code": 1033,
+        "error_name": "cloudflare_tunnel_error",
+        "error_category": "tunnel",
+    }
+    serialized = json.dumps(report)
+    assert "must-not-be-emitted" not in serialized
+    assert "must-not-be-emitted-either" not in serialized
+
+
+def test_run_preflight_rejects_secret_like_error_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float = 5.0,
+        pinned_https_addresses: tuple[object, ...] = (),
+    ) -> tuple[int, dict[str, object]]:
+        return 530, {
+            "cloudflare_error": True,
+            "error_code": "sk-not-a-real-token-value",
+            "error_name": "safe_name",
+        }
+
+    monkeypatch.setattr(remote_preflight, "fetch_json", fake_fetch_json)
+
+    report = run_preflight("https://mcp.example.com")
+
+    classification = report["responses"]["healthz"]["error_classification"]
+    assert classification == {
+        "cloudflare_error": True,
+        "error_name": "safe_name",
+    }
+    assert "sk-not-a-real-token-value" not in json.dumps(report)
+
+
 def test_fetch_json_rejects_oversized_success_response(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         status = 200
