@@ -54,6 +54,7 @@ from runner.mcp_workflow_policy import (
 )
 from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
+    GateReviewPreviewStore,
 )
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
@@ -1051,6 +1052,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             page_chars=MCP_RESULT_ARTIFACT_PAGE_CHARS,
             max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
         )
+        self._gate_review_preview_store = GateReviewPreviewStore()
         self._current_facts_preview_store = process_current_facts_preview_store()
         self._review_manifest_store = ReviewManifestStore(
             ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
@@ -4410,6 +4412,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         routed_server._mcp_result_artifact_store = (
             self._mcp_result_artifact_store
         )
+        # Gate preview continuations carry private principal bindings.  The
+        # routed server stores them only in process memory and returns an
+        # opaque handle; share the serving store so the later routed apply can
+        # resolve that handle without exposing the signed preview.
+        routed_server._gate_review_preview_store = self._gate_review_preview_store
         routed_tool = routed_server.tools.get(tool_name)
         if not callable(routed_tool):
             raise MCPToolInputError("TOOL_NOT_FOUND", f"未知 tool：{tool_name}")

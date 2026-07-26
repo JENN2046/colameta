@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name
 from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
+    GateReviewPreviewStore,
     GateReviewWorkflowError,
     MCPGateReviewWorkflow,
 )
@@ -56,6 +57,7 @@ class WorkflowCompatibilityHost(Protocol):
 
     project_root: str
     mcp_exposure_profile: str
+    _gate_review_preview_store: GateReviewPreviewStore
     _mcp_result_artifact_store: MCPResultArtifactStore
 
     def _mcp_result_artifact_uri(self, artifact_id: str, page: int | None = None) -> str: ...
@@ -350,7 +352,11 @@ class MCPWorkflowCompatibilityService:
             self._host._strip_project_name_param(params),
         )
         try:
-            result = MCPGateReviewWorkflow(self._host._tool_work_item_command).handle(clean)
+            result = MCPGateReviewWorkflow(
+                self._host._tool_work_item_command,
+                preview_store=self._host._gate_review_preview_store,
+                project_root=self._host.project_root,
+            ).handle(clean)
         except GateReviewWorkflowError as exc:
             raise WorkflowCompatibilityError(exc.error_code, exc.message, exc.details) from exc
         return self._host._attach_operation_context_binding(

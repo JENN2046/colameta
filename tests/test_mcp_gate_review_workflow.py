@@ -23,6 +23,8 @@ from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD,
     GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS,
     GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS,
+    GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA,
+    GateReviewPreviewStore,
     GateReviewWorkflowError,
     MCPGateReviewWorkflow,
 )
@@ -200,6 +202,7 @@ def test_gate_review_binding_contract_accepts_boundary_and_rejects_overflow() ->
         ],
         "copyable_apply_chars_max": GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS,
         "preview_workflow_chars_max": GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS,
+        "signed_preview_transport": "server_side_opaque_handle",
     }
 
     too_many = _bounded_preview_params()
@@ -217,17 +220,22 @@ def test_gate_review_binding_contract_accepts_boundary_and_rejects_overflow() ->
     assert length_error.value.error_code == "GATE_REVIEW_BINDING_ID_TOO_LONG"
 
 
-def test_gate_review_copyable_apply_size_boundary_stays_unpacked(tmp_path: Path) -> None:
+def test_gate_review_private_signed_preview_stays_opaque_and_bounded(
+    tmp_path: Path,
+) -> None:
     params = _bounded_preview_params()
-    baseline = MCPGateReviewWorkflow(_fake_preview_dispatch()).handle(params)
-    baseline_chars = baseline["result"]["payload_contract"]["copyable_apply_chars"]
-    boundary_padding = GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS - baseline_chars
-
-    boundary = MCPGateReviewWorkflow(_fake_preview_dispatch(boundary_padding)).handle(params)
+    private_padding = GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS * 2
+    boundary = MCPGateReviewWorkflow(_fake_preview_dispatch(private_padding)).handle(
+        params
+    )
 
     contract = boundary["result"]["payload_contract"]
-    assert contract["copyable_apply_chars"] == GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS
+    assert contract["copyable_apply_chars"] <= GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS
     assert len(json.dumps(boundary, ensure_ascii=False)) <= GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS
+    assert "signature" not in json.dumps(boundary)
+    assert boundary["result"]["preview"]["continuation_type"] == (
+        "server_side_signed_preview"
+    )
     tool_result = {"ok": True, "tool": "run_mcp_workflow", "data": boundary}
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     mcp_result = server._as_mcp_call_result(tool_result, params)
@@ -245,10 +253,6 @@ def test_gate_review_copyable_apply_size_boundary_stays_unpacked(tmp_path: Path)
         "copyable_apply_call"
     ]
 
-    with pytest.raises(GateReviewWorkflowError) as overflow_error:
-        MCPGateReviewWorkflow(_fake_preview_dispatch(boundary_padding + 1)).handle(params)
-    assert overflow_error.value.error_code == "GATE_REVIEW_COPYABLE_APPLY_TOO_LARGE"
-
 
 def test_gate_review_tool_schema_declares_bounded_binding_contract(tmp_path: Path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
@@ -260,6 +264,13 @@ def test_gate_review_tool_schema_declares_bounded_binding_contract(tmp_path: Pat
         assert properties[field]["maxItems"] == GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD
         assert properties[field]["items"]["maxLength"] == GATE_REVIEW_MAX_BINDING_ID_CHARS
     assert properties["idempotency_key"]["maxLength"] == GATE_REVIEW_MAX_BINDING_ID_CHARS
+    assert properties["gate_preview_id"] == {
+        "type": "string",
+        "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+        "description": (
+            "gate_review_request preview 返回的进程内 opaque continuation handle。"
+        ),
+    }
 
 
 def test_gate_review_workflow_reuses_signed_work_item_gate_preview(
@@ -304,12 +315,18 @@ def test_gate_review_workflow_reuses_signed_work_item_gate_preview(
     assert preview_data["status"] == "preview_ready"
     assert preview_data["requires_confirmation"] is True
     assert preview_data["result"]["state_changed"] is False
-    assert preview_data["result"]["preview"]["command"]["principal_context"]["principal_id"] == (
-        "local-gate-reviewer"
-    )
+    public_preview = preview_data["result"]["preview"]
+    assert public_preview["schema_version"] == GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA
+    assert public_preview["continuation_type"] == "server_side_signed_preview"
+    serialized_preview = json.dumps(previewed, sort_keys=True)
+    assert "local-session:gate-review-workflow" not in serialized_preview
+    assert "session_ref" not in serialized_preview
+    assert "principal_context" not in serialized_preview
     apply_call = preview_data["result"]["copyable_apply_call"]
     assert apply_call["tool"] == "run_mcp_workflow"
     assert apply_call["arguments"]["confirm_gate_review"] is True
+    assert apply_call["arguments"]["gate_preview_id"] == public_preview["gate_preview_id"]
+    assert "gate_preview" not in apply_call["arguments"]
     assert "idempotency_key" not in apply_call["arguments"]
 
     unconfirmed_arguments = copy.deepcopy(apply_call["arguments"])
@@ -329,6 +346,15 @@ def test_gate_review_workflow_reuses_signed_work_item_gate_preview(
     )
     assert mismatched["ok"] is False
     assert mismatched["error_code"] == "GATE_REVIEW_PREVIEW_BINDING_MISMATCH"
+
+    missing_arguments = copy.deepcopy(apply_call["arguments"])
+    missing_arguments["gate_preview_id"] = "missing-gate-preview"
+    missing = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        missing_arguments,
+    )
+    assert missing["ok"] is False
+    assert missing["error_code"] == "GATE_REVIEW_PREVIEW_NOT_FOUND_OR_EXPIRED"
 
     monkeypatch.setenv("COLAMETA_WORK_ITEM_PRINCIPAL_ID", "different-gate-reviewer")
     wrong_principal = server.call_tool_for_agent(
@@ -367,6 +393,34 @@ def test_gate_review_workflow_reuses_signed_work_item_gate_preview(
     assert replayed["ok"] is True
     assert replayed["data"]["result"]["gate_result"]["idempotent_replay"] is True
     assert replayed["data"]["result"]["side_effects"] is False
+
+
+def test_gate_review_preview_store_fails_closed_for_expiry_and_project_mismatch(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    store = GateReviewPreviewStore(time_fn=lambda: now[0])
+    handle = store.put(
+        project_root=str(tmp_path / "project-a"),
+        preview={"preview_id": "private-signed-preview"},
+        ttl_seconds=5,
+    )
+
+    assert (
+        store.get(
+            gate_preview_id=handle.gate_preview_id,
+            project_root=str(tmp_path / "project-b"),
+        )
+        is None
+    )
+    now[0] += 6
+    assert (
+        store.get(
+            gate_preview_id=handle.gate_preview_id,
+            project_root=str(tmp_path / "project-a"),
+        )
+        is None
+    )
 
 
 def test_gate_review_preview_fails_closed_without_authoritative_principal(tmp_path: Path) -> None:
@@ -466,8 +520,13 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=auth_context,
     )
     assert previewed["ok"] is True
+    serialized_preview = json.dumps(previewed, sort_keys=True)
+    assert "private-app-session:gate-review" not in serialized_preview
+    assert "session_ref" not in serialized_preview
     apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
     assert apply_arguments["project_name"] == "private-gate-project"
+    assert "gate_preview_id" in apply_arguments
+    assert "gate_preview" not in apply_arguments
 
     denied = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -518,6 +577,9 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
     assert applied["data"]["status"] == "succeeded"
     assert applied["data"]["result"]["outcome"] == "transition_applied"
     assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+    serialized_apply = json.dumps(applied, sort_keys=True)
+    assert "private-app-session:gate-review" not in serialized_apply
+    assert "session_ref" not in serialized_apply
 
 
 def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
@@ -645,7 +707,12 @@ def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
             token=bearer_token,
         )
         assert status == 200
+        serialized_preview = json.dumps(previewed, sort_keys=True)
+        assert "private-app-session:loopback-gate-review" not in serialized_preview
+        assert "session_ref" not in serialized_preview
         apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
+        assert "gate_preview_id" in apply_arguments
+        assert "gate_preview" not in apply_arguments
         status, applied = _loopback_json_request(
             action_url,
             payload=apply_arguments,
@@ -656,6 +723,9 @@ def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
         assert applied["data"]["status"] == "succeeded"
         assert applied["data"]["result"]["outcome"] == "transition_applied"
         assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+        serialized_apply = json.dumps(applied, sort_keys=True)
+        assert "private-app-session:loopback-gate-review" not in serialized_apply
+        assert "session_ref" not in serialized_apply
     finally:
         if server._httpd is not None:
             server._httpd.shutdown()
@@ -752,7 +822,7 @@ def test_shadow_gate_apply_is_not_reported_as_authoritative_success(
     assert applied["data"]["result"]["state_changed"] is False
 
 
-def test_commander_projection_preserves_complete_signed_gate_preview(
+def test_commander_projection_returns_opaque_gate_preview_without_session_binding(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -781,24 +851,27 @@ def test_commander_projection_preserves_complete_signed_gate_preview(
     preview = previewed["data"]["result"]["preview"]
     assert set(preview) == {
         "schema_version",
-        "preview_id",
-        "operation",
-        "project_binding",
-        "issued_at",
-        "expires_at",
+        "gate_preview_id",
+        "continuation_type",
         "ttl_seconds",
-        "content_digest",
-        "command",
-        "generated_ids",
-        "signature",
     }
+    assert preview["schema_version"] == GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA
+    assert preview["continuation_type"] == "server_side_signed_preview"
     apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
-    assert apply_arguments["gate_preview"] == preview
+    assert apply_arguments["gate_preview_id"] == preview["gate_preview_id"]
+    assert "gate_preview" not in apply_arguments
+    serialized_preview = json.dumps(previewed, sort_keys=True)
+    assert "commander-session:gate-review" not in serialized_preview
+    assert "session_ref" not in serialized_preview
+    assert "principal_context" not in serialized_preview
 
     applied = server.call_tool_for_agent("run_mcp_workflow", apply_arguments)
 
     assert applied["ok"] is True
     assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+    serialized_apply = json.dumps(applied, sort_keys=True)
+    assert "commander-session:gate-review" not in serialized_apply
+    assert "session_ref" not in serialized_apply
 
 
 def test_accept_thin_loop_points_to_read_only_gate_review_inspection() -> None:

@@ -1184,18 +1184,20 @@ Generate a signed Gate preview using the current Work Item bindings:
 ```
 
 The preview does not change Delivery State. After explicit authorization, send
-`result.copyable_apply_call.arguments` back unchanged. Apply requires the full
-signed `gate_preview`, `confirm_gate_review=true`, an exact command binding, the
-same trusted Work Item principal, and `mcp:commit`. The adapter performs no
-direct ledger write: the Work Item Gate backend remains the sole state-machine
-and GateEvent authority. Finish with `phase=status` to read the resulting Work
-Item and timeline.
+`result.copyable_apply_call.arguments` back unchanged. The public call contains
+an opaque `gate_preview_id`; the complete signed preview and its principal
+binding remain in the serving process. Apply resolves that handle and still
+requires `confirm_gate_review=true`, an exact command binding, the same trusted
+Work Item principal, and `mcp:commit`. The adapter performs no direct ledger
+write: the Work Item Gate backend remains the sole state-machine and GateEvent
+authority. Finish with `phase=status` to read the resulting Work Item and
+timeline.
 
 Do not treat `mcp:commit` alone as Work Item authority. External-OAuth apply is
 allowed only when the configured private Operator subject/client policy accepts
 the caller, the token carries matching Work Item authority claims, OAuth grants
-`mcp:commit`, and the backend verifies the signed preview. Other remote commit
-requests remain denied.
+`mcp:commit`, and the backend verifies the server-held signed preview. Other
+remote commit requests remain denied.
 
 An apply response distinguishes the backend outcome. Only
 `status=succeeded` with `result.outcome=transition_applied` means the requested

@@ -95,6 +95,7 @@ COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS = frozenset(
         "request_id",
         "runtime_dir",
         "runtime_project_root",
+        "session_ref",
         "session_id",
         "settings_path",
         "source_root",
@@ -520,27 +521,4 @@ class CommanderPublicProjector:
 
     def _project_gate_review_result(self, tool_result: dict[str, Any]) -> dict[str, Any]:
         projected = self.sanitize(tool_result, compact=False)
-        if not isinstance(projected, dict):
-            return tool_result
-        raw_data = tool_result.get("data")
-        clean_data = projected.get("data")
-        if not isinstance(raw_data, dict) or not isinstance(clean_data, dict):
-            return projected
-        raw_result = raw_data.get("result")
-        clean_result = clean_data.get("result")
-        if not isinstance(raw_result, dict) or not isinstance(clean_result, dict):
-            return projected
-        raw_preview = raw_result.get("preview")
-        if not isinstance(raw_preview, dict):
-            return projected
-        clean_result["preview"] = copy.deepcopy(raw_preview)
-        raw_apply_call = raw_result.get("copyable_apply_call")
-        clean_apply_call = clean_result.get("copyable_apply_call")
-        if isinstance(raw_apply_call, dict) and isinstance(clean_apply_call, dict):
-            raw_arguments = raw_apply_call.get("arguments")
-            clean_arguments = clean_apply_call.get("arguments")
-            if isinstance(raw_arguments, dict) and isinstance(clean_arguments, dict):
-                raw_apply_preview = raw_arguments.get("gate_preview")
-                if isinstance(raw_apply_preview, dict):
-                    clean_arguments["gate_preview"] = copy.deepcopy(raw_apply_preview)
-        return projected
+        return projected if isinstance(projected, dict) else tool_result

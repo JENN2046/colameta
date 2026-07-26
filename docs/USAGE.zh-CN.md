@@ -1226,14 +1226,15 @@ status 的 ID 相同，才能把它们当成同一次事实捕获的同一项决
 ```
 
 preview 不改变 Delivery State。得到明确授权后，把
-`result.copyable_apply_call.arguments` 原样回传。apply 必须同时满足：完整签名
-`gate_preview`、`confirm_gate_review=true`、参数精确绑定、同一个可信 Work Item principal、
-以及 `mcp:commit` 权限。适配层不直接写 ledger；Work Item Gate 后端仍是唯一状态机和
-GateEvent 权威。最后用 `phase=status` 只读核对 Work Item 和 timeline。
+`result.copyable_apply_call.arguments` 原样回传。公开 call 只包含 opaque
+`gate_preview_id`；完整签名 preview 及其 principal 绑定仅保留在 serving process。apply
+解析该 handle 后，仍必须同时满足 `confirm_gate_review=true`、参数精确绑定、同一个可信
+Work Item principal 以及 `mcp:commit` 权限。适配层不直接写 ledger；Work Item Gate 后端仍是
+唯一状态机和 GateEvent 权威。最后用 `phase=status` 只读核对 Work Item 和 timeline。
 
 不要把单独的 `mcp:commit` 当作 Work Item 权限。external-OAuth apply 只有同时满足以下条件才
 放行：已配置的私人 Operator subject/client 策略认可调用方、token 带匹配的 Work Item 权限、
-OAuth 授予 `mcp:commit`、后端验证完整签名 preview。其他远程 commit 仍保持拒绝。
+OAuth 授予 `mcp:commit`、后端验证服务端保存的完整签名 preview。其他远程 commit 仍保持拒绝。
 
 apply 返回会区分后端结果。只有 `status=succeeded` 且
 `result.outcome=transition_applied` 才表示目标状态已真正应用；`status=rejected` 和

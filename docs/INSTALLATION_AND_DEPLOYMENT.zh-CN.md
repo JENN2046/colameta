@@ -139,10 +139,11 @@ Commander 只暴露：
 }
 ```
 
-inspect/status 只读；preview 生成有界签名 Work Item Gate preview；apply 必须回传完整签名
-preview、精确 bindings、`confirm_gate_review=true`，并同时满足 `mcp:commit`、已配置的可信私人
-Operator subject/client 和 Work Item authority claims。默认/公共远端 principal 不会因此获得通用
-commit 权限。
+inspect/status 只读；preview 生成有界签名 Work Item Gate preview，并把完整对象仅保留在
+serving process；返回的 copyable apply call 只包含 opaque `gate_preview_id`。apply 解析该
+handle 后，仍必须验证完整签名 preview、精确 bindings、`confirm_gate_review=true`，并同时
+满足 `mcp:commit`、已配置的可信私人 Operator subject/client 和 Work Item authority claims。
+默认/公共远端 principal 不会因此获得通用 commit 权限。
 
 上面的启动示例故意只启用 read/preview scope，因此可以做 inspect/preview，不能直接 apply。
 开启私人 apply 是独立受保护操作：先按
