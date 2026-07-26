@@ -25,6 +25,24 @@ fail() {
   exit 1
 }
 
+restore_backup_and_restart() {
+  rollback_credentials="$refresh_dir/rollback.json"
+  if ! cp --preserve=mode,timestamps "$backup_credentials" "$rollback_credentials"; then
+    return 1
+  fi
+  if ! chmod 0600 "$rollback_credentials"; then
+    return 1
+  fi
+  if ! mv -- "$rollback_credentials" "$credentials_file"; then
+    return 1
+  fi
+  rollback_credentials=""
+  if ! sudo systemctl start "$service_name"; then
+    return 1
+  fi
+  service_stopped="no"
+}
+
 cleanup() {
   if [[ -n "$fresh_credentials" && -f "$fresh_credentials" ]]; then
     rm -f -- "$fresh_credentials"
@@ -107,13 +125,9 @@ fi
 fresh_credentials=""
 
 if ! sudo systemctl start "$service_name"; then
-  rollback_credentials="$refresh_dir/rollback.json"
-  cp --preserve=mode,timestamps "$backup_credentials" "$rollback_credentials"
-  chmod 0600 "$rollback_credentials"
-  mv -- "$rollback_credentials" "$credentials_file"
-  rollback_credentials=""
-  sudo systemctl start "$service_name" >/dev/null 2>&1 || true
-  service_stopped="no"
+  if ! restore_backup_and_restart; then
+    fail "service_start_failed_rollback_restart_failed"
+  fi
   fail "service_start_failed_rolled_back"
 fi
 service_stopped="no"
@@ -141,6 +155,13 @@ printf 'service_active=%s\n' "$(
 printf 'tunnel_ready_http=%s\n' "$ready_http"
 
 if [[ "$ready_http" != "200" ]]; then
+  service_stopped="yes"
+  if ! sudo systemctl stop "$service_name"; then
+    fail "applied_not_ready_rollback_stop_failed"
+  fi
+  if ! restore_backup_and_restart; then
+    fail "applied_not_ready_rollback_restart_failed"
+  fi
   fail "applied_not_ready"
 fi
 

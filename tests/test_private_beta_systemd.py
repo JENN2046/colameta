@@ -87,6 +87,38 @@ def test_cloudflared_credentials_refresh_is_scoped_reversible_and_secret_safe() 
     assert "service install" not in script
 
 
+def test_cloudflared_readiness_failure_restores_backup_before_reporting() -> None:
+    script = Path("scripts/refresh_cloudflared_tunnel_credentials.sh").read_text(
+        encoding="utf-8"
+    )
+
+    helper_start = script.index("restore_backup_and_restart()")
+    helper_end = script.index("\n}\n\ncleanup()", helper_start)
+    helper = script[helper_start:helper_end]
+    assert (
+        'cp --preserve=mode,timestamps "$backup_credentials" "$rollback_credentials"'
+        in helper
+    )
+    assert 'mv -- "$rollback_credentials" "$credentials_file"' in helper
+    assert 'sudo systemctl start "$service_name"' in helper
+    assert helper.index('sudo systemctl start "$service_name"') < helper.index(
+        'service_stopped="no"'
+    )
+
+    branch_start = script.index('if [[ "$ready_http" != "200" ]]; then')
+    branch_end = script.index('\nif "$python_bin" "$preflight_script"', branch_start)
+    readiness_failure = script[branch_start:branch_end]
+    assert 'service_stopped="yes"' in readiness_failure
+    assert 'sudo systemctl stop "$service_name"' in readiness_failure
+    assert "restore_backup_and_restart" in readiness_failure
+    assert 'fail "applied_not_ready_rollback_restart_failed"' in readiness_failure
+    assert (
+        readiness_failure.index('sudo systemctl stop "$service_name"')
+        < readiness_failure.index("restore_backup_and_restart")
+        < readiness_failure.index('fail "applied_not_ready"')
+    )
+
+
 def test_local_health_failure_has_rate_limited_recovery() -> None:
     health = _read("colameta-local-healthcheck.service")
     recovery = _read("colameta-stack-recover.service")
