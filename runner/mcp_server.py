@@ -4403,6 +4403,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         else:
             project_root, _ = self._resolve_read_only_project_context(params)
         routed_server = self.__class__(project_root)
+        # Project routing is an implementation detail of the serving MCP
+        # instance.  Keep packaged continuations in that instance's store so a
+        # later read_result_artifact call can recover results created by the
+        # temporary project-scoped server.
+        routed_server._mcp_result_artifact_store = (
+            self._mcp_result_artifact_store
+        )
         routed_tool = routed_server.tools.get(tool_name)
         if not callable(routed_tool):
             raise MCPToolInputError("TOOL_NOT_FOUND", f"未知 tool：{tool_name}")

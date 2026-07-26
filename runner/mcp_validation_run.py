@@ -60,6 +60,7 @@ SENSITIVE_TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_FULL_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _RUN_RESULT_FIELDS = frozenset(
     {
         "schema_version",
@@ -1618,7 +1619,7 @@ class MCPValidationRunManager:
         normalized = head.strip().lower()
         return (
             normalized
-            if re.fullmatch(r"[0-9a-f]{40}", normalized)
+            if _FULL_GIT_OBJECT_ID_RE.fullmatch(normalized)
             else None
         )
 

@@ -34,10 +34,18 @@ from runner.review_manifest_validation import (
 )
 
 
-def _make_git_checkout(tmp_path: Path, *, managed: bool = False) -> Path:
+def _make_git_checkout(
+    tmp_path: Path,
+    *,
+    managed: bool = False,
+    object_format: str | None = None,
+) -> Path:
     project = tmp_path / "review-project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    init_command = ["git", "init", "-q"]
+    if object_format is not None:
+        init_command.append(f"--object-format={object_format}")
+    subprocess.run([*init_command, str(project)], check=True)
     subprocess.run(["git", "-C", str(project), "config", "user.email", "review@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(project), "config", "user.name", "Review Fixture"], check=True)
     docs_dir = project / "docs"
@@ -300,6 +308,67 @@ def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_
         text=True,
     ).stdout
     assert worktrees.count("worktree ") == 1
+
+
+def test_manifest_bound_validation_accepts_sha256_git_object_ids(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path, object_format="sha256")
+    candidate_head = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert len(candidate_head) == 64
+
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    assert inspected["ok"] is True
+    assert inspected["data"]["context_binding"]["head"] == candidate_head
+
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    assert preview["ok"] is True
+    started = server.call_tool_for_agent(
+        "manage_validation_run",
+        preview["data"]["next_actions"][0]["params"],
+    )
+    assert started["ok"] is True
+
+    final: dict | None = None
+    for _ in range(100):
+        status = server.call_tool_for_agent(
+            "manage_validation_run",
+            {
+                "action": "status",
+                "run_id": started["data"]["run_id"],
+            },
+        )
+        assert status["ok"] is True
+        final = status["data"]
+        if final["status"] != "running":
+            break
+        time.sleep(0.01)
+
+    assert final is not None
+    assert final["status"] == "passed"
+    checkout = final["output_summary"]["checkout_provenance"]
+    assert checkout["candidate_head"] == candidate_head
+    assert checkout["source_before"]["git_object_format"] == "sha256"
+    assert checkout["source_after"]["git_object_format"] == "sha256"
 
 
 def test_manifest_validation_isolated_checkout_ignores_transient_source_checkout_changes(
