@@ -237,3 +237,59 @@ def test_current_facts_apply_fails_closed_when_the_previewed_observation_changes
     assert stale["ok"] is False
     assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
+
+
+def test_current_facts_apply_rejects_refreshed_source_timestamp(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    baseline = server._tool_analyze_project_state({})
+    assert baseline["ok"] is True
+    current_state = copy.deepcopy(baseline["canonical_state"])
+    current_state["currently_observed"]["runtime"].update(
+        {
+            "status": "healthy",
+            "observed_at": "2026-07-24T08:09:00Z",
+            "reason_code": None,
+        }
+    )
+
+    def analyze_fixture(_params: dict) -> dict:
+        return {
+            "ok": True,
+            "canonical_state": copy.deepcopy(current_state),
+        }
+
+    server._tool_analyze_project_state = analyze_fixture  # type: ignore[method-assign]
+    preview = _data(
+        server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "current_facts",
+                "phase": "preview",
+            },
+        )
+    )
+    current_state["observed_at"] = "2026-07-24T08:10:10Z"
+    current_state["freshness"]["observed_at"] = "2026-07-24T08:10:10Z"
+    current_state["currently_observed"]["runtime"]["observed_at"] = (
+        "2026-07-24T08:10:00Z"
+    )
+    apply_action = next(
+        action
+        for action in preview["next_actions"]
+        if action.get("params", {}).get("phase") == "apply"
+    )
+
+    stale = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        apply_action["params"],
+    )
+
+    assert stale["ok"] is False
+    assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"
+    assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()

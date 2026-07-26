@@ -182,6 +182,12 @@ def _validation_result(
             "timeout_seconds": spec["timeout_seconds"],
             "continue_on_failure": spec["continue_on_failure"],
             "command": " ".join(spec["argv"]),
+            "executed_command": " ".join(
+                MCPValidationRunManager._manifest_execution_command(
+                    spec["argv"],
+                    head,
+                )
+            ),
             "stdout": "",
             "stderr": "",
             "stdout_truncated": False,

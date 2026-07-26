@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
@@ -294,6 +296,20 @@ def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_
     assert final["integrity_classification"] == "verified"
     assert len(final["validation_result_sha256"]) == 64
     assert final["manifest_validation"]["contract_sha256"] == contract["contract_sha256"]
+    assert final["command_results"][0]["executed_command"] == " ".join(
+        [
+            "git",
+            "diff-tree",
+            "--check",
+            "--root",
+            "-r",
+            "-m",
+            "--no-commit-id",
+            "--no-ext-diff",
+            "--no-textconv",
+            inspected["data"]["context_binding"]["head"],
+        ]
+    )
     checkout = final["output_summary"]["checkout_provenance"]
     assert checkout["mode"] == "isolated_detached_worktree"
     assert checkout["candidate_head"] == inspected["data"]["context_binding"]["head"]
@@ -369,6 +385,74 @@ def test_manifest_bound_validation_accepts_sha256_git_object_ids(
     assert checkout["candidate_head"] == candidate_head
     assert checkout["source_before"]["git_object_format"] == "sha256"
     assert checkout["source_after"]["git_object_format"] == "sha256"
+
+
+def test_manifest_bound_git_diff_checks_the_candidate_commit(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    subject = project / "docs" / "review-input.md"
+    subject.write_text(
+        "# Review input\n\nCommitted trailing whitespace.  \n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(project), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "commit", "-qm", "bad whitespace"],
+        check=True,
+    )
+    candidate_head = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    started = server.call_tool_for_agent(
+        "manage_validation_run",
+        preview["data"]["next_actions"][0]["params"],
+    )
+
+    final: dict | None = None
+    for _ in range(100):
+        status = server.call_tool_for_agent(
+            "manage_validation_run",
+            {
+                "action": "status",
+                "run_id": started["data"]["run_id"],
+            },
+        )
+        assert status["ok"] is True
+        final = status["data"]
+        if final["status"] != "running":
+            break
+        time.sleep(0.01)
+
+    assert final is not None
+    assert final["status"] == "failed"
+    assert final["passed"] is False
+    command_result = final["command_results"][0]
+    assert command_result["returncode"] != 0
+    assert command_result["executed_command"].endswith(candidate_head)
+    assert "diff-tree --check --root" in command_result["executed_command"]
+    assert "trailing whitespace" in (
+        command_result["stdout"] + command_result["stderr"]
+    )
 
 
 def test_manifest_validation_isolated_checkout_ignores_transient_source_checkout_changes(
@@ -678,6 +762,122 @@ def test_manifest_bound_validation_rechecks_subjects_and_rejects_unsafe_commands
     # bounded manager result, matching the legacy preview/run contract.
     assert unsafe_run["ok"] is True
     assert unsafe_run["data"]["error_code"] == "PREVIEW_BLOCKED"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'sh -c "rm -rf /some/path"',
+        'bash -c "echo bypass"',
+        'python3 -c "print(1)"',
+        '.venv/bin/python -c "print(1)"',
+        'node -e "console.log(1)"',
+        'env sh -c "echo bypass"',
+        ".venv/bin/python -m pytest --rootdir=/tmp",
+        "python3 -m compileall --invalidation-mode checked-hash runner",
+        ".venv/bin/python -m ruff check --config=/tmp/ruff.toml runner",
+    ],
+)
+def test_manifest_validation_rejects_command_indirection(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+    manifest = _manifest(project)
+    manifest["acceptance_commands"] = [
+        {
+            "command": command,
+            "timeout_seconds": 60,
+        }
+    ]
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": manifest,
+        },
+    )
+    assert inspected["ok"] is True
+
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+
+    assert preview["ok"] is True
+    assert preview["data"]["can_run"] is False
+    assert preview["data"]["blockers"] == [
+        "MANIFEST_VALIDATION_COMMAND_REJECTED"
+    ]
+    assert preview["data"]["manifest_validation_rejections"] == [
+        {
+            "command_index": 1,
+            "reason": "command_not_allowed",
+        }
+    ]
+
+
+def test_manifest_validation_accepts_only_supported_command_families(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(str(project))
+    manifest = _manifest(project)
+    manifest["acceptance_commands"] = [
+        {
+            "command": ".venv/bin/python -m pytest -q",
+            "timeout_seconds": 900,
+        },
+        {
+            "command": ".venv/bin/python scripts/self_hosting_smoke.py",
+            "timeout_seconds": 900,
+        },
+        {
+            "command": (
+                ".venv/bin/python -m compileall -q "
+                "adapters runner schemas scripts tests"
+            ),
+            "timeout_seconds": 600,
+        },
+        {
+            "command": (
+                ".venv/bin/python -m ruff check "
+                "adapters runner schemas scripts tests"
+            ),
+            "timeout_seconds": 600,
+        },
+        {
+            "command": "git diff --check",
+            "timeout_seconds": 600,
+        },
+    ]
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": manifest,
+        },
+    )
+    assert inspected["ok"] is True
+
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+
+    assert preview["ok"] is True
+    assert preview["data"]["can_run"] is True
+    assert preview["data"]["command_count"] == 5
+    assert preview["data"]["manifest_validation_rejections"] == []
 
 
 def test_manifest_validation_contract_rejects_an_out_of_policy_timeout(tmp_path: Path) -> None:

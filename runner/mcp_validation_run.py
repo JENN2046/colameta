@@ -49,6 +49,11 @@ VALIDATION_RUN_RESULT_SCHEMA_VERSION = "colameta.validation_run_result.v1"
 P1_VALIDATION_MAX_AGE_SECONDS = 24 * 60 * 60
 SHELL_META_PATTERNS = ("&&", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
 DANGEROUS_EXECUTABLES = {"rm", "sudo", "su", "chmod", "chown", "curl", "wget", "ssh", "scp", "rsync", "docker", "podman", "kubectl", "terraform"}
+MANIFEST_PYTHON_EXECUTABLES = {
+    "python",
+    "python3",
+    ".venv/bin/python",
+}
 
 SENSITIVE_TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"Bearer\s+\S+", re.IGNORECASE), "Bearer ***"),
@@ -640,15 +645,18 @@ class MCPValidationRunManager:
         execution_root = self.project_root
         source_after: dict[str, Any] | None = None
         cleanup_complete = True
+        manifest_candidate_head: str | None = None
         try:
             if artifact.get("scope") == "manifest_bound":
-                candidate_head = self._manifest_candidate_head(artifact)
-                if candidate_head is None:
+                manifest_candidate_head = self._manifest_candidate_head(
+                    artifact
+                )
+                if manifest_candidate_head is None:
                     raise RuntimeError(
                         "manifest-bound validation has no candidate checkout"
                     )
                 isolated_checkout = self._prepare_isolated_checkout(
-                    candidate_head,
+                    manifest_candidate_head,
                     run_id,
                 )
                 execution_root = str(isolated_checkout["root"])
@@ -665,7 +673,14 @@ class MCPValidationRunManager:
                     if isinstance(spec, dict)
                     else False
                 )
-                if not self._is_safe_command(command):
+                manifest_command_allowed = (
+                    artifact.get("scope") != "manifest_bound"
+                    or self._is_supported_manifest_command(command)
+                )
+                if (
+                    not self._is_safe_command(command)
+                    or not manifest_command_allowed
+                ):
                     failed_indexes.append(index)
                     command_results.append({
                         "index": index,
@@ -678,8 +693,14 @@ class MCPValidationRunManager:
                         "stderr_truncated": False,
                     })
                     break
+                effective_command = list(command)
+                if manifest_candidate_head is not None:
+                    effective_command = self._manifest_execution_command(
+                        effective_command,
+                        manifest_candidate_head,
+                    )
                 result = self._run_command(
-                    command,
+                    effective_command,
                     timeout_seconds=timeout_seconds,
                     cwd=execution_root,
                 )
@@ -710,6 +731,9 @@ class MCPValidationRunManager:
                     "timeout_seconds": timeout_seconds,
                     "continue_on_failure": continue_on_failure,
                     "command": self._display_command(command),
+                    "executed_command": self._display_command(
+                        effective_command
+                    ),
                     "stdout": stdout,
                     "stderr": stderr,
                     "stdout_truncated": stdout_truncated,
@@ -1038,12 +1062,20 @@ class MCPValidationRunManager:
             zip(command_specs, command_results, strict=True)
         ):
             expected_command = self._display_command(spec["argv"])
+            expected_executed_command = self._display_command(
+                self._manifest_execution_command(
+                    spec["argv"],
+                    normalized_candidate,
+                )
+            )
             if (
                 not isinstance(command_result, dict)
                 or command_result.get("index") != index
                 or command_result.get("ok") is not True
                 or command_result.get("returncode") != 0
                 or command_result.get("command") != expected_command
+                or command_result.get("executed_command")
+                != expected_executed_command
                 or command_result.get("timeout_seconds")
                 != spec["timeout_seconds"]
                 or command_result.get("continue_on_failure")
@@ -1438,7 +1470,10 @@ class MCPValidationRunManager:
                 rejections.append({"command_index": index, "reason": "sensitive_value"})
                 continue
             argv, parse_error = self._parse_command_string(raw_command)
-            if parse_error:
+            if (
+                parse_error
+                or not self._is_supported_manifest_command(argv)
+            ):
                 rejections.append({"command_index": index, "reason": "command_not_allowed"})
                 continue
             timeout_seconds = item.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
@@ -1602,6 +1637,96 @@ class MCPValidationRunManager:
                     return False
             return True
         return True
+
+    def _is_supported_manifest_command(self, command: Any) -> bool:
+        """Accept only explicit validation argv families from review manifests."""
+
+        if not self._is_safe_command(command):
+            return False
+        if command == ["git", "diff", "--check"]:
+            return True
+        first = command[0]
+        if (
+            first not in MANIFEST_PYTHON_EXECUTABLES
+            and not (
+                os.path.isabs(first)
+                and first == self._python_executable()
+            )
+        ):
+            return False
+        if command == [first, "scripts/self_hosting_smoke.py"]:
+            return True
+        if command[1:3] == ["-m", "pytest"]:
+            for part in command[3:]:
+                if part == "-q":
+                    continue
+                if part.startswith("-"):
+                    return False
+                target = part.split("::", 1)[0]
+                normalized = self._normalize_repo_relative_path(target)
+                if (
+                    normalized is None
+                    or self._path_policy.is_denied_source_path(normalized)
+                ):
+                    return False
+            return True
+        if command[1:3] == ["-m", "compileall"]:
+            paths = list(command[3:])
+            if paths and paths[0] == "-q":
+                paths = paths[1:]
+            if not paths:
+                return False
+            for part in paths:
+                if part == ".":
+                    continue
+                if part.startswith("-"):
+                    return False
+                normalized = self._normalize_repo_relative_path(part)
+                if (
+                    normalized is None
+                    or self._path_policy.is_denied_source_path(normalized)
+                ):
+                    return False
+            return True
+        if command[1:4] == ["-m", "ruff", "check"]:
+            paths = command[4:]
+            if not paths:
+                return False
+            for part in paths:
+                if part.startswith("-"):
+                    return False
+                if part == ".":
+                    continue
+                normalized = self._normalize_repo_relative_path(part)
+                if (
+                    normalized is None
+                    or self._path_policy.is_denied_source_path(normalized)
+                ):
+                    return False
+            return True
+        return False
+
+    @staticmethod
+    def _manifest_execution_command(
+        command: list[str],
+        candidate_head: str,
+    ) -> list[str]:
+        """Bind the declared clean-tree diff check to the candidate commit."""
+
+        if command != ["git", "diff", "--check"]:
+            return list(command)
+        return [
+            "git",
+            "diff-tree",
+            "--check",
+            "--root",
+            "-r",
+            "-m",
+            "--no-commit-id",
+            "--no-ext-diff",
+            "--no-textconv",
+            candidate_head,
+        ]
 
     def _manifest_candidate_head(
         self,

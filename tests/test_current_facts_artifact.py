@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -256,6 +257,46 @@ def test_current_facts_artifact_rejects_sensitive_or_path_like_canonical_fields(
 
     assert error.value.code == "CURRENT_FACTS_REDACTION_REQUIRED"
     assert "access_token" in error.value.message
+
+
+def test_current_facts_semantic_digest_binds_source_observation_timestamps() -> None:
+    state = _canonical_state()
+    state["currently_observed"]["runtime"]["last_observed_at"] = (
+        "2026-07-24T08:08:59Z"
+    )
+    baseline = build_current_facts_artifact(state)
+
+    recollected = copy.deepcopy(state)
+    recollected["observed_at"] = "2026-07-24T08:10:10Z"
+    recollected["freshness"]["observed_at"] = "2026-07-24T08:10:10Z"
+    assert (
+        build_current_facts_artifact(
+            recollected
+        ).canonical_state_semantic_sha256
+        == baseline.canonical_state_semantic_sha256
+    )
+
+    runtime_refreshed = copy.deepcopy(recollected)
+    runtime_refreshed["currently_observed"]["runtime"]["observed_at"] = (
+        "2026-07-24T08:10:00Z"
+    )
+    assert (
+        build_current_facts_artifact(
+            runtime_refreshed
+        ).canonical_state_semantic_sha256
+        != baseline.canonical_state_semantic_sha256
+    )
+
+    last_observed_refreshed = copy.deepcopy(recollected)
+    last_observed_refreshed["currently_observed"]["runtime"][
+        "last_observed_at"
+    ] = "2026-07-24T08:10:01Z"
+    assert (
+        build_current_facts_artifact(
+            last_observed_refreshed
+        ).canonical_state_semantic_sha256
+        != baseline.canonical_state_semantic_sha256
+    )
 
 
 def test_current_facts_archive_writes_only_the_fixed_runtime_pair_and_is_idempotent(tmp_path) -> None:
