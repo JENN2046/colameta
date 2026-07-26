@@ -13,7 +13,10 @@ from runner.continuation_snapshot import (
     snapshot_from_fact_bundle,
 )
 from runner.core_orchestrator import WorkflowOrchestrator
+from runner.executor_run_claims import ExecutorRunClaimStore
+from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.project_operation_lease import ProjectOperationLease
+from runner.runner_paths import resolve_project_runner_rel_dir
 from runner.web_console import WebConsoleServer
 
 
@@ -62,6 +65,60 @@ def _facts(**overrides):
     }
     facts.update(overrides)
     return facts
+
+
+class _NoSessionStore:
+    def get_status(self):
+        return {"ok": True, "active": False}
+
+    def get_continuation_preview(self, status):
+        return {"ok": True, "selected_provider": None, "hard_blockers": []}
+
+
+class _PassingRunner:
+    def get_runner_status(self, project_root):
+        return {
+            "runner_status": "VERSION_PASSED",
+            "current_version_status": "PASSED",
+        }
+
+
+class _CleanGit:
+    def get_git_status(self, project_root):
+        return {"status_short": []}
+
+
+def _write_running_claim(
+    project_root: Path,
+    *,
+    preview_id: str,
+    run_id: str,
+    claimed_at: str,
+) -> None:
+    store = ExecutorRunClaimStore(
+        str(project_root),
+        os.path.join(
+            resolve_project_runner_rel_dir(str(project_root)),
+            "runtime",
+            "executor-workflow-previews",
+        ),
+        "claims",
+        5,
+        3,
+        20,
+    )
+    store.write_claim(
+        preview_id,
+        {
+            "preview_id": preview_id,
+            "run_id": run_id,
+            "status": "RUNNING",
+            "claimed_at": claimed_at,
+            "last_heartbeat_at": claimed_at,
+            "heartbeat_interval_seconds": 5,
+            "heartbeat_timeout_seconds": 20,
+        },
+    )
 
 
 def test_one_snapshot_projects_same_decision_to_analyze_thin_loop_and_web(tmp_path: Path) -> None:
@@ -220,6 +277,101 @@ def test_optional_runner_and_git_errors_do_not_hide_verified_no_session(tmp_path
     assert {item["name"] for item in snapshot.partial_errors} == {"runner_status", "git_status"}
     assert decision["classification"] == "no_session"
     assert decision["recommended_action"] == "start_new"
+
+
+def test_runtime_snapshot_excludes_current_run_claim(tmp_path: Path) -> None:
+    _write_running_claim(
+        tmp_path,
+        preview_id="preview-self",
+        run_id="run-self",
+        claimed_at="2099-01-01T00:00:02+00:00",
+    )
+
+    snapshot = collect_continuation_snapshot(
+        str(tmp_path),
+        requested_provider="codex",
+        current_run_id="run-self",
+        session_store=_NoSessionStore(),
+        planning_bridge=_PassingRunner(),
+        source_review=_CleanGit(),
+    )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.activity_evidence["latest_run_status"] == "not_found"
+    assert snapshot.activity_evidence["latest_claim_status"] is None
+    assert snapshot.activity_evidence["live_run"] is None
+    assert decision["classification"] == "no_session"
+    assert decision["recommended_action"] == "start_new"
+    assert decision["start_new_allowed"] is True
+
+
+def test_runtime_snapshot_keeps_other_active_claim_fail_closed(tmp_path: Path) -> None:
+    _write_running_claim(
+        tmp_path,
+        preview_id="preview-other",
+        run_id="run-other",
+        claimed_at="2099-01-01T00:00:01+00:00",
+    )
+    _write_running_claim(
+        tmp_path,
+        preview_id="preview-self",
+        run_id="run-self",
+        claimed_at="2099-01-01T00:00:02+00:00",
+    )
+
+    snapshot = collect_continuation_snapshot(
+        str(tmp_path),
+        requested_provider="codex",
+        current_run_id="run-self",
+        session_store=_NoSessionStore(),
+        planning_bridge=_PassingRunner(),
+        source_review=_CleanGit(),
+    )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.activity_evidence["latest_run_status"] == "running"
+    assert snapshot.activity_evidence["latest_claim_status"] == "RUNNING"
+    assert snapshot.activity_evidence["live_run"]["run_id"] == "run-other"
+    assert decision["classification"] == "active_operation_head_mismatch"
+    assert decision["recommended_action"] == "human_review"
+    assert decision["start_new_allowed"] is False
+
+
+def test_executor_service_passes_current_run_id_to_runtime_snapshot(tmp_path: Path) -> None:
+    allowed_snapshot = snapshot_from_fact_bundle(
+        str(tmp_path),
+        _facts(executor_session_status={"ok": True, "active": False}),
+    )
+    observed: dict[str, object] = {}
+
+    def collect(project_root, requested_provider=None, **kwargs):
+        observed["project_root"] = project_root
+        observed["requested_provider"] = requested_provider
+        observed.update(kwargs)
+        return allowed_snapshot
+
+    service = ExecutorRunOnceService.__new__(ExecutorRunOnceService)
+    service.project_root = str(tmp_path)
+    service._run_once_under_lease = lambda **kwargs: {
+        "ok": True,
+        "status": "completed",
+        "run_id": kwargs["run_id"],
+    }
+
+    with patch(
+        "runner.continuation_snapshot.collect_continuation_snapshot",
+        side_effect=collect,
+    ):
+        result = service.run_once(
+            provider="codex",
+            executor_session_mode="start_new",
+            run_id="run-self",
+        )
+
+    assert result["ok"] is True
+    assert result["run_id"] == "run-self"
+    assert observed["current_run_id"] == "run-self"
+    assert observed["held_operation_lease"].held is False
 
 
 def test_distinct_captures_have_distinct_snapshot_ids_for_identical_facts(tmp_path: Path) -> None:

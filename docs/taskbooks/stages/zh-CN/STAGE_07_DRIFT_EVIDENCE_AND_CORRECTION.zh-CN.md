@@ -3,7 +3,7 @@
 ```yaml id="stage-07-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md
-  source_sha256: 24cec5e48435254731cce4bb2e72c8810df3d041f57c142d5674d82a632cb142
+  source_sha256: 84a1f9d50115e5e4f3cb40971769e6de55ff74b2435f216fdb72de4786ce163b
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:

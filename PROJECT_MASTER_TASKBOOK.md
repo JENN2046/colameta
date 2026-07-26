@@ -1,18 +1,41 @@
-# ColaMeta Project Master Taskbook v1
+# ColaMeta Project Master Taskbook v1.1
 
 ```yaml id="master-taskbook-canonical-summary"
 master_taskbook:
   document_type: project_master_taskbook
-  id: colameta_master_taskbook_v1
+  id: colameta_master_taskbook_v1_1
   canonical_name: Master Taskbook
   aliases:
     - Project Charter
     - 项目宪章
     - 项目总目标大任务书
   project: ColaMeta
-  version: v1
-  status: discussion_draft
+  version: v1.1
+  status: freeze_candidate
+  candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
   canonical_path: PROJECT_MASTER_TASKBOOK.md
+  candidate_lineage:
+    derived_from_current_master_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    derived_from_candidate_1_raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
+    candidate_1_hash_specific_review_disposition: changes_required_two_open_p1_findings
+    candidate_2_raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    candidate_2_canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    candidate_2_freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    candidate_2_hash_specific_review_disposition: pass
+    candidate_2_exact_hash_confirmation_received: true
+    candidate_2_confirmation_record_ref: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+    formalization_authorization_received: true
+    formalization_authorization_scope: formal_master_registry_and_stage_bindings
+    formalization_source_candidate_unchanged: true
+    prior_current_master_review_status: freeze_candidate_confirmed_for_exact_hash
+    formalization_replaces_prior_current_master: true
+    active_execution_authority_granted: false
+    candidate_change_scope:
+      - complete_fail_closed_reproducibility_contract_validation
+      - repo_relative_canonical_source_path_enforcement
+      - review_decision_no_action_removed
+      - retained_gate_event_conditional_transition_fields
+    formal_master_hashes_require_materialization_receipt: true
 
   owner: Commander / Jenn
   planning_authority: ChatGPT / Commander
@@ -21,14 +44,15 @@ master_taskbook:
   review_authority: ChatGPT Reviewer / Codex Commander / Human Commander
 
   draft_notice: >
-    This is not the final frozen Master Taskbook. It is a reality-calibrated
-    discussion draft stored in the project so future planning rounds have a
-    shared anchor. It must not be treated as an active canonical hash anchor
-    until Commander confirmation and the activation requirements are satisfied.
+    This is the formal hash-bound Master Taskbook materialized from the
+    independently reviewed and exactly confirmed v1.1-candidate.2 source. Its
+    freeze_candidate status authorizes reference binding only. It is not active
+    execution authority, accepted delivery state, executor authority, push
+    authority, or runtime-transition authority.
 
   project_final_goal:
-    status: commander_confirmed_for_discussion_draft
-    applies_to: current_design_draft
+    status: commander_confirmed_for_freeze_candidate
+    applies_to: formal_freeze_candidate
     goal: >
       Design and evolve ColaMeta into a goal-anchored AI delivery command layer
       that can preserve the Commander-confirmed project final goal across
@@ -90,7 +114,7 @@ master_taskbook:
       收束升级为统一的 Delivery State Gate / 交付状态门治理契约。
 
   state_authority_contract_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     adopted_name: State Authority Contract
     chinese_name: 状态权责契约
     supersedes_discussion_label: State Ownership Contract
@@ -107,7 +131,7 @@ master_taskbook:
       用户看到的状态只是已接受主张、已验证证据、门控裁决的投影。
 
   delivery_state_transition_model_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     adopted_name: Minimal Delivery State Transition Model
     chinese_name: 最小交付状态转换模型
     summary: >
@@ -123,7 +147,7 @@ master_taskbook:
       过程或分层字段。
 
   review_decision_mapping_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     adopted_name: Review Decision Mapping
     chinese_name: 审查决策映射
     summary: >
@@ -137,7 +161,7 @@ master_taskbook:
       状态的仍然只能是 Delivery State Gate 产生的 GateEvent。
 
   taskbook_layer_responsibility_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     adopted_name: Layer Responsibility Contract
     chinese_name: 三层任务书职责边界契约
     summary: >
@@ -154,7 +178,7 @@ master_taskbook:
       Delivery State Gate 判断。
 
   goal_statement_policy:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     single_complete_goal_statement: project_final_goal
     no_separate_short_goal_phrase: true
     no_separate_north_star_goal: true
@@ -167,7 +191,7 @@ master_taskbook:
       move forward without silent drift or unauthorized expansion.
 
   product_identity_constraint_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     chinese_name: 产品定位边界决策
     derived_from: project_final_goal
     no_separate_positioning_phrase: true
@@ -185,7 +209,7 @@ master_taskbook:
       自动产品负责人、自动审查者或自动发布系统，而是目标锚定的 AI 交付指挥层。
 
   minimum_irreplaceable_capability_set:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     decision_summary: >
       ColaMeta is irreplaceable only if it keeps AI delivery anchored to the
       agreed goal across taskbooks, execution envelopes, bounded execution,
@@ -201,7 +225,7 @@ master_taskbook:
       - commander_gate_stop_boundary_and_observable_status_surface
 
   mvp_shape_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     name: Stage 0-6 Thin Governed Loop
     meaning: >
       Stage 0 through Stage 6 define one thin governed proof loop, not seven
@@ -234,7 +258,7 @@ master_taskbook:
       - discussion_draft_authority_boundary
 
   stage_0_6_readiness_contract_decision:
-    status: commander_confirmed_for_discussion_draft
+    status: commander_confirmed_for_freeze_candidate
     adopted_name: Stage 0-6 Thin Governed Loop Readiness Contract
     chinese_name: 阶段 0-6 薄治理闭环就绪契约
     summary: >
@@ -367,8 +391,8 @@ The project final goal for the current design draft is:
 
 ```yaml id="project-final-goal"
 project_final_goal:
-  status: commander_confirmed_for_discussion_draft
-  applies_to: current_design_draft
+  status: commander_confirmed_for_freeze_candidate
+  applies_to: formal_freeze_candidate
   goal: >
     Design and evolve ColaMeta into a goal-anchored AI delivery command layer
     that can preserve the Commander-confirmed project final goal across Master,
@@ -386,7 +410,7 @@ project_final_goal:
     transition, or automatic state promotion without separate explicit approval.
 ```
 
-This draft keeps one complete highest goal statement: `project_final_goal`.
+This Master keeps one complete highest goal statement: `project_final_goal`.
 It does not maintain a separate short goal phrase or a separate North Star goal.
 
 ColaMeta lets users delegate project work to a controlled, reviewable, and
@@ -398,14 +422,14 @@ project does not drift during long-running development.
 
 ### 1.1 Minimum Irreplaceable Capability Set
 
-Commander confirmed the following capability set for the discussion draft. This
+Commander confirmed the following capability set for the freeze candidate. This
 decision defines the minimum shape ColaMeta must have to satisfy the
 `project_final_goal` instead of becoming only an executor wrapper,
 a document store, a generic router, or a project dashboard.
 
 ```yaml id="minimum-irreplaceable-capability-set"
 minimum_irreplaceable_capability_set:
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   core_claim: >
     ColaMeta is irreplaceable only if it can keep AI delivery anchored to the
     agreed goal: why the work exists, which taskbook boundary controls it,
@@ -478,7 +502,7 @@ How can long-running AI project delivery remain controllable, reviewable, tracea
 
 ColaMeta's product identity is derived from `project_final_goal`.
 
-This draft does not keep a separate positioning phrase, slogan, or North Star
+This Master does not keep a separate positioning phrase, slogan, or North Star
 goal. Reopening product identity means reopening the complete
 `project_final_goal`, and requires Commander hard-gate review.
 
@@ -749,7 +773,7 @@ activation_policy:
   active_candidate:
     meaning: Reviewable and hashable, but not yet a mandatory anchor.
   freeze_candidate:
-    meaning: Revised after review, waiting for Commander freeze confirmation.
+    meaning: Reviewed, hash-bound, and Commander-confirmed for reference-only freeze use; not active authority.
   active:
     meaning: Can be formally referenced by stage, version, and review records.
   superseded:
@@ -761,8 +785,12 @@ activation_policy:
 Current document status:
 
 ```yaml id="current-taskbook-review-status"
-status: discussion_draft
-recommended_review_decision: CONTINUE_DISCUSSION
+status: freeze_candidate
+candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+candidate_preparation_status: formalized_after_independent_hash_review_and_exact_hash_confirmation
+candidate_2_hash_review_and_confirmation_applied: true
+formalization_authorization_applied: true
+recommended_review_decision: MAINTAIN_FREEZE_CANDIDATE_UNTIL_ACTIVE_PROMOTION_IS_SEPARATELY_AUTHORIZED
 ```
 
 ### 5.2 Activation Requirements
@@ -779,23 +807,26 @@ activation_requires:
   - freeze_candidate_preconditions satisfied
 ```
 
-This file is intentionally not yet active. It is the shared baseline for further route discussion.
+This formal Master is intentionally not active. It is the hash-bound,
+reference-only freeze candidate for Registry and Stage bindings.
 
 ### 5.3 Freeze Candidate Preconditions
 
-This draft must not move from `discussion_draft` to `freeze_candidate` until
-the MVP is reviewable as a thin governed loop rather than a broad product
-platform.
+The move from `discussion_draft` to `freeze_candidate` required the MVP to be
+reviewable as a thin governed loop rather than a broad product platform.
 
 ```yaml id="freeze-candidate-preconditions"
 freeze_candidate_preconditions:
-  status: required_before_freeze_candidate
-  current_status: contract_patches_applied_pending_readiness_review
+  status: satisfied_for_formal_freeze_candidate_materialization
+  current_status: candidate_2_independently_reviewed_exact_hashes_confirmed_and_formalization_authorized
   status_note: >
-    The hash/canonical authority, state authority, and minimum checkable object
-    patches have been applied in discussion_draft. This does not promote the
-    document to freeze_candidate; it only makes the draft ready for a
-    non-authoritative readiness review.
+    The three P1 contract corrections for reproducible canonical hashing,
+    conditional ReviewDecision transition fields, and conditional GateEvent
+    transition fields were independently reviewed in candidate.2. The three
+    exact candidate hashes were separately confirmed, and formal Master,
+    Registry, and Stage binding preparation was separately authorized. This
+    satisfies reference-only freeze-candidate materialization but does not
+    grant active, execution, push, or runtime authority.
   required_conditions:
     - id: stage_00_to_06_thin_governed_loop
       requirement: >
@@ -892,7 +923,9 @@ freeze_candidate_preconditions:
 
 ## 6. Hash Boundary Policy
 
-The Master Taskbook must eventually be hashable, verifiable, and referenceable. To avoid meaningless hash churn, the canonical hash should bind governance fields, not formatting or changing local status notes.
+The Master Taskbook canonical payload and freeze hash must be mechanically
+reproducible. The raw snapshot hash binds exact file bytes; the canonical hash
+binds the governance selectors below while excluding declared transient state.
 
 ```yaml id="hash-policy"
 hash_policy:
@@ -904,13 +937,72 @@ hash_policy:
       - freeze_process_and_canonicalization.derived_hashable_payload_view
       - freeze_process_and_canonicalization.derived_excluded_payload_view
     conflict_rule: >
-      If a derived payload view, review packet, or future canonicalizer mapping
-      conflicts with hash_policy.canonical_fields, the canonicalizer must fail
-      closed. The derived view must be corrected before any freeze_candidate
-      request.
+      If a derived payload view or canonicalizer mapping inside this Master
+      source conflicts with hash_policy.canonical_fields, the canonicalizer
+      must fail closed. If an external review packet conflicts with the source
+      manifest or generated hashes, the hash-specific review gate must fail
+      closed. The conflicting view or packet must be corrected before any
+      freeze_candidate request.
     chinese_meaning: >
       真正决定哈希输入的只有 hash_policy.canonical_fields。后面的
       hashable payload 只是方便人审查的派生视图，不能成为第二套权威清单。
+      外部 review packet 不属于 canonicalizer 输入；若与源 manifest 或生成的
+      hash 冲突，必须由 hash-specific review gate 拒绝。
+
+  reproducible_canonicalization:
+    status: mechanically_reproducible_candidate_contract
+    payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    implementation_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    domain_separator: ColaMeta.freeze_candidate.v1
+    hash_input_rule: sha256(utf8(domain_separator + LF + canonical_json))
+    source_encoding: utf-8
+    source_line_ending_normalization: lf
+    source_unicode_normalization: NFC
+    yaml_parser_contract:
+      library: PyYAML
+      version: 6.0.3
+      loader: safe_yaml
+      duplicate_mapping_keys: fail_closed
+      fenced_block_id_uniqueness: fail_closed
+      required_block_missing_or_ambiguous: fail_closed
+    selector_resolution:
+      master_taskbook_prefix_source_block: master-taskbook-canonical-summary
+      hash_policy_prefix_source_block: hash-policy
+      yaml_block_prefix: exact_fenced_yaml_block_id
+      markdown_section_prefix: exact_heading_from_hash_policy.markdown_section_selectors
+      wildcard_list_order: preserve_source_order
+      missing_selector: fail_closed
+    payload_shape:
+      - schema_version
+      - canonicalizer_version
+      - source_document
+      - field_manifest
+      - field_values
+    field_manifest_rule: >
+      Copy hash_policy.canonical_fields in declared order into field_manifest;
+      resolve every selector exactly once; include each normalized value under
+      its full selector key. Missing, duplicate, ambiguous, or unsupported
+      selectors fail closed.
+    scalar_normalization:
+      strings: normalize_line_endings_then_NFC_then_trim_surrounding_whitespace
+      dates_and_datetimes: ISO-8601
+      non_finite_numbers: fail_closed
+      nulls: preserve
+    canonical_json:
+      encoding: utf-8
+      ensure_ascii: false
+      mapping_key_order: utf8_byte_lexicographic
+      separators: comma_and_colon_without_surrounding_whitespace
+      list_order: preserve
+      trailing_newline: false
+      non_finite_numbers: fail_closed
+    evidence_boundary:
+      raw_snapshot_sha256_is_exact_file_identity: true
+      canonical_payload_sha256_is_payload_identity: true
+      freeze_content_hash_is_domain_separated_payload_identity: true
+      generated_hashes_are_authority: false
+      canonical_receipt_generated_by_hash_calculation: false
 
   canonical_field_path_style:
     style: machine_readable_source_paths_only
@@ -965,9 +1057,20 @@ hash_policy:
         policy rules use hash_policy.<field>. Bare concept names are not valid
         canonical field paths.
 
+  markdown_section_selectors:
+    semantics_to_mechanics_translation_table: "### 3.4 Semantics-to-Mechanics Translation Table"
+    forbidden_claims_boundary_law: "### 3.5 Forbidden Claims / Boundary Law"
+    standard_workflow: "## 11. Standard Workflow"
+    review_feedback_decision_policy: "## 12. Review Feedback Decision Policy"
+    taskbook_hierarchy: "## 8. Three-Level Taskbook Hierarchy"
+    mvp_boundary: "## 24. MVP Boundary"
+    hard_gates: "## 25. Hard Gates"
+
   canonical_fields:
     - master_taskbook.id
     - master_taskbook.version
+    - master_taskbook.candidate_id
+    - master_taskbook.candidate_lineage
     - master_taskbook.project_final_goal
     - master_taskbook.goal_statement_policy
     - master_taskbook.product_identity_constraint_decision
@@ -992,9 +1095,19 @@ hash_policy:
     - yaml_block.freeze-candidate-preconditions
     - yaml_block.freeze-process-and-canonicalization
     - yaml_block.minimum-checkable-schema-contracts-summary
+    - yaml_block.delivery-state-gate-minimum-contract
+    - yaml_block.gate-event-minimum-contract
+    - yaml_block.review-decision-mapping
+    - yaml_block.review-decision-record-minimum
+    - yaml_block.review-decision-specific-fields
     - master_taskbook.success_criteria
+    - hash_policy.canonical_payload_authority
+    - hash_policy.reproducible_canonicalization
     - hash_policy.canonical_field_path_style
     - hash_policy.canonical_scope_decisions
+    - hash_policy.markdown_section_selectors
+    - hash_policy.excluded_fields
+    - hash_policy.canonicalization
     - markdown_section.semantics_to_mechanics_translation_table
     - markdown_section.forbidden_claims_boundary_law
     - markdown_section.standard_workflow
@@ -1031,10 +1144,14 @@ hash_policy:
       non-governance presentation or transient runtime material.
 
   canonicalization:
+    normalize_unicode: NFC
     trim_surrounding_whitespace: true
     normalize_line_endings: lf
-    sort_mapping_keys: true
+    sort_mapping_keys: utf8_byte_lexicographic
     preserve_list_order: true
+    reject_duplicate_yaml_mapping_keys: true
+    canonical_json_separators: comma_and_colon_without_surrounding_whitespace
+    canonical_json_trailing_newline: false
 ```
 
 `current_known_state` is excluded because it records changing repository reality, such as local commits, remote sync state, and in-progress versions.
@@ -1067,7 +1184,7 @@ Chinese meaning:
 ```yaml id="freeze-process-and-canonicalization"
 freeze_process_and_canonicalization:
   chinese_name: 冻结流程与规范化
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
 
   freeze_candidate_meaning:
     means:
@@ -1088,7 +1205,11 @@ freeze_process_and_canonicalization:
   canonical_hash:
     name: freeze_content_hash
     algorithm: sha256
-    input_rule: sha256("ColaMeta.freeze_candidate.v1\n" + canonical_json)
+    payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    implementation_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    domain_separator: ColaMeta.freeze_candidate.v1
+    input_rule: sha256(utf8(domain_separator + LF + canonical_json))
     canonicalization_rules:
       - use UTF-8
       - normalize line endings to LF
@@ -1096,8 +1217,11 @@ freeze_process_and_canonicalization:
       - sort mapping keys by byte order
       - omit undefined fields
       - preserve explicit null fields
-      - sort set-like arrays by stable id
-      - require explicit order fields for semantically ordered arrays
+      - preserve all list order from the resolved source selector
+      - reject duplicate YAML mapping keys and duplicate fenced block ids
+      - resolve Markdown sections only through exact heading mappings
+      - emit comma and colon JSON separators without surrounding whitespace
+      - emit no trailing newline in canonical_json
       - use repo-relative forward-slash paths
       - hash EvidencePackage digests or references, not raw long logs
       - never include secrets or credentials
@@ -1106,34 +1230,25 @@ freeze_process_and_canonicalization:
     single_source_of_truth: hash_policy.canonical_fields
     derived_views_are_authoritative: false
     required_mapping_rule: >
-      Every field in derived_hashable_payload_view must trace to one or more
-      entries in hash_policy.canonical_fields. Any unmapped or ambiguously
-      mapped field fails closed before freeze_candidate.
+      The canonicalizer resolves hash_policy.canonical_fields directly and
+      copies that manifest into the canonical payload. The derived view below
+      describes the envelope only; it is not a second field manifest. Any
+      missing, duplicate, unsupported, or ambiguous selector fails closed
+      before freeze_candidate.
     chinese_meaning: >
       冻结哈希到底吃哪些内容，只看 hash_policy.canonical_fields。下面的字段
       只是审查用视图，必须能反查到真实来源路径，否则不能冻结。
 
   derived_hashable_payload_view:
-    - schema_version
-    - canonicalizer_version
-    - taskbook_id
-    - candidate_id
-    - lifecycle.phase
-    - authority_model
-    - project_final_goal
-    - scope
-    - claims
-    - assumptions
-    - unknowns
-    - acceptance_contract
-    - evidence_index
-    - blocked_policy
-    - terminal_correction_supersede_policy
-    - runtime_compatibility
-    - user_visible_projection_contract
-    - lineage.supersedes
-    - excluded_fields_manifest
-    - action_authority_flags
+    source_manifest: hash_policy.canonical_fields
+    envelope_fields:
+      - schema_version
+      - canonicalizer_version
+      - source_document
+      - field_manifest
+      - field_values
+    field_values_key_rule: full_selector_string
+    authority_status: derived_non_authoritative_view
 
   derived_excluded_payload_view:
     - markdown_formatting
@@ -1221,7 +1336,7 @@ freeze_process_and_canonicalization:
 
   commander_confirmation_template: >
     CONFIRM FREEZE_CANDIDATE taskbook_id=<TASKBOOK_ID>
-    candidate_id=<CANDIDATE_ID> canonicalizer=ColaMeta.freeze_candidate.v1
+    candidate_id=<CANDIDATE_ID> canonicalizer=ColaMeta.master_taskbook_canonicalizer.v1
     hash=sha256:<HASH> scope=<SCOPE_ID> boundary=<BOUNDARY_ID>
     review_only=true delivery_state_gate_required=true
     implementation_authority=none commit_authority=none push_authority=none
@@ -1611,7 +1726,7 @@ Chinese meaning:
 
 ```yaml id="minimum-checkable-schema-contracts-summary"
 minimum_checkable_schema_contracts:
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   chinese_name: 最小可检查结构契约
   contract_kind: governance_data_contracts_not_runner_api
   representation: YAML / JSON / Python dataclass are all valid implementation forms
@@ -1668,7 +1783,7 @@ Plain Chinese meaning: 状态不是一坨东西归某一层。ColaMeta 要把状
 
 ```yaml id="state-authority-contract"
 state_authority_contract:
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   chinese_name: 状态权责契约
   supersedes_discussion_label:
     english: State Ownership Contract
@@ -1915,7 +2030,7 @@ The adopted model is `small, strict, and boring` = 小、严、朴素.
 
 ```yaml id="delivery-state-transition-model"
 delivery_state_transition_model:
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   chinese_name: 交付状态转换模型
   model_type: minimal_canonical_delivery_lifecycle
   transition_application_rule:
@@ -2366,7 +2481,7 @@ Chinese meaning:
 ```yaml id="runtime-state-compatibility-mapping"
 runtime_state_compatibility_mapping:
   chinese_name: 运行态兼容映射
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
 
   core_invariants:
     - Runtime states are evidentiary signals, not delivery lifecycle states.
@@ -2485,7 +2600,7 @@ Chinese meaning:
 ```yaml id="user-visible-status-projection"
 user_visible_status_projection:
   chinese_name: 用户可见状态投影
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   projection_type: read_only_view
 
   authority_boundary:
@@ -2831,26 +2946,22 @@ gate_event_minimum_contract:
   chinese_name: 状态门事件最小契约
   meaning: >
     GateEvent is the append-only record emitted by Delivery State Gate when it
-    applies or rejects a delivery_state transition or item-level blocked change.
+    applies or rejects a delivery_state transition, changes an item-level
+    blocked projection, or records a ledger correction or supersession.
   chinese_meaning: >
     GateEvent / 状态门事件，是 Delivery State Gate 作出的可追溯状态裁决记录。
     它是 accepted、cancelled、returned_for_revision、blocked 变化进入用户可见状态的
     唯一账本事件。
 
-  required_fields:
+  always_required_fields:
     - gate_event_id
     - schema_version
     - gate_id
     - task_id
     - stage_id
     - event_type
+    - event_sequence
     - authority_basis
-    - prior_state_version
-    - resulting_state_version
-    - from_state
-    - to_state
-    - transition_outcome
-    - blocker_changes
     - evidence_refs
     - review_decision_refs
     - receipt_refs
@@ -2869,13 +2980,105 @@ gate_event_minimum_contract:
     - correction_recorded
     - supersede_recorded
 
+  conditional_required_fields:
+    transition_applied:
+      event_types:
+        - transition_applied
+      required_fields:
+        - prior_state_version
+        - resulting_state_version
+        - from_state
+        - to_state
+        - transition_outcome
+      forbidden_fields:
+        - observed_state_version
+        - requested_from_state
+        - requested_to_state
+        - rejection_reason
+        - correction_ref
+        - superseded_event_refs
+    transition_rejected:
+      event_types:
+        - transition_rejected
+      required_fields:
+        - observed_state_version
+        - requested_from_state
+        - requested_to_state
+        - rejection_reason
+      forbidden_fields:
+        - prior_state_version
+        - resulting_state_version
+        - from_state
+        - to_state
+        - transition_outcome
+        - blocker_changes
+        - correction_ref
+        - superseded_event_refs
+    blocker_change:
+      event_types:
+        - blocker_applied
+        - blocker_cleared
+        - blocker_waived
+        - blocker_invalidated
+      required_fields:
+        - prior_state_version
+        - resulting_state_version
+        - blocker_changes
+      forbidden_fields:
+        - from_state
+        - to_state
+        - transition_outcome
+        - requested_from_state
+        - requested_to_state
+        - rejection_reason
+        - correction_ref
+        - superseded_event_refs
+    correction_recorded:
+      event_types:
+        - correction_recorded
+      required_fields:
+        - observed_state_version
+        - correction_ref
+      forbidden_fields:
+        - prior_state_version
+        - resulting_state_version
+        - from_state
+        - to_state
+        - transition_outcome
+        - blocker_changes
+        - requested_from_state
+        - requested_to_state
+        - rejection_reason
+        - superseded_event_refs
+    supersede_recorded:
+      event_types:
+        - supersede_recorded
+      required_fields:
+        - observed_state_version
+        - superseded_event_refs
+      forbidden_fields:
+        - prior_state_version
+        - resulting_state_version
+        - from_state
+        - to_state
+        - transition_outcome
+        - blocker_changes
+        - requested_from_state
+        - requested_to_state
+        - rejection_reason
+        - correction_ref
+
   required_invariants:
     - GateEvent is append-only.
     - GateEvent is the only record that may write delivery_state.
     - GateEvent is the only record that may change delivery_item.blocked.
+    - event_sequence must be unique and monotonic for the delivery item event ledger.
     - authority_basis must identify Commander, delegated Delivery Authority, reviewer, policy, or runtime evidence used by the Gate.
-    - prior_state_version must match before the event is applied.
-    - resulting_state_version must be unique and monotonic for the delivery item.
+    - Exactly one conditional_required_fields branch must match event_type.
+    - Fields forbidden by the selected event branch must be absent, not null placeholders.
+    - prior_state_version must match before a transition or blocker change is applied.
+    - resulting_state_version must be unique and monotonic only for an applied transition or blocker projection change.
+    - transition_rejected, correction_recorded, and supersede_recorded must not claim a resulting state version.
     - idempotency_key prevents duplicate application.
     - conflict_check must fail closed on stale parent refs, stale state version, missing evidence, or active blockers that prevent acceptance.
     - accepted may be applied only when blocked is false after blocker_changes.
@@ -3074,7 +3277,7 @@ Commander 或被委派交付权责可以提供权威依据，但不是直接写�
 
 ```yaml id="review-decision-mapping"
 review_decision_mapping:
-  status: commander_confirmed_for_discussion_draft
+  status: commander_confirmed_for_freeze_candidate
   chinese_name: 审查决策映射
   decisions:
     ACCEPT:
@@ -3200,47 +3403,162 @@ review_decision_record:
     - state_transition_applied
     - gate_review_required
     - commander_decision_requested
-    - no_action
 ```
 
 Decision-specific minimum fields:
 
 ```yaml id="review-decision-specific-fields"
 review_decision_specific_fields:
+  branch_selector:
+    discriminator_fields:
+      - decision
+      - resulting_action
+    rule: >
+      Exactly one decision and resulting_action branch must match. Fields
+      required by another branch must be absent, not null placeholders.
+
   ACCEPT:
-    - accepted_criteria_refs
-    - runtime_fact_refs
-    - gate_actor_id
-    - transition_id
-    - from_state: submitted
-    - to_state: accepted
-    - transition_outcome: accepted_by_gate
+    always_required_fields:
+      - accepted_criteria_refs
+      - runtime_fact_refs
+    resulting_action_branches:
+      gate_review_required:
+        required_fields:
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - required_gate_authority
+        fixed_values:
+          requested_from_state: submitted
+          requested_to_state: accepted
+          requested_transition_outcome: accepted_by_gate
+        forbidden_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - from_state
+          - to_state
+          - transition_outcome
+      state_transition_applied:
+        required_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - from_state
+          - to_state
+          - transition_outcome
+        fixed_values:
+          from_state: submitted
+          to_state: accepted
+          transition_outcome: accepted_by_gate
+        forbidden_fields:
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - required_gate_authority
 
   NEEDS_FIX:
-    - failed_criteria_refs
-    - required_fix_summary
-    - runtime_fact_refs
-    - gate_actor_id
-    - transition_id
-    - from_state: submitted
-    - to_state: in_delivery
-    - transition_outcome: returned_for_revision
+    always_required_fields:
+      - failed_criteria_refs
+      - required_fix_summary
+      - runtime_fact_refs
+    resulting_action_branches:
+      gate_review_required:
+        required_fields:
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - required_gate_authority
+        fixed_values:
+          requested_from_state: submitted
+          requested_to_state: in_delivery
+          requested_transition_outcome: returned_for_revision
+        forbidden_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - from_state
+          - to_state
+          - transition_outcome
+      state_transition_applied:
+        required_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - from_state
+          - to_state
+          - transition_outcome
+        fixed_values:
+          from_state: submitted
+          to_state: in_delivery
+          transition_outcome: returned_for_revision
+        forbidden_fields:
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - required_gate_authority
 
   PLAN_ADJUST:
-    - plan_issue_summary
-    - affected_taskbook_sections
-    - requested_commander_decision_id
-    - plan_adjustment_required: true
-    - blocked_flag_change_if_any
-    - no_delivery_state_transition_embedded: true
+    always_required_fields:
+      - plan_issue_summary
+      - affected_taskbook_sections
+      - plan_adjustment_required
+      - blocked_flag_change_if_any
+      - no_delivery_state_transition_embedded
+    fixed_values:
+      plan_adjustment_required: true
+      no_delivery_state_transition_embedded: true
+    resulting_action_branches:
+      commander_decision_requested:
+        required_fields:
+          - requested_commander_decision_id
+        field_equality:
+          resulting_action_id: requested_commander_decision_id
+        forbidden_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - from_state
+          - to_state
+          - transition_outcome
 
   ABORT:
-    - abort_reason
-    - risk_or_boundary_issue_summary
-    - requested_commander_decision_id
-    - cancellation_recommended: true
-    - blocked_flag_change_if_any
-    - no_cancellation_transition_embedded: true
+    always_required_fields:
+      - abort_reason
+      - risk_or_boundary_issue_summary
+      - cancellation_recommended
+      - blocked_flag_change_if_any
+      - no_cancellation_transition_embedded
+    fixed_values:
+      cancellation_recommended: true
+      no_cancellation_transition_embedded: true
+    resulting_action_branches:
+      commander_decision_requested:
+        required_fields:
+          - requested_commander_decision_id
+        field_equality:
+          resulting_action_id: requested_commander_decision_id
+        forbidden_fields:
+          - gate_actor_id
+          - transition_id
+          - resulting_gate_event_ref
+          - requested_from_state
+          - requested_to_state
+          - requested_transition_outcome
+          - from_state
+          - to_state
+          - transition_outcome
+
+  branch_invariants:
+    - gate_review_required records a requested transition only; it must not contain applied transition fields.
+    - state_transition_applied requires a bound resulting_gate_event_ref and applied transition fields.
+    - resulting_action_id must identify the gate request, GateEvent, or CommanderDecisionRequest selected by the branch.
+    - commander_decision_requested requires resulting_action_id to equal requested_commander_decision_id.
+    - PLAN_ADJUST and ABORT never embed a delivery_state transition.
+    - branch mismatch, missing conditional fields, or fields forbidden by the selected branch fail closed.
 ```
 
 Forbidden shortcuts:
@@ -4536,14 +4854,16 @@ implementation commit 640a843. It prevents route confusion before deeper
 governance features are added, but it does not authorize remote sync or a new
 execution route.
 
-### Priority 2: Review And Iterate This Master Taskbook Draft
+### Priority 2: Preserve The Formal Master Freeze Candidate
 
 ```text id="priority-2"
-Goal: Continue discussion on this PROJECT_MASTER_TASKBOOK.md draft until it is
-ready for active_candidate or freeze_candidate status.
+Goal: Preserve PROJECT_MASTER_TASKBOOK.md as the exact hash-bound,
+reference-only freeze candidate derived from the reviewed and confirmed
+v1.1-candidate.2 source.
 ```
 
-This draft is intentionally stored before finalization so future planning rounds can edit the same project artifact.
+Any later active-status promotion or governance-content mutation requires a
+separate Commander decision and a new exact-hash review cycle.
 
 ### Priority 3: Enter Master Taskbook Registry V1
 
@@ -4573,7 +4893,7 @@ Goal: Generate review packages and ingest structured review feedback.
 
 ---
 
-## 27. How To Use This Draft
+## 27. How To Use This Master
 
 Allowed usage:
 
@@ -4583,7 +4903,7 @@ route review reference
 stage taskbook drafting input
 version taskbook alignment context
 reviewer orientation
-future canonicalization candidate
+hash-bound freeze-candidate reference
 ```
 
 Forbidden usage:
@@ -4604,11 +4924,11 @@ do not use as automatic authorization for push / release / deploy
 The next step is not to restart the whole route. The route is:
 
 ```text id="next-step"
-1. Keep the local v1.10 plan and implementation baseline separate from this Master Taskbook draft.
+1. Keep the local v1.10 plan and implementation baseline separate from this formal Master.
 2. Reconcile v1.10 local status before any later executor run, commit, push, or route transition.
-3. Continue discussing this PROJECT_MASTER_TASKBOOK.md draft.
-4. Only after separate hash-specific Commander authorization and all activation requirements are satisfied, consider moving this file from discussion_draft to active_candidate or freeze_candidate.
-5. Only then generate the Stage 1 taskbook and the Master Taskbook Registry V1 version taskbook.
+3. Preserve the candidate.2 source hashes and the formalization receipt that binds them to this formal Master.
+4. Keep Master Registry and current Stage bindings synchronized to this exact formal raw snapshot hash.
+5. Only after a separate active-promotion instruction and any required new exact-hash review, consider moving this file from freeze_candidate to active.
 ```
 
 Remote push remains a separate remote mutation and is not authorized by this document.

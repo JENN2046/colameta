@@ -63,7 +63,12 @@ def test_manage_files_read_packages_connector_sized_result_and_keeps_project() -
         structured["summary"]["target_tool_result_chars"]
         == MCP_MANAGE_FILES_READ_TARGET_CHARS
     )
-    next_read = structured["recommended_next_reads"][0]
+    assert structured["recommended_next_reads"][0]["tool"] == "read_result_artifact"
+    next_read = next(
+        item
+        for item in structured["recommended_next_reads"]
+        if item["tool"] == "manage_files"
+    )
     assert next_read["tool"] == "manage_files"
     assert next_read["arguments"]["project_name"] == "AGENTS_OS_Workspace"
     assert next_read["arguments"]["max_chars"] == 20000

@@ -23,6 +23,7 @@ class CoreFactSnapshot:
     risk_level: str
     mode: str
     summary: dict[str, Any]
+    canonical_state: dict[str, Any]
     unreconciled_direct_version_count: int
     unreconciled_direct_versions: list[str]
     has_pending_versions: bool = False

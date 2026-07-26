@@ -38,8 +38,8 @@ class DriftEvidencePackBuilderTests(unittest.TestCase):
         return build_audit_package_taskbook_binding(
             audit_package_id="audit-package-example",
             version_taskbook_ref={"version_id": "stage_07_v1_13_drift_evidence_pack_builder_v1"},
-            master_taskbook_hash="1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
-            stage_taskbook_hash="05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41",
+            master_taskbook_hash="895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
+            stage_taskbook_hash="af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff",
             execution_envelope_ref={"envelope_id": "execution-envelope-example"},
             run_preview_ref={"run_preview_id": "run-preview-example"},
             execution_receipt_refs=[{"receipt_id": "local-receipt-example"}],
@@ -60,7 +60,7 @@ class DriftEvidencePackBuilderTests(unittest.TestCase):
                 "handoff_package_id": "handoff-package-example",
                 "master_taskbook_ref": {
                     "path": "PROJECT_MASTER_TASKBOOK.md",
-                    "sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+                    "sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
                 },
                 "stage_taskbook_ref": {"path": "docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md"},
                 "version_taskbook_ref": {"version_id": "stage_07_v1_13_drift_evidence_pack_builder_v1"},
@@ -86,7 +86,7 @@ class DriftEvidencePackBuilderTests(unittest.TestCase):
             "drift_evidence_pack_id": "drift-evidence-pack-example",
             "master_taskbook_ref": {
                 "path": "PROJECT_MASTER_TASKBOOK.md",
-                "sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+                "sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
             },
             "stage_taskbook_ref": {
                 "stage_id": "stage_07_drift_evidence_and_correction",

@@ -4,7 +4,7 @@
   "project": "ColaMeta",
   "workspace": "/home/jenn/src/colameta-dev",
   "master_taskbook_path": "PROJECT_MASTER_TASKBOOK.md",
-  "master_raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+  "master_raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
   "master_review_status": "freeze_candidate_confirmed_for_exact_hash",
   "master_authority_boundary": {
     "review_status_is_reference_only": true,
@@ -22,7 +22,7 @@
   },
   "source_stage_taskbook_ref": {
     "path": "docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md",
-    "raw_snapshot_sha256": "f880585ed8d37639d215c9f440b37750defa9201f265b2fb7bd63cfdacf6c326",
+    "raw_snapshot_sha256": "d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af",
     "stage_id": "stage_01_master_taskbook_anchoring"
   },
   "source_version_taskbook_ref": {
@@ -30,10 +30,10 @@
     "raw_snapshot_sha256": "503af0ff7cdac71c55b9fa3d47a09d3fc484c851daffb244a52385ac0dd2b896",
     "version_id": "stage_01_v1_1_master_taskbook_registry_v1"
   },
-  "observed_git_head": "49aa038d3a05e29bd0e2454a458ca2494937b428",
-  "observed_origin_main_local_tracking_ref": "018ff63b76872504407c537cd46e1e8a2ee5c22e",
+  "observed_git_head": "c4b13b30f8c0bd7b19d94944cee1593aa3374284",
+  "observed_origin_main_local_tracking_ref": "e167fa645a000779297918d1b895eabe0756aa55",
   "ahead_behind_from_local_refs": {
-    "ahead": 48,
+    "ahead": 34,
     "behind": 0,
     "source": "git rev-list --left-right --count origin/main...HEAD"
   },

@@ -16,10 +16,16 @@ chinese_companion_index:
 
 | Source | 中文 Companion | 当前状态 | 备注 |
 | --- | --- | --- | --- |
-| `PROJECT_MASTER_TASKBOOK.md` | `PROJECT_MASTER_TASKBOOK.zh-CN.md` | `companion_draft` | Master 中文 companion 已生成，保留英文 hash 权威边界。 |
-| `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 中文 companion 已生成，保留 packet 非授权边界。 |
+| `PROJECT_MASTER_TASKBOOK.md` | `PROJECT_MASTER_TASKBOOK.zh-CN.md` | `companion_draft` | 正式 v1.1 Master 的三组精确哈希已完成独立 hash-specific 复审并获得单独确认；仍为 reference-only freeze candidate，不授予 active 或 push authority。 |
+| `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md` | `companion_draft` | 第一版三个 P1 合同收敛候选；独立 hash-specific 审查确认 hash 身份，但留下两个 P1，不替换现行 Master。 |
+| `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md` | `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md` | `companion_draft` | candidate.1 两个剩余 P1 的修订候选；三组 hash 已独立复审并确认，现作为正式 v1.1 Master 的不可变物化来源保留。 |
+| `FREEZE_CANDIDATE_REVIEW_PACKET.md` | `FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md` | `companion_draft` | Review packet 已追加正式三哈希的独立复审与确认记录，继续保留非 active、非 push、非 runtime 授权边界。 |
 | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.md` | `docs/taskbooks/PRE_IMPLEMENTATION_ROUTE_START_GATE.zh-CN.md` | `companion_draft` | 实施路线启动前总闸口材料中文 companion 已生成，只准备 Commander confirmation prompt，不授权实现、commit、push 或 executor。 |
 | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.md` | `docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md` | `companion_draft` | Stage 0-6 implementation closeout readiness packet 中文 companion 已生成，只支持 push 决策审查，不授权 push、fetch、pull、executor、route transition 或 delivery state。 |
+| `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md` | `docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.zh-CN.md` | `companion_draft` | P1-A 至 P1-D 收敛基线及 P1-E evidence gate 对账的完整中文 companion；本地实现已记录到 P1-E，fresh development acceptance 仍 pending，且不授予 commit、push、stable replacement 或外部配置权限。 |
+| `docs/taskbooks/P1_C_STAGE_7_9_INTEGRATION_MANIFEST.md` | `docs/taskbooks/P1_C_STAGE_7_9_INTEGRATION_MANIFEST.zh-CN.md` | `companion_draft` | P1-C Stage 7--9 集成绑定 manifest 中文 companion；只描述 fail-closed read/preview journey，不授予副作用权限。 |
+| `docs/taskbooks/P1_D_CLIENT_RELEASE_GATE_MANIFEST.md` | `docs/taskbooks/P1_D_CLIENT_RELEASE_GATE_MANIFEST.zh-CN.md` | `companion_draft` | P1-D 客户端分层与 release gate 中文 companion；本地实现完成，外部验收与 exact-candidate 完整验证仍 pending。 |
+| `docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.md` | `docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.zh-CN.md` | `companion_draft` | P1-E release-evidence gate 中文 companion；实现已验证，但 fresh development acceptance 与 stable replacement 独立授权仍 pending。 |
 
 ---
 
@@ -131,6 +137,8 @@ current_execution_principle:
     - docs/taskbooks/CHINESE_COMPANION_INDEX.md
   completed_draft_batch:
     - PROJECT_MASTER_TASKBOOK.zh-CN.md
+    - PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
+    - PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.zh-CN.md
     - docs/taskbooks/STAGE_0_6_IMPLEMENTATION_CLOSEOUT_READINESS_PACKET.zh-CN.md
     - docs/taskbooks/stages/zh-CN/*.zh-CN.md

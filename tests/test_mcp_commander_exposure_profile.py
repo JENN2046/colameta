@@ -6,6 +6,10 @@ from runner.mcp_server import (
     NORMAL_EXPOSED_TOOLS,
     MCPPlanningBridgeServer,
 )
+from runner.mcp_commander_public import (
+    COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
+    COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
+)
 
 
 def _nested_keys(value: object) -> set[str]:
@@ -22,13 +26,15 @@ def _nested_keys(value: object) -> set[str]:
     return set()
 
 
-def test_commander_profile_exposes_exact_seven_high_level_tools(tmp_path) -> None:
+def test_commander_profile_exposes_nine_high_level_tools_with_typed_review_reads(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
     assert tuple(server._visible_tool_names()) == COMMANDER_EXPOSED_TOOLS
-    assert len(server._visible_tool_names()) == 7
+    assert len(server._visible_tool_names()) == 9
     assert "list_registered_projects" in server._visible_tool_names()
     assert "get_apps_connector_smoke_packet" in server._visible_tool_names()
+    assert "review_manifest" in server._visible_tool_names()
+    assert "read_result_artifact" in server._visible_tool_names()
     assert all(
         tool.output_schema and tool.annotations
         for tool in server._filter_tools_by_exposure_profile(server.tool_defs)
@@ -42,6 +48,44 @@ def test_commander_profile_allows_cached_read_only_smoke_tool(tmp_path) -> None:
 
     assert result["ok"] is True
     assert server.get_required_scope_for_tool("get_apps_connector_smoke_packet", {}) == "mcp:read"
+
+
+def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    valid_uri = "colameta://result-artifact/abcdefghijklmnop"
+
+    projected = server._commander_public_sanitize(
+        {
+            "recommended_next_reads": [
+                {
+                    "kind": "mcp_resource",
+                    "tool": "resources/read",
+                    "arguments": {"uri": valid_uri},
+                },
+                {
+                    "kind": "mcp_resource",
+                    "tool": "resources/read",
+                    "arguments": {"uri": "file:///private/path"},
+                },
+                {
+                    "kind": "mcp_tool",
+                    "tool": "manage_files",
+                    "arguments": {"action": "read", "path": "README.md"},
+                },
+            ]
+        },
+        compact=False,
+    )
+
+    assert projected == {
+        "recommended_next_reads": [
+            {
+                "kind": "mcp_resource",
+                "tool": "resources/read",
+                "arguments": {"uri": valid_uri},
+            }
+        ]
+    }
 
 
 def test_commander_profile_denies_hidden_tools_even_if_client_cached_them(tmp_path) -> None:
@@ -61,8 +105,28 @@ def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
 
     assert set(server._visible_tool_names()) == set(NORMAL_EXPOSED_TOOLS)
-    assert len(server._visible_tool_names()) == 82
+    assert len(server._visible_tool_names()) == 85
     assert "manage_files" in server._visible_tool_names()
+    assert "manage_p1_release_evidence" in server._visible_tool_names()
+    assert "manage_p1_release_evidence" not in COMMANDER_EXPOSED_TOOLS
+
+
+def test_agent_contract_makes_chatgpt_and_local_codex_surfaces_explicit(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server.call_tool_for_agent("get_agent_consumer_contract", {})
+
+    assert result["ok"] is True
+    partition = result["data"]["client_experience_partition"]
+    assert partition["schema_version"] == COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION
+    chatgpt = partition["chatgpt_commander"]
+    assert chatgpt["visible_tool_count"] == 9
+    assert tuple(chatgpt["visible_tools"]) == COMMANDER_EXPOSED_TOOLS
+    assert chatgpt["resources_read"]["required"] is False
+    local_codex = partition["local_codex_loopback"]
+    assert tuple(local_codex["advanced_tool_examples"]) == COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES
+    assert set(COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES) <= set(server._visible_tool_names())
+    assert not (set(COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES) & set(COMMANDER_EXPOSED_TOOLS))
 
 
 def test_commander_profile_can_be_selected_from_environment(monkeypatch, tmp_path) -> None:
@@ -313,6 +377,77 @@ def test_commander_public_operational_tools_keep_required_continuation_fields(tm
         assert "project_root" not in data
         assert "hidden_action" not in data
         assert "/home/example" not in data["message"]
+
+
+def test_commander_public_review_manifest_preserves_expiry_contract(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    expiry = "2026-07-24T02:54:41.298082+00:00"
+
+    inspected = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "inspect",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+            },
+        },
+        {"phase": "inspect"},
+    )
+    assert inspected["data"]["expires_at"] == expiry
+
+    verified = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "verify",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+            },
+        },
+        {"phase": "verify"},
+    )
+    assert verified["data"]["expires_at"] == expiry
+
+    read = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "review_manifest",
+            "data": {
+                "ok": True,
+                "workflow": "review_manifest",
+                "phase": "read",
+                "review_manifest_id": "manifest_contract_fixture",
+                "expires_at": expiry,
+                "subject_page": {
+                    "review_manifest_id": "manifest_contract_fixture",
+                    "subject_index": 1,
+                    "page": 1,
+                    "page_count": 1,
+                    "page_char_start": 0,
+                    "page_char_end": 12,
+                    "expires_at": expiry,
+                    "content": "bounded text",
+                },
+            },
+        },
+        {"phase": "read"},
+    )
+
+    assert read["data"]["expires_at"] == expiry
+    assert read["data"]["subject_page"]["expires_at"] == expiry
+    assert read["data"]["subject_page"]["content"] == "bounded text"
+
+    mcp_read = server._as_mcp_call_result(read, {"phase": "read"})
+    mcp_data = mcp_read["structuredContent"]["data"]
+    assert mcp_data["expires_at"] == expiry
+    assert mcp_data["subject_page"]["expires_at"] == expiry
 
 
 def test_commander_public_path_redaction_covers_all_absolute_local_roots(

@@ -3,7 +3,7 @@
 ```yaml id="stage-08-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md
-  source_sha256: 60421ba765b238b9671f1f9baf878cf716c6e6e5cd05524bfa746610fd9a3755
+  source_sha256: 79af36185ac96aa7d4c89d168583fb326c0a728b3a2dfe0fba5e9f32d7cb94a7
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:

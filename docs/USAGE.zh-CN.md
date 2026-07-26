@@ -5,7 +5,7 @@
 它解释“日常怎么用”，不是 release 授权、稳定服务替换授权、Delivery State accepted、ReviewDecision 或 GateEvent。
 
 如果你要把一个新项目接入 ColaMeta，先看 [ColaMeta 通用 Onboarding](ONBOARDING.zh-CN.md)。
-如果要安装包/源码环境、部署七工具私人 App、安装 systemd、替换 stable、验收或回滚，读
+如果要安装包/源码环境、部署九工具私人 App、安装 systemd、替换 stable、验收或回滚，读
 [ColaMeta 安装与部署说明书](INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。
 
 ## 0. 最短路径
@@ -40,13 +40,40 @@
 2. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
-5. 需要 workflow 时再用 run_mcp_workflow
-6. 有界验证用 manage_validation_run
-7. 审查后的 Git 操作用 manage_git
+5. 做哈希绑定独立审查时用 review_manifest
+6. 在 ChatGPT 中遇到 packaged result 时用 read_result_artifact；支持资源方法的 MCP client 可用 resources/read
+7. 需要计划、预览或受控变更 workflow 时再用 run_mcp_workflow
+8. 有界验证用 manage_validation_run
+9. 审查后的 Git 操作用 manage_git
 ```
 
-这就是完整七工具 Commander surface。consumer contract、独立 runtime/cadence 和其他底层诊断
-属于 loopback advanced endpoint；不要把它们当成私人 App 默认公开工具。
+这就是本源码版本完整的九工具 Commander surface。对已运行的 stable 使用两个直接读取工具前，
+先核对 runtime provenance 与 `visible_tool_count`；较旧 stable 合理地仍可能只暴露七个工具。
+consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
+私人 App 默认公开工具。
+
+### P1 ChatGPT 合同演练
+
+在要求一次新的真实 ChatGPT development-connector 验收前，先运行可重复的本地合同演练：
+
+```bash
+.venv/bin/python scripts/chatgpt_development_acceptance.py --json
+```
+
+它会创建临时 Git fixture，并检查精确的九工具 Commander inventory；故意触发且不写 archive 的
+`CONTEXT_BINDING_MISMATCH`；typed `review_manifest` 的 inspect/read/verify 分页与 hash continuity；以及
+typed `read_result_artifact` 的全页恢复、稳定 SHA-256 和 expiry。它不调用 `resources/read`，也不触碰
+Connector、OAuth、tunnel、stable service、executor、Git 写操作或 release 操作。
+
+`rehearsal_status=passed` 只是开发前置检查。真实 release 仍需要新鲜的完整本地验证证据、runtime
+provenance、connector/OAuth 证据、current facts、刚刚观察到的 live ChatGPT 验收，以及另行授权的
+精确 stable-replacement target。前五组证据只能通过仅 loopback 可见、preview 绑定的
+`manage_p1_release_evidence` receipt 流程记录；外部观察会明确标为 operator-attested，绝不伪装成
+服务器自行观察。没有单独的精确 stable 授权前，`p1_client_release_gate` 仍保持 `blocked`。
+submission materials readiness 与这个 P1 release decision 是有意分开的。
+
+使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
+除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
 
 如果要开一轮受控优化：
 
@@ -62,9 +89,10 @@
 
 ```text
 1. manage_validation_run action=preview
-2. manage_validation_run action=run preview_id=<preview_id>
-3. manage_validation_run action=status run_id=<run_id>
-4. 把通过/失败结果写成 receipt 或反馈，不直接写 Delivery accepted
+2. 原样复制返回的 context_binding
+3. manage_validation_run action=run preview_id=<preview_id> context_binding=<复制的 binding>
+4. manage_validation_run action=status run_id=<run_id>
+5. 把通过/失败结果写成 receipt 或反馈，不直接写 Delivery accepted
 ```
 
 如果 connector/tunnel 还显示 unverified：
@@ -357,7 +385,7 @@ submission confirmations
 
 如果不传 `work_item_id`，inspect 会返回最多 20 个脱敏的
 `work_item_candidates`，并在 `next_actions` 中给出只读选择调用。先选择一个候选并执行它的
-inspect，再生成 transition preview。七工具 app 不需要暴露底层 `list_work_items`。
+inspect，再生成 transition preview。九工具 app 不需要暴露底层 `list_work_items`。
 
 CLI 的 `--submission-materials PATH` 只读取一个本地 JSON object，大小上限 64 KiB；
 显式命令行 flag 会覆盖 manifest 中的同名 ready 状态。MCP 工具只接受结构化
@@ -610,7 +638,7 @@ operator_closeout.decision=blocked
 
 ## 2. Advanced loopback Agent 连接后先读什么
 
-本节只适用于完整 loopback advanced catalog；私人 App 使用第 0 节七工具 fast path。
+本节只适用于完整 loopback advanced catalog；私人 App 使用第 0 节九工具 fast path。
 Advanced MCP 连接后先做只读校准，不要直接 run、commit、push 或写状态。
 
 推荐首读顺序：
@@ -656,9 +684,10 @@ Advanced MCP 连接后先做只读校准，不要直接 run、commit、push 或�
 }
 ```
 
-Apps 客户端可通过 `resources/list` 和 `resources/read` 发现并读取 widget
-resource。这个面板只展示服务事实、profile-aware 入口、connector health、
-preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
+MCP 服务会为支持资源方法的 client 通过 `resources/list` 和 `resources/read` 发布 widget
+resource；ChatGPT 通过 tool metadata 加载 widget。`resources/templates/list` 还会公开哈希绑定 review manifest 摘要、subject 和分页的
+静态 URI 形状；它不列出 live handle、路径或正文。这个面板只展示服务事实、profile-aware 入口、
+connector health、preview-first 路线和显式授权闸门；不授权 executor run、commit、push、
 stable service replacement、ReviewDecision、GateEvent 或 Delivery accepted。
 面板里的 `Release Evidence` 区块可以通过 `Console` / `Submission` 读按钮刷新
 release/submission readiness，并把未完成 evidence key 的模板渲染成可扫描卡片。卡片里的
@@ -758,7 +787,21 @@ ok=false
   先读 error_code、message、details；不要猜参数。
 
 packaged=true
-  当前结果被压成 manifest；按 recommended_next_reads 分段续读。
+  当前结果被压成 manifest。在 ChatGPT 中先使用返回的
+  read_result_artifact 调用：
+  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>)。
+  它只返回一个已存储页，并保留同一 artifact_id、page_count、expires_at 与
+  content_sha256。只沿着它返回的 next-page 调用继续；按页码拼接
+  artifact_page.content 后再核对 content_sha256。这些短期 artifact 只读，
+  不授予 workflow、executor、Git 或 delivery authority。
+  支持资源方法的 MCP client 也可通过 resources/read 读取 resource_uri，再按
+  page_uri_template 读取第 2 到 page_count 页。返回中仍会保留旧的
+  run_mcp_workflow(workflow=result_artifact, phase=read, ...) 兼容调用，供既有
+  client 使用。该读取路线只需要 mcp:read，不能读取项目文件、运行 executor
+  或 validation、修改 Git，或推进 Delivery State。
+  resources/templates/list 只公布静态 artifact URI 形状，不会枚举 live
+  artifact ID；只能在过期前读取该 packaged response 返回的 opaque handle。
+  否则按 recommended_next_reads 分段续读。
 ```
 
 最常见的错误处理：
@@ -773,6 +816,269 @@ PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
 UNKNOWN_SERVICE_ENTRY_PROFILE
   先 get_agent_consumer_contract，看 service_entry_profiles 里的 profile_id。
 ```
+
+### Manifest 绑定的独立审查
+
+当外部审查合同已经明确列出必须读取的文件及其 SHA-256 时，使用这个只读工具。
+它不是任意 `read_project_file` 的后门；`review_manifest` 是 Commander 的一等读取工具，
+旧的 `run_mcp_workflow workflow=review_manifest` 形式仍保留给既有 client。
+它要求项目是可读取 branch 和 HEAD 的 Git checkout。
+
+先取得当前绑定模板。此调用不读取 subject 文件，也不运行任何验证命令：
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+响应中的 `context_binding` 给出当前的 `project_name`、`branch`、`head`、
+`runner_plan`、`current_version`。把它们原样放入外部审查 manifest，再由调用方补入
+审查单元和每个 subject 的精确哈希：
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "inspect",
+    "project_name": "registered-project-name",
+    "review_manifest": {
+      "schema_version": "colameta.review_manifest.v1",
+      "review_unit": "fresh-independent-review-001",
+      "workflow_intent": "independent_review",
+      "project_name": "registered-project-name",
+      "branch": "<从 context_binding 原样复制>",
+      "head": "<从 context_binding 原样复制完整 SHA>",
+      "runner_plan": {
+        "mode": "source-only",
+        "plan_sha256": null
+      },
+      "current_version": null,
+      "subjects": [
+        {
+          "path": "docs/review-contract.yaml",
+          "sha256": "<当前 UTF-8 文件字节的精确 SHA-256>"
+        }
+      ],
+      "acceptance_commands": [
+        {"command": "git diff --check", "timeout_seconds": 60}
+      ]
+    }
+  }
+}
+```
+
+managed 项目必须使用模板中实际返回的 `runner_plan` 与 `current_version`，不能套用
+source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview，绝不执行。
+
+成功后，ChatGPT 应使用每个返回的、指向 `review_manifest` 的 typed `read_call`；它只读取
+已声明的 subject 页，并在返回内容前重新核对项目上下文与 subject hash。带
+`review_manifest_id` 调用 `phase=verify` 会复核所有声明的 subject，但不返回文件内容。
+支持资源方法的 MCP client 也可通过 `resources/templates/list` 发现静态 manifest URI 形状，
+再通过 `resources/read` 读取 `manifest_resource_uri`，并只读取其中返回的 subject
+`resource_uri`。大 subject 按 `page_uri_template` 分页。
+
+review_manifest workflow 本身绝不执行这些声明。若要把短期 inspect 会话转换为独立授权的
+validation preview，调用 manage_validation_run，并传 action=preview、已登记的 project_name
+和返回的 review_manifest_id 即可；已登记 source-only 项目和 managed 项目都适用。
+
+该调用会先重新核对 manifest 的项目上下文和全部 subject hash，再只接受本地 shell-free
+策略允许的命令形式，返回精确的有效 argv、manifest_validation 合同 SHA-256 和 command-spec
+SHA-256。它不会运行命令。带 review_manifest_id 时不要再传 scope 或 target_files：
+manifest 就是完整验证合同。若任一声明命令不安全、包含秘密形状的值，或 timeout 超出本地
+执行策略，整份合同会被阻断，不会只执行其中一部分。
+
+只有可运行的 preview 才会返回可原样调用的 manage_validation_run action=run next action，
+其中带有普通 context binding 和 preview ID。进入这个 commit-scoped 调用前，ColaMeta 会
+重新核对通用 validation context，并重新核对原始 manifest 的上下文和全部 subject hash，
+之后才启动固定 preview 中的命令。因此 manifest 会话只提供有界证据输入，本身不授予
+validation 执行权。
+
+每个 subject 都会返回指向 `review_manifest` 的 typed `read_call`：
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "read",
+    "project_name": "registered-project-name",
+    "review_manifest_id": "<来自 inspect>",
+    "review_manifest_subject_index": 1,
+    "review_manifest_page": 1
+  }
+}
+```
+
+`read` 只返回该已声明 subject 的指定页；每次都会重新核对当前上下文和该 subject 的 SHA-256。若还有
+后续页，它会返回同一绑定下的下一页调用。它是 ChatGPT 的主读取路线，不是任意文件读取；既有
+client 仍可使用 resource 方法或旧的 generic workflow 形式。
+
+`CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
+不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
+`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
+符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、push、
+ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与 commit-scoped 确认。
+
+### 确认性操作上下文绑定与统一项目状态
+
+Commander 现在会为每个核心 workflow 的确认性边界携带一个可原样复制的 `context_binding`。它适用于实际
+支持且有副作用的 `run_mcp_workflow` phase（`apply`、`apply_all`、`plan_apply`、`run`、`commit`、`execute`）、
+`manage_validation_run action=run` 和 `manage_git` 的各类 apply action。
+
+`review_manifest` 保留自己的不可变哈希绑定 read-session verifier；`gate_review_request` 保留自己独立签名的
+Work Item Gate 合同。通用绑定不会替代或削弱这两份专属合同。
+
+前一步 inspect 或 preview 会同时返回 `context_binding` 与 `context_binding_contract`。
+`confirmation_required=true` 表示匹配的确认调用必须携带该绑定；
+`current_call_requires_context_binding` 用来区分将来的确认边界与当前正在进行的 read 或 preview。
+进入对应确认调用时，必须把整个 `context_binding` 原样回传；同一操作身份下的生成 `next_actions` 已经自动带上
+这份绑定。服务会在副作用发生前重新核对以下七项：
+
+```text
+project_name
+branch
+head
+runner_plan { mode, plan_sha256 }
+current_version
+review_unit
+workflow_intent
+```
+
+绑定只属于一个操作身份，不能跨 workflow 或 review unit 复用。Git 家族特意让
+`run_mcp_workflow workflow=git_*` 与对应 `manage_git` 确认动作共用同一身份，因此高层 Git preview
+可以自然续到公开 Git 工具。`CONTEXT_BINDING_MISMATCH` 表示 checkout 或操作身份已变化：停止并重新
+inspect/preview。branch 或 HEAD 无法读取时会返回 `CONTEXT_BINDING_UNAVAILABLE`，不会继续执行。
+context binding 只是证据，不授予 executor、validation、Git、push、stable replacement 或 delivery
+authority。
+
+`analyze_project_state` 还会返回 schema 为
+`colameta.canonical_project_state.v1` 的 `canonical_state`。不要再把某一次 workflow 的
+`unified_status` 当作全局真相：
+
+```text
+historically_verified
+  最近 execution report 的有界历史证据；它不是 live probe。
+
+currently_observed
+  当前 Git、Runner、executor 观察。runtime 与 connector 只有在本次确实做了探测时才是当前观察；
+  否则明确显示 not_observed。
+
+freshness
+  观察时间、partial error 数量以及未观察到的 source。
+
+current_conclusion
+  保守的完整状态结论，内部会分开 project_checkout 与 runtime_and_connector。
+  即使 checkout 本身 ready，外部 source 未新鲜观察时完整结论仍是 freshness_required；
+  它绝不授予副作用权限。
+```
+
+`not_observed` 不等于 `unavailable`，更不能被提升成 healthy 或 ready。
+`unified_status.status_scope=operation_local` 只描述产生它的那一次 workflow；其中嵌入的 canonical
+summary 只是指向独立的项目状态真相。要判断 runtime 或外部 connector，走获批的只读 health 路径，
+不能从历史 receipt 或 project-only 分析中推断。
+
+### Current-facts 快照与 runtime archive
+
+使用既有的 `run_mcp_workflow` compatibility surface，并传入
+`workflow=current_facts`；这不会增加第十个公开工具。该 workflow 只从
+`canonical_project_state` 出发，因此构建快照时不会打开 raw runtime state、凭据、源码、历史 receipt
+或 taskbook。
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "current_facts",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+`inspect` 是只读操作。它通过常规 packaged-result contract 返回脱敏、版本化的 JSON/Markdown
+snapshot：`artifact_id`、`resource_uri`、`page_count`、`content_sha256` 和 `expires_at`。使用 typed
+`read_result_artifact` 读取所需的每一页；所有页面保持同一 artifact ID、SHA-256 和 expiry。artifact
+会明确写出 observation time、historical/current observation 的区别、freshness conclusion、
+canonical-state digest 以及 `observation_only` authority boundary。
+
+`preview` 只建立一个短期、进程内 archive preview，不写任何文件。它给出的 next action 同时携带 opaque
+`preview_id` 与完整 `context_binding`。只有那一次 context-bound 的
+`current_facts phase=apply` 调用（需要 `mcp:commit`）才可以把已 preview 的精确文件对写到固定 runtime
+位置：
+
+```text
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.json
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.md
+```
+
+writer 不接收调用方指定的路径，不会覆盖不同 snapshot，会拒绝经过符号链接的 archive path，并且写入前要求
+两个生成目标都已经被 Git ignore 覆盖。因此它不会静默创建 tracked documentation，也不会改写历史
+receipt/taskbook。若 preview 后当前 semantic state 已改变，apply 返回
+`CURRENT_FACTS_PREVIEW_STALE`；若没有 ignore coverage，返回
+`CURRENT_FACTS_ARCHIVE_NOT_IGNORED`。不要混用新旧 evidence，应重新 preview。创建 archive 只产生本地
+runtime evidence，不授权 executor run、validation、Git commit/push、stable replacement 或 delivery
+acceptance。
+
+### Stage 7--9 的 fail-closed PLAN_ADJUST 旅程
+
+当一个有界的 Stage 7 drift-evidence claim 需要交给 Stage 8 的 `PLAN_ADJUST`
+preview，并由 Stage 9 controlled-continue gate 检查时，使用这个窄的
+compatibility workflow。它仍在 `run_mcp_workflow` 内，不增加第十个公开工具，也不把
+Stage taskbook 变成 mutation authority。
+
+先调用 `inspect`。它只读取四份冻结 taskbook 的 hash 和当前 checkout identity；不会打开任意
+项目文件、启动 executor 或创建 workflow record：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+把返回的 `stage_7_9_context` 原样复制。对 source-only 项目，其中
+`runner_plan.plan_sha256: null` 和 `current_version: null` 是精确绑定的一部分，
+不能删除。响应还会给出冻结 taskbook hash 和最小的三对象输入模板。提供有界、sanitized 的
+Stage 输入后调用 `preview`：
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "preview",
+    "project_name": "registered-project-name",
+    "stage_7_9_context": "<从 inspect 原样复制完整对象>",
+    "stage_7_9_inputs": {
+      "stage_7_drift_evidence_inputs": "<Stage 7 builder input>",
+      "stage_8_plan_adjustment_inputs": "<Stage 8 preview input>",
+      "stage_9_continue_readiness_inputs": "<Stage 9 readiness input>"
+    }
+  }
+}
+```
+
+wrapper 会重新核对 project/branch/HEAD/Runner plan/current-version context、冻结的
+Master/Stage 7/Stage 8/Stage 9 hash 以及跨 Stage ID。它把生成的 Stage 7 pack ID 交给
+Stage 8，并把生成的 Stage 8 preview reference 绑定进 Stage 9。一个有效但尚未解决的
+`PLAN_ADJUST` journey 会返回 `journey_status=human_decision_required` 与
+`PLAN_ADJUST_BLOCKS_CONTINUE`；这是预期的安全结论，不是失败。任何独立授权的 plan change
+之前，先人工审查 Stage 8 preview。
+
+该 workflow 只需要 `mcp:read`，且只支持 `inspect` 与 `preview`。`apply`、`run`、`commit`、
+`execute` 及其他有副作用 phase 都返回 `STAGE_7_9_PHASE_NOT_SUPPORTED`。缺输入、context
+变化、冻结 taskbook 不匹配、Stage evidence 无效或跨 Stage reference 错误，都会返回各自的
+`STAGE_7_9_*` fail-closed code。结果是紧凑的 whitelist projection：绝不回显任意 input object、
+runtime/session 数据、完整 diff 或凭据；也绝不授权 plan mutation、continue、executor、review
+decision、Git、stable replacement 或 connector/OAuth 变更。
 
 ## 3. 五种 Advanced Agent 角色
 
@@ -880,11 +1186,11 @@ status 的 ID 相同，才能把它们当成同一次事实捕获的同一项决
   调用方路径本身可以是 symlink alias，只要它解析到同一个安全 canonical root。应修正部署，
   不要放宽权限或绕过 gate。
 
-### 通过七工具私人 app 请求 Work Item Gate review
+### 通过九工具私人 app 请求 Work Item Gate review
 
 当 Stage 0-6 正向结果提示“是否请求 Delivery State Gate review”时，继续使用现有
-`run_mcp_workflow`。Commander 仍然只暴露 7 个工具；`gate_review_request` 是复用现有
-Work Item Gate 后端的高层 workflow，不是第 8 个工具。
+`run_mcp_workflow`。`gate_review_request` 是复用现有 Work Item Gate 后端的高层 workflow，
+不是第 10 个 Commander 工具。
 
 先做只读检查：
 
@@ -920,14 +1226,15 @@ Work Item Gate 后端的高层 workflow，不是第 8 个工具。
 ```
 
 preview 不改变 Delivery State。得到明确授权后，把
-`result.copyable_apply_call.arguments` 原样回传。apply 必须同时满足：完整签名
-`gate_preview`、`confirm_gate_review=true`、参数精确绑定、同一个可信 Work Item principal、
-以及 `mcp:commit` 权限。适配层不直接写 ledger；Work Item Gate 后端仍是唯一状态机和
-GateEvent 权威。最后用 `phase=status` 只读核对 Work Item 和 timeline。
+`result.copyable_apply_call.arguments` 原样回传。公开 call 只包含 opaque
+`gate_preview_id`；完整签名 preview 及其 principal 绑定仅保留在 serving process。apply
+解析该 handle 后，仍必须同时满足 `confirm_gate_review=true`、参数精确绑定、同一个可信
+Work Item principal 以及 `mcp:commit` 权限。适配层不直接写 ledger；Work Item Gate 后端仍是
+唯一状态机和 GateEvent 权威。最后用 `phase=status` 只读核对 Work Item 和 timeline。
 
 不要把单独的 `mcp:commit` 当作 Work Item 权限。external-OAuth apply 只有同时满足以下条件才
 放行：已配置的私人 Operator subject/client 策略认可调用方、token 带匹配的 Work Item 权限、
-OAuth 授予 `mcp:commit`、后端验证完整签名 preview。其他远程 commit 仍保持拒绝。
+OAuth 授予 `mcp:commit`、后端验证服务端保存的完整签名 preview。其他远程 commit 仍保持拒绝。
 
 apply 返回会区分后端结果。只有 `status=succeeded` 且
 `result.outcome=transition_applied` 才表示目标状态已真正应用；`status=rejected` 和
@@ -944,7 +1251,7 @@ apply 调用最多 26,000 字符，preview workflow 结果最多 56,000 字符�
 
 ```text
 list_registered_projects -> 目标项目 available
-analyze_project_state -> commander profile 且 visible_tool_count=7
+analyze_project_state -> commander profile 且本源码版本加载后 visible_tool_count=9
 gate_review_request/inspect -> succeeded、read_only=true、side_effects=false
 get_apps_connector_smoke_packet -> connector_closeout_ready / ready、evidence gap=0
 ```
@@ -994,7 +1301,7 @@ get_apps_connector_smoke_packet -> connector_closeout_ready / ready、evidence g
 }
 ```
 
-执行器状态轮询工具不属于七工具 Commander。只在明确批准的本地 advanced client
+执行器状态轮询工具不属于九工具 Commander。只在明确批准的本地 advanced client
 `http://127.0.0.1:8768/mcp` 使用 `manage_executor_workflow action=status`，轮询口径按 profile
 分级：
 

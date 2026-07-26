@@ -757,13 +757,18 @@ def test_authoritative_canary_mcp_profile_is_exact_and_default_deny(
         auth_context={"mode": "token"},
     )
     assert resources["result"] == {"resources": []}
+    resource_templates = server._handle_jsonrpc_request(
+        {"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list"},
+        auth_context={"mode": "token"},
+    )
+    assert resource_templates["result"] == {"resourceTemplates": []}
     resource_read = server._handle_jsonrpc_request(
-        {"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": "x"}},
+        {"jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": {"uri": "x"}},
         auth_context={"mode": "token"},
     )
     assert resource_read["error"]["data"]["error_code"] == "resources_disabled"
     unknown = server._handle_jsonrpc_request(
-        {"jsonrpc": "2.0", "id": 4, "method": "unknown/method", "params": {}},
+        {"jsonrpc": "2.0", "id": 5, "method": "unknown/method", "params": {}},
         auth_context={"mode": "token"},
     )
     assert unknown["error"]["data"]["error_code"] == "method_not_found"

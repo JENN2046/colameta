@@ -28,7 +28,7 @@ from runner.mcp_private_operator import (
     operator_authenticated_request_scope,
     validate_operator_ticket,
 )
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import MCPPlanningBridgeServer, MCPToolInputError
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_project_patch import MCPProjectPatchManager
 from runner.planning_bridge import PlanningBridge
@@ -2132,11 +2132,15 @@ def test_operator_allowlist_conforms_to_real_git_commit_handler_phase(tmp_path: 
         "phase": "apply",
         "preview_id": "preview_6101",
     })
-    supported = server._tool_run_mcp_workflow({
-        "workflow": "git_commit",
-        "phase": "commit",
-        "preview_id": "preview_6101",
-    })
+    # commit is the real side-effect phase.  It is now rejected earlier when
+    # a caller omits the preview-bound project context, which confirms that
+    # the phase is recognized without allowing an unbound confirmation.
+    with pytest.raises(MCPToolInputError) as supported_error:
+        server._tool_run_mcp_workflow({
+            "workflow": "git_commit",
+            "phase": "commit",
+            "preview_id": "preview_6101",
+        })
     denied = normalize_operator_operations(
         [{
             "step_id": "commit",
@@ -2165,7 +2169,7 @@ def test_operator_allowlist_conforms_to_real_git_commit_handler_phase(tmp_path: 
     )
 
     assert unsupported["error_code"] == "PHASE_NOT_SUPPORTED"
-    assert supported.get("error_code") != "PHASE_NOT_SUPPORTED"
+    assert supported_error.value.error_code == "CONTEXT_BINDING_MISMATCH"
     assert denied["error_code"] == "OPERATOR_OPERATION_DENIED"
     assert accepted["ok"] is True
 

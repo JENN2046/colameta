@@ -23,6 +23,7 @@ from runner.continuation_snapshot import (
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
+from runner.canonical_project_state import build_canonical_project_state
 from runner.core_fact_snapshot import CoreFactSnapshot
 from runner.project_snapshot import ProjectSnapshotBuilder
 from runner.core_output import CoreOutput
@@ -46,6 +47,37 @@ _GOAL_CLASSIFIERS: list[tuple[set[str], str]] = [
       "resume", "执行器", "exec"}, "executor"),
     ({"patch", "edit", "修改"}, "small_project_patch"),
 ]
+
+# ``auto_preview`` may infer a bounded route, but an explicit instruction not
+# to execute must always win over a keyword match such as "executor", "Codex",
+# or the historical short form "exec". These are deliberately narrow safety
+# vetoes for executor routing, not a general natural-language parser.
+_EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:do\s+not|don't|dont|never|without)\s+"
+        r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
+        r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
+        r"use|using|execute|executing)\s+)?"
+        r"(?:(?:the|any|a|an)\s+)?"
+        r"(?:executor|codex|opencode|pi|execution|execute)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bno\s+(?:executor|codex|opencode|pi|execution)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:不要|别|不需要|无需|禁止|不得)\s*"
+        r"(?:启动|运行|执行|调用|触发|调度|恢复|使用)?\s*"
+        r"(?:执行器|executor|codex|opencode|pi|执行)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"不(?:启动|运行|执行|调用|触发|调度|恢复|使用)\s*"
+        r"(?:执行器|executor|codex|opencode|pi|执行)",
+        re.IGNORECASE,
+    ),
+)
 
 _STOP_NEEDS_PLAN_APPLY_CONFIRMATION = "needs_plan_apply_confirmation"
 _STOP_NEEDS_COMMIT_CONFIRMATION = "needs_commit_confirmation"
@@ -170,7 +202,26 @@ class WorkflowOrchestrator:
                 f"未知 workflow：{workflow}。支持：{', '.join(sorted(SUPPORTED_CORE_WORKFLOWS))}",
             )
         core_result = handler(params)
-        return self._build_core_output(core_result, fact_snapshot=core_result.fact_snapshot)
+        fact_snapshot = core_result.fact_snapshot
+        if fact_snapshot is None:
+            # A workflow-local status answers only what that operation did.  It
+            # must not silently become the project-wide truth (for example,
+            # a preview manager's default working_tree_clean value).  Refresh
+            # one bounded snapshot after every workflow so callers can see the
+            # current Git/Runner/executor facts beside the local status.
+            provider = self._normalize_provider(params.get("provider"))
+            try:
+                fact_snapshot = self.build_fact_snapshot(
+                    provider=provider,
+                    include_reports=True,
+                )
+            except Exception:
+                # Core workflow success must not turn into failure solely
+                # because supplementary observation is unavailable.  The
+                # operation-local status remains explicit, and its canonical
+                # summary is simply omitted in this defensive case.
+                fact_snapshot = None
+        return self._build_core_output(core_result, fact_snapshot=fact_snapshot)
 
     def handle_request(self, core_request: CoreRequest) -> CoreOutput:
         intent = core_request.intent_type
@@ -252,6 +303,10 @@ class WorkflowOrchestrator:
             preview_ids=core_result.preview_ids,
             result=core_result.result,
         ).to_dict()
+        unified_status = self._with_canonical_state_status(
+            unified_status,
+            fact_snapshot,
+        )
 
         out = CoreOutput(
             ok=core_result.ok,
@@ -344,6 +399,10 @@ class WorkflowOrchestrator:
             preview_ids=[],
             result=legacy_result,
         ).to_dict()
+        unified_status = self._with_canonical_state_status(
+            unified_status,
+            fact_snapshot,
+        )
 
         next_actions = list(result_facts.recommended_next_actions)
 
@@ -389,6 +448,29 @@ class WorkflowOrchestrator:
             "next_step_text": next_text,
             "detail_refs": [],
         }
+
+    @staticmethod
+    def _with_canonical_state_status(
+        unified_status: dict[str, Any],
+        fact_snapshot: CoreFactSnapshot | None,
+    ) -> dict[str, Any]:
+        """Keep operation-local status distinct from canonical project truth."""
+
+        if not isinstance(fact_snapshot, CoreFactSnapshot):
+            return unified_status
+        canonical = fact_snapshot.canonical_state
+        if not isinstance(canonical, dict) or not canonical:
+            return unified_status
+        result = dict(unified_status)
+        result["status_scope"] = "operation_local"
+        result["canonical_project_state"] = {
+            "schema_version": canonical.get("schema_version"),
+            "observed_at": canonical.get("observed_at"),
+            "context_binding": canonical.get("context_binding"),
+            "freshness": canonical.get("freshness"),
+            "current_conclusion": canonical.get("current_conclusion"),
+        }
+        return result
 
     # ================================================================
     # project_status
@@ -516,6 +598,20 @@ class WorkflowOrchestrator:
         )
         recommended_next_actions = self._recommend_next_actions(mode, git, plan_status, runner, executor, working_tree_clean, reports)
 
+        canonical_state = build_canonical_project_state(
+            project_root=self.project_root,
+            project_identity=project_identity,
+            mode=mode,
+            git=git,
+            runner=runner,
+            plan=plan_status,
+            executor=executor,
+            reports=reports,
+            blockers=plan_blockers,
+            warnings=(plan_warnings + pending_warnings + direct_version_warnings)[:20],
+            partial_errors=partial_errors,
+        )
+
         core_can_commit = (
             working_tree_clean is False
             and not plan_blockers
@@ -549,6 +645,7 @@ class WorkflowOrchestrator:
             risk_level=risk_level,
             mode=mode,
             summary=summary,
+            canonical_state=canonical_state,
             unreconciled_direct_version_count=int(runner.get("unreconciled_direct_version_count", 0) or 0),
             unreconciled_direct_versions=runner.get("unreconciled_direct_versions", []),
             has_pending_versions=bool(runner.get("has_pending_versions")),
@@ -582,6 +679,7 @@ class WorkflowOrchestrator:
             "plan": plan,
             "executor": executor,
             "reports": reports,
+            "canonical_state": snapshot.canonical_state,
             "summary": snapshot.summary,
             "recommended_next_actions": list(snapshot.recommended_next_actions),
             "blockers": plan_blockers,
@@ -4913,11 +5011,18 @@ class WorkflowOrchestrator:
         if not goal_lower:
             return {"selected_workflow": "project_status", "confidence": 1.0, "reason": "empty goal"}
 
+        executor_explicitly_forbidden = any(
+            pattern.search(goal_lower) is not None
+            for pattern in _EXECUTOR_NEGATION_PATTERNS
+        )
+
         best_workflow = "project_status"
         best_confidence = 0.0
         best_reason = ""
 
         for keywords, workflow in _GOAL_CLASSIFIERS:
+            if workflow == "executor" and executor_explicitly_forbidden:
+                continue
             matches = sum(1 for kw in keywords if kw in goal_lower)
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
@@ -4927,6 +5032,15 @@ class WorkflowOrchestrator:
                     best_reason = f"matched {matches} keyword(s) in {workflow} classifier"
 
         if best_workflow == "project_status":
+            if executor_explicitly_forbidden:
+                return {
+                    "selected_workflow": best_workflow,
+                    "confidence": 0.8,
+                    "reason": (
+                        "goal explicitly forbids executor execution; "
+                        "defaulted to read-only project_status"
+                    ),
+                }
             return {
                 "selected_workflow": best_workflow,
                 "confidence": 0.3,

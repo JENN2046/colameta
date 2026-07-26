@@ -420,11 +420,17 @@ def handle_inspect_executor_activity(
     project_root: str,
     action: str,
     params: dict[str, Any],
+    *,
+    _excluded_run_id: str | None = None,
 ) -> dict[str, Any]:
     if action == "run_status":
         return _run_status(project_root, params)
     elif action == "latest_run_status":
-        return _latest_run_status(project_root, params)
+        return _latest_run_status(
+            project_root,
+            params,
+            excluded_run_id=_excluded_run_id,
+        )
     elif action == "list_reports":
         return _list_reports(project_root, params)
     elif action == "get_report":
@@ -470,9 +476,18 @@ def _run_status(project_root: str, params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _latest_run_status(project_root: str, params: dict[str, Any]) -> dict[str, Any]:
+def _latest_run_status(
+    project_root: str,
+    params: dict[str, Any],
+    *,
+    excluded_run_id: str | None = None,
+) -> dict[str, Any]:
     try:
-        return _latest_run_status_impl(project_root, params)
+        return _latest_run_status_impl(
+            project_root,
+            params,
+            excluded_run_id=excluded_run_id,
+        )
     except Exception as exc:
         return {
             "ok": True,
@@ -484,7 +499,28 @@ def _latest_run_status(project_root: str, params: dict[str, Any]) -> dict[str, A
         }
 
 
-def _latest_run_status_impl(project_root: str, params: dict[str, Any]) -> dict[str, Any]:
+def _find_claim_excluding_run_id(
+    claims_store: ExecutorRunClaimStore,
+    *,
+    status: str,
+    excluded_run_id: str | None,
+) -> dict[str, Any] | None:
+    excluded = _safe_str(excluded_run_id).strip()
+    if not excluded:
+        return claims_store.find_active_claim(status=status)
+    for claim in claims_store.list_claims(status=status):
+        claim_run_id = _safe_str(claim.get("run_id")).strip()
+        if not claim_run_id or claim_run_id != excluded:
+            return claim
+    return None
+
+
+def _latest_run_status_impl(
+    project_root: str,
+    params: dict[str, Any],
+    *,
+    excluded_run_id: str | None = None,
+) -> dict[str, Any]:
     store = ExecutorRunReportStore(project_root)
     claims_store = ExecutorRunClaimStore(
         project_root,
@@ -495,7 +531,11 @@ def _latest_run_status_impl(project_root: str, params: dict[str, Any]) -> dict[s
 
     active_claim: dict[str, Any] | None = None
     try:
-        active_claim = claims_store.find_active_claim(status="RUNNING")
+        active_claim = _find_claim_excluding_run_id(
+            claims_store,
+            status="RUNNING",
+            excluded_run_id=excluded_run_id,
+        )
     except Exception:
         pass
 
@@ -586,11 +626,23 @@ def _latest_run_status_impl(project_root: str, params: dict[str, Any]) -> dict[s
 
     any_claim: dict[str, Any] | None = None
     try:
-        any_claim = claims_store.find_active_claim(status="RUNNING")
+        any_claim = _find_claim_excluding_run_id(
+            claims_store,
+            status="RUNNING",
+            excluded_run_id=excluded_run_id,
+        )
         if not any_claim:
-            any_claim = claims_store.find_active_claim(status="COMPLETED")
+            any_claim = _find_claim_excluding_run_id(
+                claims_store,
+                status="COMPLETED",
+                excluded_run_id=excluded_run_id,
+            )
         if not any_claim:
-            any_claim = claims_store.find_active_claim(status="FAILED")
+            any_claim = _find_claim_excluding_run_id(
+                claims_store,
+                status="FAILED",
+                excluded_run_id=excluded_run_id,
+            )
     except Exception:
         pass
     if any_claim:

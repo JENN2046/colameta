@@ -285,6 +285,16 @@ def main() -> int:
 
         import_script = "; ".join(f"import {name}" for name in PACKAGE_IMPORTS)
         run([runtime_python, "-c", import_script])
+        commander_widget_resource_script = """
+from runner.commander_widget import commander_widget_html
+
+widget_html = commander_widget_html()
+if not widget_html.startswith("<!doctype html>"):
+    raise RuntimeError("packaged Commander widget resource is missing its HTML document")
+if "window.openai.callTool" not in widget_html:
+    raise RuntimeError("packaged Commander widget resource lost its ChatGPT bridge")
+"""
+        run([runtime_python, "-c", commander_widget_resource_script])
         governance_validation_script = """
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.schema_loader import validate_governance_record

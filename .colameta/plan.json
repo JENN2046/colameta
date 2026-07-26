@@ -15,7 +15,7 @@
       "timeout_seconds": 600
     }
   ],
-  "logs_dir": "/home/jenn/src/colameta-dev/.colameta/logs",
+  "logs_dir": ".colameta/logs",
   "model_execution": {
     "mode": "manual",
     "model_command": null,
@@ -26,28 +26,28 @@
   },
   "plan_version": "1.0.0",
   "project_name": "colameta-self-dev",
-  "project_root": "/home/jenn/src/colameta-dev",
+  "project_root": ".",
   "review_policy": {
     "after_versions": [],
     "enabled": false,
     "mode": "manual_gate"
   },
-  "rules_file": "/home/jenn/src/colameta-dev/.colameta/rules.md",
+  "rules_file": ".colameta/rules.md",
   "runner_policy": {
     "auto_continue_on_pass": false,
     "max_fix_attempts_per_version": 3,
-    "require_clean_worktree": false,
+    "require_clean_worktree": true,
     "stop_on_acceptance_failure": true,
     "stop_on_scope_violation": true
   },
-  "runtime_dir": "/home/jenn/src/colameta-dev/.colameta/runtime",
-  "state_file": "/home/jenn/src/colameta-dev/.colameta/state.json",
+  "runtime_dir": ".colameta/runtime",
+  "state_file": ".colameta/state.json",
   "versions": [
     {
       "version": "v1.0",
       "name": "v1.0 COMMANDER_AUTHORIZATION｜E2C_PLAN",
       "description": "v1.0：COMMANDER_AUTHORIZATION｜E2C_PLAN_PATCH_AND_STATE_ACTION_GUARD_CORE Goal: Implement Web dangerous...",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.0.md",
+      "prompt_file": ".colameta/prompts/v1.0.md",
       "enabled": true,
       "context_files": [
         "runner/web_console.py",
@@ -132,7 +132,7 @@
       "version": "v1.1",
       "name": "E2D Git Commit Confirm Web Guard",
       "description": "Add Web dangerous-action confirmation protection for local Git commit confirmation. This narrows E2D to /api/commit-confirm only, leaving commit-preview as metadata preview and MCP Git managers unchanged.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.1.md",
+      "prompt_file": ".colameta/prompts/v1.1.md",
       "enabled": true,
       "context_files": [
         "runner/web_console.py",
@@ -218,7 +218,7 @@
       "version": "v1.2",
       "name": "E2E Web Remote Git Mutation Policy Baseline",
       "description": "Codify the Web Console policy that remote Git mutation remains prohibited. The slice should document and test that Web remote Git status remains read-only, no Web push/pull/fetch apply routes exist, and future accidental Web remote mutation routes are blocked by security tests.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.2.md",
+      "prompt_file": ".colameta/prompts/v1.2.md",
       "enabled": true,
       "context_files": [
         "README.md",
@@ -309,7 +309,7 @@
       "version": "v1.3",
       "name": "Platform-Blocked Operator Handoff RFC",
       "description": "Write a docs-only RFC for handling platform-level ChatGPT tool-call blocks without bypassing ColaMeta preview/apply controls. The RFC must define operator handoff, receipt verification, action-specific surfaces, and closeout rules while preserving the existing Web remote Git mutation prohibition.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.3.md",
+      "prompt_file": ".colameta/prompts/v1.3.md",
       "enabled": true,
       "context_files": [
         "README.md",
@@ -399,7 +399,7 @@
       "version": "v1.4",
       "name": "Platform-Blocked Operator Handoff Schema Validator V1",
       "description": "Add the first implementation slice for the Platform-Blocked Operator Handoff RFC: a pure schema and validator module plus focused unit tests. This slice must not add Web routes, MCP actions, executor behavior, operator execution surfaces, remote Git mutation paths, or state mutation flows.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.4.md",
+      "prompt_file": ".colameta/prompts/v1.4.md",
       "enabled": true,
       "context_files": [
         "docs/platform-blocked-operator-handoff.md",
@@ -516,7 +516,7 @@
       "version": "v1.5",
       "name": "Runtime Version Observability Read-Only Surface",
       "description": "Add a narrow read-only runtime observability slice that exposes loaded runtime metadata for restart decisions: process start time, loaded source/build HEAD, current project checkout HEAD, and restart-needed status. This slice must not restart, reload, kill processes, change business routes, mutate state, or perform Git remote operations.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.5.md",
+      "prompt_file": ".colameta/prompts/v1.5.md",
       "enabled": true,
       "context_files": [
         "runner/mcp_server.py",
@@ -633,7 +633,7 @@
       "version": "v1.6",
       "name": "Runtime Version Status Documentation + Operator Decision Contract",
       "description": "Document and test the decision contract for interpreting v1.5 read-only runtime/version observability without granting automatic restart/reload/kill/apply authority.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.6.md",
+      "prompt_file": ".colameta/prompts/v1.6.md",
       "enabled": true,
       "context_files": [
         "runner/runtime_observability.py",
@@ -745,7 +745,7 @@
       "version": "v1.6.1",
       "name": "State Lineage Reconciliation Support V1",
       "description": "Add preview-first Runner state lineage reconciliation support for binding manually controlled completion receipts back into Runner state before v1.7 execution.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.6.1.md",
+      "prompt_file": ".colameta/prompts/v1.6.1.md",
       "enabled": true,
       "context_files": [
         "runner/state_mutation.py",
@@ -837,7 +837,7 @@
       "version": "v1.7",
       "name": "Runtime Version Status Decision Evaluator V1",
       "description": "Add a pure decision evaluator for interpreting runtime version status without granting restart/reload/kill/apply authority.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.7.md",
+      "prompt_file": ".colameta/prompts/v1.7.md",
       "enabled": true,
       "context_files": [
         "docs/runtime-version-status-decision-contract.md",
@@ -947,7 +947,7 @@
       "version": "v1.8",
       "name": "Validation Report Truth-Source Hardening",
       "description": "Harden executor validation reporting so structured reports and audit packages cannot summarize failed or inconsistent command evidence as passed. Command records and exit codes are the source of truth; final report text contradictions must be preserved as validation_inconsistent rather than normalized away.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.8.md",
+      "prompt_file": ".colameta/prompts/v1.8.md",
       "enabled": true,
       "context_files": [
         "runner/executor_run_reports.py",
@@ -1057,7 +1057,7 @@
       "version": "v1.9",
       "name": "Runtime Loaded-Code Verification / Post-Commit Reload Awareness",
       "description": "Add read-only runtime loaded-code verification so MCP/Web operators can tell whether the running process is serving code loaded from the current Git HEAD or from stale module sources after a dirty worktree or post-commit change. This must only report reload awareness and must not authorize or perform restart/reload/kill/apply.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.9.md",
+      "prompt_file": ".colameta/prompts/v1.9.md",
       "enabled": true,
       "context_files": [
         "runner/runtime_observability.py",
@@ -1175,7 +1175,7 @@
       "version": "v1.10",
       "name": "Executor Session Head Mismatch Classification",
       "description": "Classify executor-session HEAD mismatches as active operation risk, completed idle stale metadata, or unknown fail-closed state, and expose clear read-only status messages without mutating runtime, Git, or service lifecycle state.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.10.md",
+      "prompt_file": ".colameta/prompts/v1.10.md",
       "enabled": true,
       "context_files": [
         "runner/executor_session.py",
@@ -1286,7 +1286,7 @@
       "version": "v1.11",
       "name": "Connector / runtime health observability",
       "description": "Add read-only observability for the ColaMeta stable service, MCP tunnel/client path, and runtime health signals so local Codex, Web GPT, planner, and reviewer users can quickly distinguish ColaMeta service failures from external connector/control-plane/network failures.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.11.md",
+      "prompt_file": ".colameta/prompts/v1.11.md",
       "enabled": true,
       "context_files": [
         "runner/runtime_observability.py",
@@ -1361,7 +1361,7 @@
       "version": "v1.12",
       "name": "Stage 7 Drift Evidence Schema V1",
       "description": "Add a fail-closed Stage 7 drift evidence schema and validator without semantic drift judgment, plan mutation, Delivery State transition, executor continuation, commit, or push.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.12.md",
+      "prompt_file": ".colameta/prompts/v1.12.md",
       "enabled": true,
       "context_files": [
         "docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md",
@@ -1415,7 +1415,7 @@
       "version": "v1.13",
       "name": "Stage 7 Drift Evidence Pack Builder V1",
       "description": "Build the Stage 7 drift evidence pack preview on top of the schema, preserving evidence, questions, risks, and PLAN_ADJUST trigger conditions without making semantic judgments or mutating plan/state.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.13.md",
+      "prompt_file": ".colameta/prompts/v1.13.md",
       "enabled": true,
       "context_files": [
         "docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md",
@@ -1475,7 +1475,7 @@
       "version": "v1.14",
       "name": "Stage 8 Plan Adjustment Request Preview V1",
       "description": "Add a preview-only Stage 8 plan adjustment request surface for PLAN_ADJUST, explicitly blocking apply, plan mutation, master-goal mutation, Reviewer bypass, executor continuation, commit, and push.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.14.md",
+      "prompt_file": ".colameta/prompts/v1.14.md",
       "enabled": true,
       "context_files": [
         "docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md",
@@ -1534,7 +1534,7 @@
       "version": "v1.15",
       "name": "Stage 9 Next Action Continue Readiness Report V1",
       "description": "Add a read-only Stage 9 next-action and continue readiness report that explains whether continuation is allowed, missing evidence or gates, no-pending-version noop state, and forbidden side effects without calling continue, executor, commit, or push.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.15.md",
+      "prompt_file": ".colameta/prompts/v1.15.md",
       "enabled": true,
       "context_files": [
         "docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md",
@@ -1593,7 +1593,7 @@
       "version": "v1.16",
       "name": "Connector Runtime Health MCP Closeout Tool V1",
       "description": "Expose a read-only MCP connector/runtime health closeout tool that combines runtime freshness, local Web/MCP service evidence, and optional sanitized tunnel-client/control-plane evidence so external connector usability can be closed only when safe evidence is present.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.16.md",
+      "prompt_file": ".colameta/prompts/v1.16.md",
       "enabled": true,
       "context_files": [
         "runner/runtime_observability.py",
@@ -1667,7 +1667,7 @@
       "version": "v1.17",
       "name": "Connector Tunnel Evidence Receipt And Closeout Packet V1",
       "description": "Add a bounded evidence receipt/closeout packet for real connector/tunnel usability checks, recording sanitized external connector evidence and residual gaps without reading secrets or mutating tunnel, proxy, provider, service, Git, executor, or delivery state.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.17.md",
+      "prompt_file": ".colameta/prompts/v1.17.md",
       "enabled": true,
       "context_files": [
         "docs/connector-runtime-health-observability.md",
@@ -1725,7 +1725,7 @@
       "version": "v1.18",
       "name": "Runner Lineage Reconciliation And Stage 0-6 Reality Snapshot V1",
       "description": "Reconcile the already-landed v1.16 and v1.17 connector work back into Runner lineage with exact local Git bindings, record a current non-authoritative reality snapshot, and verify the complete read-only Stage 0-6 thin governed loop without rewriting historical freeze evidence.",
-      "prompt_file": "/home/jenn/src/colameta-dev/.colameta/prompts/v1.18.md",
+      "prompt_file": ".colameta/prompts/v1.18.md",
       "enabled": true,
       "context_files": [
         ".colameta/plan.json",
@@ -1785,6 +1785,142 @@
       ],
       "execution": {
         "provider": "codex"
+      }
+    },
+    {
+      "version": "v1.19",
+      "name": "P1 Validation Result Provenance Bridge V1",
+      "description": "Bridge one real manifest-bound validation run into P1 release evidence by adding a canonical terminal validation_result_sha256 and binding candidate HEAD -> existing manifest_sha256 -> existing contract_sha256 -> validation_result_sha256 -> existing P1 receipt_digest. Upgrade the P1 intake, preview, and receipt contracts to explicit v2 schemas with read-only v1 receipt compatibility; use one run_id-only internal verifier across preview/apply/status; preserve verified_stale on HEAD drift; keep the release gate blocked and Commander at exactly nine tools. Execution is forbidden from the planning worktree and requires a reviewed two-file planning commit followed by a new clean execution worktree with verified relative-path rebinding.",
+      "prompt_file": ".colameta/prompts/v1.19.md",
+      "enabled": true,
+      "context_files": [
+        "AGENTS.md",
+        ".colameta/plan.json",
+        "runner/review_manifest.py",
+        "runner/review_manifest_validation.py",
+        "runner/project_context_binding.py",
+        "runner/mcp_manifest_validation.py",
+        "runner/mcp_validation_run.py",
+        "runner/p1_release_evidence.py",
+        "runner/p1_release_gate.py",
+        "runner/mcp_commander_public.py",
+        "runner/mcp_tool_catalog.py",
+        "tests/test_mcp_review_manifest.py",
+        "tests/test_p1_release_evidence.py",
+        "tests/test_mcp_commander_exposure_profile.py",
+        "docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.md",
+        "docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.zh-CN.md"
+      ],
+      "allowed_files": [
+        "runner/mcp_validation_run.py",
+        "runner/p1_release_evidence.py",
+        "tests/test_mcp_review_manifest.py",
+        "tests/test_p1_release_evidence.py",
+        "tests/test_mcp_commander_exposure_profile.py",
+        "docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.md",
+        "docs/taskbooks/P1_E_RELEASE_EVIDENCE_GATE.zh-CN.md"
+      ],
+      "forbidden_files": [
+        "PROJECT_MASTER_TASKBOOK.md",
+        "PROJECT_MASTER_TASKBOOK.zh-CN.md",
+        "PROJECT_MASTER_TASKBOOK.v1.1-candidate*.md",
+        "FREEZE_CANDIDATE_REVIEW_PACKET*.md",
+        ".colameta/taskbooks/**",
+        ".colameta/state.json",
+        ".colameta/runtime/**",
+        ".colameta/logs/**",
+        ".colameta/reports/**",
+        ".colameta/audits/**",
+        ".colameta/executor-sessions/**",
+        "runner/review_manifest.py",
+        "runner/review_manifest_validation.py",
+        "runner/project_context_binding.py",
+        "runner/mcp_manifest_validation.py",
+        "runner/p1_release_gate.py",
+        "runner/mcp_commander_public.py",
+        "runner/mcp_server.py",
+        "runner/mcp_tool_catalog.py",
+        "runner/production_ops.py",
+        "docs/dns-proxy-tunnel-runbook.zh-CN.md",
+        "docs/private-beta-systemd.md",
+        "docs/connector-tunnel-closeout-receipts/**",
+        "docs/stable-replacement-receipts/**",
+        "scripts/remote_https_mcp_preflight.py",
+        "scripts/refresh_cloudflared_tunnel_credentials.sh",
+        "scripts/*tunnel*",
+        "systemd/**",
+        "tests/test_private_beta_systemd.py",
+        "tests/test_production_ops.py",
+        "tests/test_remote_https_mcp_preflight.py",
+        ".github/workflows/**",
+        "pyproject.toml",
+        ".env",
+        ".env.*",
+        "**/.env",
+        "**/*secret*",
+        "**/*token*",
+        "**/*credential*"
+      ],
+      "acceptance_commands": [
+        {
+          "command": ".venv/bin/python -m pytest -q",
+          "timeout_seconds": 900,
+          "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python scripts/self_hosting_smoke.py",
+          "timeout_seconds": 900,
+          "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python -m compileall -q adapters runner schemas scripts tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python -m ruff check adapters runner schemas scripts tests",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        },
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 600,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "The durable chain is exact candidate HEAD -> existing manifest_sha256 -> existing contract_sha256 -> canonical validation_result_sha256 -> existing P1 receipt_digest.",
+        "Terminal validation status/read recomputes and verifies the closed result digest before returning success; legacy terminal results without a digest fail closed.",
+        "Validation result integrity uses an explicit four-way distinction: running/non-terminal records must omit validation_result_sha256 and are classified non_terminal; current-schema terminal results with a valid canonical digest are classified verified; legacy terminal records without a digest are classified unverified_legacy; a present digest that fails canonical comparison is classified integrity_failure.",
+        "P1 full_local_validation references a real run by run_id, validation_result_sha256, contract_sha256, and manifest_sha256 instead of accepting caller-authored passed strings.",
+        "The exact new P1 schema versions are colameta.p1_release_evidence.v2, colameta.p1_release_evidence_preview.v2, and colameta.p1_release_evidence_receipt.v2; new previews are v2-only, v1 previews cannot apply, and v1 receipts remain read-only historical evidence that can never be verified_current.",
+        "P1 preview and apply independently re-read and verify result integrity, terminal passed state, candidate binding, existing manifest contract, fixed argv coverage, and freshness.",
+        "Result tampering, candidate/hash mismatch, failed or running runs, legacy results, incomplete command coverage, and result rewrite after preview all fail closed.",
+        "A later HEAD change yields verified_stale and never automatically creates superseded.",
+        "No new active evidence lifecycle status is introduced; the P1 gate remains blocked pending separate stable-replacement authorization.",
+        "Commander remains the exact ordered nine-tool surface and manage_p1_release_evidence remains local/advanced only.",
+        "The required handoff is corrected plan/prompt -> new exact SHA-256 review -> a planning commit containing only those two files -> a new clean execution worktree created from that commit -> sanitized HEAD, clean-state, path-binding, plan-SHA, and prompt-SHA preflight -> separately authorized executor preview.",
+        "The selected v1.19 project root, prompt, Runner runtime, state, log, and rules paths resolve inside the new execution worktree from repository-relative plan values; no resolved path points to the planning worktree.",
+        "Every enabled version from v1.0 through v1.19 uses a repository-relative prompt_file, and preflight proves every enabled prompt resolves inside the execution worktree with no absolute override, parent traversal, or symlink escape.",
+        "P1 preview, apply, and status call the same run_id-only internal verifier; a missing or modified post-receipt result forces evidence_complete=false, prevents verified_current, and leaves the P1 gate blocked.",
+        "Caller-provided SHA values are expected comparison values only; the sole facts come from the persisted validation result located internally from run_id and freshly verified for result, contract, command-spec, candidate, command-coverage, and freshness integrity.",
+        "Both P1-E documents describe SHA-256 only as a canonical integrity binding, not a signature, remote attestation, executor-identity proof, or defense against a malicious or privileged local writer that can rewrite both result and digest.",
+        "Only the seven allowed implementation/test/doc files change; dirty main Cloudflare, systemd, production ops, tunnel, stable-replacement, Master, Registry, and Stage files remain untouched."
+      ],
+      "out_of_scope": [
+        "Any parallel review manifest, context binding, subject hash, fixed argv, command spec, or validation contract protocol.",
+        "A tenth Commander/MCP tool or a change to the existing exact nine-tool tuple.",
+        "Any new active, inactive, superseded, revoked, or promotion lifecycle state machine.",
+        "Master Taskbook revision, Registry or Stage rebinding, Master active promotion, ReviewDecision, GateEvent, Delivery State transition, or historical evidence rewrite.",
+        "Executor start or validation execution during plan/prompt preparation.",
+        "Executor preview from the current planning worktree, before the two-file planning commit, or before a clean execution-worktree preflight.",
+        "Cloudflare, DNS, proxy, tunnel, systemd, production ops, Connector/OAuth, network-visible configuration, stable service replacement, or restart.",
+        "Legacy result digest backfill or in-place receipt migration.",
+        "Commit, push, tag, release, package publication, deployment, keyed signing, remote attestation, or general provenance framework expansion."
+      ],
+      "execution": {
+        "provider": "codex",
+        "notes": "Do not start or preview an executor from the planning worktree. After a new hash-specific review, first create one planning commit containing only .colameta/plan.json and .colameta/prompts/v1.19.md, then create a separate clean execution worktree from that exact commit. Resolve all repository-relative plan paths against that execution worktree and fail closed unless the sanitized execution preflight proves HEAD, clean state, path containment, and committed plan/prompt SHA-256 bindings."
       }
     }
   ]

@@ -3,7 +3,7 @@
 ```yaml id="stage-01-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md
-  source_sha256: f880585ed8d37639d215c9f440b37750defa9201f265b2fb7bd63cfdacf6c326
+  source_sha256: d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
@@ -28,7 +28,7 @@ Stage Taskbook、Version Taskbook、receipt、review package、GateEvent 都能�
 本阶段绑定：
 
 - Master 文件：`PROJECT_MASTER_TASKBOOK.md`
-- Master raw snapshot hash：`1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34`
+- Master raw snapshot hash：`895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63`
 - Review packet：`FREEZE_CANDIDATE_REVIEW_PACKET.md`
 - Review packet hash：`2dc1761a5596fc0b41a33da8ef90536aa429d73e0b3f947f05ad4354260531ba`
 - Master 当前 review status：`freeze_candidate_confirmed_for_exact_hash`

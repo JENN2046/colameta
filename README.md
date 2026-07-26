@@ -476,11 +476,12 @@ manage_git
 
 Work Item Gate review does not add an eighth tool. Use
 `run_mcp_workflow` with `workflow=gate_review_request`: start with read-only
-`phase=inspect`, generate a signed bounded preview, and apply only after the
-complete preview, exact bindings, required OAuth/Work Item authority, and
-explicit confirmation all pass. A successful inspect with zero candidates is
-the correct result when Work Item governance is disabled; it is not a reason to
-invent a Work Item.
+`phase=inspect`, generate a bounded signed preview held server-side, and return
+the copyable apply call with its opaque continuation handle unchanged. Apply
+still requires the complete server-held preview, exact bindings, required
+OAuth/Work Item authority, and explicit confirmation to pass. A successful
+inspect with zero candidates is the correct result when Work Item governance is
+disabled; it is not a reason to invent a Work Item.
 
 See the [Operator Manual](docs/USAGE.md) for workflow details and
 [Installation And Deployment](docs/INSTALLATION_AND_DEPLOYMENT.md) for local,

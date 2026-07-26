@@ -3,7 +3,7 @@
 ```yaml id="stage-00-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md
-  source_sha256: 12103877ba181c48056299b800c546e55ac7f68b7df82f4f657a4bd2f0e91489
+  source_sha256: e97d1d1990b19744d4d3a083271ae34ee3fcb9b7e423c6ab10f3075554c3c700
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
@@ -25,7 +25,7 @@ Stage 0 的任务是让当前现实足够清楚：代码库状态、远端同步
 
 本阶段绑定到 `PROJECT_MASTER_TASKBOOK.md`，源 Master hash 为：
 
-`1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34`
+`895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63`
 
 Master 中 Stage 0 的阶段状态引用是 `active_closeout`。但这份 Stage 中文任务书
 自身仍是 `discussion_draft`，不拥有状态权威。

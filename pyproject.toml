@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "jsonschema>=4.23,<5",
     "PyJWT[crypto]>=2.8,<3",
+    "PyYAML==6.0.3",
 ]
 
 [project.urls]
@@ -47,7 +48,7 @@ quality = [
 include = ["runner", "runner.*", "adapters", "adapters.*", "schemas", "schemas.*", "scripts", "scripts.*"]
 
 [tool.setuptools.package-data]
-runner = ["py.typed"]
+runner = ["py.typed", "commander_widget.html"]
 schemas = ["work_item_governance/*.json"]
 
 [tool.ruff]

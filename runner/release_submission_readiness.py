@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 from runner.production_ops import DEFAULT_CONNECTOR_SMOKE_FRESH_HOURS, DEFAULT_PUBLIC_BASE_URL
 from runner.product_readiness import build_product_readiness_packet
 from runner.file_transaction import FileTransaction, FileTransactionError
+from runner.p1_release_gate import build_p1_client_release_gate
 
 
 RELEASE_SUBMISSION_SOURCE = "release_submission_readiness"
@@ -301,6 +302,7 @@ def build_release_submission_readiness(
     )
     blocker_codes, needs_attention_codes = _reason_codes(checks)
     status = BLOCKED if blocker_codes else NEEDS_ATTENTION if needs_attention_codes else READY
+    p1_client_release_gate = build_p1_client_release_gate(project_root, now=now)
     evidence_entry_templates = _submission_evidence_entry_templates_for(
         evidence_references.get("incomplete_keys") if isinstance(evidence_references, dict) else []
     )
@@ -318,6 +320,9 @@ def build_release_submission_readiness(
         "status": status,
         "ready": status == READY,
         "summary": _summary_for(status),
+        "p1_client_release_gate": p1_client_release_gate,
+        "release_decision_status": p1_client_release_gate["status"],
+        "release_decision_ready": p1_client_release_gate["ready"],
         "checks": checks,
         "blocker_codes": blocker_codes,
         "needs_attention_codes": needs_attention_codes,

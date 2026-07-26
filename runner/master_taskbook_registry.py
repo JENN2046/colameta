@@ -19,7 +19,7 @@ EXPECTED_PROJECT_FINAL_GOAL_REF = {
 DEFAULT_EXPECTED_SOURCE_REFS = {
     "source_stage_taskbook_ref": {
         "path": "docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md",
-        "raw_snapshot_sha256": "f880585ed8d37639d215c9f440b37750defa9201f265b2fb7bd63cfdacf6c326",
+        "raw_snapshot_sha256": "d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af",
         "id_field": "stage_id",
         "id": "stage_01_master_taskbook_anchoring",
     },

@@ -2,10 +2,13 @@
 
 ```yaml
 chinese_companion:
-  source_document: FREEZE_CANDIDATE_REVIEW_PACKET.md
-  source_sha256: 4199671538a07d3422ef510f1ad8718724b587e24cfa9014ccb6f2a1e0ef1236
+  source_document_ref: FREEZE_CANDIDATE_REVIEW_PACKET.md
+  source_sha256: d4fb1cacae7c5afe2474d04c773850d40b38046c0bc67baee2d9c32e18d6f974
   translation_status: companion_draft
   authority_status: planning_reference_only
+  source_authority_boundary: english_source_remains_authoritative
+  reconciled_at: 2026-07-26
+  known_translation_gaps: []
 ```
 
 `Freeze Candidate Review Packet` = 冻结候选审查包。中文意思是：这份文件记录
@@ -48,21 +51,28 @@ proposed_review_target:
 
 ```yaml
 repository_reality:
-  branch: main
-  observed_committed_head_before_this_readiness_edit: 9fea935
-  observed_committed_head_subject: "docs: add canonical hash receipt draft"
-  origin_main: 1caa0b2
-  origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 6
+  observed_at: 2026-07-25
+  source_branch: main
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+  reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+  local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+  local_origin_main_subject: "Merge pull request #182 from JENN2046/agent/stable-b660f7b-receipt"
+  remote_fetch_performed: false
+  ahead_local_origin_main_ref: 27
+  behind_local_origin_main_ref: 0
   tracked_remote_sync_status: local_ahead_remote
+  reconciliation_delivery_commit: intentionally_not_self_recorded
   baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
   remote_push_authorized_by_this_packet: false
 ```
 
-中文解释：当时本地 `main` 已领先 `origin/main`。Master 和 packet 已在本地 baseline
-commit 中被跟踪，但 packet 不授权 push、PR、release、tag、deploy 或任何外部写入。
+中文解释：2026-07-25 的对账以本地 `main` 的 `05575ad...` 为编辑前观察基线，并在独立
+worktree 分支中修改文档；本地保存的 `origin/main` tracking ref 是 `e167fa...`，未执行 fetch。
+观察基线领先该本地 tracking ref 27 个提交、落后 0 个。Master 和 packet 已被 Git 跟踪，
+但 packet 不授权 push、PR、release、tag、deploy 或任何外部写入。
 
 ---
 
@@ -96,7 +106,8 @@ unaccepted_snapshot_hash:
 1. 确认 candidate-authoritative canonicalization policy。
 2. 确认 candidate-authoritative hash policy。
 3. 为精确 target file 生成 canonical hash receipt。
-4. 把 freeze_candidate 当成 active authority。
+4. 取得绑定精确 hash 的独立 active-status promotion 决定；`freeze_candidate`
+   本身绝不能被当成 active authority。
 
 ### Hash 新鲜度 / 失效规则
 
@@ -302,9 +313,96 @@ runtime action 或 remote mutation。
 - 是否还允许 Commander、Reviewer、Runtime、Taskbook、Executor 直接写 delivery_state；
 - 是否还允许 PLAN_ADJUST、ABORT、ReviewDecision、Runtime、Executor 直接写 `delivery_item.blocked`；
 - 是否缺少 ExecutionEnvelope、Receipt、GateEvent、CommanderDecisionRequest、AuditEvent 最小合约；
-- 是否还有 authority-laundering keyword 的直接提升捷径。
+- 是否还有 authority-laundering keyword 的直接提升捷径。2026-07-25 Master
+  草稿审查发现，原 packet 的 future-promotion 清单第 4 项错误地要求把
+  `freeze_candidate` 当成 active authority；本次 packet-only 修复已改为必须取得
+  独立、绑定精确 hash 的 active-status promotion 决定，并明确保留
+  `freeze_candidate` 的非权威边界。
 
-P0 closure 仍未授予。未来任何 P0 closure 必须由 Commander 针对每项单独、明确授权。
+这项 P0 文案已经在 packet 内纠正，但 P0 closure 仍未授予。未来任何 P0 closure
+必须由 Commander 针对每项单独、明确授权。
+
+### 5.1 外部 Master 审查处置记录 — 2026-07-25
+
+这条记录位于 `PROJECT_MASTER_TASKBOOK.md` 外部，并绑定在提交 `6f888a58`
+审查过的精确 Master raw snapshot。它只记录审查处置，不修改或取代 Master。
+
+```yaml
+external_master_review_disposition:
+  schema_version: colameta.external_master_review_disposition.v1
+  record_id: master-review-disposition-20260725-1b2d7874
+  record_status: packet_p0_wording_corrected_formal_p0_closure_and_three_p1_decisions_pending
+  recorded_at: 2026-07-25
+  review_baseline:
+    review_commit: 6f888a58b857648be01d37f317282ef586ea935e
+    target_document: PROJECT_MASTER_TASKBOOK.md
+    target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    target_embedded_status: discussion_draft
+    target_review_status: freeze_candidate_confirmed_for_exact_hash
+    target_content_changed_by_this_record: false
+  dispositions:
+    - finding_id: p0_freeze_candidate_active_authority_shortcut
+      severity: P0
+      source_refs:
+        - "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-core-rule"
+      finding_zh_CN: >
+        packet 的 future-promotion 清单错误地要求把 freeze_candidate 当成
+        active authority。
+      disposition: corrected_in_freeze_packet_only
+      correction_ref: "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+      formal_p0_closure_status: not_granted
+      active_promotion_status: not_authorized
+      master_change_required_by_this_disposition: false
+    - finding_id: p1_canonical_freeze_hash_reproducibility
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#hash-policy"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-and-canonicalization"
+        - runner/master_taskbook_hash_binding.py
+      finding_zh_CN: >
+        当前 Master 与实现还不能机械复现 candidate-authoritative canonical
+        payload 和 freeze hash；canonical receipt generation 与 canonical
+        payload hash finalization 仍处于 deferred 状态。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_review_decision_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#review-decision-specific-fields"
+      finding_zh_CN: >
+        即使 resulting action 是 gate_review_required、尚未应用 transition，
+        ReviewDecision 的 ACCEPT 与 NEEDS_FIX 最小字段仍无条件要求 transition
+        字段。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_gate_event_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#gate-event-minimum-contract"
+      finding_zh_CN: >
+        即使 blocker、correction、supersede 与 rejected event type 没有应用
+        delivery state transition，GateEvent 最小字段仍无条件要求 transition
+        字段。
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+  next_decision:
+    status: pending_commander_decision
+    question_zh_CN: >
+      是否准备一个同时解决三个 open P1 合同问题的新 Master candidate，并仅在
+      candidate 存在之后计算、审查新的精确 Master hash。
+    master_candidate_preparation_authorized: false
+    master_rehash_authorized: false
+  non_authorization:
+    - does_not_mutate_or_supersede_master
+    - does_not_grant_formal_p0_closure
+    - does_not_close_or_downgrade_any_p1_finding
+    - does_not_promote_master
+    - does_not_authorize_implementation
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_release_or_deploy
+```
 
 ---
 
@@ -325,6 +423,41 @@ v1_10_local_status:
 中文解释：本地 v1.10 plan 和 implementation baseline 与 `PROJECT_MASTER_TASKBOOK.md`
 是两件事。Master 的 freeze-candidate review 不授权 push v1.10，不授权启动新 executor run，
 也不授权进入 Master Taskbook Registry V1 实现路线。
+
+---
+
+### 6.1 2026-07-25 主线基线对账
+
+```yaml
+p1_mainline_baseline_reconciliation:
+  observed_at: 2026-07-25
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  exact_master_taskbook_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_content_changed: false
+  master_registry_or_stage_taskbook_content_changed: false
+  p1_local_implementation_status: p1_e_implementation_verified_fresh_development_acceptance_pending
+  exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
+  fresh_development_acceptance_status: pending
+  formal_p0_closure_status: not_granted
+  stable_replacement_authority: false
+  push_authority: false
+```
+
+本地保存的 `origin/main` tracking ref 到编辑前观察基线之间共有 27 个提交，分为
+typed-read/runtime 基础和 P1-A 至 P1-E。本 packet 只对账这段实现历史；它不会把随后产生的
+文档提交自我写入，也不声称文档提交已经跑完完整 candidate validation ladder。
+
+此前 production-readiness 审查发现项的非权威实现处置如下：
+
+| 严重级别 | 发现项 | 实现证据 | 处置 |
+| --- | --- | --- | --- |
+| P0 | 服务端强制执行 configured external-OAuth scope。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；`docs/production-readiness/remote-mcp-rc-hardening-20260706.zh-CN.md` | `resolved_in_implementation_review_closure_pending` |
+| P0 | remote-public external OAuth 仅允许 read/preview，并在 handler 前拒绝 commit/plan。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | 为 MCP 与 OAuth endpoint 设置 request body 硬上限。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | 强制 Git branch/remote policy，并在 apply 时重新检查。 | `e7fdabb18f95585f0b029aac68b53d020d122468`；已跟踪 hardening receipt | `resolved_in_implementation_review_closure_pending` |
+
+这些处置只表示已有实现证据，可进入重新审查；它们不是正式 P0 closure，不接受 P1-E
+真实验收证据，也不提升 Master、Registry、Stage taskbook、release gate 或 Delivery State。
 
 ---
 
@@ -399,7 +532,7 @@ update authorization 推导。
 - 记录的 candidate-authority-for-review-only 之外的 policy acceptance；
 - P0 review closure；
 - active status promotion；
-- post-patch P1 findings 已解决或正式处置；
+- post-patch P1 findings 已针对现行 Master 或新候选正式关闭；
 - local baseline commit `f3b7420` 已 push 或远端接受；
 - post-baseline packet reconciliation 后 canonical copy storage 已最终化；
 - freeze-confirmed hash 是 active authority 或 implementation authority。
@@ -500,3 +633,620 @@ push、PR、tag、release、deploy、executor run、service restart 或 route tr
 
 以上 next-step label 不授权 file creation、status promotion、canonicalization、P0 closure、
 git action、runtime action、executor action、remote mutation 或 implementation work。
+
+---
+
+## 13. 并列 Master v1.1 候选准备记录
+
+本节镜像英文审查包中新追加的并列候选准备证据。它只说明三个 P1 已在新候选中
+得到合同层修正并通过本地验证；它不替换、修改、使现行 Master 失效，也不更新
+现行 Registry。
+
+```yaml id="master-candidate-preparation-20260725-zh"
+master_candidate_preparation:
+  record_id: master-candidate-preparation-20260725-40c6af59
+  status: discussion_draft_candidate_prepared_pending_hash_specific_review
+  prepared_at: 2026-07-25
+  authorization_basis: user_authorized_new_master_candidate_for_three_p1_findings
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    external_review_status: freeze_candidate_confirmed_for_exact_hash
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    registry_record_unchanged_for_candidate: true
+    registered_master_reference_unchanged: true
+    current_hash_specific_status_remains_bound_to_current_exact_hash: true
+    candidate_replaces_current_master: false
+
+  candidate:
+    id: colameta-master-v1.1-p1-contract-convergence-candidate.1
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: e38edbd324045bda79b04abba73ea67ef76fcd531e733eb56cff04076b7d4689
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 77da1b70bb448dcd62e54965e7a3563c3d2935e0543c9e3b85c20572e6eb0fee
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: 387dce1306628aaef5ab7d37a5a13f44489f0212466cc42527f2e54ab5465acb
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  p1_candidate_dispositions:
+    canonical_payload_and_freeze_hash_reproducibility:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        候选现在只有一份 selector manifest，并固定 fenced-block、heading、scalar、
+        canonical JSON、PyYAML 6.0.3、domain separator 与 fail-closed 可执行规范化器。
+    review_decision_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        ReviewDecision 由 decision 与 resulting_action 联合选分支；
+        gate_review_required 禁止 applied transition 字段，
+        state_transition_applied 必须绑定 GateEvent。
+    gate_event_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      correction: >-
+        每种 GateEvent event_type 只匹配一个条件分支；rejected、blocker、
+        correction、supersede 事件禁止 applied from_state、to_state 和
+        transition_outcome。
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 126
+      subtests_passed: 16
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2051
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 142
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_changed_scope: pass
+    bandit_medium_or_high_findings: 0
+    non_ci_full_probe:
+      result: failed_environment_precondition_not_counted_as_pass
+      passed: 2052
+      skipped: 2
+      failure: CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE
+      classification: >-
+        一个 frozen R3 exact-toolchain 测试拒绝生成的预导入字节码；仓库 CI
+        明确从普通矩阵 deselect 该测试和另外两个相关专用测试。
+
+  review_boundary:
+    prior_hash_review_status_transfers_to_candidate: false
+    new_hash_specific_review_required: true
+    p1_formal_closure_granted: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    commit_authorized_by_this_record: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+中文结论：新候选已经可以进入独立、绑定精确 hash 的审查。现行 Master 仍是
+`PROJECT_MASTER_TASKBOOK.md`，raw SHA-256 仍为
+`1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34`。
+三个 P1 尚未正式关闭；本记录不授权候选激活/替换、Registry mutation、Stage rebinding、
+commit、push、executor run 或 runtime action。
+
+---
+
+## 14. 术语与翻译缺口
+
+| 术语 | 中文含义 |
+| --- | --- |
+| tracking ref | 本地保存的远端引用；未执行 fetch 时不能冒充远端实时状态。 |
+| reconciliation | 将当前可验证事实回填到治理文档，不等于状态提升或验收。 |
+| implementation disposition | 对发现项已有实现证据的记录，不等于正式审查关闭。 |
+| exact-candidate validation | 针对一个精确 commit 在干净环境中运行的完整候选验证。 |
+
+已知翻译缺口：无。英文源文件仍是权威来源；中文 companion 不产生新的授权。
+
+---
+
+## 15. Master v1.1 Candidate 2 独立 Hash-Specific 审查
+
+本节镜像 candidate.2 的独立三哈希复现、P1 技术审查和最终验证。它取代
+candidate.1 的 pending technical disposition，但不替换或激活现行 Master，也不授予
+正式 P1 closure。
+
+```yaml id="master-candidate-2-hash-specific-review-20260725-zh"
+master_candidate_2_hash_specific_review:
+  record_id: master-candidate-2-hash-review-20260725-b162e804
+  status: independent_hash_specific_review_passed_pending_separate_confirmation
+  reviewed_at: 2026-07-25
+  authorization_basis: user_authorized_candidate_2_preparation_and_independent_hash_specific_review
+  technical_disposition: PASS
+  blocking_findings: []
+  review_result_is_authority: false
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    current_master_unchanged: true
+    current_registry_unchanged: true
+    current_stage_bindings_unchanged: true
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    runtime_build_policy_source_sha256: 71e88b15e5dd73b74820d18e14ad7d6866c09bb76864435806ee65261767cbf1
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  local_implementation_commits:
+    candidate_2_preparation: df5d8df19613e481bdac7274c49278e69c223e51
+    pyyaml_build_metadata_binding: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    pushed: false
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    yaml_library_version: 6.0.3
+    parsed_yaml_block_count: 52
+    canonical_field_count: 48
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+
+  p1_technical_dispositions:
+    complete_canonicalization_contract_validation:
+      status: technically_resolved_in_candidate_2
+      exact_recursive_contract_validation: true
+      derived_view_conflict_validation: true
+      contract_selectors_hash_bound: true
+      repo_relative_canonical_path_enforced: true
+      six_negative_probes_fail_closed: true
+
+    review_decision_no_action_contradiction:
+      status: technically_resolved_in_candidate_2
+      resolution: no_action_removed_from_review_decision_resulting_action_values
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+
+    gate_event_conditional_transition_fields:
+      status: prior_candidate_1_fix_retained_and_reverified
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 116
+      subtests_passed: 29
+    candidate_hash_binding_module:
+      result: pass
+      passed: 15
+      subtests_passed: 13
+    r3_source_binding_and_original_failure_nodes:
+      result: pass
+      passed: 34
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2056
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    pre_fix_full_probe_result: failed_not_counted_as_pass
+    root_cause: stale_authoritative_canary_pyproject_digest_and_wheel_metadata_headers_after_pyyaml_pin
+    security_gate_weakened: false
+    correction_commit: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    focused_retest_result: pass
+    final_full_retest_result: pass
+
+  confirmation_boundary:
+    independent_technical_review_passed: true
+    candidate_is_eligible_for_separate_confirmation: true
+    separate_commander_confirmation_received: false
+    p1_formal_closure_granted: false
+    formal_master_generated: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+中文结论：candidate.2 的三组精确 hash 已由不导入 `runner` 的参考实现独立复现；
+candidate.1 留下的两个 P1 在 candidate.2 中技术审查通过，GateEvent 修正也复审通过。
+candidate.2 现在仅具备进入另行确认的资格；本记录没有生成或授权正式 Master、Registry、
+Stage binding、activation、replacement、push、executor run 或 runtime action。
+
+---
+
+## 16. Master v1.1 Candidate 2 精确哈希确认
+
+本追加记录保存独立 hash-specific 复审之后另行给出的确认。确认仅绑定到下列三组
+精确候选哈希。它满足未来考虑正式物化提案的前置门槛，但本身不授权或执行正式物化。
+
+```yaml id="master-candidate-2-exact-hash-confirmation-20260725-zh"
+master_candidate_2_exact_hash_confirmation:
+  record_id: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+  status: exact_hashes_confirmed_formalization_not_authorized
+  confirmed_at: 2026-07-25
+  confirmation_source: current_explicit_user_instruction
+  confirmation_scope: confirm_the_three_exact_hashes_above
+  review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+  review_record_commit: ede2db1218b0bad138537ed3b14b86c47e38dc24
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+
+  confirmation_preconditions:
+    independent_hash_specific_review_passed: true
+    blocking_findings: []
+    exact_hashes_reverified_before_recording: true
+    candidate_raw_snapshot_unchanged_since_review: true
+
+  confirmation_effect:
+    separate_commander_confirmation_received: true
+    exact_hash_confirmation_gate: satisfied
+    candidate_eligible_for_formalization_consideration: true
+    prior_pending_confirmation_status_superseded: true
+
+  non_authorization:
+    - does_not_change_candidate_embedded_status
+    - does_not_grant_p1_formal_closure
+    - does_not_generate_or_replace_formal_master
+    - does_not_update_master_registry
+    - does_not_update_stage_registry_or_stage_bindings
+    - does_not_authorize_activation_or_runtime_action
+    - does_not_authorize_push
+    - does_not_make_candidate_active_authority
+
+  next_decision_required:
+    - separate_instruction_to_prepare_formal_master_registry_and_stage_bindings
+```
+
+确认结论：v1.1-candidate.2 的另行精确哈希确认门槛已满足。正式 Master、Registry 和
+Stage binding 的物化仍是独立的后续决策，本记录没有授权或执行该步骤。
+
+---
+
+## 17. Master v1.1 正式物化与绑定记录
+
+本追加记录保存从已复审、已确认的 candidate.2 到正式 Master 路径、当前 Registry
+记录和当前 Stage 0--9 绑定的单独授权物化。历史 Version Taskbook 与 evidence report
+保留原始哈希，没有被改写。
+
+```yaml id="master-v1-1-formal-materialization-20260725-zh"
+master_v1_1_formal_materialization:
+  record_id: master-v1-1-formal-materialization-20260725-895b91af
+  status: formal_master_registry_and_stage_bindings_prepared_local_not_pushed
+  prepared_at: 2026-07-25
+  authorization_basis: current_explicit_user_instruction_separately_authorizing_formal_master_registry_and_stage_binding_preparation
+  materialization_base_head: c4b13b30f8c0bd7b19d94944cee1593aa3374284
+
+  confirmed_source_candidate:
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    independent_review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+    exact_hash_confirmation_record_ref: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+
+  deterministic_formalization:
+    formal_path: PROJECT_MASTER_TASKBOOK.md
+    formal_id: colameta_master_taskbook_v1_1
+    formal_version: v1.1
+    formal_status: freeze_candidate
+    canonical_path: PROJECT_MASTER_TASKBOOK.md
+    retained_candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    changes:
+      - formal_title_id_version_and_canonical_path
+      - candidate_review_confirmation_and_formalization_lineage
+      - discussion_draft_to_reference_only_freeze_candidate_status
+      - activation_and_next_step_text_reconciled_to_formal_state
+    p1_contract_semantics_changed_from_confirmed_candidate: false
+    active_authority_added: false
+
+  exact_formal_master_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    chinese_companion_sha256: e715fcacd629aa9eaf32d1b06fc086f1ae91931d59d8c51dccd3240167df0b29
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+    independent_reference_implementation_imported_runner: false
+    all_three_hashes_independently_reproduced: true
+
+  registry_artifacts:
+    master_registry:
+      path: .colameta/taskbooks/master_taskbook_registry.json
+      raw_snapshot_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+      bound_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+      review_status: freeze_candidate_confirmed_for_exact_hash
+      review_status_is_reference_only: true
+    stage_registry:
+      path: .colameta/taskbooks/stage_taskbook_registry.json
+      raw_snapshot_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+      registered_stage_id: stage_02_stage_taskbook_management
+      registered_stage_raw_snapshot_sha256: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+    stage_schema:
+      path: .colameta/taskbooks/stage_taskbook_schema.json
+      raw_snapshot_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+      required_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+
+  stage_binding_set:
+    binding_count: 10
+    manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    bindings:
+      docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md: e97d1d1990b19744d4d3a083271ae34ee3fcb9b7e423c6ab10f3075554c3c700
+      docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md: d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af
+      docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+      docs/taskbooks/stages/STAGE_03_EXTERNAL_TASKBOOK_IMPORT.md: 2adb368816294d0f14353d9b607aac933ffd3ae61a8d850df45e5289386e16f5
+      docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md: af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff
+      docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md: dc440a858905660fb8360162e512b8ed9796503d7c79b58268f1258bf125e7bf
+      docs/taskbooks/stages/STAGE_06_REVIEW_FEEDBACK_INTAKE.md: feef78fc63ddd9332f011bc0149c2056eb51033fb437023e7702e7c51b24bdd6
+      docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md: 84a1f9d50115e5e4f3cb40971769e6de55ff74b2435f216fdb72de4786ce163b
+      docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md: 79af36185ac96aa7d4c89d168583fb326c0a728b3a2dfe0fba5e9f32d7cb94a7
+      docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md: be200dcb5b8b3c3df7703b8f989f23fe2c807c58e84e86f93a7349d17dc04d0a
+    chinese_companion_source_hashes_match: true
+
+  live_binding_consumers:
+    updated_runner_modules:
+      - runner/drift_evidence_schema.py
+      - runner/execution_envelope.py
+      - runner/external_taskbook_validator.py
+      - runner/master_taskbook_registry.py
+      - runner/mcp_stage_7_9_preview.py
+      - runner/review_feedback_schema.py
+      - runner/review_feedback_validator.py
+      - runner/stage_taskbook_registry.py
+      - runner/thin_governed_loop.py
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    historical_version_and_evidence_hashes_rewritten: false
+
+  validation_evidence:
+    master_registry_stage_contracts:
+      result: pass
+      passed: 118
+      subtests_passed: 29
+    expanded_binding_consumers:
+      result: pass
+      passed: 314
+      subtests_passed: 51
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2055
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+      warnings: 3
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    first_expanded_binding_probe_result: failed_not_counted_as_pass
+    failed_tests: 18
+    root_cause: secondary_stage_taskbook_hash_consumers_still_bound_to_pre_materialization_stage_hashes
+    correction: stage_3_4_6_7_8_9_consumer_bindings_updated_to_their_post_materialization_hashes
+    focused_retest_result: pass
+    security_gate_weakened: false
+
+  stage_schema_baseline:
+    stage_02_current_registry_record_validation: passed
+    other_stage_taskbook_validation_shapes_changed_by_rebinding: false
+    pre_existing_non_stage_02_schema_fail_closed_results_remain: true
+    structural_stage_reauthoring_in_scope: false
+
+  authority_boundary:
+    formal_master_generated: true
+    master_registry_updated: true
+    stage_registry_updated: true
+    current_stage_bindings_updated: true
+    source_candidate_exact_hashes_confirmed: true
+    formal_output_hashes_generated_and_independently_reproduced: true
+    formal_output_hashes_separately_confirmed_after_generation: false
+    p1_formal_closure_granted: false
+    active_status_promotion_authorized: false
+    active_execution_authority: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+物化结论：正式 v1.1 Master、当前 Master/Stage Registry 和当前 Stage 0--9
+哈希绑定已经从已复审、已确认的 candidate.2 在本地完成准备。正式输出三哈希已独立
+复现，但尚未获得生成后的新一轮精确哈希确认。本记录不授予 active promotion、
+P1 formal closure、push、executor run 或 runtime action。
+
+---
+
+## 18. Master v1.1 正式三哈希复审与确认
+
+本追加记录保存对上一条物化记录所生成正式 Master 的单独、hash-specific 复审与确认。
+正式 Master 字节、Registry 记录和 Stage 绑定都是本次复审输入，本记录没有修改它们。
+
+```yaml id="master-v1-1-formal-exact-hash-confirmation-20260726-zh"
+master_v1_1_formal_exact_hash_confirmation:
+  record_id: master-v1-1-formal-hash-confirmation-20260726-895b91af
+  status: exact_formal_hashes_independently_reviewed_and_confirmed_reference_only
+  reviewed_at: 2026-07-26
+  confirmed_at: 2026-07-26
+  authorization_basis: current_explicit_user_instruction_for_separate_formal_three_hash_review_and_confirmation
+  technical_disposition: PASS
+  blocking_findings: []
+  technical_review_result_is_authority: false
+  commander_confirmation_received: true
+
+  exact_review_target:
+    path: PROJECT_MASTER_TASKBOOK.md
+    review_base_head: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    materialization_commit: f36c5644530ca3308637f2ea593c9df7b529f1d2
+    materialization_record_commit: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    worktree_bytes_match_review_base_head: true
+    formal_master_bytes_changed_by_this_review: false
+    formal_master_status: freeze_candidate
+
+  exact_formal_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_source_document: PROJECT_MASTER_TASKBOOK.md
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+    head_object_matches_worktree_bytes: true
+    production_and_independent_implementations_match_all_three_hashes: true
+
+  hash_and_contract_review:
+    complete_canonicalization_contract_validation:
+      result: pass
+      repo_relative_forward_slash_canonical_path_enforced: true
+      canonical_source_document_matches_formal_path: true
+      canonicalization_contract_selectors_hash_bound: true
+      negative_probe_count: 19
+      all_negative_probes_fail_closed: true
+    review_decision_no_action_contradiction:
+      result: pass
+      no_action_absent_from_review_decision_resulting_action_values: true
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+    gate_event_conditional_transition_fields:
+      result: pass
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  candidate_to_formal_review:
+    source_candidate_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    source_candidate_raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    same_yaml_block_id_set: true
+    yaml_block_count: 52
+    p1_contract_blocks_unchanged:
+      - hash-policy
+      - gate-event-minimum-contract
+      - review-decision-record-minimum
+      - review-decision-specific-fields
+    freeze_contract_unchanged_except_authorized_status_transition: true
+    candidate_status: discussion_draft
+    formal_status: freeze_candidate
+    formal_identity_and_lineage_match_authorized_transform: true
+    active_execution_authority_added: false
+
+  registry_and_stage_binding_review:
+    master_registry_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+    stage_registry_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+    stage_schema_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+    stage_binding_count: 10
+    stage_binding_manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    registry_review_status_is_reference_only: true
+    active_execution_authority: false
+    delivery_state_authority: false
+    route_transition_authority: false
+
+  validation_evidence:
+    exact_formal_hash_regression:
+      result: pass
+      passed: 16
+      subtests_passed: 13
+    master_registry_stage_binding_suite:
+      result: pass
+      passed: 116
+      subtests_passed: 24
+      warnings: 3
+    compileall: pass
+    git_diff_check: pass
+
+  probe_correction_record:
+    initial_freeze_block_full_equality_probe:
+      result: failed_not_counted_as_pass
+      root_cause: expected_authorized_candidate_to_formal_status_transition
+      corrected_probe: freeze_contract_equal_after_removing_exact_status_field_then_verify_expected_status_transition
+      corrected_result: pass
+    initial_registry_boundary_probe:
+      result: script_error_not_counted_as_pass
+      root_cause: probe_assumed_a_nonexistent_field_instead_of_using_the_registry_contract
+      corrected_probe: validate_all_actual_master_and_stage_registry_authority_fields
+      corrected_result: pass
+    security_gate_weakened: false
+
+  confirmation_boundary:
+    exact_formal_hashes_confirmed: true
+    confirmation_applies_to_exact_three_hashes_only: true
+    three_p1_contracts_technically_confirmed_pass: true
+    p1_formal_closure_granted: false
+    formal_master_status_remains_freeze_candidate: true
+    active_status_promotion_authorized: false
+    push_authorized: false
+    registry_or_stage_binding_mutation_authorized_by_confirmation: false
+    executor_or_runtime_action_authorized: false
+    next_decisions_require_separate_instruction:
+      - active_status_promotion
+      - git_push
+```
+
+确认结论：正式 Master 的 raw snapshot、canonical payload 与 freeze-content 三个精确
+哈希已通过独立 hash-specific 复审，并获得 reference-only freeze candidate 范围内的
+单独确认。本确认不把 Master 提升为 active，不授予 P1 formal closure 或 push，不修改
+Registry/Stage 绑定，也不授权 executor 或 runtime action。

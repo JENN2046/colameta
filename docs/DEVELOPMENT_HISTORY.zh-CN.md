@@ -1,14 +1,20 @@
 # ColaMeta 开发历程总览
 
 ```yaml
-document_type: development_history_overview
+document_type: development_history_evidence_index
 language: zh-CN
-status: living_overview
+status: historical_snapshot_with_current_fact_pointers
 recorded_at: 2026-07-01
 project: colameta-self-dev
 dev_repo: /home/jenn/src/colameta-dev
 stable_runtime_dir: /home/jenn/tools/colameta
 authority_status: evidence_index_only
+freshness_contract:
+  snapshot_claims: historical_only
+  current_dev_head: git -C /home/jenn/src/colameta-dev rev-parse HEAD
+  current_stable_head: git -C /home/jenn/tools/colameta rev-parse HEAD
+  current_runtime_status: get_runtime_version_status
+  current_connector_status: get_apps_connector_smoke_packet
 ```
 
 这份文档是 ColaMeta 开发过程的中文总览。它把分散在 taskbook、evidence report、
@@ -19,10 +25,10 @@ stable replacement receipt、connector closeout receipt、`.colameta` 运行痕�
 `Delivery State accepted`，不替代任何具体 receipt，也不授权 executor run、push、
 stable replacement、deploy、release 或 package publish。
 
-## 当前一眼看懂
+## 2026-07-01 一眼看懂（历史快照）
 
 ```yaml
-current_baseline:
+historical_baseline:
   observed_at: 2026-07-01T23:51:00+08:00
   observation_scope: development_history_snapshot
   validated_by:
@@ -42,10 +48,13 @@ current_baseline:
   operator_closeout: local_runtime_ready_external_connector_unverified
 ```
 
-大白话：ColaMeta 现在已经不是一堆文档草案。它有稳定 Web/MCP 服务，有受控
+大白话：在这份快照记录时，ColaMeta 已经不是一堆文档草案。它有稳定 Web/MCP 服务，有受控
 preview/apply 思路，有 taskbook 证据链，有稳定服务替换记录，也已经能作为本地 agent
-和 Web GPT 的指挥入口使用。剩余最明显的运营缺口是 external connector/tunnel 的真实
+和 Web GPT 的指挥入口使用。当时最明显的运营缺口是 external connector/tunnel 的真实
 可用性仍需要持续用 approved sanitized evidence 收口。
+
+这个段落不能作为当前 runtime、stable checkout 或 connector 的结论。需要当前事实时，按文首
+`freshness_contract` 的命令和只读 MCP 状态重新观察；receipt 证明一次历史操作，不替代实时状态。
 
 ## 怎么读这条证据链
 
@@ -292,9 +301,11 @@ service_layout:
 - [stable-replacement-814568f-20260701.md](stable-replacement-receipts/stable-replacement-814568f-20260701.md)
 - [stable-replacement-7d45c30-20260701.md](stable-replacement-receipts/stable-replacement-7d45c30-20260701.md)
 
-当前 stable 已替换到 `a3a1bbca2394b71fef1f8255c186b02a3d32eab3`，并通过 Web/MCP smoke。
-这份开发历程文档记录该事实，但不替代专门的
-`stable-replacement-a3a1bbc-20260701.md` receipt。
+`a3a1bbca2394b71fef1f8255c186b02a3d32eab3` 是本文件 2026-07-01 快照中记录的 stable
+commit，并非当前 stable 的声明。当前 stable checkout 必须用文首的
+`git -C /home/jenn/tools/colameta rev-parse HEAD` 重新确认；当前服务健康、加载代码和
+connector 新鲜度则分别由只读 runtime/connector 状态返回。每一份 stable replacement receipt
+只证明它所记录的一次替换，不能被当成后续替换后的实时状态。
 
 ## 使用手感与交付化推进
 
@@ -366,12 +377,14 @@ evidence_locations:
 ## 当前剩余缺口
 
 ```yaml
-known_gaps:
+historical_gaps_and_follow_up:
   latest_stable_replacement_receipt:
-    status: pending
-    target_commit: a3a1bbca2394b71fef1f8255c186b02a3d32eab3
+    status: not_asserted_by_this_historical_snapshot
+    historical_target_commit: a3a1bbca2394b71fef1f8255c186b02a3d32eab3
+    current_check: inspect the exact receipt and current stable checkout separately
   external_connector_tunnel:
-    status: unverified_in_current_stable_health_surface
+    status: unverified_at_2026-07-01_snapshot
+    current_check: use fresh sanitized connector evidence and get_apps_connector_smoke_packet
     required_for_closeout:
       - approved sanitized tunnel_client evidence
       - approved sanitized control_plane evidence
@@ -391,11 +404,14 @@ known_gaps:
 
 ## 结论
 
-ColaMeta 的开发历程已经有证据链：不是口头推进，也不是只靠聊天记录。它现在的状态可以概括为：
+ColaMeta 的开发历程已经有证据链：不是口头推进，也不是只靠聊天记录。就这份历史快照而言，可以概括为：
 
 - Stage 0-6 薄治理闭环已经实现并有收口证据；
 - Stage 7-9 已经从规划进入部分实现，但仍保持 preview/read-only/fail-closed 边界；
-- 稳定服务已经能作为本地 Web/MCP 指挥入口使用；
+- 当时的稳定服务已经能作为本地 Web/MCP 指挥入口使用；
 - executor 模型路径已经显式到 `codex + gpt-5.5 + xhigh`；
-- connector/tunnel 的证据模型已经建立，但当前外部可用性仍需要持续 closeout；
+- connector/tunnel 的证据模型已经建立，但该快照中的外部可用性仍需要持续 closeout；
 - 下一步产品化重点是让每次稳定替换、connector closeout 和新项目 onboarding 都更自动、更可读、更一致。
+
+任何“当前”状态结论都需要重新读取 Git、runtime、connector 与对应 receipt 的新鲜证据，不能从本页的
+历史快照推导。

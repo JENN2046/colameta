@@ -74,10 +74,19 @@ def _identity_binding(session_status: dict[str, Any]) -> tuple[str | None, str |
     return None, None
 
 
-def _activity_evidence(project_root: str) -> dict[str, Any]:
+def _activity_evidence(
+    project_root: str,
+    *,
+    current_run_id: str | None = None,
+) -> dict[str, Any]:
     from runner.executor_read import handle_inspect_executor_activity
 
-    result = handle_inspect_executor_activity(project_root, "latest_run_status", {})
+    result = handle_inspect_executor_activity(
+        project_root,
+        "latest_run_status",
+        {},
+        _excluded_run_id=current_run_id,
+    )
     if not isinstance(result, dict):
         return {}
     live = result.get("live")
@@ -304,6 +313,7 @@ def collect_continuation_snapshot(
     requested_provider: str | None = None,
     *,
     held_operation_lease: ProjectOperationLease | None = None,
+    current_run_id: str | None = None,
     session_store: ExecutorSessionStore | None = None,
     planning_bridge: PlanningBridge | None = None,
     source_review: SourceReviewBridge | None = None,
@@ -367,7 +377,10 @@ def collect_continuation_snapshot(
             continuation_evidence_failed = True
 
         try:
-            activity = _activity_evidence(root)
+            # current_run_id is an internal dispatch identity. Exclude only that
+            # run's already-claimed record; every other active claim remains
+            # visible and therefore fail-closed.
+            activity = _activity_evidence(root, current_run_id=current_run_id)
         except Exception as exc:
             activity = {}
             partial_errors.append(_error("executor_activity", exc))

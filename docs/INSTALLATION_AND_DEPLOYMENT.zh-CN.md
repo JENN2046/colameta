@@ -2,7 +2,7 @@
 
 [English](INSTALLATION_AND_DEPLOYMENT.md)
 
-本文统一说明 Python 包安装、源码开发环境、loopback 服务、七工具私人 App、仓库自带的
+本文统一说明 Python 包安装、源码开发环境、loopback 服务、九工具私人 App、仓库自带的
 private-Beta systemd 栈、稳定运行时替换、验收和回滚。
 
 它是操作说明，不是持续授权。暴露网络、修改 DNS/OAuth、重启服务、替换 stable、Git push、
@@ -15,7 +15,7 @@ private-Beta systemd 栈、稳定运行时替换、验收和回滚。
 | venv 内 Python 包 | 普通 CLI 使用 | 启动服务前不监听端口 |
 | editable 源码环境 | 开发 ColaMeta、跑测试 | 默认仅本地 |
 | loopback Web/MCP | 本机浏览器或本地 MCP client | `127.0.0.1`；本地开发认证 |
-| 七工具 Commander | ChatGPT/Codex 私人 App | Commander profile；外部入口必须 HTTPS + OAuth |
+| 九工具 Commander | ChatGPT/Codex 私人 App | Commander profile；外部入口必须 HTTPS + OAuth |
 | private-Beta systemd | Jenn 当前持久本地/私人部署 | system-level unit、loopback origin、受管 ingress |
 
 不要为了绕过本地连接问题就把 MCP/Web 绑定到 `0.0.0.0`。远程私人 App 应使用经过明确批准的
@@ -99,9 +99,9 @@ colameta serve /path/to/project --auth-mode none --open
 `--allow-external-web` 和 Web read token。远程 MCP 私人 App 必须使用 HTTPS 与 OAuth，见
 [Remote HTTPS MCP Service](remote-https-mcp-service.md)。
 
-## 6. 启动七工具私人 App 入口
+## 6. 启动九工具私人 App 入口
 
-通过 Commander exposure profile 保持恰好 7 个工具：
+通过 Commander exposure profile 启动九工具入口：
 
 ```bash
 MCP_EXPOSURE_PROFILE=commander \
@@ -123,11 +123,13 @@ Commander 只暴露：
 2. `get_apps_connector_smoke_packet`
 3. `render_commander_app`
 4. `analyze_project_state`
-5. `run_mcp_workflow`
-6. `manage_validation_run`
-7. `manage_git`
+5. `review_manifest`
+6. `read_result_artifact`
+7. `run_mcp_workflow`
+8. `manage_validation_run`
+9. `manage_git`
 
-`gate_review_request` 是 `run_mcp_workflow` 内部 workflow，不是第 8 个工具。首调用：
+`gate_review_request` 是 `run_mcp_workflow` 内部 workflow，不是第 10 个工具。首调用：
 
 ```json
 {
@@ -137,10 +139,11 @@ Commander 只暴露：
 }
 ```
 
-inspect/status 只读；preview 生成有界签名 Work Item Gate preview；apply 必须回传完整签名
-preview、精确 bindings、`confirm_gate_review=true`，并同时满足 `mcp:commit`、已配置的可信私人
-Operator subject/client 和 Work Item authority claims。默认/公共远端 principal 不会因此获得通用
-commit 权限。
+inspect/status 只读；preview 生成有界签名 Work Item Gate preview，并把完整对象仅保留在
+serving process；返回的 copyable apply call 只包含 opaque `gate_preview_id`。apply 解析该
+handle 后，仍必须验证完整签名 preview、精确 bindings、`confirm_gate_review=true`，并同时
+满足 `mcp:commit`、已配置的可信私人 Operator subject/client 和 Work Item authority claims。
+默认/公共远端 principal 不会因此获得通用 commit 权限。
 
 上面的启动示例故意只启用 read/preview scope，因此可以做 inspect/preview，不能直接 apply。
 开启私人 apply 是独立受保护操作：先按
@@ -164,8 +167,8 @@ sudo systemctl start colameta-private-beta.target
 
 ```text
 127.0.0.1:8801  stable Web
-127.0.0.1:8766  stable 七工具 Commander MCP
-127.0.0.1:8767  external-OAuth 七工具 MCP origin
+127.0.0.1:8766  stable Commander MCP
+127.0.0.1:8767  external-OAuth Commander MCP origin
 127.0.0.1:8768  loopback advanced MCP catalog
 ```
 
@@ -188,8 +191,8 @@ stable replacement 与安装是两条边界，必须绑定精确目标：
 4. 让 stable checkout fetch 并 detached 到精确授权 commit；
 5. 本地构建单一 wheel，以 `--no-deps --force-reinstall` 重装；
 6. 只重启被明确授权的服务；
-7. 验证服务状态、loopback endpoint、runtime provenance、七工具清单、私人 App connector smoke
-   与 `gate_review_request/inspect`；
+7. 验证服务状态、loopback endpoint、runtime provenance、精确候选的 Commander 清单、私人 App
+   connector smoke 与 `gate_review_request/inspect`；
 8. 写 stable-replacement receipt。
 
 不能从 CI、preview、receipt 或普通 `dev_ahead_stable` 漂移自动推导替换授权。可参考已脱敏的
@@ -215,7 +218,7 @@ service active/running
 loaded_runtime_head == authorized target
 runtime_loaded_code_stale == false
 reload_needed_for_verification == false
-Commander visible_tool_count == 7
+Commander visible_tool_count == 精确授权候选的预期清单（本源码版本为 9）
 私人 App list_registered_projects 成功
 connector closeout == connector_closeout_ready / ready
 gate_review_request inspect 成功且零副作用

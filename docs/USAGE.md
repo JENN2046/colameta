@@ -12,7 +12,7 @@ ReviewDecision creation, or GateEvent emission.
 
 For onboarding a new local project into ColaMeta, read
 [ColaMeta Onboarding](ONBOARDING.md) first.
-For package/source installation, the seven-tool private App, systemd deployment,
+For package/source installation, the nine-tool private App, systemd deployment,
 stable replacement, verification, and rollback, read
 [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
 
@@ -36,14 +36,51 @@ If Web GPT or a local agent has just connected to the stable MCP endpoint:
 2. get_apps_connector_smoke_packet(project_name="colameta-self-dev")
 3. render_commander_app(project_name="colameta-self-dev")
 4. analyze_project_state(project_name="colameta-self-dev")
-5. Use run_mcp_workflow only for the requested read/preview workflow.
-6. Use manage_validation_run for bounded validation.
-7. Use manage_git for reviewed Git operations.
+5. Use review_manifest for hash-bound independent review.
+6. In ChatGPT, use read_result_artifact for a packaged result; resource-capable MCP clients may use resources/read.
+7. Use run_mcp_workflow for the requested plan, preview, or controlled-change workflow.
+8. Use manage_validation_run for bounded validation.
+9. Use manage_git for reviewed Git operations.
 ```
 
-That is the complete seven-tool Commander surface. Consumer contracts,
+That is the complete nine-tool Commander surface in this source version.
+Before using the two direct read tools against an already-running stable service,
+confirm its runtime provenance and `visible_tool_count`; an older stable
+deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
+
+### P1 ChatGPT contract rehearsal
+
+Before requesting a new live ChatGPT development-connector acceptance, run the
+repeatable local contract rehearsal:
+
+```bash
+.venv/bin/python scripts/chatgpt_development_acceptance.py --json
+```
+
+It creates a temporary Git fixture and verifies the exact nine-tool Commander
+inventory; a deliberate `CONTEXT_BINDING_MISMATCH` without an archive write;
+typed `review_manifest` inspect/read/verify pagination with hash continuity;
+and complete typed `read_result_artifact` recovery with stable SHA-256 and
+expiry. It invokes no `resources/read`, Connector, OAuth, tunnel, stable
+service, executor, Git write, or release action.
+
+`rehearsal_status=passed` is developer preflight only. A real release still
+needs fresh full local-validation evidence, runtime provenance, connector/OAuth
+evidence, current facts, a newly observed live ChatGPT acceptance, and a
+separately authorized exact stable-replacement target. The first five groups
+can only be recorded through the loopback-only,
+preview-bound `manage_p1_release_evidence` receipt flow; external observations
+remain explicitly operator-attested rather than server-observed. The returned
+`p1_client_release_gate` remains `blocked` until the separate exact stable
+authorization exists. Submission-material readiness and this P1 release
+decision are intentionally distinct.
+
+When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
+such as “do not start/run the executor” is a hard routing constraint. ColaMeta
+uses the read-only project-status route instead of executor preflight, unless
+the request independently identifies a more specific non-executor workflow.
 
 If you want to start a controlled optimization round:
 
@@ -59,9 +96,10 @@ If you only need validation or regression evidence:
 
 ```text
 1. manage_validation_run action=preview
-2. manage_validation_run action=run preview_id=<preview_id>
-3. manage_validation_run action=status run_id=<run_id>
-4. Record the result as a receipt or feedback. Do not write Delivery accepted.
+2. Copy the returned context_binding unchanged.
+3. manage_validation_run action=run preview_id=<preview_id> context_binding=<copied binding>
+4. manage_validation_run action=status run_id=<run_id>
+5. Record the result as a receipt or feedback. Do not write Delivery accepted.
 ```
 
 If connector or tunnel status is still unverified:
@@ -124,7 +162,7 @@ does not authorize executor runs, commits, pushes, stable replacement,
 ReviewDecision, GateEvent, or Delivery accepted.
 
 The following role-aware packet is an **advanced loopback** capability, not a
-seven-tool private App call. On the advanced endpoint, use
+nine-tool private App call. On the advanced endpoint, use
 `get_agent_operator_flow_packet(project_name=..., profile_id=...)` before
 choosing lower-level tools. It returns one `primary_next_action`, the gate level
 for that action, `persona_safe_next_tool`, confirmation flags, and
@@ -237,7 +275,7 @@ operator_closeout.decision=blocked
 ## 2. First Reads On The Advanced Loopback Endpoint
 
 This section applies to the complete loopback advanced catalog. The private App
-uses the seven-tool fast path in section 0. After advanced MCP connects, do
+uses the nine-tool fast path in section 0. After advanced MCP connects, do
 read-only calibration first. Do not run an executor,
 commit, push, or write project state before reading the service contract.
 
@@ -292,10 +330,14 @@ need data, use:
 }
 ```
 
-Apps clients can discover and read the widget resource through
-`resources/list` and `resources/read`. The widget only displays service facts,
-profile-aware entries, connector health, preview-first routes, and explicit
-authorization gates. It does not authorize executor runs, commits, pushes,
+The MCP server publishes the widget through `resources/list` and `resources/read`
+for clients that support resource methods; ChatGPT loads the widget through its
+tool metadata. `resources/templates/list` additionally advertises only the static
+URI shapes for hash-bound review-manifest summaries, subjects, and pages; it never
+lists live handles, paths, or content. The widget
+only displays service facts, profile-aware entries, connector health,
+preview-first routes, and explicit authorization gates. It does not authorize
+executor runs, commits, pushes,
 stable service replacement, ReviewDecision, GateEvent, or Delivery accepted.
 
 For a compact product surface map, call `get_product_console_map` or
@@ -630,8 +672,25 @@ ok=false
   before retrying any preview or commit-scoped action.
 
 packaged=true
-  The result was compressed into a manifest. Continue through
-  recommended_next_reads.
+  The result was compressed into a manifest. In ChatGPT, use the returned
+  read_result_artifact call first:
+  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>).
+  It returns exactly one stored page and keeps the same artifact_id, page_count,
+  expires_at, and content_sha256. Continue only through its next-page call,
+  concatenate the returned artifact_page.content values in page order, then
+  verify content_sha256. These short-lived artifacts are read-only and do not
+  grant any workflow, executor, Git, or delivery authority.
+  A resource-capable MCP client may instead read resource_uri through
+  resources/read, then continue with page_uri_template for pages 2..page_count.
+  The legacy
+  run_mcp_workflow(workflow=result_artifact, phase=read, ...) call remains in
+  the response as a compatibility fallback for existing clients.
+  This read route requires mcp:read and cannot read project files, run an
+  executor or validation, change Git, or advance delivery state.
+  resources/templates/list advertises only the static artifact URI shapes; it
+  never lists live artifact IDs. Read only the opaque handle returned by the
+  packaged response before it expires.
+  Otherwise, continue through recommended_next_reads.
 ```
 
 Common errors:
@@ -648,6 +707,313 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
   Call get_agent_consumer_contract and choose a profile_id from
   service_entry_profiles.
 ```
+
+### Manifest-bound independent review
+
+Use this read-only tool when an external review contract already names the
+exact files and SHA-256 values that must be inspected. It is intentionally not
+an arbitrary `read_project_file` escape hatch. `review_manifest` is a
+first-class Commander read tool; the legacy
+`run_mcp_workflow workflow=review_manifest` route remains available for
+existing clients.
+It requires a Git checkout with a readable branch and HEAD.
+
+First obtain the current binding template. This reads no subject files and runs
+no validation command:
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+The response includes `context_binding`. Copy its `project_name`, `branch`,
+`head`, `runner_plan`, and `current_version` exactly into an external review
+manifest, then supply the caller-owned review unit and exact subject hashes:
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "inspect",
+    "project_name": "registered-project-name",
+    "review_manifest": {
+      "schema_version": "colameta.review_manifest.v1",
+      "review_unit": "fresh-independent-review-001",
+      "workflow_intent": "independent_review",
+      "project_name": "registered-project-name",
+      "branch": "<copied from context_binding>",
+      "head": "<copied full SHA from context_binding>",
+      "runner_plan": {
+        "mode": "source-only",
+        "plan_sha256": null
+      },
+      "current_version": null,
+      "subjects": [
+        {
+          "path": "docs/review-contract.yaml",
+          "sha256": "<SHA-256 of the exact current UTF-8 file bytes>"
+        }
+      ],
+      "acceptance_commands": [
+        {"command": "git diff --check", "timeout_seconds": 60}
+      ]
+    }
+  }
+}
+```
+
+For a managed project, use the template's `runner_plan` object and
+`current_version` instead of the source-only example. `acceptance_commands` are
+only previewed in this workflow; they are never run.
+
+The review workflow never executes the declarations itself. To convert the
+short-lived inspected session into a separately authorised validation preview,
+call manage_validation_run with action=preview, the registered project_name,
+and the returned review_manifest_id. This works for registered source-only and
+managed projects.
+
+That call first rechecks the manifest project context and every declared
+subject hash. It then accepts only shell-free, locally allowed command forms
+and returns exact effective argv specs plus manifest_validation contract and
+command-spec SHA-256 values. It does not run a command. Do not combine a
+review_manifest_id with scope or target_files: the manifest is the complete
+validation contract. If any declared command is unsafe, contains a
+secret-shaped value, or has a timeout outside the local execution policy, the
+entire contract is blocked rather than partially run.
+
+Only a runnable preview returns a copyable manage_validation_run action=run
+next action, containing both the normal context binding and the preview ID.
+Immediately before that commit-scoped call starts fixed preview commands,
+ColaMeta rechecks the generic validation context and the original manifest
+context and every subject hash. The manifest session therefore supplies bounded
+evidence input; it does not by itself grant validation execution authority.
+
+On success, ChatGPT should use each returned typed `read_call` that names
+`review_manifest`; it reads only its declared subject page and rechecks the
+project context and subject hash before returning text. `phase=verify` with
+`review_manifest_id` rechecks every declared subject without returning file
+content. A resource-capable MCP client may instead discover the static manifest
+URI shapes through `resources/templates/list`, read `manifest_resource_uri`
+through `resources/read`, then read only the returned subject `resource_uri`
+values. Subject pages use `page_uri_template`.
+
+Each returned subject includes this typed `read_call`:
+
+```json
+{
+  "name": "review_manifest",
+  "arguments": {
+    "phase": "read",
+    "project_name": "registered-project-name",
+    "review_manifest_id": "<from inspect>",
+    "review_manifest_subject_index": 1,
+    "review_manifest_page": 1
+  }
+}
+```
+
+`read` returns only that declared page, rechecks the current context and that
+subject's SHA-256, and returns a bound next-page call when more pages remain.
+It is ChatGPT's primary narrow read route, not arbitrary file access. Existing
+clients may continue to use resource methods or the legacy generic workflow form.
+
+`CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
+or current version no longer matches the manifest. Stop combining evidence,
+request a fresh template, and build a new manifest. A changed subject returns
+`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`. Sensitive, private-runtime, symlinked,
+and high-risk configuration paths are denied even when a manifest names them.
+The short-lived manifest session does not authorize executor runs, commits,
+pushes, ReviewDecision, or delivery acceptance. Validation requires the
+separate preview and commit-scoped confirmation described above.
+
+### Confirmation-bound actions and canonical project state
+
+The Commander surface now carries one exact, copyable `context_binding` for
+every core-workflow confirmation boundary. This applies to real mutating
+`run_mcp_workflow` phases (`apply`, `apply_all`, `plan_apply`, `run`, `commit`,
+and `execute`) where that phase is supported by its workflow,
+`manage_validation_run action=run`, and `manage_git` apply actions.
+
+`review_manifest` keeps its own immutable hash-bound read-session verifier and
+`gate_review_request` keeps its separately signed Work Item Gate contract;
+neither is weakened or replaced by this generic binding.
+
+A prior inspect or preview returns both `context_binding` and
+`context_binding_contract`. `confirmation_required=true` means that the
+matching confirmation needs this binding; `current_call_requires_context_binding`
+distinguishes that future boundary from the read or preview currently being
+performed. For the matching confirmation, copy the entire `context_binding`
+object unchanged; generated `next_actions` already contain that copy when the
+next Commander call has the same operation identity. The server rechecks all
+seven fields immediately before the side effect:
+
+```text
+project_name
+branch
+head
+runner_plan { mode, plan_sha256 }
+current_version
+review_unit
+workflow_intent
+```
+
+The binding is operation-specific. It cannot be reused for a different
+workflow or review unit. The Git workflow family intentionally shares the
+same identity across `run_mcp_workflow workflow=git_*` and the corresponding
+`manage_git` confirmation, so a high-level Git preview can continue through
+the public Git tool. `CONTEXT_BINDING_MISMATCH` means the current checkout or
+operation identity changed; stop and create a fresh inspect/preview. If branch
+or HEAD cannot be read, the server returns `CONTEXT_BINDING_UNAVAILABLE` and
+does not perform the action. A context binding is evidence only; it grants no
+executor, validation, Git, push, stable-replacement, or delivery authority.
+
+`analyze_project_state` also returns `canonical_state` with schema
+`colameta.canonical_project_state.v1`. Use it instead of treating a local
+workflow's `unified_status` as global truth:
+
+```text
+historically_verified
+  Bounded evidence from the latest execution report; it is not a live probe.
+
+currently_observed
+  Current Git, Runner, and executor observations. Runtime and connector are
+  explicitly not_observed unless this call actually obtained those probes.
+
+freshness
+  Observation time, partial-error count, and sources that were not observed.
+
+current_conclusion
+  Conservative full-state conclusion. It separates project_checkout from
+  runtime_and_connector: an otherwise ready checkout is freshness_required
+  when those external sources have not been freshly observed. It never
+  authorizes a side effect.
+```
+
+`not_observed` is not `unavailable` and must never be promoted to healthy or
+ready. `unified_status.status_scope=operation_local` describes just the
+workflow result that produced it; its embedded canonical summary is a pointer
+to the separate project-state truth. For a runtime or external connector
+decision, use the approved read-only health path rather than inferring it from
+a historical receipt or a project-only analysis.
+
+### Current-facts snapshot and runtime archive
+
+Use the existing `run_mcp_workflow` compatibility surface with
+`workflow=current_facts`; it does not add a tenth public tool. The workflow
+starts only from `canonical_project_state`, so it never opens raw runtime
+state, credentials, source files, historical receipts, or taskbooks to build
+the snapshot.
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "current_facts",
+    "phase": "inspect",
+    "project_name": "colameta-self-dev"
+  }
+}
+```
+
+`inspect` is read-only. It returns a redacted, versioned JSON/Markdown snapshot
+through the normal packaged-result contract: `artifact_id`, `resource_uri`,
+`page_count`, `content_sha256`, and `expires_at`. Read every required page with
+the typed `read_result_artifact` tool; the returned pages retain the same
+artifact ID, SHA-256, and expiry. The artifact states its observation time,
+historical versus current observation, freshness conclusion, canonical-state
+digest, and explicit `observation_only` authority boundary.
+
+`preview` creates a short-lived, process-local archive preview without writing
+anything. Its generated next action carries both the opaque `preview_id` and
+the exact `context_binding`. Only that context-bound
+`current_facts phase=apply` call, with `mcp:commit`, may write the exact
+previewed pair beneath the fixed runtime location:
+
+```text
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.json
+.colameta/reports/current-facts/current-facts-<observed-at>-<digest>.md
+```
+
+The writer accepts no caller-selected path, will not overwrite a different
+snapshot, rejects symlinked archive paths, and requires both generated targets
+to be covered by Git ignore before it writes. Thus it cannot silently create
+tracked documentation or modify a historical receipt/taskbook. If the current
+semantic state changed after preview, apply returns
+`CURRENT_FACTS_PREVIEW_STALE`; if ignore coverage is absent it returns
+`CURRENT_FACTS_ARCHIVE_NOT_IGNORED`. Re-preview instead of combining old and
+new evidence. Archive creation is local runtime evidence only: it does not
+authorize executor runs, validation, Git commits/pushes, stable replacement,
+or delivery acceptance.
+
+### Stage 7--9 fail-closed PLAN_ADJUST journey
+
+Use this narrow compatibility workflow when a bounded Stage 7 drift-evidence
+claim must be handed to a Stage 8 `PLAN_ADJUST` preview and then checked by the
+Stage 9 controlled-continue gate. It stays inside `run_mcp_workflow`; it does
+not add a tenth public tool or turn the Stage taskbooks into mutation
+authority.
+
+Start with an inspect call. It reads only the four frozen taskbook hashes and
+the current checkout identity; it does not open arbitrary project files, start
+an executor, or create a workflow record:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "inspect",
+    "project_name": "registered-project-name"
+  }
+}
+```
+
+Copy the returned `stage_7_9_context` unchanged. It deliberately preserves
+`runner_plan.plan_sha256: null` and `current_version: null` for a source-only
+project; those nulls are part of the exact binding, not fields to remove. The
+response also contains the frozen taskbook hashes and a minimal three-object
+input template. Supply bounded, sanitized Stage inputs and call `preview`:
+
+```json
+{
+  "name": "run_mcp_workflow",
+  "arguments": {
+    "workflow": "stage_7_9_preview",
+    "phase": "preview",
+    "project_name": "registered-project-name",
+    "stage_7_9_context": "<copy the full object from inspect>",
+    "stage_7_9_inputs": {
+      "stage_7_drift_evidence_inputs": "<Stage 7 builder input>",
+      "stage_8_plan_adjustment_inputs": "<Stage 8 preview input>",
+      "stage_9_continue_readiness_inputs": "<Stage 9 readiness input>"
+    }
+  }
+}
+```
+
+The wrapper rechecks project/branch/HEAD/Runner plan/current-version context,
+the frozen Master/Stage 7/Stage 8/Stage 9 hashes, and cross-stage IDs. It
+passes the generated Stage 7 pack ID to Stage 8 and binds the generated Stage
+8 preview reference into Stage 9. A valid unresolved `PLAN_ADJUST` journey
+returns `journey_status=human_decision_required` and
+`PLAN_ADJUST_BLOCKS_CONTINUE`; that blocked Stage 9 conclusion is the intended
+safe result. Review the Stage 8 preview before any separate authorised plan
+change.
+
+This workflow needs only `mcp:read` and supports only `inspect` and `preview`.
+`apply`, `run`, `commit`, `execute`, and related side-effect phases return
+`STAGE_7_9_PHASE_NOT_SUPPORTED`. Missing inputs, changed context, frozen
+taskbook mismatches, invalid Stage evidence, and wrong cross-stage references
+return their specific `STAGE_7_9_*` fail-closed code. The response is a compact
+whitelist projection: it never echoes arbitrary input objects, runtime/session
+data, full diffs, or credentials, and it never authorizes plan mutation,
+continue, executor work, review decisions, Git, stable replacement, or
+connector/OAuth changes.
 
 ## 3. Common Advanced Agent Profiles
 
@@ -772,12 +1138,12 @@ Handle the two fail-closed errors as follows:
   the gate. A caller path may itself be a symlink alias when it resolves to the
   same safe canonical root.
 
-### Request a Work Item Gate review through the seven-tool app
+### Request a Work Item Gate review through the nine-tool app
 
 When an accepted Stage 0-6 result asks whether to request a Delivery State Gate
-review, use the existing `run_mcp_workflow` tool. This keeps the Commander app at
-exactly seven exposed tools; `gate_review_request` is a high-level workflow over
-the existing Work Item Gate backend, not an eighth tool.
+review, use the existing `run_mcp_workflow` tool. `gate_review_request` is a
+high-level workflow over the existing Work Item Gate backend, not a tenth
+Commander tool.
 
 Start with the read-only inspection:
 
@@ -796,7 +1162,7 @@ Start with the read-only inspection:
 If `work_item_id` is omitted, inspect returns up to 20 sanitized
 `work_item_candidates` plus read-only selection calls in `next_actions`. Select
 one candidate and call its inspect action before previewing a transition. The
-seven-tool app does not need the hidden `list_work_items` tool.
+nine-tool app does not need the hidden `list_work_items` tool.
 
 Generate a signed Gate preview using the current Work Item bindings:
 
@@ -818,18 +1184,20 @@ Generate a signed Gate preview using the current Work Item bindings:
 ```
 
 The preview does not change Delivery State. After explicit authorization, send
-`result.copyable_apply_call.arguments` back unchanged. Apply requires the full
-signed `gate_preview`, `confirm_gate_review=true`, an exact command binding, the
-same trusted Work Item principal, and `mcp:commit`. The adapter performs no
-direct ledger write: the Work Item Gate backend remains the sole state-machine
-and GateEvent authority. Finish with `phase=status` to read the resulting Work
-Item and timeline.
+`result.copyable_apply_call.arguments` back unchanged. The public call contains
+an opaque `gate_preview_id`; the complete signed preview and its principal
+binding remain in the serving process. Apply resolves that handle and still
+requires `confirm_gate_review=true`, an exact command binding, the same trusted
+Work Item principal, and `mcp:commit`. The adapter performs no direct ledger
+write: the Work Item Gate backend remains the sole state-machine and GateEvent
+authority. Finish with `phase=status` to read the resulting Work Item and
+timeline.
 
 Do not treat `mcp:commit` alone as Work Item authority. External-OAuth apply is
 allowed only when the configured private Operator subject/client policy accepts
 the caller, the token carries matching Work Item authority claims, OAuth grants
-`mcp:commit`, and the backend verifies the signed preview. Other remote commit
-requests remain denied.
+`mcp:commit`, and the backend verifies the server-held signed preview. Other
+remote commit requests remain denied.
 
 An apply response distinguishes the backend outcome. Only
 `status=succeeded` with `result.outcome=transition_applied` means the requested
@@ -851,7 +1219,7 @@ in this order:
 
 ```text
 list_registered_projects -> expected project is available
-analyze_project_state -> commander profile and visible_tool_count=7
+analyze_project_state -> commander profile and visible_tool_count=9 after this source version is loaded
 gate_review_request/inspect -> succeeded, read_only=true, side_effects=false
 get_apps_connector_smoke_packet -> connector_closeout_ready / ready, no evidence gaps
 ```
@@ -1330,7 +1698,7 @@ before changing provider/auth config.
 
 ## 11. Advanced Executor Status Polling
 
-The tools in this section are hidden from the seven-tool Commander endpoint.
+The tools in this section are hidden from the nine-tool Commander endpoint.
 Use an explicitly approved local advanced client, for example:
 
 ```bash

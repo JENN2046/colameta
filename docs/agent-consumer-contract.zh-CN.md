@@ -136,11 +136,48 @@ advanced endpoint，不应通过隐藏工具调用绕过 Commander profile。
   "package_mode": "manifest",
   "summary": {},
   "omitted_fields": ["data"],
+  "artifact_id": "<opaque short-lived id>",
+  "resource_uri": "colameta://result-artifact/<id>",
+  "page_uri_template": "colameta://result-artifact/<id>/pages/{page}",
+  "page_count": 1,
+  "content_sha256": "<sha256>",
+  "expires_at": "<ISO-8601>",
   "recommended_next_reads": []
 }
 ```
 
-Agent 应按 `recommended_next_reads` 分步续读，不要把 packaged manifest 当作完整业务 payload。
+当 manifest 带有 `resource_uri` 时，Agent 应优先通过 `resources/read` 读取第 1 页，再按
+`page_uri_template` 读取到 `page_count`。拼回 `content` 后必须核对 `content_sha256`；artifact
+过期、缺失或页码无效时返回 `result_artifact_not_found_or_expired`，此时重新发起更小范围的只读请求。
+artifact 是服务进程内的短期只读 continuation，不是 durable receipt、preview、授权或业务状态。
+
+没有 artifact 字段的旧 manifest，Agent 仍应按 `recommended_next_reads` 分步续读；不要把 packaged
+manifest 当作完整业务 payload。
+
+## Manifest 绑定的独立审查读取
+
+复杂独立审查不能通过任意源码读取来补洞。使用七工具中的
+`run_mcp_workflow(workflow="review_manifest", phase="inspect")`：
+
+1. 不传 `review_manifest` 的 inspect 只返回当前 `context_binding` 与模板；不读取 subject。
+2. 外部合同必须精确绑定 `project_name`、`branch`、完整 `head`、`runner_plan`、
+   `current_version`、`review_unit`、`workflow_intent=independent_review`，并列出最多 64 个
+   `subjects[{path, sha256}]`。
+3. 带 manifest 的 inspect 在所有上下文与哈希都匹配时，返回短期
+   `review_manifest_id`、`manifest_resource_uri` 和每个 subject 的 `resource_uri`、`read_call`。
+4. `resources/templates/list` 会静态公开 manifest 摘要、subject 首页和后续页的 URI 形状；它不列出
+   live session ID、文件路径或正文，也不绕过 scope、上下文或哈希校验。
+5. Agent 应优先通过 `resources/read` 读取这些 opaque URI；每次读取都会重新核对 checkout
+   上下文，读取 subject 时还会重新核对文件 SHA-256。若 ChatGPT 宿主拒绝动态 URI，则使用该 subject
+   返回的 `read_call`，即 `review_manifest` 的 `phase=read`、短期 manifest ID、已声明的
+   `review_manifest_subject_index` 和页码。它只返回这一页，并再次复核上下文和该 subject SHA-256。
+   `phase=verify` 只复核所有 subject，不返回文件正文。
+
+若任一绑定不一致，返回 `CONTEXT_BINDING_MISMATCH`；若 subject 内容变化，返回
+`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。此时必须停止把旧证据与新 checkout 混用，重新请求
+模板并建立 manifest。敏感、私有 runtime、符号链接和高风险配置路径即使被 manifest 声明也会被
+拒绝。manifest 会话不授权 validation run、executor、commit、push、ReviewDecision、GateEvent
+或 Delivery accepted。
 
 ## Thin Governed Loop 使用规则
 
@@ -169,7 +206,8 @@ packet 必须保持 blocked，不继承 example evidence，也不能执行。
 
 私人 App 通过七工具中的 `run_mcp_workflow` 调用
 `workflow=gate_review_request`，不会新增第 8 个工具。必须先 `phase=inspect`；inspect/status
-只读，preview 生成有界签名 Gate preview，apply 需要完整 preview、精确 bindings、显式确认、
+只读，preview 生成仅在服务端保存的有界签名 Gate preview，并返回 opaque handle；apply 需要
+服务端完整 preview、精确 bindings、显式确认、
 `mcp:commit` 和可信私人 Operator/Work Item authority。governance disabled 时
 `candidate_count=0` 是正确结果，不得伪造 Work Item。
 

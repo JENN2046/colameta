@@ -21,7 +21,7 @@ EXPECTED_PROJECT = "ColaMeta"
 EXPECTED_RECORD_KEY = "stage_id"
 EXPECTED_MASTER_TASKBOOK_REF = {
     "path": "PROJECT_MASTER_TASKBOOK.md",
-    "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+    "raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
     "review_status": "freeze_candidate_confirmed_for_exact_hash",
 }
 EXPECTED_SOURCE_VERSION_TASKBOOK_REF = {

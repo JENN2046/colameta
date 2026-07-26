@@ -470,10 +470,11 @@ manage_git
 ```
 
 Work Item Gate review 不会增加第 8 个工具。通过 `run_mcp_workflow` 调用
-`workflow=gate_review_request`：先做只读 `phase=inspect`，再生成有界签名 preview；只有完整
-preview、精确 bindings、所需 OAuth/Work Item 权限以及显式确认全部通过后，才允许 apply。
-如果项目没有启用 Work Item governance，成功 inspect 且候选为 0 就是真实结果，不能为了继续
-流程伪造 Work Item。
+`workflow=gate_review_request`：先做只读 `phase=inspect`，再生成仅在服务端保存的有界签名
+preview；客户端只需原样回传 copyable apply call 中的 opaque continuation handle。服务端仍会
+用完整 preview 核对精确 bindings、所需 OAuth/Work Item 权限和显式确认，全部通过后才允许
+apply。如果项目没有启用 Work Item governance，成功 inspect 且候选为 0 就是真实结果，不能
+为了继续流程伪造 Work Item。
 
 workflow 细节见 [ColaMeta 使用说明书](docs/USAGE.zh-CN.md)；本地安装、私人 App、systemd、
 稳定替换、验收与回滚见

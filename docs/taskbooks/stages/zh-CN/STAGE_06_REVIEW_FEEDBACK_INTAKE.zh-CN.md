@@ -3,7 +3,7 @@
 ```yaml id="stage-06-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_06_REVIEW_FEEDBACK_INTAKE.md
-  source_sha256: c83c979d447a4ec645d380b6c1dc206730d12d5d644c08582b3cfd04f3e0009d
+  source_sha256: feef78fc63ddd9332f011bc0149c2056eb51033fb437023e7702e7c51b24bdd6
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
