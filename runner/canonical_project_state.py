@@ -17,6 +17,8 @@ from runner.project_context_binding import collect_project_context_binding
 
 
 CANONICAL_PROJECT_STATE_SCHEMA_VERSION = "colameta.canonical_project_state.v1"
+EXTERNAL_OBSERVATION_MAX_AGE_SECONDS = 24 * 60 * 60
+EXTERNAL_OBSERVATION_FUTURE_SKEW_SECONDS = 5 * 60
 
 
 def build_canonical_project_state(
@@ -43,7 +45,7 @@ def build_canonical_project_state(
     or credentials itself.
     """
 
-    at = observed_at or datetime.now(timezone.utc)
+    at = _normalize_datetime(observed_at or datetime.now(timezone.utc))
     observed_at_text = _iso(at)
     project_name = _optional_text(project_identity.get("project_name"))
     context_binding = collect_project_context_binding(
@@ -72,6 +74,7 @@ def build_canonical_project_state(
         connector=connector,
         blockers=blockers,
         partial_errors=partial_errors,
+        reference_time=at,
     )
     unobserved = [
         name
@@ -81,6 +84,7 @@ def build_canonical_project_state(
     external_freshness_reasons = _external_freshness_reasons(
         runtime,
         connector,
+        reference_time=at,
     )
     external_partial = any(
         observation.get("status") == "partial"
@@ -255,6 +259,7 @@ def _current_conclusion(
     connector: dict[str, Any],
     blockers: list[str],
     partial_errors: list[dict[str, Any]],
+    reference_time: datetime,
 ) -> dict[str, Any]:
     """State both the project-workflow and external-freshness conclusions.
 
@@ -285,7 +290,11 @@ def _current_conclusion(
     else:
         project_status = "ready"
 
-    external_reasons = _external_freshness_reasons(runtime, connector)
+    external_reasons = _external_freshness_reasons(
+        runtime,
+        connector,
+        reference_time=reference_time,
+    )
     external_status = (
         "partial_observation"
         if any(
@@ -339,6 +348,8 @@ def _current_conclusion(
 def _external_freshness_reasons(
     runtime: dict[str, Any],
     connector: dict[str, Any],
+    *,
+    reference_time: datetime,
 ) -> list[str]:
     reasons: list[str] = []
     for name, observation in (("runtime", runtime), ("connector", connector)):
@@ -351,6 +362,22 @@ def _external_freshness_reasons(
             reasons.append(f"{name}_partial_observation")
         elif status not in {"healthy", "current"}:
             reasons.append(f"{name}_current_observation_not_healthy")
+        else:
+            observed_at = observation.get("observed_at")
+            if observed_at is None:
+                reasons.append(f"{name}_current_observation_timestamp_missing")
+                continue
+            observed = _parse_iso(observed_at)
+            if observed is None:
+                reasons.append(f"{name}_current_observation_timestamp_invalid")
+                continue
+            age_seconds = (
+                _normalize_datetime(reference_time) - observed
+            ).total_seconds()
+            if age_seconds < -EXTERNAL_OBSERVATION_FUTURE_SKEW_SECONDS:
+                reasons.append(f"{name}_current_observation_from_future")
+            elif age_seconds > EXTERNAL_OBSERVATION_MAX_AGE_SECONDS:
+                reasons.append(f"{name}_current_observation_stale")
     return reasons
 
 
@@ -380,6 +407,24 @@ def _unique_texts(values: list[Any]) -> list[str]:
         if isinstance(value, str) and value and value not in result:
             result.append(value)
     return result
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            value[:-1] + "+00:00" if value.endswith("Z") else value
+        )
+    except ValueError:
+        return None
+    return _normalize_datetime(parsed)
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _iso(value: datetime) -> str:

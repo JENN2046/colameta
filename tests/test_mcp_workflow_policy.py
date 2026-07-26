@@ -27,6 +27,7 @@ from runner.mcp_workflow_policy import (
         ({"workflow": "stage_7_9_preview", "phase": "preview"}, "mcp:read"),
         ({"workflow": "stage_7_9_preview", "phase": "apply"}, "mcp:read"),
         ({"workflow": "current_facts", "phase": "preview"}, "mcp:preview"),
+        ({"workflow": "review_manifest"}, "mcp:read"),
         ({"workflow": "review_manifest", "phase": "verify"}, "mcp:read"),
         ({"workflow": "result_artifact", "phase": "read"}, "mcp:read"),
         ({"workflow": "gate_review_request", "phase": "preview"}, "mcp:preview"),

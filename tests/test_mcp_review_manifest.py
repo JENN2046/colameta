@@ -236,6 +236,22 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
 
 
+def test_legacy_review_manifest_defaults_omitted_phase_to_inspect(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path, managed=True)
+    server = MCPPlanningBridgeServer(str(project))
+
+    template = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {"workflow": "review_manifest"},
+    )
+
+    assert template["ok"] is True
+    assert template["data"]["status"] == "template_ready"
+    assert template["data"]["authority_boundary"]["does_not_read_files"] is True
+
+
 def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     server = MCPPlanningBridgeServer(str(project))

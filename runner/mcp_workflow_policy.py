@@ -107,7 +107,7 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     if workflow == "thin_governed_loop_preview":
         return "mcp:read"
     if workflow == REVIEW_MANIFEST_WORKFLOW:
-        if phase in {"inspect", "read", "verify", "status"}:
+        if phase in {"", "inspect", "read", "verify", "status"}:
             return "mcp:read"
         return None
     if workflow == "small_project_patch":

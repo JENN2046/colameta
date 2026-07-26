@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from runner.canonical_project_state import (
     CANONICAL_PROJECT_STATE_SCHEMA_VERSION,
+    EXTERNAL_OBSERVATION_FUTURE_SKEW_SECONDS,
+    EXTERNAL_OBSERVATION_MAX_AGE_SECONDS,
     build_canonical_project_state,
 )
 from runner.project_snapshot import ProjectSnapshotBuilder
@@ -212,7 +216,10 @@ def test_canonical_state_never_projects_noncurrent_external_status_as_ready(
             head,
             delivery_clean=True,
             runtime_observation={"status": status},
-            connector_observation={"status": "healthy"},
+            connector_observation={
+                "status": "healthy",
+                "observed_at": "2026-07-22T01:02:01Z",
+            },
         )
         assert state["freshness"]["current_observation"] == (
             "freshness_required"
@@ -229,13 +236,91 @@ def test_canonical_state_never_projects_noncurrent_external_status_as_ready(
         head,
         delivery_clean=True,
         runtime_observation={"status": "partial"},
-        connector_observation={"status": "healthy"},
+        connector_observation={
+            "status": "healthy",
+            "observed_at": "2026-07-22T01:02:01Z",
+        },
     )
     assert partial["freshness"]["current_observation"] == "partial"
     assert partial["current_conclusion"]["status"] == "partial_observation"
     assert partial["current_conclusion"]["reasons"] == [
         "runtime_partial_observation"
     ]
+
+
+@pytest.mark.parametrize("source_name", ["runtime", "connector"])
+@pytest.mark.parametrize(
+    ("observed_at", "reason_suffix"),
+    [
+        (None, "timestamp_missing"),
+        ("not-a-timestamp", "timestamp_invalid"),
+        ("2026-07-21T01:02:02Z", "stale"),
+        ("2026-07-22T01:07:04Z", "from_future"),
+    ],
+)
+def test_canonical_state_requires_fresh_external_observation_timestamps(
+    tmp_path: Path,
+    source_name: str,
+    observed_at: str | None,
+    reason_suffix: str,
+) -> None:
+    project, head = _make_git_checkout(tmp_path)
+    fresh_observation = {
+        "status": "healthy",
+        "observed_at": "2026-07-22T01:02:01Z",
+    }
+    checked_observation = {"status": "healthy"}
+    if observed_at is not None:
+        checked_observation["observed_at"] = observed_at
+    observations = {
+        "runtime": dict(fresh_observation),
+        "connector": dict(fresh_observation),
+    }
+    observations[source_name] = checked_observation
+
+    state = _state(
+        project,
+        head,
+        delivery_clean=True,
+        runtime_observation=observations["runtime"],
+        connector_observation=observations["connector"],
+    )
+
+    assert state["freshness"]["current_observation"] == "freshness_required"
+    assert state["current_conclusion"]["status"] == "freshness_required"
+    assert state["current_conclusion"]["reasons"] == [
+        f"{source_name}_current_observation_{reason_suffix}"
+    ]
+
+
+def test_canonical_state_external_observation_freshness_boundaries(
+    tmp_path: Path,
+) -> None:
+    project, head = _make_git_checkout(tmp_path)
+    reference = datetime(2026, 7, 22, 1, 2, 3, tzinfo=timezone.utc)
+
+    state = _state(
+        project,
+        head,
+        delivery_clean=True,
+        runtime_observation={
+            "status": "current",
+            "observed_at": (
+                reference
+                - timedelta(seconds=EXTERNAL_OBSERVATION_MAX_AGE_SECONDS)
+            ).isoformat(),
+        },
+        connector_observation={
+            "status": "healthy",
+            "observed_at": (
+                reference
+                + timedelta(seconds=EXTERNAL_OBSERVATION_FUTURE_SKEW_SECONDS)
+            ).isoformat(),
+        },
+    )
+
+    assert state["freshness"]["current_observation"] == "current"
+    assert state["current_conclusion"]["status"] == "ready"
 
 
 def test_project_snapshot_projects_scalar_runner_status(
