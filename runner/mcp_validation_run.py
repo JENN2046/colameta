@@ -718,6 +718,9 @@ class MCPValidationRunManager:
                     break
 
             if isolated_checkout is not None:
+                self._remove_isolated_execution_overlays(
+                    isolated_checkout
+                )
                 source_after = self._capture_checkout_snapshot(
                     Path(execution_root)
                 )
@@ -1749,10 +1752,18 @@ class MCPValidationRunManager:
                 raise RuntimeError(
                     "isolated validation checkout did not match candidate"
                 )
+            project_venv = project_root / ".venv"
+            checkout_venv = checkout / ".venv"
+            if project_venv.is_dir():
+                checkout_venv.symlink_to(
+                    project_venv,
+                    target_is_directory=True,
+                )
             return {
                 "root": checkout,
                 "parent": parent,
                 "git": git,
+                "checkout_venv": checkout_venv,
                 "candidate_head": candidate_head,
                 "candidate_tree": candidate_tree,
                 "source_before": source_before,
@@ -1774,6 +1785,33 @@ class MCPValidationRunManager:
             raise RuntimeError(
                 "isolated validation checkout preparation failed"
             ) from exc
+
+    def _remove_isolated_execution_overlays(
+        self,
+        isolated_checkout: dict[str, Any],
+    ) -> None:
+        checkout = isolated_checkout.get("root")
+        checkout_venv = isolated_checkout.get("checkout_venv")
+        git = isolated_checkout.get("git")
+        if (
+            not isinstance(checkout, Path)
+            or not isinstance(checkout_venv, Path)
+            or git is None
+        ):
+            raise RuntimeError(
+                "isolated validation overlay cleanup is unavailable"
+            )
+        if checkout_venv.is_symlink():
+            checkout_venv.unlink()
+        elif checkout_venv.exists():
+            raise RuntimeError(
+                "isolated validation virtualenv overlay was rebound"
+            )
+        git.run(
+            checkout,
+            "clean",
+            "-fdX",
+        )
 
     def _cleanup_isolated_checkout(
         self,

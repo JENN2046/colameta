@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 from runner.mcp_server import (
@@ -41,6 +42,10 @@ def _make_git_checkout(tmp_path: Path, *, managed: bool = False) -> Path:
     subprocess.run(["git", "-C", str(project), "config", "user.name", "Review Fixture"], check=True)
     docs_dir = project / "docs"
     docs_dir.mkdir()
+    (project / ".gitignore").write_text(
+        ".pytest_cache/\n.venv/\n",
+        encoding="utf-8",
+    )
     (docs_dir / "review-input.md").write_text("# Review input\n\nA bounded subject.\n", encoding="utf-8")
     (docs_dir / "review-contract.yaml").write_text("review: independent\n", encoding="utf-8")
     if managed:
@@ -344,6 +349,59 @@ def test_manifest_validation_isolated_checkout_ignores_transient_source_checkout
     )
     assert subject.read_text(encoding="utf-8") == original_subject
     checkout = final["output_summary"]["checkout_provenance"]
+    assert checkout["source_binding_match"] is True
+    assert checkout["cleanup_complete"] is True
+
+
+def test_manifest_validation_isolated_checkout_binds_toolchain_and_cleans_generated_overlays(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    venv_bin = project / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(Path(sys.executable).resolve())
+    observed_venv_targets: list[Path] = []
+    original_run_command = MCPValidationRunManager._run_command
+
+    def run_command(
+        self,
+        command,
+        *,
+        timeout_seconds,
+        cwd=None,
+    ):
+        assert cwd is not None
+        checkout = Path(cwd)
+        checkout_venv = checkout / ".venv"
+        assert checkout_venv.is_symlink()
+        observed_venv_targets.append(checkout_venv.resolve())
+        generated = checkout / ".pytest_cache"
+        generated.mkdir()
+        (generated / "validation-cache").write_text(
+            "generated\n",
+            encoding="utf-8",
+        )
+        return original_run_command(
+            self,
+            command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
+        )
+
+    monkeypatch.setattr(
+        MCPValidationRunManager,
+        "_run_command",
+        run_command,
+    )
+    _manager, _run_id, final, _path = _completed_manifest_validation(
+        project
+    )
+
+    assert final["status"] == "passed"
+    assert observed_venv_targets == [(project / ".venv").resolve()]
+    checkout = final["output_summary"]["checkout_provenance"]
+    assert checkout["source_before"] == checkout["source_after"]
     assert checkout["source_binding_match"] is True
     assert checkout["cleanup_complete"] is True
 
