@@ -38,6 +38,12 @@ from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.mcp_project_memory import MCPProjectMemoryManager
 from runner.mcp_todolist import MCPTodoListManager
 from runner.mcp_project_patch import MCPProjectPatchManager
+from runner.mcp_project_routing import (
+    OPERATOR_TARGET_ISOLATED,
+    TOOL_ROUTE_CONTINUATIONS,
+    ProjectRouteContext,
+    ProjectRouteServerFactory,
+)
 from runner.mcp_submission_evidence_revision import MCPSubmissionEvidenceRevisionManager
 from runner.p1_release_evidence import P1ReleaseEvidenceManager
 from runner.mcp_git_history import MCPGitHistoryManager
@@ -1058,6 +1064,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
             max_items=MCP_REVIEW_MANIFEST_MAX_ITEMS,
         )
+        self._project_route_server_factory = ProjectRouteServerFactory(self)
         self.bridge = PlanningBridge()
         self.source_review = SourceReviewBridge()
         if self.service_mode:
@@ -4387,6 +4394,28 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         clean.pop("project_name", None)
         return clean
 
+    def _resolve_project_route_context(
+        self,
+        params: dict[str, Any],
+        *,
+        require_managed: bool,
+    ) -> ProjectRouteContext:
+        if require_managed:
+            project_root, _ = self._resolve_managed_project_context(params)
+        else:
+            project_root, _ = self._resolve_read_only_project_context(params)
+        raw_project_name = params.get("project_name")
+        public_project_name = (
+            raw_project_name.strip()
+            if isinstance(raw_project_name, str)
+            else None
+        )
+        return ProjectRouteContext(
+            project_root=project_root,
+            public_project_name=public_project_name,
+            require_managed=require_managed,
+        )
+
     def _route_project_name_tool(
         self,
         tool_name: str,
@@ -4400,39 +4429,36 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED",
                 "project_name 路由不接受 project_root 覆盖。",
             )
-        if require_managed:
-            project_root, _ = self._resolve_managed_project_context(params)
-        else:
-            project_root, _ = self._resolve_read_only_project_context(params)
-        routed_server = self.__class__(project_root)
-        # Project routing is an implementation detail of the serving MCP
-        # instance.  Keep packaged continuations in that instance's store so a
-        # later read_result_artifact call can recover results created by the
-        # temporary project-scoped server.
-        routed_server._mcp_result_artifact_store = (
-            self._mcp_result_artifact_store
+        context = self._resolve_project_route_context(
+            params,
+            require_managed=require_managed,
         )
-        # Gate preview continuations carry private principal bindings.  The
-        # routed server stores them only in process memory and returns an
-        # opaque handle; share the serving store so the later routed apply can
-        # resolve that handle without exposing the signed preview.
-        routed_server._gate_review_preview_store = self._gate_review_preview_store
+        routed_server = self._project_route_server_factory.create(
+            context,
+            TOOL_ROUTE_CONTINUATIONS,
+        )
         routed_tool = routed_server.tools.get(tool_name)
         if not callable(routed_tool):
             raise MCPToolInputError("TOOL_NOT_FOUND", f"未知 tool：{tool_name}")
         routed_params = self._strip_project_name_param(params)
         routed_params.pop("project_root", None)
-        original_project_name = params.get("project_name")
-        if isinstance(original_project_name, str) and original_project_name.strip():
+        if context.public_project_name:
             # Keep the public registry identity available to the routed server
             # only for context revalidation.  It carries no authority and is
             # removed before any lower-level manager sees parameters.
-            routed_params["__context_binding_project_name"] = original_project_name.strip()
+            routed_params["__context_binding_project_name"] = (
+                context.public_project_name
+            )
         result = routed_tool(routed_params)
-        if isinstance(result, dict) and isinstance(original_project_name, str) and original_project_name.strip():
-            clean_project_name = original_project_name.strip()
-            self._inject_project_name_into_routed_result(result, clean_project_name)
-            self._inject_project_name_into_nested_actions(result, clean_project_name)
+        if isinstance(result, dict) and context.public_project_name:
+            self._inject_project_name_into_routed_result(
+                result,
+                context.public_project_name,
+            )
+            self._inject_project_name_into_nested_actions(
+                result,
+                context.public_project_name,
+            )
         return result
 
     def _inject_project_name_into_nested_actions(self, value: Any, project_name: str) -> None:
@@ -8370,10 +8396,16 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
 
     def _operator_target_server(self, params: dict[str, Any]) -> "MCPPlanningBridgeServer":
-        project_root, _ = self._resolve_managed_project_context(params)
-        if os.path.realpath(project_root) == os.path.realpath(self.project_root):
+        context = self._resolve_project_route_context(
+            params,
+            require_managed=True,
+        )
+        if os.path.realpath(context.project_root) == os.path.realpath(self.project_root):
             return self
-        return self.__class__(project_root)
+        return self._project_route_server_factory.create(
+            context,
+            OPERATOR_TARGET_ISOLATED,
+        )
 
     def _operator_batch_service_for_params(self, params: dict[str, Any]) -> OperatorBatchService:
         return self._operator_target_server(params)._operator_batch_service()
