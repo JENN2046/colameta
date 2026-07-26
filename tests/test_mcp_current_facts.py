@@ -9,6 +9,7 @@ import subprocess
 from runner.current_facts_artifact import CURRENT_FACTS_ARCHIVE_ROOT
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_registry import ProjectRegistry
 
 
 def _make_git_checkout(tmp_path: Path) -> Path:
@@ -89,6 +90,60 @@ def test_current_facts_inspect_uses_a_recoverable_typed_result_artifact(tmp_path
     payload = json.loads(restored)
     assert payload["data"]["workflow"] == "current_facts"
     assert payload["data"]["current_facts"]["authority_boundary"]["snapshot_is_observation_only"] is True
+
+
+def test_routed_current_facts_artifact_remains_in_the_serving_store(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(project),
+        project_name="current-facts-target",
+    )
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+    server._mcp_result_artifact_store = MCPResultArtifactStore(page_chars=300)
+
+    inspect = _data(
+        server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "current_facts",
+                "phase": "inspect",
+                "project_name": "current-facts-target",
+            },
+        )
+    )
+
+    pages: list[str] = []
+    for page in range(1, inspect["page_count"] + 1):
+        read = _data(
+            server.call_tool_for_agent(
+                "read_result_artifact",
+                {
+                    "artifact_id": inspect["artifact_id"],
+                    "artifact_page": page,
+                },
+            )
+        )
+        assert read["content_sha256"] == inspect["content_sha256"]
+        pages.append(read["artifact_page"]["content"])
+
+    restored = "".join(pages)
+    assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == (
+        inspect["content_sha256"]
+    )
+    payload = json.loads(restored)
+    assert payload["data"]["workflow"] == "current_facts"
 
 
 def test_current_facts_preview_is_observational_until_its_explicit_apply(tmp_path: Path) -> None:
@@ -178,6 +233,62 @@ def test_current_facts_apply_fails_closed_when_the_previewed_observation_changes
     )
 
     stale = server.call_tool_for_agent("run_mcp_workflow", apply_action["params"])
+
+    assert stale["ok"] is False
+    assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"
+    assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
+
+
+def test_current_facts_apply_rejects_refreshed_source_timestamp(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    baseline = server._tool_analyze_project_state({})
+    assert baseline["ok"] is True
+    current_state = copy.deepcopy(baseline["canonical_state"])
+    current_state["currently_observed"]["runtime"].update(
+        {
+            "status": "healthy",
+            "observed_at": "2026-07-24T08:09:00Z",
+            "reason_code": None,
+        }
+    )
+
+    def analyze_fixture(_params: dict) -> dict:
+        return {
+            "ok": True,
+            "canonical_state": copy.deepcopy(current_state),
+        }
+
+    server._tool_analyze_project_state = analyze_fixture  # type: ignore[method-assign]
+    preview = _data(
+        server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "current_facts",
+                "phase": "preview",
+            },
+        )
+    )
+    current_state["observed_at"] = "2026-07-24T08:10:10Z"
+    current_state["freshness"]["observed_at"] = "2026-07-24T08:10:10Z"
+    current_state["currently_observed"]["runtime"]["observed_at"] = (
+        "2026-07-24T08:10:00Z"
+    )
+    apply_action = next(
+        action
+        for action in preview["next_actions"]
+        if action.get("params", {}).get("phase") == "apply"
+    )
+
+    stale = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        apply_action["params"],
+    )
 
     assert stale["ok"] is False
     assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"

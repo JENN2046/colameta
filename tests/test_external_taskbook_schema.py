@@ -43,12 +43,12 @@ class ExternalTaskbookSchemaTests(unittest.TestCase):
             },
             "master_taskbook_ref": {
                 "path": "PROJECT_MASTER_TASKBOOK.md",
-                "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+                "raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
                 "review_status": "freeze_candidate_confirmed_for_exact_hash",
             },
             "stage_taskbook_ref": {
                 "path": "docs/taskbooks/stages/STAGE_03_EXTERNAL_TASKBOOK_IMPORT.md",
-                "raw_snapshot_sha256": "c5402734ef6990687a6a03ec6b17769f598ff0319b350b6a2371144985ece7ff",
+                "raw_snapshot_sha256": "2adb368816294d0f14353d9b607aac933ffd3ae61a8d850df45e5289386e16f5",
                 "stage_id": "stage_03_external_taskbook_import",
             },
             "allowed_files": [

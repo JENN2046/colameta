@@ -10,6 +10,9 @@ from runner.core_orchestrator import WorkflowOrchestrator
     [
         "Inspect the project state, but do not start executor.",
         "Review the current session without running Codex.",
+        "Inspect the project state, but do not invoke an executor.",
+        "Review the current session; don't run an executor.",
+        "Inspect only, without starting an executor.",
         "只查看执行器状态，不要启动执行器。",
         "不运行 executor，只读检查当前项目。",
     ],

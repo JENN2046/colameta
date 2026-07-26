@@ -110,8 +110,8 @@ tunnel-client/proxy/provider 配置，也不读取 token/cookie/credential。只
 
 验收应看到 `status=succeeded`、`read_only=true`、`side_effects=false`。如果 governance
 disabled 且 `candidate_count=0`，这是正确边界；不要伪造 Work Item。preview/apply 必须继续遵守
-完整签名 preview、精确 bindings、显式确认、`mcp:commit` 和可信私人 Operator/Work Item
-authority 的联合门禁。
+服务端保存的完整签名 preview、公开 opaque handle、精确 bindings、显式确认、`mcp:commit`
+和可信私人 Operator/Work Item authority 的联合门禁。
 
 ## 薄治理闭环输入草稿
 

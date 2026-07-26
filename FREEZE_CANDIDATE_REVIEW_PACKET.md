@@ -19,8 +19,9 @@ freeze_candidate_review_packet:
   target_review_status: freeze_candidate_confirmed_for_exact_hash
   project: ColaMeta
   observed_at: "2026-06-29"
+  reconciled_at: "2026-07-25"
   workspace: /home/jenn/src/colameta-dev
-  packet_sync_status: post_canonical_hash_receipt_draft_commit_reconciliation
+  packet_sync_status: post_p1_convergence_mainline_baseline_reconciliation
   synced_after_master_updates:
     - hash_canonical_single_authority_patch
     - gateevent_commander_blocked_accepted_state_authority_patch
@@ -33,6 +34,15 @@ freeze_candidate_review_packet:
     commit: 9fea935
     subject: "docs: add canonical hash receipt draft"
     status: created_locally_not_pushed
+  mainline_baseline_reconciliation:
+    observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+    observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+    reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+    local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+    remote_fetch_performed: false
+    local_implementation_commits_ahead_of_tracking_ref: 27
+    local_implementation_commits_behind_tracking_ref: 0
+    reconciliation_delivery_commit_self_recorded: false
 
   non_authorization:
     - does_not_promote_target_to_active
@@ -88,13 +98,18 @@ in this packet as an external confirmation record for that exact hash.
 
 ```yaml id="repository-reality-snapshot"
 repository_reality:
-  branch: main
-  observed_committed_head_before_this_readiness_edit: 9fea935
-  observed_committed_head_subject: "docs: add canonical hash receipt draft"
-  origin_main: 1caa0b2
-  origin_main_subject: "feat(runtime): add loaded-code verification"
-  ahead_origin_main: 6
+  observed_at: 2026-07-25
+  source_branch: main
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  observed_base_head_subject: "feat(release): evaluate P1 evidence receipts"
+  reconciliation_branch: codex/mainline-baseline-reconciliation-20260725
+  local_origin_main_ref: e167fa645a000779297918d1b895eabe0756aa55
+  local_origin_main_subject: "Merge pull request #182 from JENN2046/agent/stable-b660f7b-receipt"
+  remote_fetch_performed: false
+  ahead_local_origin_main_ref: 27
+  behind_local_origin_main_ref: 0
   tracked_remote_sync_status: local_ahead_remote
+  reconciliation_delivery_commit: intentionally_not_self_recorded
   baseline_files_tracked_in_head:
     - PROJECT_MASTER_TASKBOOK.md
     - FREEZE_CANDIDATE_REVIEW_PACKET.md
@@ -142,7 +157,8 @@ not authorized by this packet:
 1. Confirm candidate-authoritative canonicalization policy.
 2. Confirm candidate-authoritative hash policy.
 3. Generate canonical hash receipt for the exact target file.
-4. Treat freeze_candidate as active authority.
+4. Obtain a separate hash-specific active-status promotion decision;
+   freeze_candidate itself must never be treated as active authority.
 ```
 
 Hash freshness / invalidation rule:
@@ -376,7 +392,7 @@ This section is a review checklist, not P0 closure. `no_known_p0` means the curr
 
 ```yaml id="p0-review-checklist"
 p0_review:
-  status: pending_non_authoritative_post_patch_review
+  status: pending_non_authoritative_post_packet_correction_review
   post_patch_review_scope:
     - hash_canonical_single_authority
     - gateevent_state_authority
@@ -424,11 +440,14 @@ p0_review:
       current_result: no_known_p0_after_patch
     - id: p0_authority_laundering_keyword_scan_after_patch
       question: Did the latest authority-laundering wording scan find a remaining direct promotion shortcut?
-      current_result: no_known_p0_after_patch
+      current_result: packet_shortcut_found_and_corrected_formal_p0_closure_not_granted
       scan_note: >
-        Search targets for old split-hash, direct-state-effect, allowed_flag_change,
-        ReviewDecision approved, review_status approved, and direct apply wording
-        returned no remaining authority shortcut matches.
+        The 2026-07-25 Master draft review found that
+        hash-receipt-required-before-promotion item 4 incorrectly instructed
+        readers to treat freeze_candidate as active authority. The packet-only
+        correction now requires a separate hash-specific active-status
+        promotion decision and explicitly preserves the non-authority boundary.
+        This correction does not grant formal P0 closure.
 ```
 
 Closure language draft:
@@ -438,6 +457,91 @@ P0 closure has not been granted. Any future P0 closure must be separately,
 explicitly, and item-by-item authorized by Commander after canonical copy
 storage, canonical hash receipt, accepted candidate policies, and
 hash-specific confirmation.
+```
+
+### 5.1 External Master Review Disposition — 2026-07-25
+
+This record is external to `PROJECT_MASTER_TASKBOOK.md` and is bound to the
+exact raw Master snapshot reviewed at commit `6f888a58`. It records review
+dispositions only; it does not modify or supersede the Master.
+
+```yaml id="external-master-review-disposition-20260725"
+external_master_review_disposition:
+  schema_version: colameta.external_master_review_disposition.v1
+  record_id: master-review-disposition-20260725-1b2d7874
+  record_status: packet_p0_wording_corrected_formal_p0_closure_and_three_p1_decisions_pending
+  recorded_at: 2026-07-25
+  review_baseline:
+    review_commit: 6f888a58b857648be01d37f317282ef586ea935e
+    target_document: PROJECT_MASTER_TASKBOOK.md
+    target_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    target_embedded_status: discussion_draft
+    target_review_status: freeze_candidate_confirmed_for_exact_hash
+    target_content_changed_by_this_record: false
+  dispositions:
+    - finding_id: p0_freeze_candidate_active_authority_shortcut
+      severity: P0
+      source_refs:
+        - "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-core-rule"
+      finding: >
+        The packet's required-before-promotion list incorrectly instructed
+        readers to treat freeze_candidate as active authority.
+      disposition: corrected_in_freeze_packet_only
+      correction_ref: "FREEZE_CANDIDATE_REVIEW_PACKET.md#hash-receipt-required-before-promotion"
+      formal_p0_closure_status: not_granted
+      active_promotion_status: not_authorized
+      master_change_required_by_this_disposition: false
+    - finding_id: p1_canonical_freeze_hash_reproducibility
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#hash-policy"
+        - "PROJECT_MASTER_TASKBOOK.md#freeze-process-and-canonicalization"
+        - runner/master_taskbook_hash_binding.py
+      finding: >
+        The candidate-authoritative canonical payload and freeze hash are not
+        yet mechanically reproducible from the current Master and
+        implementation; canonical receipt generation and canonical payload
+        hash finalization remain deferred.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_review_decision_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#review-decision-specific-fields"
+      finding: >
+        ReviewDecision decision-specific minimum fields require transition
+        fields for ACCEPT and NEEDS_FIX even when the resulting action is
+        gate_review_required and no transition has yet been applied.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+    - finding_id: p1_gate_event_conditional_transition_fields
+      severity: P1
+      source_refs:
+        - "PROJECT_MASTER_TASKBOOK.md#gate-event-minimum-contract"
+      finding: >
+        GateEvent minimum fields require transition fields for blocker,
+        correction, supersede, and rejected event types even when no delivery
+        state transition is applied.
+      disposition: open_pending_master_candidate_route_decision
+      proposed_master_change_status: not_prepared
+  next_decision:
+    status: pending_commander_decision
+    question: >
+      Whether to prepare a new Master candidate that resolves all three open
+      P1 contract findings and, only after that candidate exists, calculate and
+      review a new exact Master hash.
+    master_candidate_preparation_authorized: false
+    master_rehash_authorized: false
+  non_authorization:
+    - does_not_mutate_or_supersede_master
+    - does_not_grant_formal_p0_closure
+    - does_not_close_or_downgrade_any_p1_finding
+    - does_not_promote_master
+    - does_not_authorize_implementation
+    - does_not_authorize_commit
+    - does_not_authorize_push
+    - does_not_authorize_release_or_deploy
 ```
 
 ---
@@ -464,6 +568,47 @@ PROJECT_MASTER_TASKBOOK.md. Freeze-candidate review of the Master Taskbook
 does not authorize pushing v1.10, starting a new executor run, or entering the
 Master Taskbook Registry V1 implementation route.
 ```
+
+---
+
+### 6.1 2026-07-25 Mainline Baseline Reconciliation
+
+```yaml id="p1-mainline-baseline-reconciliation"
+p1_mainline_baseline_reconciliation:
+  observed_at: 2026-07-25
+  observed_base_head_before_reconciliation_edit: 05575ad90cd40f44819aed31dda185ec7aa5c1f8
+  exact_master_taskbook_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_content_changed: false
+  master_registry_or_stage_taskbook_content_changed: false
+  p1_local_implementation_status: p1_e_implementation_verified_fresh_development_acceptance_pending
+  exact_candidate_validation_status: not_claimed_requires_clean_candidate_revalidation
+  fresh_development_acceptance_status: pending
+  formal_p0_closure_status: not_granted
+  stable_replacement_authority: false
+  push_authority: false
+```
+
+The 27 local commits between the locally stored `origin/main` tracking ref and
+the observed base HEAD group into the typed-read/runtime foundation and P1-A
+through P1-E. This packet records that implementation-history convergence only.
+It does not self-record the later documentation commit and does not claim that
+the resulting documentation commit has passed the complete candidate
+validation ladder.
+
+The earlier production-readiness review findings have the following
+non-authoritative implementation dispositions:
+
+| Severity | Finding | Implementation evidence | Disposition |
+| --- | --- | --- | --- |
+| P0 | Enforce configured external-OAuth scopes server-side. | `e7fdabb18f95585f0b029aac68b53d020d122468`; `docs/production-readiness/remote-mcp-rc-hardening-20260706.zh-CN.md` | `resolved_in_implementation_review_closure_pending` |
+| P0 | Keep remote-public external OAuth read/preview-only and deny commit/plan before handler execution. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | Enforce a hard request-body cap for MCP and OAuth endpoints. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+| P1 | Enforce Git branch and remote policy, including apply-time recheck. | `e7fdabb18f95585f0b029aac68b53d020d122468`; tracked hardening receipt | `resolved_in_implementation_review_closure_pending` |
+
+These dispositions mean that implementation evidence exists for renewed
+review. They are not formal P0 closure, do not accept P1-E live evidence, and
+do not promote the Master, Registry, Stage taskbooks, release gate, or Delivery
+State.
 
 ---
 
@@ -586,7 +731,7 @@ packet_cannot_prove:
   - policy acceptance beyond the recorded candidate-authority-for-review-only scope
   - P0 review closure
   - active status promotion
-  - that post-patch P1 findings are resolved or formally dispositioned
+  - that post-patch P1 findings are formally closed for either the current Master or a new candidate
   - that local baseline commit f3b7420 has been pushed or accepted remotely
   - that canonical copy storage is final after post-baseline packet reconciliation
   - that the freeze-confirmed hash is active authority or implementation authority
@@ -724,4 +869,678 @@ Not allowed:
 None of these next-step labels authorize file creation, status promotion,
 canonicalization, P0 closure, git action, runtime action, executor action,
 remote mutation, or implementation work.
+```
+
+---
+
+## 13. Side-by-Side Master v1.1 Candidate Preparation
+
+This section records preparation evidence for a new, side-by-side Master
+candidate that addresses the three open P1 contract findings. It does not
+replace, mutate, invalidate, or re-register the current Master.
+
+```yaml id="master-candidate-preparation-20260725"
+master_candidate_preparation:
+  record_id: master-candidate-preparation-20260725-40c6af59
+  status: discussion_draft_candidate_prepared_pending_hash_specific_review
+  prepared_at: 2026-07-25
+  authorization_basis: user_authorized_new_master_candidate_for_three_p1_findings
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    external_review_status: freeze_candidate_confirmed_for_exact_hash
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    registry_record_unchanged_for_candidate: true
+    registered_master_reference_unchanged: true
+    current_hash_specific_status_remains_bound_to_current_exact_hash: true
+    candidate_replaces_current_master: false
+
+  candidate:
+    id: colameta-master-v1.1-p1-contract-convergence-candidate.1
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
+    raw_snapshot_command: sha256sum PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: e38edbd324045bda79b04abba73ea67ef76fcd531e733eb56cff04076b7d4689
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 77da1b70bb448dcd62e54965e7a3563c3d2935e0543c9e3b85c20572e6eb0fee
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: 387dce1306628aaef5ab7d37a5a13f44489f0212466cc42527f2e54ab5465acb
+    reproduction_input: Path(candidate.path).read_bytes()
+    reproduction_command: >-
+      .venv/bin/python -c 'import json; from pathlib import Path; from
+      runner.master_taskbook_hash_binding import canonicalize_master_taskbook;
+      r=canonicalize_master_taskbook(Path("PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md").read_bytes());
+      print(json.dumps({k:r[k] for k in
+      ("raw_snapshot_sha256","canonical_payload_sha256","freeze_content_hash",
+      "canonical_payload_field_count")},sort_keys=True))'
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  p1_candidate_dispositions:
+    canonical_payload_and_freeze_hash_reproducibility:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#hash-policy"
+        - runner/master_taskbook_hash_binding.py
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        The candidate declares one selector manifest, exact fenced-block and
+        heading resolution, deterministic scalar and JSON normalization,
+        a pinned safe YAML parser, a domain separator, and a fail-closed
+        executable canonicalizer.
+    review_decision_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#review-decision-specific-fields"
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        ReviewDecision fields are selected by decision and resulting_action;
+        gate_review_required forbids applied transition fields, while
+        state_transition_applied requires a bound GateEvent and applied fields.
+    gate_event_conditional_transition_fields:
+      status: addressed_in_candidate_pending_independent_review
+      evidence_refs:
+        - "PROJECT_MASTER_TASKBOOK.v1.1-candidate.1.md#gate-event-minimum-contract"
+        - tests/test_master_taskbook_hash_binding.py
+      correction: >-
+        Every GateEvent event_type maps to exactly one conditional branch;
+        rejected, blocker, correction, and supersede events forbid applied
+        from_state, to_state, and transition_outcome fields.
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 126
+      subtests_passed: 16
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2051
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 142
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_changed_scope: pass
+    bandit_changed_scope:
+      medium_or_high_findings: 0
+      retained_preexisting_low_finding: B105_false_positive_for_result_value_pass
+    non_ci_full_probe:
+      result: failed_environment_precondition_not_counted_as_pass
+      passed: 2052
+      skipped: 2
+      failure: CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE
+      classification: >-
+        One frozen R3 exact-toolchain test rejected generated pre-import
+        bytecode. Repository CI explicitly deselects this test and two related
+        frozen-toolchain tests from the ordinary matrix.
+
+  review_boundary:
+    prior_hash_review_status_transfers_to_candidate: false
+    new_hash_specific_review_required: true
+    p1_formal_closure_granted: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    commit_authorized_by_this_record: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+Candidate preparation outcome:
+
+```text id="master-candidate-preparation-outcome"
+The side-by-side candidate is ready for independent, hash-specific review.
+The current Master remains PROJECT_MASTER_TASKBOOK.md at raw SHA-256
+1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34.
+No P1 is formally closed, and no candidate activation, replacement, Registry
+mutation, Stage rebinding, commit, push, executor run, or runtime action is
+authorized by this preparation record.
+```
+
+---
+
+## 14. Master v1.1 Candidate 2 Independent Hash-Specific Review
+
+This section records the independently reproduced identity and technical
+contract review for `v1.1-candidate.2`. It supersedes the pending technical
+disposition for candidate 1, but it does not replace or activate the current
+Master and it does not grant formal P1 closure.
+
+```yaml id="master-candidate-2-hash-specific-review-20260725"
+master_candidate_2_hash_specific_review:
+  record_id: master-candidate-2-hash-review-20260725-b162e804
+  status: independent_hash_specific_review_passed_pending_separate_confirmation
+  reviewed_at: 2026-07-25
+  authorization_basis: user_authorized_candidate_2_preparation_and_independent_hash_specific_review
+  technical_disposition: PASS
+  blocking_findings: []
+  review_result_is_authority: false
+
+  current_master_boundary:
+    path: PROJECT_MASTER_TASKBOOK.md
+    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    registry_path: .colameta/taskbooks/master_taskbook_registry.json
+    current_master_unchanged: true
+    current_registry_unchanged: true
+    current_stage_bindings_unchanged: true
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    chinese_companion_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.zh-CN.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    runtime_build_policy_source_sha256: 71e88b15e5dd73b74820d18e14ad7d6866c09bb76864435806ee65261767cbf1
+    canonical_payload_field_count: 48
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_hash_domain_separator: ColaMeta.freeze_candidate.v1
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    generated_hashes_are_authority: false
+    canonical_receipt_generated: false
+
+  local_implementation_commits:
+    candidate_2_preparation: df5d8df19613e481bdac7274c49278e69c223e51
+    pyyaml_build_metadata_binding: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    pushed: false
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    yaml_library: PyYAML
+    yaml_library_version: 6.0.3
+    parsed_yaml_block_count: 52
+    canonical_field_count: 48
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+
+  candidate_1_p1_dispositions:
+    complete_canonicalization_contract_validation:
+      status: technically_resolved_in_candidate_2
+      evidence:
+        - exact recursive validation of all reproducible_canonicalization fields
+        - derived canonicalization views are checked for conflicts
+        - canonicalization contract selectors must be hash-bound
+        - repo-relative forward-slash canonical_path is enforced
+      negative_probes:
+        source_encoding_conflict: fail_closed
+        canonical_json_conflict: fail_closed
+        payload_shape_conflict: fail_closed
+        absolute_canonical_path: fail_closed
+        derived_view_conflict: fail_closed
+        unbound_contract_selector: fail_closed
+
+    review_decision_no_action_contradiction:
+      status: technically_resolved_in_candidate_2
+      resolution: no_action_removed_from_review_decision_resulting_action_values
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+      requested_and_applied_transition_fields_forbidden: true
+
+    gate_event_conditional_transition_fields:
+      status: prior_candidate_1_fix_retained_and_reverified
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  validation_evidence:
+    targeted_master_and_stage_contracts:
+      result: pass
+      passed: 116
+      subtests_passed: 29
+    candidate_hash_binding_module:
+      result: pass
+      passed: 15
+      subtests_passed: 13
+    r3_source_binding_and_original_failure_nodes:
+      result: pass
+      passed: 34
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2056
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+      warnings: 3
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    pre_fix_full_probe_result: failed_not_counted_as_pass
+    root_cause: stale_authoritative_canary_pyproject_digest_and_wheel_metadata_headers_after_pyyaml_pin
+    security_gate_weakened: false
+    correction_commit: 9e5c3ee4a3a7c777391789b51cd7a15a841f9568
+    focused_retest_result: pass
+    final_full_retest_result: pass
+
+  confirmation_boundary:
+    independent_technical_review_passed: true
+    candidate_is_eligible_for_separate_confirmation: true
+    separate_commander_confirmation_received: false
+    p1_formal_closure_granted: false
+    formal_master_generated: false
+    current_registry_updated_for_candidate: false
+    current_stage_bindings_updated_for_candidate: false
+    activation_or_replacement_authorized: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+Candidate 2 review outcome:
+
+```text id="master-candidate-2-review-outcome"
+The three exact candidate hashes were independently reproduced and the two
+candidate-1 P1 findings are technically resolved in v1.1-candidate.2. The
+retained GateEvent correction also passes structural review. Candidate 2 is
+eligible for a separate confirmation decision, but no formal Master, Registry,
+Stage binding, activation, replacement, push, executor run, or runtime action
+has been authorized or generated.
+```
+
+---
+
+## 15. Master v1.1 Candidate 2 Exact-Hash Confirmation
+
+This append-only record captures the separate confirmation issued after the
+independent hash-specific review. The confirmation is bound only to the three
+exact candidate hashes below. It satisfies the prerequisite for considering a
+future formalization proposal; it does not itself authorize or perform that
+formalization.
+
+```yaml id="master-candidate-2-exact-hash-confirmation-20260725"
+master_candidate_2_exact_hash_confirmation:
+  record_id: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+  status: exact_hashes_confirmed_formalization_not_authorized
+  confirmed_at: 2026-07-25
+  confirmation_source: current_explicit_user_instruction
+  confirmation_scope: confirm_the_three_exact_hashes_above
+  review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+  review_record_commit: ede2db1218b0bad138537ed3b14b86c47e38dc24
+
+  exact_candidate_identity:
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    embedded_status: discussion_draft
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+
+  confirmation_preconditions:
+    independent_hash_specific_review_passed: true
+    blocking_findings: []
+    exact_hashes_reverified_before_recording: true
+    candidate_raw_snapshot_unchanged_since_review: true
+
+  confirmation_effect:
+    separate_commander_confirmation_received: true
+    exact_hash_confirmation_gate: satisfied
+    candidate_eligible_for_formalization_consideration: true
+    prior_pending_confirmation_status_superseded: true
+
+  non_authorization:
+    - does_not_change_candidate_embedded_status
+    - does_not_grant_p1_formal_closure
+    - does_not_generate_or_replace_formal_master
+    - does_not_update_master_registry
+    - does_not_update_stage_registry_or_stage_bindings
+    - does_not_authorize_activation_or_runtime_action
+    - does_not_authorize_push
+    - does_not_make_candidate_active_authority
+
+  next_decision_required:
+    - separate_instruction_to_prepare_formal_master_registry_and_stage_bindings
+```
+
+Confirmation outcome:
+
+```text id="master-candidate-2-exact-hash-confirmation-outcome"
+The separate exact-hash confirmation gate for v1.1-candidate.2 is satisfied.
+Formal Master, Registry, and Stage binding materialization remains a distinct
+future decision and has not been authorized or performed by this record.
+```
+
+---
+
+## 16. Master v1.1 Formal Materialization And Binding Record
+
+This append-only record captures the separately authorized materialization of
+the reviewed and confirmed candidate 2 into the formal Master path, current
+Registry records, and current Stage 0--9 bindings. Historical Version Taskbooks
+and evidence reports retain their original hashes and were not rewritten.
+
+```yaml id="master-v1-1-formal-materialization-20260725"
+master_v1_1_formal_materialization:
+  record_id: master-v1-1-formal-materialization-20260725-895b91af
+  status: formal_master_registry_and_stage_bindings_prepared_local_not_pushed
+  prepared_at: 2026-07-25
+  authorization_basis: current_explicit_user_instruction_separately_authorizing_formal_master_registry_and_stage_binding_preparation
+  materialization_base_head: c4b13b30f8c0bd7b19d94944cee1593aa3374284
+
+  confirmed_source_candidate:
+    path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
+    freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
+    independent_review_record_ref: master-candidate-2-hash-review-20260725-b162e804
+    exact_hash_confirmation_record_ref: master-candidate-2-exact-hash-confirmation-20260725-b162e804
+
+  deterministic_formalization:
+    formal_path: PROJECT_MASTER_TASKBOOK.md
+    formal_id: colameta_master_taskbook_v1_1
+    formal_version: v1.1
+    formal_status: freeze_candidate
+    canonical_path: PROJECT_MASTER_TASKBOOK.md
+    retained_candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
+    changes:
+      - formal_title_id_version_and_canonical_path
+      - candidate_review_confirmation_and_formalization_lineage
+      - discussion_draft_to_reference_only_freeze_candidate_status
+      - activation_and_next_step_text_reconciled_to_formal_state
+    p1_contract_semantics_changed_from_confirmed_candidate: false
+    active_authority_added: false
+
+  exact_formal_master_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    chinese_companion_sha256: e715fcacd629aa9eaf32d1b06fc086f1ae91931d59d8c51dccd3240167df0b29
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+    independent_reference_implementation_imported_runner: false
+    all_three_hashes_independently_reproduced: true
+
+  registry_artifacts:
+    master_registry:
+      path: .colameta/taskbooks/master_taskbook_registry.json
+      raw_snapshot_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+      bound_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+      review_status: freeze_candidate_confirmed_for_exact_hash
+      review_status_is_reference_only: true
+    stage_registry:
+      path: .colameta/taskbooks/stage_taskbook_registry.json
+      raw_snapshot_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+      registered_stage_id: stage_02_stage_taskbook_management
+      registered_stage_raw_snapshot_sha256: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+    stage_schema:
+      path: .colameta/taskbooks/stage_taskbook_schema.json
+      raw_snapshot_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+      required_master_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+
+  stage_binding_set:
+    binding_count: 10
+    manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    bindings:
+      docs/taskbooks/stages/STAGE_00_BASELINE_CLOSEOUT.md: e97d1d1990b19744d4d3a083271ae34ee3fcb9b7e423c6ab10f3075554c3c700
+      docs/taskbooks/stages/STAGE_01_MASTER_TASKBOOK_ANCHORING.md: d7a19ceb356ae97ac47312fad87b53b143226f956f0efe9a7750b65234ac12af
+      docs/taskbooks/stages/STAGE_02_STAGE_TASKBOOK_MANAGEMENT.md: 380be2fc2783b00805fb65953789140a8e403b34fdb0bab0f4782594edb482dd
+      docs/taskbooks/stages/STAGE_03_EXTERNAL_TASKBOOK_IMPORT.md: 2adb368816294d0f14353d9b607aac933ffd3ae61a8d850df45e5289386e16f5
+      docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md: af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff
+      docs/taskbooks/stages/STAGE_05_REVIEWER_HANDOFF_PACKAGE.md: dc440a858905660fb8360162e512b8ed9796503d7c79b58268f1258bf125e7bf
+      docs/taskbooks/stages/STAGE_06_REVIEW_FEEDBACK_INTAKE.md: feef78fc63ddd9332f011bc0149c2056eb51033fb437023e7702e7c51b24bdd6
+      docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md: 84a1f9d50115e5e4f3cb40971769e6de55ff74b2435f216fdb72de4786ce163b
+      docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md: 79af36185ac96aa7d4c89d168583fb326c0a728b3a2dfe0fba5e9f32d7cb94a7
+      docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md: be200dcb5b8b3c3df7703b8f989f23fe2c807c58e84e86f93a7349d17dc04d0a
+    chinese_companion_source_hashes_match: true
+
+  live_binding_consumers:
+    updated_runner_modules:
+      - runner/drift_evidence_schema.py
+      - runner/execution_envelope.py
+      - runner/external_taskbook_validator.py
+      - runner/master_taskbook_registry.py
+      - runner/mcp_stage_7_9_preview.py
+      - runner/review_feedback_schema.py
+      - runner/review_feedback_validator.py
+      - runner/stage_taskbook_registry.py
+      - runner/thin_governed_loop.py
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    historical_version_and_evidence_hashes_rewritten: false
+
+  validation_evidence:
+    master_registry_stage_contracts:
+      result: pass
+      passed: 118
+      subtests_passed: 29
+    expanded_binding_consumers:
+      result: pass
+      passed: 314
+      subtests_passed: 51
+      warnings: 3
+    final_ci_equivalent_full_pytest:
+      result: pass
+      passed: 2055
+      skipped: 1
+      deselected_frozen_r3_toolchain_tests: 3
+      subtests_passed: 155
+      warnings: 3
+    compileall: pass
+    self_hosting_smoke: pass
+    ruff_full_scope: pass
+    bandit_high_confidence_high_severity: pass
+    focused_coverage:
+      result: pass
+      passed: 25
+      measured_coverage_percent: 58.61
+      required_coverage_percent: 45
+      warnings: 3
+    dependency_audit:
+      result: pass
+      known_vulnerabilities: 0
+
+  validation_correction_record:
+    first_expanded_binding_probe_result: failed_not_counted_as_pass
+    failed_tests: 18
+    root_cause: secondary_stage_taskbook_hash_consumers_still_bound_to_pre_materialization_stage_hashes
+    correction: stage_3_4_6_7_8_9_consumer_bindings_updated_to_their_post_materialization_hashes
+    focused_retest_result: pass
+    security_gate_weakened: false
+
+  stage_schema_baseline:
+    stage_02_current_registry_record_validation: passed
+    other_stage_taskbook_validation_shapes_changed_by_rebinding: false
+    pre_existing_non_stage_02_schema_fail_closed_results_remain: true
+    structural_stage_reauthoring_in_scope: false
+
+  authority_boundary:
+    formal_master_generated: true
+    master_registry_updated: true
+    stage_registry_updated: true
+    current_stage_bindings_updated: true
+    source_candidate_exact_hashes_confirmed: true
+    formal_output_hashes_generated_and_independently_reproduced: true
+    formal_output_hashes_separately_confirmed_after_generation: false
+    p1_formal_closure_granted: false
+    active_status_promotion_authorized: false
+    active_execution_authority: false
+    push_authorized: false
+    executor_or_runtime_action_authorized: false
+```
+
+Materialization outcome:
+
+```text id="master-v1-1-formal-materialization-outcome"
+The formal v1.1 Master, current Master and Stage Registries, and current
+Stage 0--9 hash bindings are prepared locally from the reviewed and confirmed
+candidate 2 source. The formal output hashes were independently reproduced,
+but they have not received a new post-generation exact-hash confirmation.
+No active promotion, P1 formal closure, push, executor run, or runtime action
+is granted by this materialization record.
+```
+
+---
+
+## 17. Master v1.1 Formal Exact-Hash Review And Confirmation
+
+This append-only record captures the separately authorized, hash-specific
+review and confirmation of the exact formal Master generated by the preceding
+materialization record. The formal Master bytes, Registry records, and Stage
+bindings are review inputs and remain unchanged by this record.
+
+```yaml id="master-v1-1-formal-exact-hash-confirmation-20260726"
+master_v1_1_formal_exact_hash_confirmation:
+  record_id: master-v1-1-formal-hash-confirmation-20260726-895b91af
+  status: exact_formal_hashes_independently_reviewed_and_confirmed_reference_only
+  reviewed_at: 2026-07-26
+  confirmed_at: 2026-07-26
+  authorization_basis: current_explicit_user_instruction_for_separate_formal_three_hash_review_and_confirmation
+  technical_disposition: PASS
+  blocking_findings: []
+  technical_review_result_is_authority: false
+  commander_confirmation_received: true
+
+  exact_review_target:
+    path: PROJECT_MASTER_TASKBOOK.md
+    review_base_head: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    materialization_commit: f36c5644530ca3308637f2ea593c9df7b529f1d2
+    materialization_record_commit: b4f30d4c7cf46eaf5466527ed4709bdd4153f535
+    worktree_bytes_match_review_base_head: true
+    formal_master_bytes_changed_by_this_review: false
+    formal_master_status: freeze_candidate
+
+  exact_formal_identity:
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+    canonical_payload_sha256: 217d155c9f33724a93a3ce6d6891735eec940cd58b0ac2cab4660f69c96ac0ab
+    freeze_content_hash: 3943ccc0ad2397a0c0dc5877a3be2b17ac88936f18fda829ade41b5b36868eae
+    canonical_payload_schema_version: colameta.master_taskbook_canonical_payload.v1
+    canonicalizer_version: ColaMeta.master_taskbook_canonicalizer.v1
+    canonicalizer_entrypoint: runner.master_taskbook_hash_binding.canonicalize_master_taskbook
+    canonicalizer_source_sha256: ca32786c72742e342874d55d38b26c4473a524ace46a34c906a1cafc0045ac6c
+    canonicalizer_dependency: PyYAML==6.0.3
+    dependency_manifest_sha256: 62abb97aef9c004abc435ec4ae1d109bb99c16a4cb8aa7d55ecb730b7a167c52
+    canonical_source_document: PROJECT_MASTER_TASKBOOK.md
+    canonical_payload_field_count: 48
+    parsed_yaml_block_count: 52
+
+  independent_hash_reproduction:
+    reference_implementation_imported_runner: false
+    raw_snapshot_sha256_match: true
+    canonical_payload_sha256_match: true
+    freeze_content_hash_match: true
+    head_object_matches_worktree_bytes: true
+    production_and_independent_implementations_match_all_three_hashes: true
+
+  hash_and_contract_review:
+    complete_canonicalization_contract_validation:
+      result: pass
+      repo_relative_forward_slash_canonical_path_enforced: true
+      canonical_source_document_matches_formal_path: true
+      canonicalization_contract_selectors_hash_bound: true
+      negative_probe_count: 19
+      all_negative_probes_fail_closed: true
+    review_decision_no_action_contradiction:
+      result: pass
+      no_action_absent_from_review_decision_resulting_action_values: true
+      plan_adjust_branch: commander_decision_requested_only
+      abort_branch: commander_decision_requested_only
+      resulting_action_id_equals_requested_commander_decision_id: true
+    gate_event_conditional_transition_fields:
+      result: pass
+      every_event_type_matches_exactly_one_branch: true
+      required_and_forbidden_fields_are_disjoint: true
+      non_transition_events_forbid_applied_transition_fields: true
+
+  candidate_to_formal_review:
+    source_candidate_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+    source_candidate_raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
+    same_yaml_block_id_set: true
+    yaml_block_count: 52
+    p1_contract_blocks_unchanged:
+      - hash-policy
+      - gate-event-minimum-contract
+      - review-decision-record-minimum
+      - review-decision-specific-fields
+    freeze_contract_unchanged_except_authorized_status_transition: true
+    candidate_status: discussion_draft
+    formal_status: freeze_candidate
+    formal_identity_and_lineage_match_authorized_transform: true
+    active_execution_authority_added: false
+
+  registry_and_stage_binding_review:
+    master_registry_sha256: 18f3b5a07405b9a8cd224c6d9813b65ceb8daeb5e40cef13710fa8e6106a7aa0
+    stage_registry_sha256: 9e192afb9a6b17768e347743a32220da07d349ec3c68da979b0dd867c85de3f9
+    stage_schema_sha256: 04750dfa077bae149a7ea0b568c3ab2f1fc7f946fb01fcdb980f637c0a6c96cc
+    stage_binding_count: 10
+    stage_binding_manifest_sha256: 62df11fdb6b3acd57c2e36d83594b5e028eaba5454938aa6ea6a1c8f3ed1e2ee
+    old_master_hash_remaining_in_live_binding_surfaces: false
+    registry_review_status_is_reference_only: true
+    active_execution_authority: false
+    delivery_state_authority: false
+    route_transition_authority: false
+
+  validation_evidence:
+    exact_formal_hash_regression:
+      result: pass
+      passed: 16
+      subtests_passed: 13
+    master_registry_stage_binding_suite:
+      result: pass
+      passed: 116
+      subtests_passed: 24
+      warnings: 3
+    compileall: pass
+    git_diff_check: pass
+
+  probe_correction_record:
+    initial_freeze_block_full_equality_probe:
+      result: failed_not_counted_as_pass
+      root_cause: expected_authorized_candidate_to_formal_status_transition
+      corrected_probe: freeze_contract_equal_after_removing_exact_status_field_then_verify_expected_status_transition
+      corrected_result: pass
+    initial_registry_boundary_probe:
+      result: script_error_not_counted_as_pass
+      root_cause: probe_assumed_a_nonexistent_field_instead_of_using_the_registry_contract
+      corrected_probe: validate_all_actual_master_and_stage_registry_authority_fields
+      corrected_result: pass
+    security_gate_weakened: false
+
+  confirmation_boundary:
+    exact_formal_hashes_confirmed: true
+    confirmation_applies_to_exact_three_hashes_only: true
+    three_p1_contracts_technically_confirmed_pass: true
+    p1_formal_closure_granted: false
+    formal_master_status_remains_freeze_candidate: true
+    active_status_promotion_authorized: false
+    push_authorized: false
+    registry_or_stage_binding_mutation_authorized_by_confirmation: false
+    executor_or_runtime_action_authorized: false
+    next_decisions_require_separate_instruction:
+      - active_status_promotion
+      - git_push
+```
+
+Confirmation outcome:
+
+```text id="master-v1-1-formal-exact-hash-confirmation-outcome"
+The exact formal raw snapshot, canonical payload, and freeze-content hashes
+passed independent hash-specific review and are separately confirmed for the
+reference-only freeze candidate. The confirmation does not promote the Master
+to active, grant formal P1 closure, authorize push, mutate Registry or Stage
+bindings, or authorize executor or runtime action.
 ```

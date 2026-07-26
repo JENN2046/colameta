@@ -1,9 +1,9 @@
-# ColaMeta 项目主任务书 v1.1 中文 Companion
+# ColaMeta 项目主任务书 v1.1 Candidate 2 中文 Companion
 
 ```yaml
 chinese_companion:
-  source_document: PROJECT_MASTER_TASKBOOK.md
-  source_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
+  source_document: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
+  source_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
   translation_status: companion_draft
   authority_status: planning_reference_only
   translation_mode: full_semantic_chinese_mirror
@@ -13,25 +13,25 @@ chinese_companion:
 治理任务书，用来固定项目最终目标、产品定位、三层任务书结构、状态权责、MVP 边界、
 冻结规则和后续 Stage 路线。
 
-本中文文件是正式 `PROJECT_MASTER_TASKBOOK.md` 的中文 companion。它不替代英文源文件的
-hash 权威，不扩大 freeze-candidate 确认，不授权 implementation、push、
+本中文文件是 `PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md` 的中文 companion。它不替代英文源文件的
+hash 权威，不修改 freeze-candidate 确认，不授权 implementation、commit、push、
 executor run、route transition、remote action、memory write 或 bridge activation。
 
 ---
 
-## 0. 元信息与正式 Freeze Candidate 边界
+## 0. 元信息与当前草稿边界
 
 英文源文件声明：
 
 ```yaml
 document_type: project_master_taskbook
-id: colameta_master_taskbook_v1_1
+id: colameta_master_taskbook_v1_1_candidate_2
 canonical_name: Master Taskbook
 project: ColaMeta
-version: v1.1
-status: freeze_candidate
+version: v1.1-candidate.2
+status: discussion_draft
 candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
-canonical_path: PROJECT_MASTER_TASKBOOK.md
+canonical_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
 owner: Commander / Jenn
 planning_authority: ChatGPT / Commander
 execution_governance_layer: ColaMeta
@@ -42,11 +42,10 @@ review_authority: ChatGPT Reviewer / Codex Commander / Human Commander
 中文解释：
 
 - `Master Taskbook` = 主任务书 / 项目宪章 / 项目总目标大任务书。
-- 当前状态是 `freeze_candidate`，即经过独立审查、精确哈希确认和单独物化授权的
-  reference-only 正式冻结候选。
-- 正式版本是 `v1.1`，来源候选是 `v1.1-candidate.2`。
-- 它不是已经生效的 active authority，也不授予 execution、push 或 runtime authority。
-- 任何 active promotion 仍需要单独 Commander 决策。
+- 当前状态是 `discussion_draft`，即讨论草稿。
+- 当前候选版本是 `v1.1-candidate.2`，用于修正 candidate.1 独立审查留下的两个 P1。
+- 它不是已经生效的 active authority。
+- 它必须经过 Commander 确认和 activation requirements，才可成为正式 anchor。
 
 候选 lineage：
 
@@ -54,11 +53,9 @@ review_authority: ChatGPT Reviewer / Codex Commander / Human Commander
   的现行 Master 精确快照派生而来；
 - 它直接继承 raw SHA `40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528`
   的 candidate.1；candidate.1 的独立审查结论是仍有两个 P1、需要修改；
-- candidate.2 的 raw、canonical payload 和 freeze content 三组精确哈希已经独立
-  hash-specific 复审并获得另行确认；
-- Commander 已单独授权从该精确候选准备正式 Master、Registry 和 Stage 绑定；
-- 正式 Master 替换旧 canonical-copy candidate，但不获得 active execution authority；
-- 正式物化生成的新 hash 由 materialization receipt 记录并供当前 Registry/Stage 绑定使用。
+- 现行 Master 继续保持该 hash 的 hash-specific freeze-candidate review status；
+- 本候选在单独激活前不替换现行 Master，该 review status 也不转移到本候选；
+- 本候选的新 raw SHA 与 canonical freeze hash 必须另行进入 hash-specific review。
 
 当前源文件中的 `current_known_state` 是文档被 hash 绑定时的记录，不等于每次阅读时的
 实时仓库状态。实时状态要用 Git 和 Runner 当前输出另行校准。
@@ -69,7 +66,7 @@ review_authority: ChatGPT Reviewer / Codex Commander / Human Commander
 
 ### 1.0 Project Final Goal = 项目最终实现目标
 
-`project_final_goal` 是当前正式 freeze candidate 唯一完整最高目标。项目不再另设短句版
+`project_final_goal` 是当前设计稿唯一完整最高目标。项目不再另设短句版
 `North Star Goal`。
 
 完整中文表述：
@@ -343,16 +340,14 @@ final semantic alignment。最终语义对齐要 Reviewer 或 Commander 判断�
 - `draft`：可编辑，不是执行锚点。
 - `discussion_draft`：存入项目供讨论，不是 frozen canonical anchor。
 - `active_candidate`：可审查、可 hash，但还不是 mandatory anchor。
-- `freeze_candidate`：已经 review、hash 绑定并经 Commander 确认，可作 reference-only
-  freeze 使用，但不是 active authority。
+- `freeze_candidate`：review 后修订，等待 Commander freeze confirmation。
 - `active`：可被 Stage、Version、Review records 正式引用。
 - `superseded`：被新版本替代，旧任务仍可引用旧 hash。
 - `revoked`：被 Commander 撤销，新任务不可用。
 
-当前源文件内部状态是 `freeze_candidate`。candidate.1 已通过的 GateEvent 修正被保留，
-两个剩余 P1 已在 candidate.2 中完成独立技术复审；三组候选精确哈希已经另行确认，
-正式 Master、Registry 和 Stage binding 准备也已获单独授权。推荐状态是在没有新的
-active-promotion 指令前维持 reference-only freeze candidate。
+当前源文件内部状态仍是 `discussion_draft`。candidate.1 已通过的 GateEvent 修正被保留，
+两个剩余 P1 的修正已经进入本候选，
+但候选仍等待新的 hash-specific review；推荐 review decision 仍是 `CONTINUE_DISCUSSION`。
 
 激活要求：
 
@@ -367,8 +362,8 @@ active-promotion 指令前维持 reference-only freeze candidate。
 
 ### 5.3 Freeze Candidate Preconditions = 冻结候选前置条件
 
-从 `discussion_draft` 进入 `freeze_candidate` 的前置条件是：MVP 能被审查为一个
-thin governed loop，而不是广泛产品平台。本正式物化记录这些前置条件已满足。
+Master 不能从 `discussion_draft` 进入 `freeze_candidate`，除非 MVP 能被审查为一个
+thin governed loop，而不是广泛产品平台。
 
 前置条件包括：
 
@@ -389,11 +384,10 @@ thin governed loop，而不是广泛产品平台。本正式物化记录这些�
 - codex-router 仍是 future_bridge_candidate，不是 MVP dependency。
 - discussion_draft、hash、validation results、review packets 不等于 execution/freeze/canonicalization/commit/push/memory-write/bridge authority。
 
-candidate.2 完整校验 canonicalization 声明合同及派生视图，并拒绝非 repo-relative
+本候选完整校验 canonicalization 声明合同及派生视图，并拒绝非 repo-relative
 `canonical_path`；ReviewDecision 删除了与上位决策映射冲突的 `no_action`，
 PLAN_ADJUST / ABORT 只保留 Commander decision request 分支；GateEvent 的
-条件字段修正继续保留。这些合同已经独立复审并完成候选精确哈希确认；正式
-物化仍不等于 active authority、delivery acceptance 或 runtime 状态提升。
+条件字段修正继续保留。这里的“已写入”不等于 review closure 或状态提升。
 
 ---
 
@@ -1828,7 +1822,7 @@ Priority 1：保留已完成本地 v1.10 Executor Session Head Mismatch Classifi
 此安全修正已在本地 implementation commit `640a843` 完成，用于防 route confusion。但它不授权 remote sync
 或新 execution route。
 
-Priority 2：保持正式 Master 的 reference-only freeze candidate 精确绑定。
+Priority 2：审查并迭代此 Master Taskbook draft。
 
 Priority 3：进入 Master Taskbook Registry V1。之前草稿叫 v1.10；修正路线推迟到 v1.11 或以后。
 
@@ -1840,7 +1834,7 @@ Priority 6：建立 Review Handoff And Feedback Intake。
 
 ---
 
-## 27. How To Use This Master = 如何使用此 Master
+## 27. How To Use This Draft = 如何使用此草稿
 
 允许用途：
 
@@ -1849,7 +1843,7 @@ Priority 6：建立 Review Handoff And Feedback Intake。
 - stage taskbook drafting input；
 - version taskbook alignment context；
 - reviewer orientation；
-- hash-bound freeze-candidate reference。
+- future canonicalization candidate。
 
 禁止用途：
 
@@ -1866,11 +1860,12 @@ Priority 6：建立 Review Handoff And Feedback Intake。
 
 下一步不是重启整条路线。路线是：
 
-1. 保持本地 v1.10 plan 和 implementation baseline 与正式 Master 分开。
+1. 保持本地 v1.10 plan 和 implementation baseline 与 Master Taskbook draft 分开。
 2. 任何后续 executor run、commit、push 或 route transition 前，先对账 v1.10 local status。
-3. 保留 candidate.2 源哈希以及把它绑定到本正式 Master 的 materialization receipt。
-4. 保持 Master Registry 和当前 Stage 绑定与正式 Master 的精确 raw snapshot hash 同步。
-5. 只有在单独 active-promotion 指令及任何必要的新 exact-hash review 之后，才考虑从
-   `freeze_candidate` 进入 `active`。
+3. 独立审查新 `v1.1-candidate.2` 的两个剩余 P1 修正、保留的 GateEvent 合同、
+   raw SHA、canonical payload SHA 与 freeze content hash。
+4. 只有在新的单独 hash-specific Commander authorization 且全部 activation requirements 满足后，才考虑从
+   `discussion_draft` 进入 `active_candidate` 或 `freeze_candidate`。
+5. 之后才生成 Stage 1 taskbook 和 Master Taskbook Registry V1 version taskbook。
 
 Remote push 仍是单独 remote mutation，不被本文档授权。

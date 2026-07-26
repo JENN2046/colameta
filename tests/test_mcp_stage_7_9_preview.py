@@ -15,19 +15,19 @@ from runner.mcp_stage_7_9_preview import STAGE_7_9_PREVIEW_WORKFLOW
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MASTER = {
     "path": "PROJECT_MASTER_TASKBOOK.md",
-    "sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+    "sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
 }
 STAGE_7 = {
     "path": "docs/taskbooks/stages/STAGE_07_DRIFT_EVIDENCE_AND_CORRECTION.md",
-    "sha256": "24cec5e48435254731cce4bb2e72c8810df3d041f57c142d5674d82a632cb142",
+    "sha256": "84a1f9d50115e5e4f3cb40971769e6de55ff74b2435f216fdb72de4786ce163b",
 }
 STAGE_8 = {
     "path": "docs/taskbooks/stages/STAGE_08_PLAN_ADJUSTMENT_CONTROL.md",
-    "sha256": "60421ba765b238b9671f1f9baf878cf716c6e6e5cd05524bfa746610fd9a3755",
+    "sha256": "79af36185ac96aa7d4c89d168583fb326c0a728b3a2dfe0fba5e9f32d7cb94a7",
 }
 STAGE_9 = {
     "path": "docs/taskbooks/stages/STAGE_09_CONTROLLED_CONTINUE_AND_LONG_RUN_TRACE.md",
-    "sha256": "5bfe6e4632748bd33f5a763963bc54b5e546bd3349ad536ec5b693522c7d696d",
+    "sha256": "be200dcb5b8b3c3df7703b8f989f23fe2c807c58e84e86f93a7349d17dc04d0a",
 }
 
 

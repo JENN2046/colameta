@@ -20,7 +20,7 @@ from runner.stage_taskbook_validator import (
 )
 
 
-MASTER_SHA = "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34"
+MASTER_SHA = "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63"
 OTHER_SHA = "2" * 64
 
 

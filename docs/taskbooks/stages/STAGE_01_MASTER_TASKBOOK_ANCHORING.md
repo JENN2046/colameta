@@ -31,13 +31,13 @@ Stage 1 是 `planned_after_stage_00_closeout`，但这份 Stage Taskbook 文件�
 ```yaml id="master-binding"
 master_binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
-  master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
   review_packet_path: FREEZE_CANDIDATE_REVIEW_PACKET.md
   review_packet_sha256: 2dc1761a5596fc0b41a33da8ef90536aa429d73e0b3f947f05ad4354260531ba
   master_review_status: freeze_candidate_confirmed_for_exact_hash
   master_taskbook_ref:
     path: PROJECT_MASTER_TASKBOOK.md
-    raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+    raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
     review_status: freeze_candidate_confirmed_for_exact_hash
   master_authority_boundary:
     - freeze_candidate is review status only

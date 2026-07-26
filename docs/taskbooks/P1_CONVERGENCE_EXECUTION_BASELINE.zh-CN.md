@@ -4,13 +4,15 @@
 p1_convergence_execution_baseline_zh_cn:
   document_type: chinese_companion
   source_document_ref: docs/taskbooks/P1_CONVERGENCE_EXECUTION_BASELINE.md
-  source_sha256: 0ea741932fc0697dea34c737c6da124d7cb084e3ed8a08f821ec146bdebdd477
+  source_sha256: 0ca6da39880c7da6692dbf8831866108f8bf8fbb3b64238c45fb24723069c558
   source_schema_version: colameta.p1_convergence_execution_baseline.v2
   translation_status: companion_draft
   authority_status: planning_reference_only
   source_authority_boundary: english_source_remains_authoritative
-  revision: 8
+  revision: 9
   created_at: 2026-07-24
+  reconciled_at: 2026-07-25
+  source_status: p1_e_implementation_verified_fresh_development_acceptance_pending
   known_translation_gaps: []
 ```
 
@@ -268,6 +270,24 @@ development-connector 验收，以及任何 stable-replacement 决策，仍然�
 - 即使五组 evidence check 均通过，gate 仍保持 `blocked`，并给出
   `EXPLICIT_STABLE_REPLACEMENT_AUTHORIZATION_REQUIRED`，直到 Jenn 通过 stable-promotion boundary
   单独授权一个精确 target。
+
+### 2026-07-25 治理对账
+
+本次文档对账开始前观察到的本地实现 HEAD 为
+`05575ad90cd40f44819aed31dda185ec7aa5c1f8`，实现历史已经走到 P1-E：
+
+- typed-read 与 runtime-convergence 基础：`25a9585` 至 `20ecb3b`；
+- P1-A 组合根拆分：`4aef920` 至 `34a0382`；
+- P1-B current-facts artifact workflow：`eb35e8e`；
+- P1-C Stage 7--9 manifest 与 preview journey：`ddd2bea` 至 `7e18f29`；
+- P1-D 客户端 release gate 与 continuity 修复：`29b2bd4` 至 `5dd354a`；
+- P1-E release-evidence 评估：`05575ad`。
+
+这是实现历史对账，不是 exact-candidate 验收结论。本次文档提交位于上述实现 HEAD
+之后，因此仍须在干净、精确的候选提交上重新运行完整 validation ladder。新鲜的 public
+runtime provenance、脱敏的 Connector/OAuth 可达性证据和新的 ChatGPT development-connector
+验收仍待完成。本节不授予 P0 closure、stable replacement、外部配置、push、release 或
+deployment 权力。
 
 ## 交付节奏
 

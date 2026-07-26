@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import copy
+from dataclasses import dataclass
 import json
+import os
+import secrets
+import threading
+import time
 from typing import Any, Callable
 
 
 GATE_REVIEW_WORKFLOW = "gate_review_request"
 GATE_REVIEW_PHASES = frozenset({"inspect", "preview", "apply", "status"})
+GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA = "colameta.gate_review_public_preview.v1"
 WORK_ITEM_STATES = frozenset(
     {"proposed", "ready", "in_delivery", "submitted", "accepted", "cancelled"}
 )
@@ -19,6 +26,9 @@ GATE_REVIEW_MAX_BINDING_IDS_PER_FIELD = 16
 GATE_REVIEW_MAX_BINDING_ID_CHARS = 256
 GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS = 26_000
 GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS = 56_000
+GATE_REVIEW_PREVIEW_DEFAULT_TTL_SECONDS = 300
+GATE_REVIEW_PREVIEW_MAX_TTL_SECONDS = 900
+GATE_REVIEW_PREVIEW_STORE_MAX_ITEMS = 64
 
 
 class GateReviewWorkflowError(ValueError):
@@ -35,6 +45,100 @@ class GateReviewWorkflowError(ValueError):
         self.details = details or {}
 
 
+@dataclass(frozen=True)
+class GateReviewPreviewHandle:
+    gate_preview_id: str
+    ttl_seconds: int
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA,
+            "gate_preview_id": self.gate_preview_id,
+            "continuation_type": "server_side_signed_preview",
+            "ttl_seconds": self.ttl_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class _StoredGateReviewPreview:
+    project_root: str
+    preview: dict[str, Any]
+    expires_at_monotonic: float
+
+
+class GateReviewPreviewStore:
+    """Thread-safe, bounded storage for private signed Gate previews.
+
+    Public Commander and Actions responses receive only the random handle.
+    Principal context and authority bindings remain process-local until apply,
+    when the authoritative Work Item Gate verifies the complete signed preview.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_items: int = GATE_REVIEW_PREVIEW_STORE_MAX_ITEMS,
+        time_fn: Callable[[], float] | None = None,
+    ) -> None:
+        self._max_items = max(1, int(max_items))
+        self._time_fn = time_fn or time.monotonic
+        self._items: dict[str, _StoredGateReviewPreview] = {}
+        self._lock = threading.RLock()
+
+    def put(
+        self,
+        *,
+        project_root: str,
+        preview: dict[str, Any],
+        ttl_seconds: int,
+    ) -> GateReviewPreviewHandle:
+        ttl = max(1, min(GATE_REVIEW_PREVIEW_MAX_TTL_SECONDS, int(ttl_seconds)))
+        gate_preview_id = secrets.token_urlsafe(24)
+        now = float(self._time_fn())
+        stored = _StoredGateReviewPreview(
+            project_root=_normalized_project_root(project_root),
+            preview=copy.deepcopy(preview),
+            expires_at_monotonic=now + ttl,
+        )
+        with self._lock:
+            self._purge_expired_locked(now)
+            self._items[gate_preview_id] = stored
+            self._trim_locked()
+        return GateReviewPreviewHandle(
+            gate_preview_id=gate_preview_id,
+            ttl_seconds=ttl,
+        )
+
+    def get(self, *, gate_preview_id: str, project_root: str) -> dict[str, Any] | None:
+        if not isinstance(gate_preview_id, str) or not gate_preview_id.strip():
+            return None
+        now = float(self._time_fn())
+        with self._lock:
+            self._purge_expired_locked(now)
+            stored = self._items.get(gate_preview_id.strip())
+            if (
+                stored is None
+                or stored.project_root != _normalized_project_root(project_root)
+            ):
+                return None
+            return copy.deepcopy(stored.preview)
+
+    def _purge_expired_locked(self, now: float) -> None:
+        for gate_preview_id in [
+            item_id
+            for item_id, stored in self._items.items()
+            if stored.expires_at_monotonic <= now
+        ]:
+            self._items.pop(gate_preview_id, None)
+
+    def _trim_locked(self) -> None:
+        overflow = len(self._items) - self._max_items
+        if overflow <= 0:
+            return
+        for gate_preview_id in list(self._items)[:overflow]:
+            self._items.pop(gate_preview_id, None)
+
+
 class MCPGateReviewWorkflow:
     """Seven-tool adapter over the authoritative Work Item Gate backend.
 
@@ -43,8 +147,16 @@ class MCPGateReviewWorkflow:
     Work Item application commands, and keeps preview/apply bindings explicit.
     """
 
-    def __init__(self, dispatch: Callable[[str, dict[str, Any]], dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        dispatch: Callable[[str, dict[str, Any]], dict[str, Any]],
+        *,
+        preview_store: GateReviewPreviewStore | None = None,
+        project_root: str | None = None,
+    ) -> None:
         self._dispatch = dispatch
+        self._preview_store = preview_store or GateReviewPreviewStore()
+        self._project_root = _normalized_project_root(project_root or os.getcwd())
 
     def handle(self, params: dict[str, Any]) -> dict[str, Any]:
         phase = _clean_text(params.get("phase")).lower()
@@ -155,12 +267,26 @@ class MCPGateReviewWorkflow:
                 "GATE_REVIEW_PREVIEW_MISSING",
                 "Work Item Gate backend did not return a signed preview.",
             )
-        preview_id = _require_text(preview.get("preview_id"), "preview.preview_id")
+        _require_text(preview.get("preview_id"), "preview.preview_id")
+        signed_ttl = preview.get("ttl_seconds")
+        preview_ttl_seconds = (
+            signed_ttl
+            if isinstance(signed_ttl, int)
+            and not isinstance(signed_ttl, bool)
+            and 1 <= signed_ttl <= GATE_REVIEW_PREVIEW_MAX_TTL_SECONDS
+            else ttl_seconds or GATE_REVIEW_PREVIEW_DEFAULT_TTL_SECONDS
+        )
+        handle = self._preview_store.put(
+            project_root=self._project_root,
+            preview=preview,
+            ttl_seconds=preview_ttl_seconds,
+        )
+        public_preview = handle.to_public_dict()
         apply_arguments = {
             "workflow": GATE_REVIEW_WORKFLOW,
             "phase": "apply",
             **command,
-            "gate_preview": preview,
+            "gate_preview_id": handle.gate_preview_id,
             "confirm_gate_review": True,
         }
         if apply_arguments.get("idempotency_key") is None:
@@ -174,7 +300,7 @@ class MCPGateReviewWorkflow:
         if apply_call_chars > GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS:
             raise GateReviewWorkflowError(
                 "GATE_REVIEW_COPYABLE_APPLY_TOO_LARGE",
-                "The complete signed Gate apply call exceeds the bounded response contract.",
+                "The opaque Gate apply call exceeds the bounded response contract.",
                 details={
                     "actual_chars": apply_call_chars,
                     "max_chars": GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS,
@@ -185,13 +311,13 @@ class MCPGateReviewWorkflow:
             status="preview_ready",
             risk_level="preview",
             requires_confirmation=True,
-            preview_ids=[preview_id],
+            preview_ids=[handle.gate_preview_id],
             result={
                 "ok": True,
                 "read_only": False,
                 "side_effects": False,
                 "backend": "work_item_governance",
-                "preview": preview,
+                "preview": public_preview,
                 "evaluation": backend.get("evaluation"),
                 "gate_mode": backend.get("gate_mode"),
                 "state_changed": False,
@@ -202,6 +328,7 @@ class MCPGateReviewWorkflow:
                     "copyable_apply_chars": apply_call_chars,
                     "copyable_apply_chars_max": GATE_REVIEW_MAX_COPYABLE_APPLY_CHARS,
                     "preview_workflow_chars_max": GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS,
+                    "signed_preview_transport": "server_side_opaque_handle",
                 },
                 "authority_boundary": _authority_boundary(),
             },
@@ -210,7 +337,7 @@ class MCPGateReviewWorkflow:
         if workflow_chars > GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS:
             raise GateReviewWorkflowError(
                 "GATE_REVIEW_PREVIEW_RESPONSE_TOO_LARGE",
-                "The signed Gate preview exceeds the bounded workflow response contract.",
+                "The opaque Gate preview response exceeds the bounded workflow response contract.",
                 details={
                     "actual_chars": workflow_chars,
                     "max_chars": GATE_REVIEW_MAX_PREVIEW_WORKFLOW_CHARS,
@@ -225,11 +352,33 @@ class MCPGateReviewWorkflow:
                 "gate_review_request apply requires confirm_gate_review=true.",
             )
         command = _transition_command(params)
-        preview = params.get("gate_preview")
-        if not isinstance(preview, dict):
+        gate_preview_id = params.get("gate_preview_id")
+        legacy_preview = params.get("gate_preview")
+        if gate_preview_id is not None and legacy_preview is not None:
+            raise GateReviewWorkflowError(
+                "GATE_REVIEW_PREVIEW_AMBIGUOUS",
+                "gate_review_request apply accepts gate_preview_id or legacy gate_preview, not both.",
+            )
+        if gate_preview_id is not None:
+            clean_gate_preview_id = _require_bounded_text(
+                gate_preview_id,
+                "gate_preview_id",
+            )
+            preview = self._preview_store.get(
+                gate_preview_id=clean_gate_preview_id,
+                project_root=self._project_root,
+            )
+            if preview is None:
+                raise GateReviewWorkflowError(
+                    "GATE_REVIEW_PREVIEW_NOT_FOUND_OR_EXPIRED",
+                    "The opaque Gate preview is unavailable, expired, or bound to another project.",
+                )
+        elif isinstance(legacy_preview, dict):
+            preview = legacy_preview
+        else:
             raise GateReviewWorkflowError(
                 "GATE_REVIEW_PREVIEW_REQUIRED",
-                "gate_review_request apply requires the complete signed gate_preview object.",
+                "gate_review_request apply requires gate_preview_id or a legacy signed gate_preview.",
             )
         signed_command = preview.get("command")
         if not isinstance(signed_command, dict):
@@ -423,7 +572,12 @@ def _authority_boundary() -> dict[str, Any]:
         "apply_requires_matching_principal": True,
         "apply_requires_commit_scope": True,
         "preview_does_not_change_state": True,
+        "signed_preview_held_server_side": True,
     }
+
+
+def _normalized_project_root(value: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(value)))
 
 
 def _clean_text(value: Any) -> str:

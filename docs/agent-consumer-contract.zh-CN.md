@@ -206,7 +206,8 @@ packet 必须保持 blocked，不继承 example evidence，也不能执行。
 
 私人 App 通过七工具中的 `run_mcp_workflow` 调用
 `workflow=gate_review_request`，不会新增第 8 个工具。必须先 `phase=inspect`；inspect/status
-只读，preview 生成有界签名 Gate preview，apply 需要完整 preview、精确 bindings、显式确认、
+只读，preview 生成仅在服务端保存的有界签名 Gate preview，并返回 opaque handle；apply 需要
+服务端完整 preview、精确 bindings、显式确认、
 `mcp:commit` 和可信私人 Operator/Work Item authority。governance disabled 时
 `candidate_count=0` 是正确结果，不得伪造 Work Item。
 

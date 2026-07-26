@@ -249,7 +249,7 @@ def example_drift_evidence_pack() -> dict[str, Any]:
         "drift_evidence_pack_id": "drift-evidence-example",
         "master_taskbook_ref": {
             "path": "PROJECT_MASTER_TASKBOOK.md",
-            "sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+            "sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
         },
         "stage_taskbook_ref": {
             "stage_id": "stage_07_drift_evidence_and_correction",

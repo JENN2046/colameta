@@ -144,8 +144,8 @@ ColaMeta is only the MCP resource server:
   `operator_batch` remains its own Operator-policy channel, while private
   `gate_review_request/apply` additionally requires an accepted Operator
   subject/client, matching authenticated Work Item authority claims and
-  `mcp:commit`, a verified complete signed Gate preview with exact bindings,
-  and `confirm_gate_review=true`;
+  `mcp:commit`, an opaque handle to a server-held complete signed Gate preview
+  with exact bindings, and `confirm_gate_review=true`;
 - ColaMeta does not serve `/authorize`, `/register`, `/token`, or `/revoke`.
 
 Example:

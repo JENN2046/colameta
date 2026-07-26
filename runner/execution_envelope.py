@@ -53,12 +53,12 @@ ATTEMPT_ID_PATTERN = re.compile(
 )
 EXPECTED_MASTER_TASKBOOK_REF = {
     "path": "PROJECT_MASTER_TASKBOOK.md",
-    "raw_snapshot_sha256": "1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34",
+    "raw_snapshot_sha256": "895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63",
     "review_status": "freeze_candidate_confirmed_for_exact_hash",
 }
 EXPECTED_STAGE_TASKBOOK_REF = {
     "path": "docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md",
-    "raw_snapshot_sha256": "05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41",
+    "raw_snapshot_sha256": "af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff",
     "stage_id": "stage_04_bounded_execution_and_evidence",
 }
 EXPECTED_VERSION_TASKBOOK_REF = {

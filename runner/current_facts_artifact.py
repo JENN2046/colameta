@@ -623,23 +623,44 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _canonical_semantic_identity(value: Any) -> Any:
-    """Drop collection timestamps before comparing preview freshness snapshots.
+_COLLECTION_TIMESTAMP_PATHS = frozenset(
+    {
+        ("observed_at",),
+        ("freshness", "observed_at"),
+    }
+)
 
-    A new read necessarily has a new collection time.  That alone must not
-    make an otherwise unchanged preview impossible to apply; changed source
-    state, freshness status, reasons, or authority data still changes the
-    semantic digest and fails closed.
+
+def _canonical_semantic_identity(
+    value: Any,
+    *,
+    path: tuple[str, ...] = (),
+) -> Any:
+    """Ignore collection time while retaining source-observation timestamps.
+
+    ``freshness.observed_at`` mirrors the root collection time in the
+    canonical-state contract. Runtime, connector, historical-report, and other
+    nested timestamps remain bound so refreshed evidence invalidates a stale
+    preview even when its status and reason text are unchanged.
     """
 
     if isinstance(value, dict):
-        return {
-            str(key): _canonical_semantic_identity(nested)
-            for key, nested in value.items()
-            if str(key) not in {"observed_at", "last_observed_at"}
-        }
+        result: dict[str, Any] = {}
+        for key, nested in value.items():
+            normalized_key = str(key)
+            nested_path = (*path, normalized_key)
+            if nested_path in _COLLECTION_TIMESTAMP_PATHS:
+                continue
+            result[normalized_key] = _canonical_semantic_identity(
+                nested,
+                path=nested_path,
+            )
+        return result
     if isinstance(value, list):
-        return [_canonical_semantic_identity(item) for item in value]
+        return [
+            _canonical_semantic_identity(item, path=(*path, "[]"))
+            for item in value
+        ]
     return value
 
 

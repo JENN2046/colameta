@@ -150,7 +150,9 @@ tool. Start with:
 ```
 
 Inspect and status are read-only. Preview creates a bounded signed Work Item
-Gate preview. Apply requires the complete signed preview, exact bindings,
+Gate preview and keeps the complete object in the serving process. The returned
+copyable apply call contains only an opaque `gate_preview_id`. Apply resolves
+that handle and requires the complete signed preview, exact bindings,
 `confirm_gate_review=true`, `mcp:commit`, and the configured trusted private
 Operator subject/client plus Work Item authority claims. Default/public remote
 principals do not gain general commit authority.

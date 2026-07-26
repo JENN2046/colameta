@@ -1,41 +1,32 @@
-# ColaMeta Project Master Taskbook v1.1
+# ColaMeta Project Master Taskbook v1.1 Candidate 2
 
 ```yaml id="master-taskbook-canonical-summary"
 master_taskbook:
   document_type: project_master_taskbook
-  id: colameta_master_taskbook_v1_1
+  id: colameta_master_taskbook_v1_1_candidate_2
   canonical_name: Master Taskbook
   aliases:
     - Project Charter
     - 项目宪章
     - 项目总目标大任务书
   project: ColaMeta
-  version: v1.1
-  status: freeze_candidate
+  version: v1.1-candidate.2
+  status: discussion_draft
   candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
-  canonical_path: PROJECT_MASTER_TASKBOOK.md
+  canonical_path: PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md
   candidate_lineage:
     derived_from_current_master_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
     derived_from_candidate_1_raw_snapshot_sha256: 40c6af59e10ae488c58230e5a29d1348824101485fae86daf9fff1d3d019d528
     candidate_1_hash_specific_review_disposition: changes_required_two_open_p1_findings
-    candidate_2_raw_snapshot_sha256: b162e804899b6871c9291de68e62ad6c8541d9e71852ec6100ce437afada2a3b
-    candidate_2_canonical_payload_sha256: 34e3c3b2fef13bb9e88a05fdbdadf2f4adcc971899289fc607ad93ac820e2015
-    candidate_2_freeze_content_hash: ca744af4c012c48f32720375536e0a43d4edb8e56c5f1f005f28fdef90c42190
-    candidate_2_hash_specific_review_disposition: pass
-    candidate_2_exact_hash_confirmation_received: true
-    candidate_2_confirmation_record_ref: master-candidate-2-exact-hash-confirmation-20260725-b162e804
-    formalization_authorization_received: true
-    formalization_authorization_scope: formal_master_registry_and_stage_bindings
-    formalization_source_candidate_unchanged: true
-    prior_current_master_review_status: freeze_candidate_confirmed_for_exact_hash
-    formalization_replaces_prior_current_master: true
-    active_execution_authority_granted: false
+    current_master_review_status: freeze_candidate_confirmed_for_exact_hash
+    candidate_does_not_replace_current_master_without_separate_activation: true
+    prior_hash_review_status_transfers_to_this_candidate: false
     candidate_change_scope:
       - complete_fail_closed_reproducibility_contract_validation
       - repo_relative_canonical_source_path_enforcement
       - review_decision_no_action_removed
       - retained_gate_event_conditional_transition_fields
-    formal_master_hashes_require_materialization_receipt: true
+    new_raw_and_canonical_hashes_require_separate_hash_specific_review: true
 
   owner: Commander / Jenn
   planning_authority: ChatGPT / Commander
@@ -44,15 +35,14 @@ master_taskbook:
   review_authority: ChatGPT Reviewer / Codex Commander / Human Commander
 
   draft_notice: >
-    This is the formal hash-bound Master Taskbook materialized from the
-    independently reviewed and exactly confirmed v1.1-candidate.2 source. Its
-    freeze_candidate status authorizes reference binding only. It is not active
-    execution authority, accepted delivery state, executor authority, push
-    authority, or runtime-transition authority.
+    This is not the final frozen Master Taskbook. It is a reality-calibrated
+    discussion draft stored in the project so future planning rounds have a
+    shared anchor. It must not be treated as an active canonical hash anchor
+    until Commander confirmation and the activation requirements are satisfied.
 
   project_final_goal:
-    status: commander_confirmed_for_freeze_candidate
-    applies_to: formal_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
+    applies_to: current_design_draft
     goal: >
       Design and evolve ColaMeta into a goal-anchored AI delivery command layer
       that can preserve the Commander-confirmed project final goal across
@@ -114,7 +104,7 @@ master_taskbook:
       收束升级为统一的 Delivery State Gate / 交付状态门治理契约。
 
   state_authority_contract_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     adopted_name: State Authority Contract
     chinese_name: 状态权责契约
     supersedes_discussion_label: State Ownership Contract
@@ -131,7 +121,7 @@ master_taskbook:
       用户看到的状态只是已接受主张、已验证证据、门控裁决的投影。
 
   delivery_state_transition_model_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     adopted_name: Minimal Delivery State Transition Model
     chinese_name: 最小交付状态转换模型
     summary: >
@@ -147,7 +137,7 @@ master_taskbook:
       过程或分层字段。
 
   review_decision_mapping_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     adopted_name: Review Decision Mapping
     chinese_name: 审查决策映射
     summary: >
@@ -161,7 +151,7 @@ master_taskbook:
       状态的仍然只能是 Delivery State Gate 产生的 GateEvent。
 
   taskbook_layer_responsibility_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     adopted_name: Layer Responsibility Contract
     chinese_name: 三层任务书职责边界契约
     summary: >
@@ -178,7 +168,7 @@ master_taskbook:
       Delivery State Gate 判断。
 
   goal_statement_policy:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     single_complete_goal_statement: project_final_goal
     no_separate_short_goal_phrase: true
     no_separate_north_star_goal: true
@@ -191,7 +181,7 @@ master_taskbook:
       move forward without silent drift or unauthorized expansion.
 
   product_identity_constraint_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     chinese_name: 产品定位边界决策
     derived_from: project_final_goal
     no_separate_positioning_phrase: true
@@ -209,7 +199,7 @@ master_taskbook:
       自动产品负责人、自动审查者或自动发布系统，而是目标锚定的 AI 交付指挥层。
 
   minimum_irreplaceable_capability_set:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     decision_summary: >
       ColaMeta is irreplaceable only if it keeps AI delivery anchored to the
       agreed goal across taskbooks, execution envelopes, bounded execution,
@@ -225,7 +215,7 @@ master_taskbook:
       - commander_gate_stop_boundary_and_observable_status_surface
 
   mvp_shape_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     name: Stage 0-6 Thin Governed Loop
     meaning: >
       Stage 0 through Stage 6 define one thin governed proof loop, not seven
@@ -258,7 +248,7 @@ master_taskbook:
       - discussion_draft_authority_boundary
 
   stage_0_6_readiness_contract_decision:
-    status: commander_confirmed_for_freeze_candidate
+    status: commander_confirmed_for_discussion_draft
     adopted_name: Stage 0-6 Thin Governed Loop Readiness Contract
     chinese_name: 阶段 0-6 薄治理闭环就绪契约
     summary: >
@@ -391,8 +381,8 @@ The project final goal for the current design draft is:
 
 ```yaml id="project-final-goal"
 project_final_goal:
-  status: commander_confirmed_for_freeze_candidate
-  applies_to: formal_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
+  applies_to: current_design_draft
   goal: >
     Design and evolve ColaMeta into a goal-anchored AI delivery command layer
     that can preserve the Commander-confirmed project final goal across Master,
@@ -410,7 +400,7 @@ project_final_goal:
     transition, or automatic state promotion without separate explicit approval.
 ```
 
-This Master keeps one complete highest goal statement: `project_final_goal`.
+This draft keeps one complete highest goal statement: `project_final_goal`.
 It does not maintain a separate short goal phrase or a separate North Star goal.
 
 ColaMeta lets users delegate project work to a controlled, reviewable, and
@@ -422,14 +412,14 @@ project does not drift during long-running development.
 
 ### 1.1 Minimum Irreplaceable Capability Set
 
-Commander confirmed the following capability set for the freeze candidate. This
+Commander confirmed the following capability set for the discussion draft. This
 decision defines the minimum shape ColaMeta must have to satisfy the
 `project_final_goal` instead of becoming only an executor wrapper,
 a document store, a generic router, or a project dashboard.
 
 ```yaml id="minimum-irreplaceable-capability-set"
 minimum_irreplaceable_capability_set:
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   core_claim: >
     ColaMeta is irreplaceable only if it can keep AI delivery anchored to the
     agreed goal: why the work exists, which taskbook boundary controls it,
@@ -502,7 +492,7 @@ How can long-running AI project delivery remain controllable, reviewable, tracea
 
 ColaMeta's product identity is derived from `project_final_goal`.
 
-This Master does not keep a separate positioning phrase, slogan, or North Star
+This draft does not keep a separate positioning phrase, slogan, or North Star
 goal. Reopening product identity means reopening the complete
 `project_final_goal`, and requires Commander hard-gate review.
 
@@ -773,7 +763,7 @@ activation_policy:
   active_candidate:
     meaning: Reviewable and hashable, but not yet a mandatory anchor.
   freeze_candidate:
-    meaning: Reviewed, hash-bound, and Commander-confirmed for reference-only freeze use; not active authority.
+    meaning: Revised after review, waiting for Commander freeze confirmation.
   active:
     meaning: Can be formally referenced by stage, version, and review records.
   superseded:
@@ -785,12 +775,11 @@ activation_policy:
 Current document status:
 
 ```yaml id="current-taskbook-review-status"
-status: freeze_candidate
+status: discussion_draft
 candidate_id: colameta-master-v1.1-p1-contract-convergence-candidate.2
-candidate_preparation_status: formalized_after_independent_hash_review_and_exact_hash_confirmation
-candidate_2_hash_review_and_confirmation_applied: true
-formalization_authorization_applied: true
-recommended_review_decision: MAINTAIN_FREEZE_CANDIDATE_UNTIL_ACTIVE_PROMOTION_IS_SEPARATELY_AUTHORIZED
+candidate_preparation_status: p1_contract_convergence_candidate_prepared_pending_hash_specific_review
+prior_hash_review_status_transfers_to_this_candidate: false
+recommended_review_decision: CONTINUE_DISCUSSION
 ```
 
 ### 5.2 Activation Requirements
@@ -807,26 +796,24 @@ activation_requires:
   - freeze_candidate_preconditions satisfied
 ```
 
-This formal Master is intentionally not active. It is the hash-bound,
-reference-only freeze candidate for Registry and Stage bindings.
+This file is intentionally not yet active. It is the shared baseline for further route discussion.
 
 ### 5.3 Freeze Candidate Preconditions
 
-The move from `discussion_draft` to `freeze_candidate` required the MVP to be
-reviewable as a thin governed loop rather than a broad product platform.
+This draft must not move from `discussion_draft` to `freeze_candidate` until
+the MVP is reviewable as a thin governed loop rather than a broad product
+platform.
 
 ```yaml id="freeze-candidate-preconditions"
 freeze_candidate_preconditions:
-  status: satisfied_for_formal_freeze_candidate_materialization
-  current_status: candidate_2_independently_reviewed_exact_hashes_confirmed_and_formalization_authorized
+  status: required_before_freeze_candidate
+  current_status: p1_contract_convergence_candidate_prepared_pending_hash_specific_review
   status_note: >
     The three P1 contract corrections for reproducible canonical hashing,
     conditional ReviewDecision transition fields, and conditional GateEvent
-    transition fields were independently reviewed in candidate.2. The three
-    exact candidate hashes were separately confirmed, and formal Master,
-    Registry, and Stage binding preparation was separately authorized. This
-    satisfies reference-only freeze-candidate materialization but does not
-    grant active, execution, push, or runtime authority.
+    transition fields have been applied in discussion_draft. This does not
+    transfer the prior hash-specific freeze confirmation or promote this
+    candidate; it only prepares a new exact candidate for review.
   required_conditions:
     - id: stage_00_to_06_thin_governed_loop
       requirement: >
@@ -1184,7 +1171,7 @@ Chinese meaning:
 ```yaml id="freeze-process-and-canonicalization"
 freeze_process_and_canonicalization:
   chinese_name: 冻结流程与规范化
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
 
   freeze_candidate_meaning:
     means:
@@ -1726,7 +1713,7 @@ Chinese meaning:
 
 ```yaml id="minimum-checkable-schema-contracts-summary"
 minimum_checkable_schema_contracts:
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   chinese_name: 最小可检查结构契约
   contract_kind: governance_data_contracts_not_runner_api
   representation: YAML / JSON / Python dataclass are all valid implementation forms
@@ -1783,7 +1770,7 @@ Plain Chinese meaning: 状态不是一坨东西归某一层。ColaMeta 要把状
 
 ```yaml id="state-authority-contract"
 state_authority_contract:
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   chinese_name: 状态权责契约
   supersedes_discussion_label:
     english: State Ownership Contract
@@ -2030,7 +2017,7 @@ The adopted model is `small, strict, and boring` = 小、严、朴素.
 
 ```yaml id="delivery-state-transition-model"
 delivery_state_transition_model:
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   chinese_name: 交付状态转换模型
   model_type: minimal_canonical_delivery_lifecycle
   transition_application_rule:
@@ -2481,7 +2468,7 @@ Chinese meaning:
 ```yaml id="runtime-state-compatibility-mapping"
 runtime_state_compatibility_mapping:
   chinese_name: 运行态兼容映射
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
 
   core_invariants:
     - Runtime states are evidentiary signals, not delivery lifecycle states.
@@ -2600,7 +2587,7 @@ Chinese meaning:
 ```yaml id="user-visible-status-projection"
 user_visible_status_projection:
   chinese_name: 用户可见状态投影
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   projection_type: read_only_view
 
   authority_boundary:
@@ -3277,7 +3264,7 @@ Commander 或被委派交付权责可以提供权威依据，但不是直接写�
 
 ```yaml id="review-decision-mapping"
 review_decision_mapping:
-  status: commander_confirmed_for_freeze_candidate
+  status: commander_confirmed_for_discussion_draft
   chinese_name: 审查决策映射
   decisions:
     ACCEPT:
@@ -4854,16 +4841,15 @@ implementation commit 640a843. It prevents route confusion before deeper
 governance features are added, but it does not authorize remote sync or a new
 execution route.
 
-### Priority 2: Preserve The Formal Master Freeze Candidate
+### Priority 2: Review And Iterate This Master Taskbook Draft
 
 ```text id="priority-2"
-Goal: Preserve PROJECT_MASTER_TASKBOOK.md as the exact hash-bound,
-reference-only freeze candidate derived from the reviewed and confirmed
-v1.1-candidate.2 source.
+Goal: Continue discussion on this
+PROJECT_MASTER_TASKBOOK.v1.1-candidate.2.md draft until it is ready for
+active_candidate or freeze_candidate status.
 ```
 
-Any later active-status promotion or governance-content mutation requires a
-separate Commander decision and a new exact-hash review cycle.
+This draft is intentionally stored before finalization so future planning rounds can edit the same project artifact.
 
 ### Priority 3: Enter Master Taskbook Registry V1
 
@@ -4893,7 +4879,7 @@ Goal: Generate review packages and ingest structured review feedback.
 
 ---
 
-## 27. How To Use This Master
+## 27. How To Use This Draft
 
 Allowed usage:
 
@@ -4903,7 +4889,7 @@ route review reference
 stage taskbook drafting input
 version taskbook alignment context
 reviewer orientation
-hash-bound freeze-candidate reference
+future canonicalization candidate
 ```
 
 Forbidden usage:
@@ -4924,11 +4910,11 @@ do not use as automatic authorization for push / release / deploy
 The next step is not to restart the whole route. The route is:
 
 ```text id="next-step"
-1. Keep the local v1.10 plan and implementation baseline separate from this formal Master.
+1. Keep the local v1.10 plan and implementation baseline separate from this Master Taskbook draft.
 2. Reconcile v1.10 local status before any later executor run, commit, push, or route transition.
-3. Preserve the candidate.2 source hashes and the formalization receipt that binds them to this formal Master.
-4. Keep Master Registry and current Stage bindings synchronized to this exact formal raw snapshot hash.
-5. Only after a separate active-promotion instruction and any required new exact-hash review, consider moving this file from freeze_candidate to active.
+3. Review the new v1.1-candidate.2 contract corrections, raw snapshot hash, and canonical freeze hash.
+4. Only after separate new hash-specific Commander authorization and all activation requirements are satisfied, consider moving this file from discussion_draft to active_candidate or freeze_candidate.
+5. Only then generate the Stage 1 taskbook and the Master Taskbook Registry V1 version taskbook.
 ```
 
 Remote push remains a separate remote mutation and is not authorized by this document.

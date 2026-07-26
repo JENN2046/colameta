@@ -484,6 +484,7 @@ class ExecutorRunOnceService:
                 self.project_root,
                 requested_provider=provider,
                 held_operation_lease=lease,
+                current_run_id=run_id or None,
             )
             decision = snapshot.project(provider)["canonical_continuation_decision"]
             recommended_action = str(decision.get("recommended_action") or "inspect_evidence")

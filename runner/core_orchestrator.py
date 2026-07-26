@@ -58,7 +58,8 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
         r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
         r"use|using|execute|executing)\s+)?"
-        r"(?:the\s+|any\s+)?(?:executor|codex|opencode|pi|execution|execute)\b",
+        r"(?:(?:the|any|a|an)\s+)?"
+        r"(?:executor|codex|opencode|pi|execution|execute)\b",
         re.IGNORECASE,
     ),
     re.compile(

@@ -52,7 +52,7 @@ that evidence instead of inventing a new authority path.
 ```yaml id="binding"
 binding:
   master_taskbook_path: PROJECT_MASTER_TASKBOOK.md
-  master_taskbook_raw_snapshot_sha256: 1b2d787465eef52a177f4716ea7495704e03c390ce6f0e3d26ca16b360688e34
+  master_taskbook_raw_snapshot_sha256: 895b91afe29d32c9742c6f8b1d91b2f0507522deed875d5a7999cc484f351e63
   master_taskbook_stage_section: "21. Stage 7: Drift Evidence And Correction"
   upstream_stage_dependency:
     - stage_05_reviewer_handoff_package

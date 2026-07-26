@@ -3102,7 +3102,12 @@ def build_mcp_tool_definitions(
                     "gate_preview": {
                         "type": "object",
                         "additionalProperties": True,
-                        "description": "gate_review_request apply 必须原样回传的完整签名 Work Item Gate preview。",
+                        "description": "仅供兼容的本地 apply 输入；公开 preview 不返回完整签名对象。",
+                    },
+                    "gate_preview_id": {
+                        "type": "string",
+                        "maxLength": GATE_REVIEW_MAX_BINDING_ID_CHARS,
+                        "description": "gate_review_request preview 返回的进程内 opaque continuation handle。",
                     },
                     "confirm_gate_review": {
                         "type": "boolean",

@@ -3,7 +3,7 @@
 ```yaml id="stage-04-zh-cn-summary"
 chinese_companion:
   source_document: docs/taskbooks/stages/STAGE_04_BOUNDED_EXECUTION_AND_EVIDENCE.md
-  source_sha256: 05e6114a666942c0641c635905c2295feaa62b98bd9e7b5166babd662e015a41
+  source_sha256: af9dac09893b49af08788ebeac9dfb569f89eb87f693625ef7cd41413de9c7ff
   translation_status: companion_draft
   authority_status: planning_reference_only
 stage:
