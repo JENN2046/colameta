@@ -52,6 +52,43 @@ def _sha256(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
+def _checkout_provenance(project: Path, head: str) -> dict[str, object]:
+    tree = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tracked_path_count = len(
+        subprocess.run(
+            ["git", "-C", str(project), "ls-files"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    snapshot: dict[str, object] = {
+        "head": head,
+        "tree": tree,
+        "candidate_clean": True,
+        "git_object_format": "sha1",
+        "git_object_manifest_sha256": _sha256("git-object-manifest"),
+        "tracked_path_count": tracked_path_count,
+        "worktree_id_sha256": _sha256("isolated-validation-worktree"),
+        "violation_count": 0,
+    }
+    return {
+        "mode": "isolated_detached_worktree",
+        "candidate_head": head,
+        "candidate_tree": tree,
+        "source_before": dict(snapshot),
+        "source_after": dict(snapshot),
+        "source_binding_match": True,
+        "isolated_from_project_worktree": True,
+        "cleanup_complete": True,
+    }
+
+
 def _validation_result(
     project: Path,
     head: str,
@@ -172,6 +209,7 @@ def _validation_result(
             "total_output_chars": 0,
             "redacted": True,
             "truncated": False,
+            "checkout_provenance": _checkout_provenance(project, head),
         },
         "started_at": (now - timedelta(minutes=3)).isoformat(),
         "completed_at": observed_at,
@@ -448,6 +486,55 @@ def test_p1_result_reference_failures_are_distinct_and_fail_closed(
     assert failed["error_code"] == "P1_VALIDATION_RESULT_NOT_PASSED"
     assert path.exists()
     assert result["validation_result_sha256"]
+
+
+def test_p1_rejects_missing_or_rebound_checkout_provenance(
+    tmp_path: Path,
+) -> None:
+    project, head = _git_fixture(tmp_path)
+    now = datetime(2026, 7, 24, 5, 0, tzinfo=timezone.utc)
+    manager = P1ReleaseEvidenceManager(str(project), now_fn=lambda: now)
+
+    observations = _observations(project, head, now)
+    reference, path, result = _validation_result(project, head, now)
+    result["output_summary"].pop("checkout_provenance")
+    result["validation_result_sha256"] = canonical_validation_result_sha256(
+        result
+    )
+    path.write_text(json.dumps(result), encoding="utf-8")
+    reference["validation_result_sha256"] = str(
+        result["validation_result_sha256"]
+    )
+    observations["full_local_validation"]["validation_run"] = reference
+    missing = manager.handle(
+        "preview",
+        {"candidate_head": head, **observations},
+    )
+    assert (
+        missing["error_code"]
+        == "P1_VALIDATION_CHECKOUT_PROVENANCE_MISSING"
+    )
+
+    observations = _observations(project, head, now)
+    reference, path, result = _validation_result(project, head, now)
+    provenance = result["output_summary"]["checkout_provenance"]
+    provenance["source_after"]["tree"] = "0" * 40
+    result["validation_result_sha256"] = canonical_validation_result_sha256(
+        result
+    )
+    path.write_text(json.dumps(result), encoding="utf-8")
+    reference["validation_result_sha256"] = str(
+        result["validation_result_sha256"]
+    )
+    observations["full_local_validation"]["validation_run"] = reference
+    rebound = manager.handle(
+        "preview",
+        {"candidate_head": head, **observations},
+    )
+    assert (
+        rebound["error_code"]
+        == "P1_VALIDATION_CHECKOUT_PROVENANCE_MISMATCH"
+    )
 
 
 def test_p1_rejects_running_and_legacy_terminal_results_without_backfill(

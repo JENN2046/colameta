@@ -1,13 +1,16 @@
-import json
+import hashlib
 import hmac
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runner.core_confirmation import (
@@ -24,6 +27,10 @@ from runner.review_manifest_validation import (
     normalize_review_manifest_validation_source,
 )
 from runner.runner_paths import resolve_project_runner_path
+from runner.work_item_governance.source_binding import (
+    _inspect_git_checkout,
+    _trusted_git_for_checkout,
+)
 
 
 PREVIEW_TTL_SECONDS = 3600
@@ -150,6 +157,31 @@ _P1_COMMAND_CONTRACT = (
 )
 _P1_COMMAND_FAMILIES = tuple(
     family for family, _argv, _timeout in _P1_COMMAND_CONTRACT
+)
+_ISOLATED_CHECKOUT_MODE = "isolated_detached_worktree"
+_CHECKOUT_PROVENANCE_FIELDS = frozenset(
+    {
+        "mode",
+        "candidate_head",
+        "candidate_tree",
+        "source_before",
+        "source_after",
+        "source_binding_match",
+        "isolated_from_project_worktree",
+        "cleanup_complete",
+    }
+)
+_CHECKOUT_SNAPSHOT_FIELDS = frozenset(
+    {
+        "head",
+        "tree",
+        "candidate_clean",
+        "git_object_format",
+        "git_object_manifest_sha256",
+        "tracked_path_count",
+        "worktree_id_sha256",
+        "violation_count",
+    }
 )
 
 
@@ -603,55 +635,154 @@ class MCPValidationRunManager:
         command_results: list[dict[str, Any]] = []
         total_output_chars = 0
         failed_indexes: list[int] = []
-        for index, spec in enumerate(command_specs):
-            command = spec.get("argv") if isinstance(spec, dict) else None
-            timeout_seconds = self._normalize_timeout_seconds(spec.get("timeout_seconds") if isinstance(spec, dict) else None)
-            continue_on_failure = bool(spec.get("continue_on_failure", False)) if isinstance(spec, dict) else False
-            if not self._is_safe_command(command):
-                failed_indexes.append(index)
+        isolated_checkout: dict[str, Any] | None = None
+        execution_root = self.project_root
+        source_after: dict[str, Any] | None = None
+        cleanup_complete = True
+        try:
+            if artifact.get("scope") == "manifest_bound":
+                candidate_head = self._manifest_candidate_head(artifact)
+                if candidate_head is None:
+                    raise RuntimeError(
+                        "manifest-bound validation has no candidate checkout"
+                    )
+                isolated_checkout = self._prepare_isolated_checkout(
+                    candidate_head,
+                    run_id,
+                )
+                execution_root = str(isolated_checkout["root"])
+
+            for index, spec in enumerate(command_specs):
+                command = spec.get("argv") if isinstance(spec, dict) else None
+                timeout_seconds = self._normalize_timeout_seconds(
+                    spec.get("timeout_seconds")
+                    if isinstance(spec, dict)
+                    else None
+                )
+                continue_on_failure = (
+                    bool(spec.get("continue_on_failure", False))
+                    if isinstance(spec, dict)
+                    else False
+                )
+                if not self._is_safe_command(command):
+                    failed_indexes.append(index)
+                    command_results.append({
+                        "index": index,
+                        "ok": False,
+                        "returncode": 127,
+                        "command": self._display_command(command),
+                        "stdout": "",
+                        "stderr": "命令结构无效，已阻断。",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    })
+                    break
+                result = self._run_command(
+                    command,
+                    timeout_seconds=timeout_seconds,
+                    cwd=execution_root,
+                )
+                stdout = result["stdout"]
+                stderr = result["stderr"]
+                remaining = max(
+                    0,
+                    MAX_TOTAL_OUTPUT_CHARS - total_output_chars,
+                )
+                per_stream_limit = min(MAX_STDOUT_CHARS, remaining)
+                stdout, stdout_truncated = _truncate(stdout, per_stream_limit)
+                total_output_chars += len(stdout)
+                remaining = max(
+                    0,
+                    MAX_TOTAL_OUTPUT_CHARS - total_output_chars,
+                )
+                per_stream_limit = min(MAX_STDERR_CHARS, remaining)
+                stderr, stderr_truncated = _truncate(stderr, per_stream_limit)
+                total_output_chars += len(stderr)
+                ok = result["returncode"] == 0
+                if not ok:
+                    failed_indexes.append(index)
                 command_results.append({
                     "index": index,
-                    "ok": False,
-                    "returncode": 127,
+                    "ok": ok,
+                    "returncode": result["returncode"],
+                    "error_code": result.get("error_code"),
+                    "timeout_seconds": timeout_seconds,
+                    "continue_on_failure": continue_on_failure,
                     "command": self._display_command(command),
-                    "stdout": "",
-                    "stderr": "命令结构无效，已阻断。",
-                    "stdout_truncated": False,
-                    "stderr_truncated": False,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "stdout_truncated": stdout_truncated,
+                    "stderr_truncated": stderr_truncated,
                 })
-                break
-            result = self._run_command(command, timeout_seconds=timeout_seconds)
-            stdout = result["stdout"]
-            stderr = result["stderr"]
-            remaining = max(0, MAX_TOTAL_OUTPUT_CHARS - total_output_chars)
-            per_stream_limit = min(MAX_STDOUT_CHARS, remaining)
-            stdout, stdout_truncated = _truncate(stdout, per_stream_limit)
-            total_output_chars += len(stdout)
-            remaining = max(0, MAX_TOTAL_OUTPUT_CHARS - total_output_chars)
-            per_stream_limit = min(MAX_STDERR_CHARS, remaining)
-            stderr, stderr_truncated = _truncate(stderr, per_stream_limit)
-            total_output_chars += len(stderr)
-            ok = result["returncode"] == 0
-            if not ok:
-                failed_indexes.append(index)
-            command_results.append({
-                "index": index,
-                "ok": ok,
-                "returncode": result["returncode"],
-                "error_code": result.get("error_code"),
-                "timeout_seconds": timeout_seconds,
-                "continue_on_failure": continue_on_failure,
-                "command": self._display_command(command),
-                "stdout": stdout,
-                "stderr": stderr,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-            })
-            if not ok and not continue_on_failure:
-                break
+                if not ok and not continue_on_failure:
+                    break
 
+            if isolated_checkout is not None:
+                source_after = self._capture_checkout_snapshot(
+                    Path(execution_root)
+                )
+        finally:
+            if isolated_checkout is not None:
+                cleanup_complete = self._cleanup_isolated_checkout(
+                    isolated_checkout
+                )
+
+        checkout_provenance: dict[str, Any] | None = None
+        if isolated_checkout is not None:
+            source_before = isolated_checkout["source_before"]
+            source_binding_match = (
+                isinstance(source_after, dict)
+                and source_before == source_after
+            )
+            checkout_provenance = {
+                "mode": _ISOLATED_CHECKOUT_MODE,
+                "candidate_head": isolated_checkout["candidate_head"],
+                "candidate_tree": isolated_checkout["candidate_tree"],
+                "source_before": source_before,
+                "source_after": source_after,
+                "source_binding_match": source_binding_match,
+                "isolated_from_project_worktree": isolated_checkout[
+                    "isolated_from_project_worktree"
+                ],
+                "cleanup_complete": cleanup_complete,
+            }
+            provenance_valid = (
+                source_binding_match
+                and source_before.get("candidate_clean") is True
+                and checkout_provenance["isolated_from_project_worktree"]
+                is True
+                and cleanup_complete
+            )
+            if not provenance_valid:
+                failed_index = max(0, len(command_results) - 1)
+                if failed_index not in failed_indexes:
+                    failed_indexes.append(failed_index)
+                if command_results:
+                    command_result = command_results[failed_index]
+                    command_result["ok"] = False
+                    if command_result.get("returncode") == 0:
+                        command_result["returncode"] = 125
+                    command_result["error_code"] = (
+                        "VALIDATION_CHECKOUT_PROVENANCE_INVALID"
+                    )
+                    message = (
+                        "Validation checkout provenance changed or cleanup "
+                        "did not complete."
+                    )
+                    command_result["stderr"] = message
+                    command_result["stderr_truncated"] = False
+                    total_output_chars += len(message)
+
+        failed_indexes.sort()
         status = "passed" if not failed_indexes else "failed"
         completed_at = _utc_now()
+        output_summary: dict[str, Any] = {
+            "total_output_chars": total_output_chars,
+            "redacted": True,
+            "truncated": total_output_chars >= MAX_TOTAL_OUTPUT_CHARS,
+        }
+        if checkout_provenance is not None:
+            output_summary["checkout_provenance"] = checkout_provenance
         run_record = {
             "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -668,11 +799,7 @@ class MCPValidationRunManager:
             "command_results": command_results,
             "failed_command_indexes": failed_indexes,
             "failed_command_index": failed_indexes[0] if failed_indexes else None,
-            "output_summary": {
-                "total_output_chars": total_output_chars,
-                "redacted": True,
-                "truncated": total_output_chars >= MAX_TOTAL_OUTPUT_CHARS,
-            },
+            "output_summary": output_summary,
             "started_at": _iso(started_at),
             "completed_at": _iso(completed_at),
             "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
@@ -882,6 +1009,11 @@ class MCPValidationRunManager:
                 "The validation contract candidate does not match the P1 candidate.",
             )
 
+        self._verify_p1_checkout_provenance(
+            data,
+            normalized_candidate,
+        )
+
         families = self._p1_command_families(command_specs)
         command_results = data.get("command_results")
         if (
@@ -978,6 +1110,92 @@ class MCPValidationRunManager:
             "source_kind": "server_verified_validation_run",
             "required_command_families": list(_P1_COMMAND_FAMILIES),
         }
+
+    def _verify_p1_checkout_provenance(
+        self,
+        data: dict[str, Any],
+        candidate_head: str,
+    ) -> None:
+        output_summary = data.get("output_summary")
+        provenance = (
+            output_summary.get("checkout_provenance")
+            if isinstance(output_summary, dict)
+            else None
+        )
+        if not isinstance(provenance, dict):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CHECKOUT_PROVENANCE_MISSING",
+                "The validation result does not bind the checkout it executed.",
+            )
+        if set(provenance) != _CHECKOUT_PROVENANCE_FIELDS:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CHECKOUT_PROVENANCE_MISMATCH",
+                "The validation checkout provenance has an invalid schema.",
+            )
+        source_before = provenance.get("source_before")
+        source_after = provenance.get("source_after")
+        try:
+            git = _trusted_git_for_checkout(
+                Path(self.project_root).resolve()
+            )
+            candidate_tree = git.run(
+                Path(self.project_root).resolve(),
+                "rev-parse",
+                "--verify",
+                f"{candidate_head}^{{tree}}",
+            ).strip().lower()
+        except Exception:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CHECKOUT_PROVENANCE_MISMATCH",
+                "The validation candidate tree cannot be verified.",
+            ) from None
+
+        def valid_snapshot(value: Any) -> bool:
+            if (
+                not isinstance(value, dict)
+                or set(value) != _CHECKOUT_SNAPSHOT_FIELDS
+            ):
+                return False
+            tracked_path_count = value.get("tracked_path_count")
+            violation_count = value.get("violation_count")
+            return (
+                value.get("head") == candidate_head
+                and value.get("tree") == candidate_tree
+                and value.get("candidate_clean") is True
+                and value.get("git_object_format") in {"sha1", "sha256"}
+                and isinstance(
+                    value.get("git_object_manifest_sha256"),
+                    str,
+                )
+                and _SHA256_RE.fullmatch(
+                    value["git_object_manifest_sha256"]
+                )
+                is not None
+                and isinstance(value.get("worktree_id_sha256"), str)
+                and _SHA256_RE.fullmatch(value["worktree_id_sha256"])
+                is not None
+                and not isinstance(tracked_path_count, bool)
+                and isinstance(tracked_path_count, int)
+                and tracked_path_count >= 0
+                and not isinstance(violation_count, bool)
+                and violation_count == 0
+            )
+
+        if (
+            provenance.get("mode") != _ISOLATED_CHECKOUT_MODE
+            or provenance.get("candidate_head") != candidate_head
+            or provenance.get("candidate_tree") != candidate_tree
+            or not valid_snapshot(source_before)
+            or not valid_snapshot(source_after)
+            or source_before != source_after
+            or provenance.get("source_binding_match") is not True
+            or provenance.get("isolated_from_project_worktree") is not True
+            or provenance.get("cleanup_complete") is not True
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CHECKOUT_PROVENANCE_MISMATCH",
+                "The validation result is not bound to one clean isolated candidate checkout.",
+            )
 
     def _normalize_scope(self, value: Any) -> tuple[str, dict[str, Any] | None]:
         if value is None:
@@ -1381,16 +1599,243 @@ class MCPValidationRunManager:
             return True
         return True
 
-    def _run_command(self, command: list[str], *, timeout_seconds: int) -> dict[str, Any]:
+    def _manifest_candidate_head(
+        self,
+        artifact: dict[str, Any],
+    ) -> str | None:
+        contract = artifact.get("manifest_validation")
+        binding = (
+            contract.get("review_context_binding")
+            if isinstance(contract, dict)
+            else None
+        )
+        head = binding.get("head") if isinstance(binding, dict) else None
+        if not isinstance(head, str):
+            return None
+        normalized = head.strip().lower()
+        return (
+            normalized
+            if re.fullmatch(r"[0-9a-f]{40}", normalized)
+            else None
+        )
+
+    @staticmethod
+    def _worktree_id_sha256(path: Path) -> str:
+        return hashlib.sha256(
+            path.resolve().as_posix().encode("utf-8")
+        ).hexdigest()
+
+    def _capture_checkout_snapshot(
+        self,
+        checkout: Path,
+    ) -> dict[str, Any]:
+        requested = checkout.resolve()
+        git = _trusted_git_for_checkout(requested)
+        exact = _inspect_git_checkout(
+            requested,
+            git=git,
+            pathspecs=(),
+        )
+        tracked = [
+            item
+            for item in git.run(
+                requested,
+                "diff",
+                "--name-only",
+                "-z",
+            ).split("\0")
+            if item
+        ]
+        staged = [
+            item
+            for item in git.run(
+                requested,
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+            ).split("\0")
+            if item
+        ]
+        untracked = [
+            item
+            for item in git.run(
+                requested,
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ).split("\0")
+            if item
+        ]
+        exact_violation_count = sum(
+            len(exact.get(key, []))
+            for key in (
+                "object_mismatches",
+                "assume_unchanged_paths",
+                "skip_worktree_paths",
+                "ignored_execution_overlays",
+                "untracked_execution_overlays",
+            )
+        )
+        violation_count = (
+            len(tracked)
+            + len(staged)
+            + len(untracked)
+            + exact_violation_count
+        )
+        return {
+            "head": git.run(
+                requested,
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            ).strip().lower(),
+            "tree": git.run(
+                requested,
+                "rev-parse",
+                "--verify",
+                "HEAD^{tree}",
+            ).strip().lower(),
+            "candidate_clean": violation_count == 0,
+            "git_object_format": exact.get("object_format"),
+            "git_object_manifest_sha256": exact.get("manifest_digest"),
+            "tracked_path_count": exact.get("tracked_path_count"),
+            "worktree_id_sha256": self._worktree_id_sha256(requested),
+            "violation_count": violation_count,
+        }
+
+    def _prepare_isolated_checkout(
+        self,
+        candidate_head: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        project_root = Path(self.project_root).resolve()
+        git = _trusted_git_for_checkout(project_root)
+        candidate_tree = git.run(
+            project_root,
+            "rev-parse",
+            "--verify",
+            f"{candidate_head}^{{tree}}",
+        ).strip().lower()
+        parent = Path(
+            tempfile.mkdtemp(
+                prefix=f"colameta-validation-{run_id[-8:]}-",
+            )
+        )
+        checkout = parent / "checkout"
+        added = False
+        try:
+            git.run(
+                project_root,
+                "worktree",
+                "add",
+                "--detach",
+                checkout.as_posix(),
+                candidate_head,
+            )
+            added = True
+            source_before = self._capture_checkout_snapshot(checkout)
+            isolated = (
+                source_before["worktree_id_sha256"]
+                != self._worktree_id_sha256(project_root)
+            )
+            if (
+                source_before.get("head") != candidate_head
+                or source_before.get("tree") != candidate_tree
+                or source_before.get("candidate_clean") is not True
+                or not isolated
+            ):
+                raise RuntimeError(
+                    "isolated validation checkout did not match candidate"
+                )
+            return {
+                "root": checkout,
+                "parent": parent,
+                "git": git,
+                "candidate_head": candidate_head,
+                "candidate_tree": candidate_tree,
+                "source_before": source_before,
+                "isolated_from_project_worktree": isolated,
+            }
+        except Exception as exc:
+            if added:
+                try:
+                    git.run(
+                        project_root,
+                        "worktree",
+                        "remove",
+                        "--force",
+                        checkout.as_posix(),
+                    )
+                except Exception:
+                    pass
+            shutil.rmtree(parent, ignore_errors=True)
+            raise RuntimeError(
+                "isolated validation checkout preparation failed"
+            ) from exc
+
+    def _cleanup_isolated_checkout(
+        self,
+        isolated_checkout: dict[str, Any],
+    ) -> bool:
+        project_root = Path(self.project_root).resolve()
+        checkout = isolated_checkout.get("root")
+        parent = isolated_checkout.get("parent")
+        git = isolated_checkout.get("git")
+        if (
+            not isinstance(checkout, Path)
+            or not isinstance(parent, Path)
+            or git is None
+        ):
+            return False
+        try:
+            git.run(
+                project_root,
+                "worktree",
+                "remove",
+                "--force",
+                checkout.as_posix(),
+            )
+        except Exception:
+            return False
+        shutil.rmtree(parent, ignore_errors=True)
+        return not checkout.exists()
+
+    def _run_command(
+        self,
+        command: list[str],
+        *,
+        timeout_seconds: int,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        execution_root = os.path.abspath(cwd or self.project_root)
+        effective_command = list(command)
+        if effective_command[0] == ".venv/bin/python":
+            effective_command[0] = self._python_executable()
+        environment = dict(os.environ)
+        for key in list(environment):
+            if key.startswith("GIT_") or key in {
+                "PYTHONHOME",
+                "PYTHONSTARTUP",
+                "PYTHONUSERBASE",
+            }:
+                environment.pop(key, None)
+        if os.path.realpath(execution_root) != os.path.realpath(
+            self.project_root
+        ):
+            environment["PYTHONPATH"] = execution_root
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
             proc = subprocess.run(
-                command,
-                cwd=self.project_root,
+                effective_command,
+                cwd=execution_root,
                 capture_output=True,
                 text=True,
                 check=False,
                 shell=False,
                 timeout=timeout_seconds,
+                env=environment,
             )
             return {
                 "returncode": proc.returncode,

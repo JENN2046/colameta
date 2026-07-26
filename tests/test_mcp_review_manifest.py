@@ -281,6 +281,71 @@ def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_
     assert final["integrity_classification"] == "verified"
     assert len(final["validation_result_sha256"]) == 64
     assert final["manifest_validation"]["contract_sha256"] == contract["contract_sha256"]
+    checkout = final["output_summary"]["checkout_provenance"]
+    assert checkout["mode"] == "isolated_detached_worktree"
+    assert checkout["candidate_head"] == inspected["data"]["context_binding"]["head"]
+    assert checkout["source_before"] == checkout["source_after"]
+    assert checkout["source_binding_match"] is True
+    assert checkout["isolated_from_project_worktree"] is True
+    assert checkout["cleanup_complete"] is True
+    worktrees = subprocess.run(
+        ["git", "-C", str(project), "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert worktrees.count("worktree ") == 1
+
+
+def test_manifest_validation_isolated_checkout_ignores_transient_source_checkout_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    subject = project / "docs" / "review-input.md"
+    original_subject = subject.read_text(encoding="utf-8")
+    execution_roots: list[str] = []
+    original_run_command = MCPValidationRunManager._run_command
+
+    def run_command(
+        self,
+        command,
+        *,
+        timeout_seconds,
+        cwd=None,
+    ):
+        assert cwd is not None
+        execution_roots.append(cwd)
+        subject.write_text("transient unrelated checkout change\n", encoding="utf-8")
+        try:
+            return original_run_command(
+                self,
+                command,
+                timeout_seconds=timeout_seconds,
+                cwd=cwd,
+            )
+        finally:
+            subject.write_text(original_subject, encoding="utf-8")
+
+    monkeypatch.setattr(
+        MCPValidationRunManager,
+        "_run_command",
+        run_command,
+    )
+    _manager, _run_id, final, _path = _completed_manifest_validation(
+        project
+    )
+
+    assert final["status"] == "passed"
+    assert execution_roots
+    assert all(
+        os.path.realpath(root) != os.path.realpath(project)
+        for root in execution_roots
+    )
+    assert subject.read_text(encoding="utf-8") == original_subject
+    checkout = final["output_summary"]["checkout_provenance"]
+    assert checkout["source_binding_match"] is True
+    assert checkout["cleanup_complete"] is True
 
 
 def test_validation_result_status_detects_semantic_tampering_but_not_key_order(

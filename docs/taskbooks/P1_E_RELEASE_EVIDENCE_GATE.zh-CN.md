@@ -56,7 +56,9 @@ candidate 不匹配、非标准九工具 inventory、缺少 continuity evidence 
 必须有五组证据：
 
 1. 完整本地验证：一个经过验证的 manifest-bound run，其固定 argv contract 与有序结果完整覆盖
-   pytest、self-hosting smoke、compileall、Ruff、`git diff --check`；
+   pytest、self-hosting smoke、compileall、Ruff、`git diff --check`；该 run 在 candidate commit
+   的临时 detached worktree 中执行，并把前后匹配且 clean 的 Git object manifest、candidate tree、
+   隔离状态与清理状态绑定进 terminal result digest；
 2. runtime provenance：loaded runtime 与 checkout HEAD 都等于 candidate，且不存在 stale-code 或
    reload-needed；
 3. connector/OAuth：可达、已授权，并暴露精确顺序的九工具元组；
@@ -99,6 +101,11 @@ privileged local writer。因此，`server_verified_validation_run` 只表示在
 v1.19 不新增 HMAC、digital signature、external attestation 或新的信任权威
 （new trust authority）。不得把
 validation result 描述为 tamper-proof、unforgeable、signed、remotely attested 或 immutable。
+
+detached validation worktree 防止 operator source checkout 的普通编辑改变实际受测内容。其脱敏的
+checkout provenance 属于 terminal result 的 canonical integrity binding，并在 P1 eligibility
+复核时重新验证。这项隔离不会扩展信任模型，不能抵御能够同时重写 persisted result 与 digest 的恶意或
+privileged local writer。
 
 新的 P1 intake、preview 与 receipt 使用显式 v2 schema。v1 preview 不得 apply；完整性有效的
 v1 receipt 只作为只读历史记录，最多报告 `verified_stale`。恢复必须重新执行 manifest-bound

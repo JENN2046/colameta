@@ -60,7 +60,10 @@ Required evidence groups are:
 
 1. full local validation: one verified manifest-bound run whose fixed argv
    contract and ordered results cover pytest, self-hosting smoke, compileall,
-   Ruff, and `git diff --check`;
+   Ruff, and `git diff --check`; the run executes in a temporary detached
+   worktree at the candidate commit and binds matching clean before/after Git
+   object manifests, candidate tree, isolation, and cleanup state into the
+   terminal result digest;
 2. runtime provenance: loaded runtime and checkout head equal the candidate,
    with no stale-code or reload-needed flag;
 3. connector/OAuth: reachable, authorized, and exposing the exact ordered
@@ -110,6 +113,13 @@ authenticated execution provenance.
 v1.19 adds no HMAC, digital signature, external attestation, or new trust authority.
 The validation result must not be described as tamper-proof,
 unforgeable, signed, remotely attested, or immutable.
+
+The detached validation worktree prevents ordinary edits to the operator's
+source checkout from changing the content under test. Its sanitized checkout
+provenance is part of the terminal result's canonical integrity binding and is
+re-verified for P1 eligibility. This isolation does not extend the trust model
+to resist a malicious or privileged local writer that can rewrite both the
+persisted result and its digest.
 
 New P1 intake, preview, and receipt records use explicit v2 schemas. A v1
 preview cannot apply. An integrity-valid v1 receipt remains read-only historical
