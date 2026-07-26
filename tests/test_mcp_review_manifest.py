@@ -15,6 +15,11 @@ from runner.mcp_server import (
     MCP_TOOL_POLICIES,
     MCPPlanningBridgeServer,
 )
+from runner.mcp_validation_run import (
+    MCPValidationRunManager,
+    VALIDATION_RUN_RESULT_SCHEMA_VERSION,
+    canonical_validation_result_sha256,
+)
 from runner.project_registry import ProjectRegistry
 from runner.review_manifest import (
     REVIEW_MANIFEST_SCHEMA_VERSION,
@@ -114,6 +119,52 @@ def _tool_call(server: MCPPlanningBridgeServer, arguments: dict) -> dict:
     )
     assert response is not None
     return response
+
+
+def _completed_manifest_validation(
+    project: Path,
+) -> tuple[MCPValidationRunManager, str, dict, Path]:
+    server = MCPPlanningBridgeServer(str(project))
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    preview = server.call_tool_for_agent(
+        "manage_validation_run",
+        {
+            "action": "preview",
+            "review_manifest_id": inspected["data"]["review_manifest_id"],
+        },
+    )
+    started = server.call_tool_for_agent(
+        "manage_validation_run",
+        preview["data"]["next_actions"][0]["params"],
+    )
+    run_id = started["data"]["run_id"]
+    final: dict | None = None
+    for _ in range(100):
+        status = server.call_tool_for_agent(
+            "manage_validation_run",
+            {"action": "status", "run_id": run_id},
+        )
+        final = status["data"]
+        if final["status"] != "running":
+            break
+        time.sleep(0.01)
+    assert final is not None and final["status"] == "passed"
+    manager = MCPValidationRunManager(str(project))
+    path = (
+        project
+        / ".colameta"
+        / "runtime"
+        / "validation-runs"
+        / f"{run_id}.json"
+    )
+    return manager, run_id, final, path
 
 
 def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_path: Path) -> None:
@@ -226,7 +277,102 @@ def test_manifest_bound_validation_preview_and_run_keep_the_review_contract(tmp_
     assert final is not None
     assert final["status"] == "passed"
     assert final["passed"] is True
+    assert final["schema_version"] == VALIDATION_RUN_RESULT_SCHEMA_VERSION
+    assert final["integrity_classification"] == "verified"
+    assert len(final["validation_result_sha256"]) == 64
     assert final["manifest_validation"]["contract_sha256"] == contract["contract_sha256"]
+
+
+def test_validation_result_status_detects_semantic_tampering_but_not_key_order(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    manager, run_id, _final, path = _completed_manifest_validation(project)
+    stored = json.loads(path.read_text(encoding="utf-8"))
+
+    reordered = dict(reversed(list(stored.items())))
+    path.write_text(json.dumps(reordered), encoding="utf-8")
+    verified = manager.status({"run_id": run_id})
+    assert verified["ok"] is True
+    assert verified["integrity_classification"] == "verified"
+
+    reordered["output_summary"]["total_output_chars"] += 1
+    path.write_text(json.dumps(reordered), encoding="utf-8")
+    tampered = manager.status({"run_id": run_id})
+    assert tampered["ok"] is False
+    assert tampered["error_code"] == "RUN_RESULT_DIGEST_MISMATCH"
+    assert tampered["integrity_classification"] == "integrity_failure"
+
+
+def test_validation_result_status_enforces_closed_terminal_and_running_schemas(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    manager, run_id, _final, path = _completed_manifest_validation(project)
+    terminal = json.loads(path.read_text(encoding="utf-8"))
+
+    missing = dict(terminal)
+    missing.pop("output_summary")
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    assert manager.status({"run_id": run_id})["error_code"] == "RUN_RESULT_INVALID"
+
+    extra = dict(terminal)
+    extra["response_only"] = True
+    path.write_text(json.dumps(extra), encoding="utf-8")
+    assert manager.status({"run_id": run_id})["error_code"] == "RUN_RESULT_INVALID"
+
+    invalid_contract = copy.deepcopy(terminal)
+    invalid_contract["manifest_validation"]["command_specs_sha256"] = "0" * 64
+    invalid_contract["validation_result_sha256"] = (
+        canonical_validation_result_sha256(invalid_contract)
+    )
+    path.write_text(json.dumps(invalid_contract), encoding="utf-8")
+    contract_status = manager.status({"run_id": run_id})
+    assert contract_status["ok"] is False
+    assert contract_status["error_code"] == "RUN_RESULT_INVALID"
+    assert (
+        contract_status["integrity_classification"]
+        == "integrity_failure"
+    )
+
+    legacy = dict(terminal)
+    legacy.pop("schema_version")
+    legacy.pop("validation_result_sha256")
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    legacy_status = manager.status({"run_id": run_id})
+    assert legacy_status["ok"] is False
+    assert legacy_status["error_code"] == "RUN_RESULT_UNVERIFIED_LEGACY"
+    assert legacy_status["integrity_classification"] == "unverified_legacy"
+    assert "validation_result_sha256" not in json.loads(path.read_text(encoding="utf-8"))
+
+    running = {
+        key: value
+        for key, value in terminal.items()
+        if key != "validation_result_sha256"
+    }
+    running.update(
+        {
+            "status": "running",
+            "passed": None,
+            "command_results": [],
+            "failed_command_indexes": [],
+            "failed_command_index": None,
+            "completed_at": None,
+            "duration_seconds": None,
+        }
+    )
+    path.write_text(json.dumps(running), encoding="utf-8")
+    running_status = manager.status({"run_id": run_id})
+    assert running_status["ok"] is True
+    assert running_status["status"] == "running"
+    assert running_status["integrity_classification"] == "non_terminal"
+
+    running["validation_result_sha256"] = terminal["validation_result_sha256"]
+    path.write_text(json.dumps(running), encoding="utf-8")
+    invalid_running = manager.status({"run_id": run_id})
+    assert invalid_running["ok"] is False
+    assert invalid_running["error_code"] == "RUN_RESULT_INVALID"
+    assert invalid_running["integrity_classification"] == "integrity_failure"
 
 
 def test_manifest_bound_validation_rechecks_subjects_and_rejects_unsafe_commands(tmp_path: Path) -> None:

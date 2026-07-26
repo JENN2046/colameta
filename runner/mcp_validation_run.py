@@ -1,4 +1,5 @@
 import json
+import hmac
 import os
 import re
 import shlex
@@ -18,6 +19,8 @@ from runner.path_policy import RunnerPathPolicy
 from runner.plan_loader import PlanLoader
 from runner.review_manifest_validation import (
     build_review_manifest_validation_contract,
+    canonical_manifest_validation_sha256,
+    manifest_validation_contract_from_artifact,
     normalize_review_manifest_validation_source,
 )
 from runner.runner_paths import resolve_project_runner_path
@@ -35,6 +38,8 @@ VALID_SCOPES = {"changed_files", "target_files", "current_version", "full"}
 MIN_TIMEOUT_SECONDS = 10
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_TIMEOUT_SECONDS = 300
+VALIDATION_RUN_RESULT_SCHEMA_VERSION = "colameta.validation_run_result.v1"
+P1_VALIDATION_MAX_AGE_SECONDS = 24 * 60 * 60
 SHELL_META_PATTERNS = ("&&", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
 DANGEROUS_EXECUTABLES = {"rm", "sudo", "su", "chmod", "chown", "curl", "wget", "ssh", "scp", "rsync", "docker", "podman", "kubectl", "terraform"}
 
@@ -46,6 +51,136 @@ SENSITIVE_TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"sk-[A-Za-z0-9_-]+"), "[REDACTED]"),
     (re.compile(r"https://[^/\s:@]+:[^@\s]+@"), "https://***@"),
 ]
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RUN_RESULT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "preview_id",
+        "action",
+        "status",
+        "passed",
+        "scope",
+        "target_files",
+        "strategy",
+        "validation_groups",
+        "command_summary",
+        "command_count",
+        "command_results",
+        "failed_command_indexes",
+        "failed_command_index",
+        "output_summary",
+        "started_at",
+        "completed_at",
+        "duration_seconds",
+        "manifest_validation",
+    }
+)
+_TERMINAL_RUN_RESULT_FIELDS = _RUN_RESULT_FIELDS | {"validation_result_sha256"}
+_LEGACY_TERMINAL_REQUIRED_FIELDS = frozenset(
+    {
+        "run_id",
+        "preview_id",
+        "action",
+        "status",
+        "passed",
+        "scope",
+        "target_files",
+        "strategy",
+        "validation_groups",
+        "command_results",
+        "failed_command_indexes",
+        "failed_command_index",
+        "output_summary",
+        "started_at",
+        "completed_at",
+        "duration_seconds",
+    }
+)
+_LEGACY_TERMINAL_OPTIONAL_FIELDS = frozenset(
+    {"command_summary", "command_count", "manifest_validation"}
+)
+_P1_COMMAND_CONTRACT = (
+    (
+        "pytest",
+        (".venv/bin/python", "-m", "pytest", "-q"),
+        900,
+    ),
+    (
+        "self_hosting_smoke",
+        (".venv/bin/python", "scripts/self_hosting_smoke.py"),
+        900,
+    ),
+    (
+        "compileall",
+        (
+            ".venv/bin/python",
+            "-m",
+            "compileall",
+            "-q",
+            "adapters",
+            "runner",
+            "schemas",
+            "scripts",
+            "tests",
+        ),
+        600,
+    ),
+    (
+        "ruff",
+        (
+            ".venv/bin/python",
+            "-m",
+            "ruff",
+            "check",
+            "adapters",
+            "runner",
+            "schemas",
+            "scripts",
+            "tests",
+        ),
+        600,
+    ),
+    (
+        "git_diff_check",
+        ("git", "diff", "--check"),
+        600,
+    ),
+)
+_P1_COMMAND_FAMILIES = tuple(
+    family for family, _argv, _timeout in _P1_COMMAND_CONTRACT
+)
+
+
+class P1ValidationResultError(ValueError):
+    """Fail-closed, path-free validation result error for P1 evidence."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def canonical_validation_result_sha256(result: dict[str, Any]) -> str:
+    """Hash one closed terminal result without its self-referential digest."""
+
+    payload = {
+        key: value
+        for key, value in result.items()
+        if key != "validation_result_sha256"
+    }
+    # The existing manifest helper is the canonicalization authority.  This
+    # explicit pass adds the validation-result requirement to reject NaN and
+    # infinity before using that helper's byte-compatible valid-value output.
+    json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return canonical_manifest_validation_sha256(payload)
 
 
 def _utc_now() -> datetime:
@@ -454,7 +589,7 @@ class MCPValidationRunManager:
                 "completed_at": _iso(completed_at),
                 "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
             }
-            self._write_run_result(run_id, run_record)
+            self._write_terminal_run_result(run_id, run_record)
 
     def _execute_run_worker(
         self,
@@ -518,6 +653,7 @@ class MCPValidationRunManager:
         status = "passed" if not failed_indexes else "failed"
         completed_at = _utc_now()
         run_record = {
+            "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
             "run_id": run_id,
             "preview_id": preview_id,
             "action": "run",
@@ -527,6 +663,8 @@ class MCPValidationRunManager:
             "target_files": artifact.get("target_files", []),
             "strategy": artifact.get("strategy"),
             "validation_groups": artifact.get("validation_groups", []),
+            "command_summary": self._command_summary(commands),
+            "command_count": len(commands),
             "command_results": command_results,
             "failed_command_indexes": failed_indexes,
             "failed_command_index": failed_indexes[0] if failed_indexes else None,
@@ -538,11 +676,13 @@ class MCPValidationRunManager:
             "started_at": _iso(started_at),
             "completed_at": _iso(completed_at),
             "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
+            "manifest_validation": (
+                dict(artifact["manifest_validation"])
+                if isinstance(artifact.get("manifest_validation"), dict)
+                else None
+            ),
         }
-        manifest_validation = artifact.get("manifest_validation")
-        if isinstance(manifest_validation, dict):
-            run_record["manifest_validation"] = dict(manifest_validation)
-        self._write_run_result(run_id, run_record)
+        self._write_terminal_run_result(run_id, run_record)
 
     def _initial_run_record(
         self,
@@ -553,6 +693,7 @@ class MCPValidationRunManager:
         started_at: datetime,
     ) -> dict[str, Any]:
         result = {
+            "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
             "run_id": run_id,
             "preview_id": preview_id,
             "action": "run",
@@ -571,29 +712,264 @@ class MCPValidationRunManager:
             "started_at": _iso(started_at),
             "completed_at": None,
             "duration_seconds": None,
+            "manifest_validation": (
+                dict(artifact["manifest_validation"])
+                if isinstance(artifact.get("manifest_validation"), dict)
+                else None
+            ),
         }
-        manifest_validation = artifact.get("manifest_validation")
-        if isinstance(manifest_validation, dict):
-            result["manifest_validation"] = dict(manifest_validation)
         return result
 
     def status(self, params: dict[str, Any]) -> dict[str, Any]:
         run_id = self._validate_run_id(params.get("run_id"))
         if run_id is None:
             return {"ok": False, "action": "status", "error_code": "INVALID_RUN_ID", "message": "status 需要合法 run_id。"}
-        path = self._run_result_path(run_id)
-        if not os.path.isfile(path):
+        data, read_error = self._read_verified_run_result(run_id)
+        if read_error == "RUN_NOT_FOUND":
             return {"ok": False, "action": "status", "error_code": "RUN_NOT_FOUND", "message": "run_id 不存在。"}
+        if read_error is not None:
+            classification = (
+                "unverified_legacy"
+                if read_error == "RUN_RESULT_UNVERIFIED_LEGACY"
+                else "integrity_failure"
+            )
+            return {
+                "ok": False,
+                "action": "status",
+                "error_code": read_error,
+                "message": "run result 未通过闭合 schema 与 canonical digest 校验。",
+                "integrity_classification": classification,
+            }
+        assert data is not None
+        response = dict(data)
+        response["action"] = "status"
+        response["ok"] = True
+        response["integrity_classification"] = (
+            "non_terminal" if data["status"] == "running" else "verified"
+        )
+        return response
+
+    def verify_p1_result(
+        self,
+        run_id: Any,
+        *,
+        candidate_head: str,
+        expected_validation_result_sha256: str,
+        expected_contract_sha256: str,
+        expected_manifest_sha256: str,
+        now: datetime,
+        require_current_head: bool,
+        phase: str,
+    ) -> dict[str, Any]:
+        """Re-read and verify one manifest-bound run selected only by run_id."""
+
+        normalized_run_id = self._validate_run_id(run_id)
+        if normalized_run_id is None:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_NOT_FOUND",
+                "The referenced validation result was not found.",
+            )
+        data, read_error = self._read_verified_run_result(
+            normalized_run_id,
+            validate_manifest_contract=False,
+        )
+        if read_error == "RUN_NOT_FOUND":
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_NOT_FOUND",
+                "The referenced validation result was not found.",
+            )
+        if read_error == "RUN_RESULT_UNVERIFIED_LEGACY":
+            raise P1ValidationResultError(
+                "P1_LEGACY_VALIDATION_PROVENANCE_MISSING",
+                "The validation result predates canonical result provenance.",
+            )
+        if read_error == "RUN_RESULT_DIGEST_MISMATCH":
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_DIGEST_MISMATCH",
+                "The validation result canonical digest does not match.",
+            )
+        if read_error is not None or data is None:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The validation result has an invalid closed schema.",
+            )
+        if data.get("status") == "running":
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_NOT_TERMINAL",
+                "The validation result is not terminal.",
+            )
+        if data.get("status") != "passed" or data.get("passed") is not True:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_NOT_PASSED",
+                "The validation result did not pass.",
+            )
+
+        contract = data.get("manifest_validation")
+        if not isinstance(contract, dict):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The validation result does not contain a manifest contract.",
+            )
+        command_specs = contract.get("command_specs")
         try:
-            with open(path, encoding="utf-8") as handle:
-                data = json.load(handle)
-            if not isinstance(data, dict):
-                raise ValueError("invalid result")
-        except Exception:
-            return {"ok": False, "action": "status", "error_code": "RUN_RESULT_INVALID", "message": "run result 无法读取。"}
-        data["action"] = "status"
-        data["ok"] = True
-        return data
+            fresh_specs_sha256 = canonical_manifest_validation_sha256(command_specs)
+        except (TypeError, ValueError):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The manifest command specs are invalid.",
+            ) from None
+        if not hmac.compare_digest(
+            str(contract.get("command_specs_sha256") or ""),
+            fresh_specs_sha256,
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_COMMAND_SPECS_DIGEST_MISMATCH",
+                "The manifest command-spec digest does not match.",
+            )
+        try:
+            contract_payload = {
+                key: value
+                for key, value in contract.items()
+                if key != "contract_sha256"
+            }
+            fresh_contract_sha256 = canonical_manifest_validation_sha256(
+                contract_payload
+            )
+        except (TypeError, ValueError):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The manifest validation contract is invalid.",
+            ) from None
+        if not hmac.compare_digest(
+            str(contract.get("contract_sha256") or ""),
+            fresh_contract_sha256,
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CONTRACT_DIGEST_MISMATCH",
+                "The manifest validation contract digest does not match.",
+            )
+        if manifest_validation_contract_from_artifact(
+            {"manifest_validation": contract}
+        ) is None:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The manifest validation contract is structurally invalid.",
+            )
+
+        contract_head = (
+            contract.get("review_context_binding", {}).get("head")
+            if isinstance(contract.get("review_context_binding"), dict)
+            else None
+        )
+        current_head = self._git_stdout(["rev-parse", "HEAD"]).strip().lower()
+        normalized_candidate = (
+            candidate_head.lower() if isinstance(candidate_head, str) else ""
+        )
+        if (
+            contract_head != normalized_candidate
+            or (require_current_head and current_head != normalized_candidate)
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CANDIDATE_MISMATCH",
+                "The validation contract candidate does not match the P1 candidate.",
+            )
+
+        families = self._p1_command_families(command_specs)
+        command_results = data.get("command_results")
+        if (
+            families != list(_P1_COMMAND_FAMILIES)
+            or not isinstance(command_results, list)
+            or len(command_results) != len(command_specs)
+            or not isinstance(data.get("command_summary"), list)
+            or len(data["command_summary"]) != len(command_specs)
+            or data.get("command_count") != len(command_specs)
+            or data.get("failed_command_indexes") != []
+            or data.get("failed_command_index") is not None
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_COMMAND_COVERAGE_INCOMPLETE",
+                "The validation result does not contain complete required command coverage.",
+            )
+        for index, (spec, command_result) in enumerate(
+            zip(command_specs, command_results, strict=True)
+        ):
+            expected_command = self._display_command(spec["argv"])
+            if (
+                not isinstance(command_result, dict)
+                or command_result.get("index") != index
+                or command_result.get("ok") is not True
+                or command_result.get("returncode") != 0
+                or command_result.get("command") != expected_command
+                or command_result.get("timeout_seconds")
+                != spec["timeout_seconds"]
+                or command_result.get("continue_on_failure")
+                is not spec["continue_on_failure"]
+                or data["command_summary"][index] != expected_command
+            ):
+                raise P1ValidationResultError(
+                    "P1_VALIDATION_COMMAND_COVERAGE_INCOMPLETE",
+                    "The validation command results are incomplete or out of order.",
+                )
+
+        completed_at = self._parse_result_time(data.get("completed_at"))
+        observed_now = (
+            now.astimezone(timezone.utc)
+            if now.tzinfo is not None
+            else now.replace(tzinfo=timezone.utc)
+        )
+        if completed_at is None:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_SCHEMA_INVALID",
+                "The validation completion time is invalid.",
+            )
+        age_seconds = (observed_now - completed_at).total_seconds()
+        if age_seconds < -300 or age_seconds > P1_VALIDATION_MAX_AGE_SECONDS:
+            raise P1ValidationResultError(
+                "P1_VALIDATION_RESULT_STALE",
+                "The validation result is outside the P1 freshness window.",
+            )
+
+        actual_result_sha256 = str(data["validation_result_sha256"])
+        if not hmac.compare_digest(
+            actual_result_sha256,
+            expected_validation_result_sha256,
+        ):
+            code = (
+                "P1_VALIDATION_RESULT_CHANGED_AFTER_PREVIEW"
+                if phase == "apply"
+                else "P1_VALIDATION_RESULT_DIGEST_MISMATCH"
+            )
+            raise P1ValidationResultError(
+                code,
+                "The verified validation result differs from the bound expected digest.",
+            )
+        if not hmac.compare_digest(
+            fresh_contract_sha256,
+            expected_contract_sha256,
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_CONTRACT_DIGEST_MISMATCH",
+                "The verified validation contract differs from the bound expected digest.",
+            )
+        actual_manifest_sha256 = str(contract["manifest_sha256"])
+        if not hmac.compare_digest(
+            actual_manifest_sha256,
+            expected_manifest_sha256,
+        ):
+            raise P1ValidationResultError(
+                "P1_VALIDATION_MANIFEST_DIGEST_MISMATCH",
+                "The verified manifest differs from the bound expected digest.",
+            )
+        return {
+            "run_id": normalized_run_id,
+            "validation_result_sha256": actual_result_sha256,
+            "contract_sha256": fresh_contract_sha256,
+            "manifest_sha256": actual_manifest_sha256,
+            "candidate_head": normalized_candidate,
+            "observed_at": data["completed_at"],
+            "source_kind": "server_verified_validation_run",
+            "required_command_families": list(_P1_COMMAND_FAMILIES),
+        }
 
     def _normalize_scope(self, value: Any) -> tuple[str, dict[str, Any] | None]:
         if value is None:
@@ -1089,6 +1465,18 @@ class MCPValidationRunManager:
     def _run_result_path(self, run_id: str) -> str:
         return os.path.join(self._runs_root, f"{run_id}.json")
 
+    def _write_terminal_run_result(
+        self,
+        run_id: str,
+        result: dict[str, Any],
+    ) -> str:
+        terminal = dict(result)
+        terminal["schema_version"] = VALIDATION_RUN_RESULT_SCHEMA_VERSION
+        terminal["validation_result_sha256"] = canonical_validation_result_sha256(
+            terminal
+        )
+        return self._write_run_result(run_id, terminal)
+
     def _write_run_result(self, run_id: str, result: dict[str, Any]) -> str:
         os.makedirs(self._runs_root, exist_ok=True)
         path = self._run_result_path(run_id)
@@ -1098,6 +1486,151 @@ class MCPValidationRunManager:
             f.write("\n")
         os.replace(tmp_path, path)
         return os.path.relpath(path, self.project_root)
+
+    def _read_verified_run_result(
+        self,
+        run_id: str,
+        *,
+        validate_manifest_contract: bool = True,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        path = self._run_result_path(run_id)
+        runs_root = os.path.realpath(self._runs_root)
+        candidate = os.path.realpath(path)
+        try:
+            within_store = os.path.commonpath([candidate, runs_root]) == runs_root
+        except ValueError:
+            within_store = False
+        if (
+            not within_store
+            or os.path.islink(path)
+            or not os.path.exists(path)
+        ):
+            return None, "RUN_NOT_FOUND"
+        if not os.path.isfile(path):
+            return None, "RUN_RESULT_INVALID"
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None, "RUN_RESULT_INVALID"
+        if not isinstance(data, dict):
+            return None, "RUN_RESULT_INVALID"
+
+        status = data.get("status")
+        if status == "running":
+            if (
+                set(data) != _RUN_RESULT_FIELDS
+                or data.get("schema_version")
+                != VALIDATION_RUN_RESULT_SCHEMA_VERSION
+                or "validation_result_sha256" in data
+                or data.get("passed") is not None
+                or data.get("completed_at") is not None
+                or data.get("duration_seconds") is not None
+            ):
+                return None, "RUN_RESULT_INVALID"
+            manifest_validation = data.get("manifest_validation")
+            if (
+                validate_manifest_contract
+                and
+                manifest_validation is not None
+                and manifest_validation_contract_from_artifact(
+                    {"manifest_validation": manifest_validation}
+                )
+                is None
+            ):
+                return None, "RUN_RESULT_INVALID"
+            return data, None
+
+        if status not in {"passed", "failed"}:
+            return None, "RUN_RESULT_INVALID"
+        digest = data.get("validation_result_sha256")
+        if digest is None:
+            actual_fields = set(data)
+            if (
+                "schema_version" not in data
+                and _LEGACY_TERMINAL_REQUIRED_FIELDS <= actual_fields
+                and not (
+                    actual_fields
+                    - _LEGACY_TERMINAL_REQUIRED_FIELDS
+                    - _LEGACY_TERMINAL_OPTIONAL_FIELDS
+                )
+                and data.get("action") == "run"
+                and data.get("passed") is (status == "passed")
+                and isinstance(data.get("completed_at"), str)
+            ):
+                return None, "RUN_RESULT_UNVERIFIED_LEGACY"
+            return None, "RUN_RESULT_INVALID"
+        if (
+            set(data) != _TERMINAL_RUN_RESULT_FIELDS
+            or data.get("schema_version") != VALIDATION_RUN_RESULT_SCHEMA_VERSION
+            or not isinstance(digest, str)
+            or _SHA256_RE.fullmatch(digest) is None
+            or data.get("passed") is not (status == "passed")
+            or not isinstance(data.get("completed_at"), str)
+            or isinstance(data.get("duration_seconds"), bool)
+            or not isinstance(data.get("duration_seconds"), (int, float))
+        ):
+            return None, "RUN_RESULT_INVALID"
+        try:
+            expected = canonical_validation_result_sha256(data)
+        except (TypeError, ValueError):
+            return None, "RUN_RESULT_INVALID"
+        if not hmac.compare_digest(digest, expected):
+            return None, "RUN_RESULT_DIGEST_MISMATCH"
+        manifest_validation = data.get("manifest_validation")
+        if (
+            validate_manifest_contract
+            and
+            manifest_validation is not None
+            and manifest_validation_contract_from_artifact(
+                {"manifest_validation": manifest_validation}
+            )
+            is None
+        ):
+            return None, "RUN_RESULT_INVALID"
+        return data, None
+
+    @staticmethod
+    def _parse_result_time(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value or len(value) > 64:
+            return None
+        try:
+            parsed = datetime.fromisoformat(
+                value[:-1] + "+00:00" if value.endswith("Z") else value
+            )
+        except ValueError:
+            return None
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+
+    @staticmethod
+    def _p1_command_families(command_specs: Any) -> list[str]:
+        if (
+            not isinstance(command_specs, list)
+            or len(command_specs) != len(_P1_COMMAND_CONTRACT)
+        ):
+            return []
+        families: list[str] = []
+        for spec, (
+            family,
+            expected_argv,
+            expected_timeout,
+        ) in zip(command_specs, _P1_COMMAND_CONTRACT, strict=True):
+            if not isinstance(spec, dict):
+                return []
+            if (
+                set(spec)
+                != {"argv", "timeout_seconds", "continue_on_failure"}
+                or spec.get("argv") != list(expected_argv)
+                or spec.get("timeout_seconds") != expected_timeout
+                or spec.get("continue_on_failure") is not False
+            ):
+                return []
+            families.append(family)
+        return families
 
     def _is_expired(self, expires_at: str) -> bool:
         if not expires_at:

@@ -29,13 +29,23 @@ from typing import Any, Callable, Mapping
 
 from runner._internal_utils import write_json_atomic
 from runner.mcp_commander_public import COMMANDER_EXPOSED_TOOLS
+from runner.mcp_validation_run import (
+    MCPValidationRunManager,
+    P1ValidationResultError,
+)
 from runner.runner_paths import resolve_project_runner_path
 
 
 P1_RELEASE_EVIDENCE_SOURCE = "p1_release_evidence"
-P1_RELEASE_EVIDENCE_SCHEMA_VERSION = "colameta.p1_release_evidence.v1"
-P1_RELEASE_EVIDENCE_PREVIEW_SCHEMA_VERSION = "colameta.p1_release_evidence_preview.v1"
-P1_RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION = "colameta.p1_release_evidence_receipt.v1"
+P1_RELEASE_EVIDENCE_SCHEMA_VERSION = "colameta.p1_release_evidence.v2"
+P1_RELEASE_EVIDENCE_PREVIEW_SCHEMA_VERSION = "colameta.p1_release_evidence_preview.v2"
+P1_RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION = "colameta.p1_release_evidence_receipt.v2"
+P1_RELEASE_EVIDENCE_LEGACY_PREVIEW_SCHEMA_VERSION = (
+    "colameta.p1_release_evidence_preview.v1"
+)
+P1_RELEASE_EVIDENCE_LEGACY_RECEIPT_SCHEMA_VERSION = (
+    "colameta.p1_release_evidence_receipt.v1"
+)
 P1_RELEASE_EVIDENCE_PREVIEW_TTL_SECONDS = 1800
 P1_RELEASE_EVIDENCE_MAX_AGE_SECONDS = 24 * 60 * 60
 P1_RELEASE_EVIDENCE_MAX_RECEIPTS = 64
@@ -112,19 +122,27 @@ def p1_release_evidence_input_schema() -> dict[str, Any]:
             "full_local_validation": {
                 "type": "object",
                 "properties": {
-                    "observed_at": observed_at,
-                    "candidate_head": head,
-                    "commands": {
+                    "validation_run": {
                         "type": "object",
                         "properties": {
-                            name: {"type": "string", "const": "passed"}
-                            for name in P1_REQUIRED_LOCAL_VALIDATION_COMMANDS
+                            "run_id": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9_-]{8,80}$",
+                            },
+                            "validation_result_sha256": sha256,
+                            "contract_sha256": sha256,
+                            "manifest_sha256": sha256,
                         },
-                        "required": list(P1_REQUIRED_LOCAL_VALIDATION_COMMANDS),
+                        "required": [
+                            "run_id",
+                            "validation_result_sha256",
+                            "contract_sha256",
+                            "manifest_sha256",
+                        ],
                         "additionalProperties": False,
                     },
                 },
-                "required": ["observed_at", "candidate_head", "commands"],
+                "required": ["validation_run"],
                 "additionalProperties": False,
             },
             "runtime_provenance": {
@@ -339,6 +357,9 @@ class P1ReleaseEvidenceManager:
             observations = _normalize_observations(
                 {check_id: params.get(check_id) for check_id in P1_EVIDENCE_CHECK_IDS},
                 candidate_head,
+                project_root=self.project_root,
+                now=self._now(),
+                phase="preview",
             )
         except P1ReleaseEvidenceError as exc:
             return _manager_error("preview", exc.code, exc.message, **exc.details)
@@ -443,7 +464,13 @@ class P1ReleaseEvidenceManager:
             )
         raw_observations = preview.get("observations")
         try:
-            observations = _normalize_observations(raw_observations, candidate_head)
+            observations = _normalize_observations(
+                raw_observations,
+                candidate_head,
+                project_root=self.project_root,
+                now=self._now(),
+                phase="apply",
+            )
         except P1ReleaseEvidenceError as exc:
             return _manager_error("apply", exc.code, exc.message, **exc.details)
         evaluation = _evaluate_observations(observations, candidate_head, self._now())
@@ -577,6 +604,29 @@ class P1ReleaseEvidenceManager:
 
     def _validate_preview(self, preview: Mapping[str, Any], preview_id: str) -> dict[str, Any] | None:
         if (
+            preview.get("schema_version")
+            == P1_RELEASE_EVIDENCE_LEGACY_PREVIEW_SCHEMA_VERSION
+        ):
+            return _manager_error(
+                "apply",
+                "P1_LEGACY_PREVIEW_NOT_APPLICABLE",
+                "A v1 P1 preview is historical runtime state and cannot be applied or converted.",
+            )
+        expected_keys = {
+            "schema_version",
+            "artifact_kind",
+            "preview_id",
+            "project_root",
+            "candidate_head",
+            "created_at",
+            "expires_at",
+            "observations",
+            "authority_boundary",
+            "preview_digest",
+        }
+        if (
+            set(preview) != expected_keys
+            or
             preview.get("schema_version") != P1_RELEASE_EVIDENCE_PREVIEW_SCHEMA_VERSION
             or preview.get("artifact_kind") != "p1_release_evidence_preview"
             or preview.get("preview_id") != preview_id
@@ -667,10 +717,35 @@ def get_p1_release_evidence_status(
             integrity_error["message"],
             candidate_head=candidate,
         )
+    if (
+        receipt.get("schema_version")
+        == P1_RELEASE_EVIDENCE_LEGACY_RECEIPT_SCHEMA_VERSION
+    ):
+        return _legacy_receipt_status(
+            root,
+            candidate,
+            receipt,
+            path,
+            len(records),
+        )
     try:
-        observations = _normalize_observations(receipt.get("observations"), candidate)
+        observations = _normalize_observations(
+            receipt.get("observations"),
+            candidate,
+            project_root=root,
+            now=observed_now,
+            phase="status",
+        )
     except P1ReleaseEvidenceError as exc:
-        return _status_error(exc.code, exc.message, candidate_head=candidate)
+        return _receipt_reverification_failure(
+            root,
+            candidate,
+            receipt,
+            path,
+            len(records),
+            exc.code,
+            exc.message,
+        )
     evaluation = _evaluate_observations(observations, candidate, observed_now)
     current_head = _resolve_commit(root, "HEAD")
     candidate_current = current_head == candidate
@@ -700,18 +775,39 @@ def get_p1_release_evidence_status(
     }
 
 
-def _normalize_observations(value: Any, candidate_head: str) -> dict[str, Any]:
+def _normalize_observations(
+    value: Any,
+    candidate_head: str,
+    *,
+    project_root: str,
+    now: datetime,
+    phase: str,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise P1ReleaseEvidenceError(
             "P1_RELEASE_EVIDENCE_OBSERVATIONS_REQUIRED",
             "P1 release evidence requires all five structured observations.",
         )
     _require_exact_keys(value, set(P1_EVIDENCE_CHECK_IDS), "observations")
-    validation = _normalize_validation(value.get("full_local_validation"), candidate_head)
+    validation = _normalize_validation(
+        value.get("full_local_validation"),
+        candidate_head,
+        project_root=project_root,
+        now=now,
+        phase=phase,
+    )
     runtime = _normalize_runtime(value.get("runtime_provenance"), candidate_head)
     connector = _normalize_connector(value.get("connector_oauth"), candidate_head)
     current_facts = _normalize_current_facts(value.get("current_facts"), candidate_head)
     live = _normalize_live_chatgpt(value.get("live_chatgpt_development_acceptance"), candidate_head)
+    if (
+        live["review_manifest"]["manifest_sha256"]
+        != validation["validation_run"]["manifest_sha256"]
+    ):
+        raise P1ReleaseEvidenceError(
+            "P1_VALIDATION_MANIFEST_DIGEST_MISMATCH",
+            "The live review manifest and verified validation result must bind the same manifest digest.",
+        )
     return {
         "full_local_validation": validation,
         "runtime_provenance": runtime,
@@ -721,23 +817,95 @@ def _normalize_observations(value: Any, candidate_head: str) -> dict[str, Any]:
     }
 
 
-def _normalize_validation(value: Any, candidate_head: str) -> dict[str, Any]:
+def _normalize_validation(
+    value: Any,
+    candidate_head: str,
+    *,
+    project_root: str,
+    now: datetime,
+    phase: str,
+) -> dict[str, Any]:
     mapping = _require_object(value, "full_local_validation")
-    _require_exact_keys(mapping, {"observed_at", "candidate_head", "commands"}, "full_local_validation")
-    commands = _require_object(mapping.get("commands"), "full_local_validation.commands")
-    _require_exact_keys(commands, set(P1_REQUIRED_LOCAL_VALIDATION_COMMANDS), "full_local_validation.commands")
-    for name in P1_REQUIRED_LOCAL_VALIDATION_COMMANDS:
-        if commands.get(name) != "passed":
-            raise P1ReleaseEvidenceError(
-                "P1_LOCAL_VALIDATION_NOT_PASSED",
-                "Every required local validation command must be recorded as passed.",
-                command=name,
-            )
-    return {
-        "observed_at": _normalize_observed_at(mapping.get("observed_at"), "full_local_validation.observed_at"),
-        "candidate_head": _require_candidate(mapping.get("candidate_head"), candidate_head, "full_local_validation.candidate_head"),
-        "commands": {name: "passed" for name in P1_REQUIRED_LOCAL_VALIDATION_COMMANDS},
+    intake_keys = {"validation_run"}
+    stored_keys = {
+        "observed_at",
+        "candidate_head",
+        "source_kind",
+        "validation_run",
     }
+    if set(mapping) not in {frozenset(intake_keys), frozenset(stored_keys)}:
+        _require_exact_keys(mapping, intake_keys, "full_local_validation")
+    reference = _require_object(
+        mapping.get("validation_run"),
+        "full_local_validation.validation_run",
+    )
+    reference_keys = {
+        "run_id",
+        "validation_result_sha256",
+        "contract_sha256",
+        "manifest_sha256",
+    }
+    _require_exact_keys(
+        reference,
+        reference_keys,
+        "full_local_validation.validation_run",
+    )
+    run_id = reference.get("run_id")
+    if (
+        not isinstance(run_id, str)
+        or not 8 <= len(run_id) <= 80
+        or re.fullmatch(r"[A-Za-z0-9_-]+", run_id) is None
+    ):
+        raise P1ReleaseEvidenceError(
+            "P1_VALIDATION_RESULT_NOT_FOUND",
+            "The validation run reference is invalid or unavailable.",
+        )
+    expected_result = _require_sha256(
+        reference.get("validation_result_sha256"),
+        "full_local_validation.validation_run.validation_result_sha256",
+    )
+    expected_contract = _require_sha256(
+        reference.get("contract_sha256"),
+        "full_local_validation.validation_run.contract_sha256",
+    )
+    expected_manifest = _require_sha256(
+        reference.get("manifest_sha256"),
+        "full_local_validation.validation_run.manifest_sha256",
+    )
+    try:
+        verified = MCPValidationRunManager(project_root).verify_p1_result(
+            run_id,
+            candidate_head=candidate_head,
+            expected_validation_result_sha256=expected_result,
+            expected_contract_sha256=expected_contract,
+            expected_manifest_sha256=expected_manifest,
+            now=now,
+            require_current_head=phase in {"preview", "apply"},
+            phase=phase,
+        )
+    except P1ValidationResultError as exc:
+        raise P1ReleaseEvidenceError(exc.code, exc.message) from exc
+    normalized = {
+        "observed_at": verified["observed_at"],
+        "candidate_head": verified["candidate_head"],
+        "source_kind": verified["source_kind"],
+        "validation_run": {
+            "run_id": verified["run_id"],
+            "validation_result_sha256": verified[
+                "validation_result_sha256"
+            ],
+            "contract_sha256": verified["contract_sha256"],
+            "manifest_sha256": verified["manifest_sha256"],
+        },
+    }
+    if set(mapping) == stored_keys and dict(mapping) != normalized:
+        raise P1ReleaseEvidenceError(
+            "P1_VALIDATION_RESULT_CHANGED_AFTER_PREVIEW"
+            if phase == "apply"
+            else "P1_VALIDATION_RESULT_DIGEST_MISMATCH",
+            "The stored validation observation differs from the verified result.",
+        )
+    return normalized
 
 
 def _normalize_runtime(value: Any, candidate_head: str) -> dict[str, Any]:
@@ -1012,9 +1180,17 @@ def _evaluate_observations(
             continue
         checks[check_id] = {
             "status": "passed",
-            "reason": "operator_attested_observation_is_fresh_and_candidate_bound",
+            "reason": (
+                "server_verified_validation_run_is_fresh_and_candidate_bound"
+                if check_id == "full_local_validation"
+                else "operator_attested_observation_is_fresh_and_candidate_bound"
+            ),
             "observed_at": observation.get("observed_at"),
-            "evidence_kind": "operator_attested" if check_id != "full_local_validation" else "operator_confirmed_local_validation",
+            "evidence_kind": (
+                "server_verified_validation_run"
+                if check_id == "full_local_validation"
+                else "operator_attested"
+            ),
         }
     return {
         "checks": checks,
@@ -1045,7 +1221,7 @@ def _evidence_summary(observations: Mapping[str, Any]) -> dict[str, Any]:
                 "observed_at": observation.get("observed_at"),
                 "source_kind": "operator_attested_external_observation"
                 if check_id != "full_local_validation"
-                else "operator_confirmed_local_validation",
+                else "server_verified_validation_run",
             }
     return result
 
@@ -1093,6 +1269,95 @@ def _status_error(error_code: str, message: str, **details: Any) -> dict[str, An
     }
 
 
+def _receipt_reverification_failure(
+    root: str,
+    candidate_head: str,
+    receipt: Mapping[str, Any],
+    path: Path,
+    receipt_count: int,
+    error_code: str,
+    message: str,
+) -> dict[str, Any]:
+    checks = {
+        check_id: {
+            "status": (
+                "stale"
+                if error_code == "P1_VALIDATION_RESULT_STALE"
+                else "blocked"
+            ),
+            "reason": (
+                error_code
+                if check_id == "full_local_validation"
+                else "receipt_reverification_blocked"
+            ),
+        }
+        for check_id in P1_EVIDENCE_CHECK_IDS
+    }
+    return {
+        "ok": True,
+        "source": P1_RELEASE_EVIDENCE_SOURCE,
+        "schema_version": P1_RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION,
+        "read_only": True,
+        "side_effects": False,
+        "status": "verified_stale",
+        "candidate_head": candidate_head,
+        "receipt_integrity_verified": True,
+        "operator_attested_external_observations": True,
+        "evidence_complete": False,
+        "candidate_current": _resolve_commit(root, "HEAD") == candidate_head,
+        "receipt_id": receipt.get("receipt_id"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "recorded_at": receipt.get("recorded_at"),
+        "receipt_path": _relative_runtime_path(root, str(path)),
+        "receipt_count": receipt_count,
+        "error_code": error_code,
+        "message": message,
+        "checks": checks,
+        "authority_boundary": _authority_boundary(),
+    }
+
+
+def _legacy_receipt_status(
+    root: str,
+    candidate_head: str,
+    receipt: Mapping[str, Any],
+    path: Path,
+    receipt_count: int,
+) -> dict[str, Any]:
+    checks = {
+        check_id: {
+            "status": "blocked",
+            "reason": (
+                "legacy_validation_provenance_missing"
+                if check_id == "full_local_validation"
+                else "legacy_receipt_historical_only"
+            ),
+        }
+        for check_id in P1_EVIDENCE_CHECK_IDS
+    }
+    return {
+        "ok": True,
+        "source": P1_RELEASE_EVIDENCE_SOURCE,
+        "schema_version": P1_RELEASE_EVIDENCE_LEGACY_RECEIPT_SCHEMA_VERSION,
+        "read_only": True,
+        "side_effects": False,
+        "status": "verified_stale",
+        "candidate_head": candidate_head,
+        "receipt_integrity_verified": True,
+        "operator_attested_external_observations": True,
+        "evidence_complete": False,
+        "candidate_current": _resolve_commit(root, "HEAD") == candidate_head,
+        "receipt_id": receipt.get("receipt_id"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "recorded_at": receipt.get("recorded_at"),
+        "receipt_path": _relative_runtime_path(root, str(path)),
+        "receipt_count": receipt_count,
+        "error_code": "P1_LEGACY_VALIDATION_PROVENANCE_MISSING",
+        "checks": checks,
+        "authority_boundary": _authority_boundary(),
+    }
+
+
 def _manager_error(action: str, error_code: str, message: str, **details: Any) -> dict[str, Any]:
     return {
         "ok": False,
@@ -1109,8 +1374,28 @@ def _manager_error(action: str, error_code: str, message: str, **details: Any) -
 
 
 def _validate_receipt(receipt: Mapping[str, Any], root: str, candidate_head: str) -> dict[str, str] | None:
+    schema_version = receipt.get("schema_version")
+    expected_keys = {
+        "schema_version",
+        "receipt_id",
+        "source",
+        "project_root",
+        "candidate_head",
+        "recorded_at",
+        "preview_id",
+        "preview_digest",
+        "operator_confirmation",
+        "observations",
+        "authority_boundary",
+        "receipt_digest",
+    }
     if (
-        receipt.get("schema_version") != P1_RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION
+        set(receipt) != expected_keys
+        or schema_version
+        not in {
+            P1_RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION,
+            P1_RELEASE_EVIDENCE_LEGACY_RECEIPT_SCHEMA_VERSION,
+        }
         or receipt.get("source") != P1_RELEASE_EVIDENCE_SOURCE
         or receipt.get("project_root") != root
         or receipt.get("candidate_head") != candidate_head
@@ -1119,6 +1404,32 @@ def _validate_receipt(receipt: Mapping[str, Any], root: str, candidate_head: str
         or receipt["operator_confirmation"].get("confirmed") is not True
     ):
         return {"error_code": "RECEIPT_INVALID", "message": "P1 release-evidence receipt binding is invalid."}
+    if schema_version == P1_RELEASE_EVIDENCE_LEGACY_RECEIPT_SCHEMA_VERSION:
+        observations = receipt.get("observations")
+        validation = (
+            observations.get("full_local_validation")
+            if isinstance(observations, Mapping)
+            else None
+        )
+        commands = (
+            validation.get("commands")
+            if isinstance(validation, Mapping)
+            else None
+        )
+        if (
+            not isinstance(validation, Mapping)
+            or set(validation) != {"observed_at", "candidate_head", "commands"}
+            or not isinstance(commands, Mapping)
+            or set(commands) != set(P1_REQUIRED_LOCAL_VALIDATION_COMMANDS)
+            or any(
+                commands.get(name) != "passed"
+                for name in P1_REQUIRED_LOCAL_VALIDATION_COMMANDS
+            )
+        ):
+            return {
+                "error_code": "RECEIPT_INVALID",
+                "message": "Legacy P1 receipt contains a mixed or invalid evidence schema.",
+            }
     expected = _receipt_digest(dict(receipt))
     if not secrets.compare_digest(str(receipt.get("receipt_digest") or ""), expected):
         return {"error_code": "RECEIPT_DIGEST_MISMATCH", "message": "P1 release-evidence receipt digest does not match."}
