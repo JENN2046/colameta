@@ -4,6 +4,7 @@ import copy
 from pathlib import Path
 import subprocess
 
+from runner.commander_contract import validate_commander_response
 from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_context_binding import OPERATION_CONTEXT_BINDING_FIELDS
 
@@ -30,6 +31,7 @@ def _data(result: dict) -> dict:
     assert result["ok"] is True
     value = result.get("data")
     assert isinstance(value, dict)
+    validate_commander_response(value)
     return value
 
 
@@ -53,17 +55,20 @@ def test_commander_context_contract_is_copyable_and_required_before_patch_apply(
     assert tuple(binding) == OPERATION_CONTEXT_BINDING_FIELDS
     assert binding["workflow_intent"] == "workflow:small_project_patch"
     assert binding["review_unit"] == "operation:workflow:small_project_patch"
-    assert preview["context_binding_contract"]["confirmation_required"] is True
-    assert preview["context_binding_contract"]["current_call_requires_context_binding"] is False
-
-    preview_id = preview["preview_ids"][0]
-    apply_action = next(
-        action
-        for action in preview["next_actions"]
-        if action.get("tool") == "run_mcp_workflow"
-        and action.get("params", {}).get("phase") == "apply"
+    assert preview["outcome"] == "confirmation_required"
+    assert preview["facts"]["context_binding_contract"]["confirmation_required"] is True
+    assert (
+        preview["facts"]["context_binding_contract"][
+            "current_call_requires_context_binding"
+        ]
+        is False
     )
-    assert apply_action["params"]["context_binding"] == binding
+
+    preview_id = preview["confirmation"]["preview_id"]
+    apply_action = preview["next_action"]
+    assert apply_action["tool"] == "run_mcp_workflow"
+    assert apply_action["arguments"]["phase"] == "apply"
+    assert apply_action["arguments"]["context_binding"] == binding
 
     tampered = copy.deepcopy(binding)
     tampered["head"] = "0" * 40
@@ -77,12 +82,24 @@ def test_commander_context_contract_is_copyable_and_required_before_patch_apply(
         },
     )
     assert blocked["ok"] is False
-    assert blocked["error_code"] == "CONTEXT_BINDING_MISMATCH"
+    assert blocked["error_code"] == "PROJECT_CONTEXT_MISMATCH"
+    assert blocked["data"]["outcome"] == "blocked"
     assert (project / "README.md").read_text(encoding="utf-8") == "old\n"
 
-    applied = _data(server.call_tool_for_agent("run_mcp_workflow", apply_action["params"]))
-    assert applied["context_binding_verification"]["status"] == "matched"
-    assert applied["context_binding_contract"]["current_call_requires_context_binding"] is True
+    applied = _data(
+        server.call_tool_for_agent(
+            "run_mcp_workflow",
+            apply_action["arguments"],
+        )
+    )
+    assert applied["outcome"] == "completed"
+    assert applied["facts"]["context_binding_verification"]["status"] == "matched"
+    assert (
+        applied["facts"]["context_binding_contract"][
+            "current_call_requires_context_binding"
+        ]
+        is True
+    )
     assert (project / "README.md").read_text(encoding="utf-8") == "new\n"
 
 
@@ -99,7 +116,7 @@ def test_context_gate_precedes_validation_run_and_commander_keeps_canonical_fres
         {"action": "run", "preview_id": "missing-id"},
     )
     assert missing_binding["ok"] is False
-    assert missing_binding["error_code"] == "CONTEXT_BINDING_MISMATCH"
+    assert missing_binding["error_code"] == "PROJECT_CONTEXT_MISMATCH"
 
     with_binding = _data(
         server.call_tool_for_agent(
@@ -111,10 +128,11 @@ def test_context_gate_precedes_validation_run_and_commander_keeps_canonical_fres
             },
         )
     )
-    assert with_binding["error_code"] == "PREVIEW_NOT_FOUND"
+    assert with_binding["outcome"] == "blocked"
+    assert with_binding["error"]["code"] == "PREVIEW_REQUIRED"
 
     analyzed = _data(server.call_tool_for_agent("analyze_project_state", {}))
-    canonical = analyzed["canonical_state"]
+    canonical = analyzed["facts"]["canonical_state"]
     assert canonical["context_binding"]["head"]
     assert canonical["observed_at"]
     assert canonical["currently_observed"]["runtime"]["status"] == "not_observed"
@@ -143,18 +161,19 @@ def test_git_workflow_and_manage_git_share_one_confirmation_identity(tmp_path: P
             },
         )
     )
-    apply_action = preview["next_actions"][0]
+    assert preview["outcome"] == "confirmation_required"
+    apply_action = preview["next_action"]
     assert apply_action["tool"] == "manage_git"
-    assert apply_action["params"]["action"] == "commit_apply"
-    assert apply_action["params"]["context_binding"] == preview["context_binding"]
-    canonical_summary = preview["unified_status"]["canonical_project_state"]
+    assert apply_action["arguments"]["action"] == "commit_apply"
+    assert apply_action["arguments"]["context_binding"] == preview["context_binding"]
+    canonical_summary = preview["facts"]["unified_status"]["canonical_project_state"]
     assert canonical_summary["current_conclusion"]["status"] == "action_required"
-    assert preview["unified_status"]["status_scope"] == "operation_local"
+    assert preview["facts"]["unified_status"]["status_scope"] == "operation_local"
 
     direct_readiness = _data(
         server.call_tool_for_agent("manage_git", {"action": "commit_readiness"})
     )
-    direct_status = direct_readiness["unified_status"]
+    direct_status = direct_readiness["facts"]["unified_status"]
     assert direct_status["status_scope"] == "operation_local"
     assert direct_status["canonical_project_state"]["current_conclusion"]["status"] == (
         "action_required"

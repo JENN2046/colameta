@@ -32,6 +32,7 @@ from runner.mcp_server import MCPPlanningBridgeServer, MCPToolInputError
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_project_patch import MCPProjectPatchManager
 from runner.planning_bridge import PlanningBridge
+from runner.project_context_binding import collect_project_context_binding
 from runner.source_review_bridge import SourceReviewBridge
 from scripts import runner_cli
 
@@ -1824,9 +1825,10 @@ def test_server_reports_scope_union_and_plan_scope(monkeypatch: pytest.MonkeyPat
 def test_call_tool_preserves_exact_operator_public_projection(tmp_path: Path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     expires_at = "2026-07-19T12:34:56Z"
+    context_binding = collect_project_context_binding(str(tmp_path))
     server.tools["run_mcp_workflow"] = lambda _params: {
         "ok": True,
-        "batch_preview_id": "opb_12345678",
+        "batch_preview_id": "opb_1234567890123456",
         "manifest_digest": "a" * 64,
         "required_scopes": ["mcp:commit"],
         "operations": [{
@@ -1837,6 +1839,7 @@ def test_call_tool_preserves_exact_operator_public_projection(tmp_path: Path) ->
         }],
         "expires_at": expires_at,
         "requires_confirmation": True,
+        "context_binding": context_binding,
         "project_name": "must-not-be-added",
         "project_root": "/must/not/escape",
     }
@@ -1848,13 +1851,18 @@ def test_call_tool_preserves_exact_operator_public_projection(tmp_path: Path) ->
         "operations": [_commit_operation("commit", "preview_2801")],
     })
 
-    assert result["data"]["expires_at"] == expires_at
-    assert set(result["data"]) == {
-        "ok", "batch_preview_id", "manifest_digest", "required_scopes",
-        "operations", "expires_at", "requires_confirmation",
+    contract = result["data"]
+    assert contract["outcome"] == "confirmation_required"
+    assert contract["confirmation"]["expires_at"] == expires_at
+    assert contract["confirmation"]["preview_id"] == "opb_1234567890123456"
+    assert contract["context_binding"] == context_binding
+    assert set(contract["facts"]) == {
+        "manifest_digest",
+        "required_scopes",
+        "operations",
     }
-    assert "project_name" not in result["data"]
-    assert "project_root" not in result["data"]
+    assert "project_name" not in contract["facts"]
+    assert "project_root" not in contract["facts"]
 
 
 def test_operator_cli_rejects_principal_values_on_command_line(capsys: pytest.CaptureFixture[str]) -> None:

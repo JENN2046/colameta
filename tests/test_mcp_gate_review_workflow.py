@@ -30,6 +30,7 @@ from runner.mcp_gate_review_workflow import (
 )
 from runner.mcp_private_operator import OperatorSettingsStore
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_context_binding import collect_project_context_binding
 from runner.project_registry import ProjectRegistry
 from runner.thin_governed_loop import example_stage_3_6_inputs
 
@@ -236,6 +237,7 @@ def test_gate_review_private_signed_preview_stays_opaque_and_bounded(
     assert boundary["result"]["preview"]["continuation_type"] == (
         "server_side_signed_preview"
     )
+    boundary["context_binding"] = collect_project_context_binding(str(tmp_path))
     tool_result = {"ok": True, "tool": "run_mcp_workflow", "data": boundary}
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     mcp_result = server._as_mcp_call_result(tool_result, params)
@@ -245,13 +247,14 @@ def test_gate_review_private_signed_preview_stays_opaque_and_bounded(
         tool_result,
     )
     assert mcp_result["structuredContent"].get("packaged") is not True
-    assert mcp_result["structuredContent"]["data"]["result"]["copyable_apply_call"] == (
-        boundary["result"]["copyable_apply_call"]
+    mcp_contract = mcp_result["structuredContent"]["data"]
+    assert mcp_contract["outcome"] == "confirmation_required"
+    assert mcp_contract["next_action"]["tool"] == "run_mcp_workflow"
+    assert mcp_contract["next_action"]["arguments"] == (
+        boundary["result"]["copyable_apply_call"]["arguments"]
     )
     assert actions_result.get("packaged") is not True
-    assert actions_result["data"]["result"]["copyable_apply_call"] == boundary["result"][
-        "copyable_apply_call"
-    ]
+    assert actions_result["data"]["next_action"] == mcp_contract["next_action"]
 
 
 def test_gate_review_tool_schema_declares_bounded_binding_contract(tmp_path: Path) -> None:
@@ -492,11 +495,12 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=auth_context,
     )
     assert discovered["ok"] is True
-    assert discovered["data"]["result"]["candidate_count"] == 1
-    assert discovered["data"]["result"]["work_item_candidates"][0]["work_item_id"] == (
+    discovered_contract = discovered["data"]
+    assert discovered_contract["facts"]["result"]["candidate_count"] == 1
+    assert discovered_contract["facts"]["result"]["work_item_candidates"][0]["work_item_id"] == (
         created["work_item_id"]
     )
-    select_arguments = discovered["data"]["next_actions"][0]["arguments"]
+    select_arguments = discovered_contract["next_action"]["arguments"]
     assert select_arguments == {
         "workflow": "gate_review_request",
         "phase": "inspect",
@@ -509,7 +513,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         select_arguments,
         auth_context=auth_context,
     )
-    preview_arguments = selected["data"]["next_actions"][0]["arguments"]
+    preview_arguments = selected["data"]["next_action"]["arguments"]
     assert preview_arguments["target_state"] == "ready"
     assert preview_arguments["expected_state_version"] == 0
     assert preview_arguments["project_name"] == "private-gate-project"
@@ -523,7 +527,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
     serialized_preview = json.dumps(previewed, sort_keys=True)
     assert "private-app-session:gate-review" not in serialized_preview
     assert "session_ref" not in serialized_preview
-    apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
+    apply_arguments = previewed["data"]["next_action"]["arguments"]
     assert apply_arguments["project_name"] == "private-gate-project"
     assert "gate_preview_id" in apply_arguments
     assert "gate_preview" not in apply_arguments
@@ -534,7 +538,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=_private_auth(subject="auth0|other"),
     )
     assert denied["ok"] is False
-    assert denied["error_code"] == "OPERATOR_PRINCIPAL_DENIED"
+    assert denied["error_code"] == "SCOPE_VIOLATION"
 
     missing_work_item_authority = _private_auth()
     missing_work_item_authority["token"].pop("work_item_permissions")
@@ -544,7 +548,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=missing_work_item_authority,
     )
     assert denied["ok"] is False
-    assert denied["error_code"] == "WORK_ITEM_PRIVATE_PRINCIPAL_REQUIRED"
+    assert denied["error_code"] == "SCOPE_VIOLATION"
 
     missing_commit_scope = _private_auth()
     missing_commit_scope["token"]["scope"] = "mcp:read mcp:preview"
@@ -554,7 +558,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=missing_commit_scope,
     )
     assert denied["ok"] is False
-    assert denied["error_code"] == "INSUFFICIENT_SCOPE"
+    assert denied["error_code"] == "SCOPE_VIOLATION"
 
     generic_remote_commit = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -566,7 +570,7 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=auth_context,
     )
     assert generic_remote_commit["ok"] is False
-    assert generic_remote_commit["error_code"] == "REMOTE_POLICY_DENIED"
+    assert generic_remote_commit["error_code"] == "SCOPE_VIOLATION"
 
     applied = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -574,9 +578,13 @@ def test_service_mode_private_auth_discovers_and_applies_gate_review(
         auth_context=auth_context,
     )
     assert applied["ok"] is True
-    assert applied["data"]["status"] == "succeeded"
-    assert applied["data"]["result"]["outcome"] == "transition_applied"
-    assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+    assert applied["data"]["outcome"] == "completed"
+    assert applied["data"]["facts"]["status"] == "succeeded"
+    assert applied["data"]["facts"]["result"]["outcome"] == "transition_applied"
+    assert (
+        applied["data"]["facts"]["result"]["gate_result"]["work_item"]["state"]
+        == "ready"
+    )
     serialized_apply = json.dumps(applied, sort_keys=True)
     assert "private-app-session:gate-review" not in serialized_apply
     assert "session_ref" not in serialized_apply
@@ -689,18 +697,18 @@ def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
         )
         assert status == 200
         assert discovered["ok"] is True
-        assert discovered["data"]["result"]["work_item_candidates"][0]["work_item_id"] == (
+        assert discovered["data"]["facts"]["result"]["work_item_candidates"][0]["work_item_id"] == (
             created["work_item_id"]
         )
 
-        select_arguments = discovered["data"]["next_actions"][0]["arguments"]
+        select_arguments = discovered["data"]["next_action"]["arguments"]
         status, selected = _loopback_json_request(
             action_url,
             payload=select_arguments,
             token=bearer_token,
         )
         assert status == 200
-        preview_arguments = selected["data"]["next_actions"][0]["arguments"]
+        preview_arguments = selected["data"]["next_action"]["arguments"]
         status, previewed = _loopback_json_request(
             action_url,
             payload=preview_arguments,
@@ -710,7 +718,7 @@ def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
         serialized_preview = json.dumps(previewed, sort_keys=True)
         assert "private-app-session:loopback-gate-review" not in serialized_preview
         assert "session_ref" not in serialized_preview
-        apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
+        apply_arguments = previewed["data"]["next_action"]["arguments"]
         assert "gate_preview_id" in apply_arguments
         assert "gate_preview" not in apply_arguments
         status, applied = _loopback_json_request(
@@ -720,9 +728,12 @@ def test_loopback_service_mode_private_oauth_applies_real_signed_gate_review(
         )
         assert status == 200
         assert applied["ok"] is True
-        assert applied["data"]["status"] == "succeeded"
-        assert applied["data"]["result"]["outcome"] == "transition_applied"
-        assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+        assert applied["data"]["facts"]["status"] == "succeeded"
+        assert applied["data"]["facts"]["result"]["outcome"] == "transition_applied"
+        assert (
+            applied["data"]["facts"]["result"]["gate_result"]["work_item"]["state"]
+            == "ready"
+        )
         serialized_apply = json.dumps(applied, sort_keys=True)
         assert "private-app-session:loopback-gate-review" not in serialized_apply
         assert "session_ref" not in serialized_apply
@@ -848,7 +859,7 @@ def test_commander_projection_returns_opaque_gate_preview_without_session_bindin
     )
 
     assert previewed["ok"] is True
-    preview = previewed["data"]["result"]["preview"]
+    preview = previewed["data"]["facts"]["result"]["preview"]
     assert set(preview) == {
         "schema_version",
         "gate_preview_id",
@@ -857,7 +868,7 @@ def test_commander_projection_returns_opaque_gate_preview_without_session_bindin
     }
     assert preview["schema_version"] == GATE_REVIEW_PUBLIC_PREVIEW_SCHEMA
     assert preview["continuation_type"] == "server_side_signed_preview"
-    apply_arguments = previewed["data"]["result"]["copyable_apply_call"]["arguments"]
+    apply_arguments = previewed["data"]["next_action"]["arguments"]
     assert apply_arguments["gate_preview_id"] == preview["gate_preview_id"]
     assert "gate_preview" not in apply_arguments
     serialized_preview = json.dumps(previewed, sort_keys=True)
@@ -868,7 +879,10 @@ def test_commander_projection_returns_opaque_gate_preview_without_session_bindin
     applied = server.call_tool_for_agent("run_mcp_workflow", apply_arguments)
 
     assert applied["ok"] is True
-    assert applied["data"]["result"]["gate_result"]["work_item"]["state"] == "ready"
+    assert (
+        applied["data"]["facts"]["result"]["gate_result"]["work_item"]["state"]
+        == "ready"
+    )
     serialized_apply = json.dumps(applied, sort_keys=True)
     assert "commander-session:gate-review" not in serialized_apply
     assert "session_ref" not in serialized_apply

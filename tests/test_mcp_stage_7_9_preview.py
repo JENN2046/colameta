@@ -172,7 +172,7 @@ def _preview(server: MCPPlanningBridgeServer, inspect: dict, inputs: dict) -> di
         {
             "workflow": STAGE_7_9_PREVIEW_WORKFLOW,
             "phase": "preview",
-            "stage_7_9_context": inspect["stage_7_9_context"],
+            "stage_7_9_context": inspect["context_binding"],
             "stage_7_9_inputs": inputs,
         },
     )
@@ -184,23 +184,26 @@ def test_stage_7_9_inspect_returns_a_hash_bound_read_only_template(tmp_path: Pat
 
     inspect = _inspect(server)
 
-    assert inspect["workflow"] == STAGE_7_9_PREVIEW_WORKFLOW
-    assert inspect["read_only"] is True
-    assert inspect["side_effects"] is False
-    assert inspect["stage_7_9_context"]["workflow_intent"] == STAGE_7_9_PREVIEW_WORKFLOW
-    assert inspect["stage_7_9_context"]["review_unit"] == "stage_07_to_stage_09_preview"
-    assert inspect["stage_7_9_context"]["runner_plan"] == {
+    facts = inspect["facts"]
+    context = inspect["context_binding"]
+    assert inspect["outcome"] == "completed"
+    assert facts["workflow"] == STAGE_7_9_PREVIEW_WORKFLOW
+    assert facts["read_only"] is True
+    assert facts["side_effects"] is False
+    assert context["workflow_intent"] == STAGE_7_9_PREVIEW_WORKFLOW
+    assert context["review_unit"] == "stage_07_to_stage_09_preview"
+    assert context["runner_plan"] == {
         "mode": "source-only",
         "plan_sha256": None,
     }
-    assert inspect["stage_7_9_context"]["current_version"] is None
-    assert [item["path"] for item in inspect["frozen_taskbook_bindings"]] == [
+    assert context["current_version"] is None
+    assert [item["path"] for item in facts["frozen_taskbook_bindings"]] == [
         MASTER["path"],
         STAGE_7["path"],
         STAGE_8["path"],
         STAGE_9["path"],
     ]
-    assert inspect["input_contract"]["required_scope"] == "mcp:read"
+    assert facts["input_contract"]["required_scope"] == "mcp:read"
     assert _git_status(project) == ""
 
 
@@ -208,24 +211,25 @@ def test_stage_7_9_preview_connects_valid_plan_adjust_handoff_without_side_effec
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_9_continue_readiness_inputs"]["private_runtime_marker"] = "must-not-appear-in-public-result"
 
     preview = _data(_preview(server, inspect, inputs))
 
-    assert preview["journey_status"] == "human_decision_required"
-    assert preview["read_only"] is True
-    assert preview["side_effects"] is False
-    assert preview["stage_results"]["stage_7"]["status"] == "drift_evidence_pack_generated"
-    assert preview["stage_results"]["stage_8"]["status"] == "plan_adjustment_preview_available"
-    assert preview["stage_results"]["stage_9"]["can_continue"] is False
-    assert "PLAN_ADJUST_BLOCKS_CONTINUE" in preview["stage_results"]["stage_9"]["blocker_codes"]
-    assert preview["next_human_decision"]["action"] == "review_stage_8_plan_adjustment_preview"
-    assert preview["authority_boundary"]["read_only"] is True
-    assert preview["authority_boundary"]["side_effects"] is False
+    facts = preview["facts"]
+    assert facts["journey_status"] == "human_decision_required"
+    assert facts["read_only"] is True
+    assert facts["side_effects"] is False
+    assert facts["stage_results"]["stage_7"]["status"] == "drift_evidence_pack_generated"
+    assert facts["stage_results"]["stage_8"]["status"] == "plan_adjustment_preview_available"
+    assert facts["stage_results"]["stage_9"]["can_continue"] is False
+    assert "PLAN_ADJUST_BLOCKS_CONTINUE" in facts["stage_results"]["stage_9"]["blocker_codes"]
+    assert facts["next_human_decision"]["action"] == "review_stage_8_plan_adjustment_preview"
+    assert facts["authority_boundary"]["read_only"] is True
+    assert facts["authority_boundary"]["side_effects"] is False
     assert all(
         value is True
-        for key, value in preview["authority_boundary"].items()
+        for key, value in facts["authority_boundary"].items()
         if key not in {"side_effects"}
     )
     assert "must-not-appear-in-public-result" not in json.dumps(preview, ensure_ascii=False)
@@ -242,12 +246,12 @@ def test_stage_7_9_preview_requires_inspect_context(tmp_path: Path) -> None:
         {
             "workflow": STAGE_7_9_PREVIEW_WORKFLOW,
             "phase": "preview",
-            "stage_7_9_inputs": _journey_inputs(inspect["stage_7_9_context"]),
+            "stage_7_9_inputs": _journey_inputs(inspect["context_binding"]),
         },
     )
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_CONTEXT_REQUIRED"
+    assert result["error_code"] == "STALE_CONTEXT"
 
 
 @pytest.mark.parametrize(
@@ -267,7 +271,7 @@ def test_stage_7_9_preview_rejects_changed_context(
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    changed_context = copy.deepcopy(inspect["stage_7_9_context"])
+    changed_context = copy.deepcopy(inspect["context_binding"])
     changed_context[field] = replacement
 
     result = server.call_tool_for_agent(
@@ -276,12 +280,12 @@ def test_stage_7_9_preview_rejects_changed_context(
             "workflow": STAGE_7_9_PREVIEW_WORKFLOW,
             "phase": "preview",
             "stage_7_9_context": changed_context,
-            "stage_7_9_inputs": _journey_inputs(inspect["stage_7_9_context"]),
+            "stage_7_9_inputs": _journey_inputs(inspect["context_binding"]),
         },
     )
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_CONTEXT_MISMATCH"
+    assert result["error_code"] == "PROJECT_CONTEXT_MISMATCH"
 
 
 def test_stage_7_9_inspect_rejects_changed_frozen_taskbook_bytes(tmp_path: Path) -> None:
@@ -296,85 +300,85 @@ def test_stage_7_9_inspect_rejects_changed_frozen_taskbook_bytes(tmp_path: Path)
     )
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_TASKBOOK_BINDING_MISMATCH"
+    assert result["error_code"] == "STALE_CONTEXT"
 
 
 def test_stage_7_9_preview_rejects_wrong_taskbook_binding(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_7_drift_evidence_inputs"]["master_taskbook_ref"]["sha256"] = "0" * 64
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_TASKBOOK_BINDING_MISMATCH"
+    assert result["error_code"] == "STALE_CONTEXT"
 
 
 def test_stage_7_9_preview_rejects_missing_stage_input(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs.pop("stage_9_continue_readiness_inputs")
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_INPUTS_REQUIRED"
+    assert result["error_code"] == "EVIDENCE_UNAVAILABLE"
 
 
 def test_stage_7_9_preview_stops_on_invalid_stage_7_evidence(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_7_drift_evidence_inputs"]["changed_files"] = []
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_STAGE_7_FAILED_CLOSED"
+    assert result["error_code"] == "VALIDATION_FAILED"
 
 
 def test_stage_7_9_preview_stops_on_non_plan_adjust_stage_8_source(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_8_plan_adjustment_inputs"]["commander_decision_request"]["source_review_decision_value"] = "ACCEPT"
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_STAGE_8_FAILED_CLOSED"
+    assert result["error_code"] == "VALIDATION_FAILED"
 
 
 def test_stage_7_9_preview_requires_stage_8_to_reference_generated_drift_pack(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_8_plan_adjustment_inputs"]["drift_evidence_ref"]["drift_evidence_pack_id"] = "wrong-pack"
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_DRIFT_PACK_BINDING_MISMATCH"
+    assert result["error_code"] == "STALE_CONTEXT"
 
 
 def test_stage_7_9_preview_stops_when_stage_9_readiness_inputs_are_incomplete(tmp_path: Path) -> None:
     project = _make_stage_project(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
     inspect = _inspect(server)
-    inputs = _journey_inputs(inspect["stage_7_9_context"])
+    inputs = _journey_inputs(inspect["context_binding"])
     inputs["stage_9_continue_readiness_inputs"].pop("plan")
 
     result = _preview(server, inspect, inputs)
 
     assert result["ok"] is False
-    assert result["error_code"] == "STAGE_7_9_STAGE_9_FAILED_CLOSED"
+    assert result["error_code"] == "VALIDATION_FAILED"
 
 
 def test_stage_7_9_preview_rejects_every_side_effect_phase(tmp_path: Path) -> None:
@@ -387,4 +391,4 @@ def test_stage_7_9_preview_rejects_every_side_effect_phase(tmp_path: Path) -> No
             {"workflow": STAGE_7_9_PREVIEW_WORKFLOW, "phase": phase},
         )
         assert result["ok"] is False
-        assert result["error_code"] == "STAGE_7_9_PHASE_NOT_SUPPORTED"
+        assert result["error_code"] == "WORKFLOW_NOT_SUPPORTED"

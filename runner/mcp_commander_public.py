@@ -7,6 +7,11 @@ import re
 from typing import Any
 
 from runner.canonical_project_state import CANONICAL_PROJECT_STATE_SCHEMA_VERSION
+from runner.commander_contract import (
+    COMMANDER_RESPONSE_SCHEMA_VERSION,
+    build_commander_response,
+    validate_commander_response,
+)
 from runner.commander_projections import CommanderProjectionService
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
 from runner.mcp_workflow_migration import RESULT_ARTIFACT_WORKFLOW
@@ -228,6 +233,37 @@ class CommanderPublicProjector:
         public_tool_result = copy.deepcopy(tool_result)
         tool_name = str(public_tool_result.get("tool") or "")
         raw_data = public_tool_result.get("data")
+        if (
+            tool_name in COMMANDER_EXPOSED_TOOLS
+            and isinstance(raw_data, dict)
+            and raw_data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
+        ):
+            try:
+                validate_commander_response(raw_data)
+            except Exception:
+                return self._wrap_commander_contract(
+                    tool_name=tool_name,
+                    projected_result={
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "PUBLIC_PROJECTION_FAILED",
+                        "message": "Commander 公共响应重复投影校验失败。",
+                    },
+                    params=params,
+                )
+            projected_contract: dict[str, Any] = {
+                "ok": public_tool_result.get("ok") is True
+                and raw_data["outcome"] != "failed",
+                "tool": tool_name,
+                "data": copy.deepcopy(raw_data),
+            }
+            meta = public_tool_result.get("_meta")
+            if isinstance(meta, dict):
+                projected_contract["_meta"] = copy.deepcopy(meta)
+            if projected_contract["ok"] is False and isinstance(raw_data.get("error"), dict):
+                projected_contract["error_code"] = raw_data["error"]["code"]
+                projected_contract["message"] = raw_data["error"]["message"]
+            return projected_contract
         is_review_manifest = (
             (
                 tool_name == "review_manifest"
@@ -331,13 +367,21 @@ class CommanderPublicProjector:
                     for key, value in data.items()
                     if key in allowed_data_keys
                 }
-            return projected
+            return self._wrap_commander_contract(
+                tool_name=tool_name,
+                projected_result=projected,
+                params=params,
+            )
         if (
             tool_name == "run_mcp_workflow"
             and isinstance(params, dict)
             and _policy_string_param(params, "workflow") == GATE_REVIEW_WORKFLOW
         ):
-            return self._project_gate_review_result(public_tool_result)
+            return self._wrap_commander_contract(
+                tool_name=tool_name,
+                projected_result=self._project_gate_review_result(public_tool_result),
+                params=params,
+            )
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
             for key, value in public_tool_result.items():
@@ -392,7 +436,42 @@ class CommanderPublicProjector:
             if isinstance(clean_data, dict):
                 clean_data["result_artifact"] = result_artifact_descriptor
                 clean_data.update(result_artifact_descriptor)
-        return clean_result if isinstance(clean_result, dict) else projected
+        return self._wrap_commander_contract(
+            tool_name=tool_name,
+            projected_result=(
+                clean_result if isinstance(clean_result, dict) else projected
+            ),
+            params=params,
+        )
+
+    @staticmethod
+    def _wrap_commander_contract(
+        *,
+        tool_name: str,
+        projected_result: dict[str, Any],
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        response = build_commander_response(
+            tool_name=tool_name,
+            raw_result=projected_result,
+            params=params,
+        )
+        validate_commander_response(response)
+        result: dict[str, Any] = {
+            "ok": projected_result.get("ok") is True
+            and response["outcome"] != "failed",
+            "tool": tool_name,
+            "data": response,
+        }
+        meta = projected_result.get("_meta")
+        if isinstance(meta, dict):
+            result["_meta"] = copy.deepcopy(meta)
+        if result["ok"] is False:
+            error = response.get("error")
+            if isinstance(error, dict):
+                result["error_code"] = error["code"]
+                result["message"] = error["message"]
+        return result
 
     def _public_string(self, value: str) -> str:
         if COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(value):

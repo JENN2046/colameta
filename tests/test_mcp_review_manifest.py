@@ -1051,11 +1051,15 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_pa
 
     structured = response["result"]["structuredContent"]
     assert structured["ok"] is True
-    data = structured["data"]
-    assert data["review_manifest_id"]
-    assert data["manifest_resource_uri"].startswith("colameta://review-manifest/")
-    assert data["subjects"][0]["resource_uri"].startswith("colameta://review-manifest/")
-    assert data["subjects"][0]["page_uri_template"].endswith("/pages/{page}")
+    contract = structured["data"]
+    assert contract["schema_version"] == "commander_response.v1"
+    assert contract["outcome"] == "completed"
+    evidence = contract["evidence"]
+    facts = contract["facts"]
+    assert evidence["review_manifest_id"]
+    assert evidence["resource_uri"].startswith("colameta://review-manifest/")
+    assert facts["subjects"][0]["resource_uri"].startswith("colameta://review-manifest/")
+    assert facts["subjects"][0]["page_uri_template"].endswith("/pages/{page}")
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:
@@ -1114,10 +1118,11 @@ def test_commander_keeps_safe_review_manifest_mismatch_details(tmp_path: Path) -
     )
 
     assert result["ok"] is False
-    assert result["error_code"] == "CONTEXT_BINDING_MISMATCH"
-    assert result["details"]["mismatches"] == [
-        {"field": "head", "expected": "b" * 40, "actual": actual_head}
-    ]
+    assert result["error_code"] == "PROJECT_CONTEXT_MISMATCH"
+    assert result["data"]["outcome"] == "blocked"
+    assert result["data"]["error"]["code"] == "PROJECT_CONTEXT_MISMATCH"
+    assert "details" not in result
+    assert actual_head not in repr(result)
 
 
 def test_review_manifest_fails_closed_when_checkout_or_subject_changes(tmp_path: Path) -> None:
@@ -1364,39 +1369,33 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
 
     template = server.call_tool_for_agent("review_manifest", {"phase": "inspect"})
     assert template["ok"] is True
-    assert template["data"]["status"] == "template_ready"
+    assert template["data"]["outcome"] == "completed"
+    assert template["data"]["facts"]["status"] == "template_ready"
 
     inspected = server.call_tool_for_agent(
         "review_manifest",
         {"phase": "inspect", "review_manifest": _manifest(project)},
     )
     assert inspected["ok"] is True
-    data = inspected["data"]
+    contract = inspected["data"]
+    data = contract["facts"]
+    manifest_id = contract["evidence"]["review_manifest_id"]
     descriptor = data["subjects"][0]
-    assert data["recommended_next_reads"] == [
-        {
-            "kind": "mcp_tool",
-            "tool": "review_manifest",
-            "arguments": {
-                "phase": "read",
-                "review_manifest_id": data["review_manifest_id"],
-                "review_manifest_subject_index": 1,
-                "review_manifest_page": 1,
-            },
-            "reason": "通过 ChatGPT 可调用的 review_manifest 读取同一绑定下的第 1 个 subject 第 1 页；上下文和 SHA-256 会复核。",
+    assert contract["next_action"] == {
+        "tool": "review_manifest",
+        "arguments": {
+            "phase": "read",
+            "review_manifest_id": manifest_id,
+            "review_manifest_subject_index": 1,
+            "review_manifest_page": 1,
         },
-        {
-            "kind": "mcp_resource",
-            "tool": "resources/read",
-            "arguments": {"uri": data["manifest_resource_uri"]},
-            "reason": "可选的标准 MCP 资源续读：支持动态 resources/read 的客户端可先读取审查 manifest，再按 subjects 中返回的 resource_uri 读取完整输入。",
-        },
-    ]
+        "reason": "通过 ChatGPT 可调用的 review_manifest 读取同一绑定下的第 1 个 subject 第 1 页；上下文和 SHA-256 会复核。",
+    }
     assert descriptor["read_call"] == {
         "tool": "review_manifest",
         "arguments": {
             "phase": "read",
-            "review_manifest_id": data["review_manifest_id"],
+            "review_manifest_id": manifest_id,
             "review_manifest_subject_index": 1,
             "review_manifest_page": 1,
         },
@@ -1404,20 +1403,20 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
 
     read = server.call_tool_for_agent("review_manifest", descriptor["read_call"]["arguments"])
     assert read["ok"] is True
-    assert read["data"]["verification"] == {
+    assert read["data"]["facts"]["verification"] == {
         "context_binding": "matched",
         "subject_hash": "matched",
         "subject_index": 1,
     }
-    assert read["data"]["read_call"]["tool"] == "review_manifest"
+    assert read["data"]["facts"]["read_call"]["tool"] == "review_manifest"
 
     verified = server.call_tool_for_agent(
         "review_manifest",
-        {"phase": "verify", "review_manifest_id": data["review_manifest_id"]},
+        {"phase": "verify", "review_manifest_id": manifest_id},
     )
     assert verified["ok"] is True
-    assert verified["data"]["verification"]["context_binding"] == "matched"
-    assert verified["data"]["verification"]["subject_hashes"] == "matched"
+    assert verified["data"]["facts"]["verification"]["context_binding"] == "matched"
+    assert verified["data"]["facts"]["verification"]["subject_hashes"] == "matched"
 
 
 def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path: Path) -> None:
@@ -1433,7 +1432,7 @@ def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path:
 
     missing_project = server.call_tool_for_agent("review_manifest", {"phase": "inspect"})
     assert missing_project["ok"] is False
-    assert missing_project["error_code"] == "PROJECT_NAME_REQUIRED"
+    assert missing_project["error_code"] == "PROJECT_REQUIRED"
 
     inspected = server.call_tool_for_agent(
         "review_manifest",
@@ -1444,15 +1443,15 @@ def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path:
         },
     )
     assert inspected["ok"] is True
-    data = inspected["data"]
-    assert data["context_binding"]["project_name"] == "review-target"
-    read_call = data["subjects"][0]["read_call"]
+    contract = inspected["data"]
+    assert contract["context_binding"]["project_name"] == "review-target"
+    read_call = contract["facts"]["subjects"][0]["read_call"]
     assert read_call["tool"] == "review_manifest"
     assert read_call["arguments"]["project_name"] == "review-target"
 
     read = server.call_tool_for_agent("review_manifest", read_call["arguments"])
     assert read["ok"] is True
-    assert read["data"]["subject_page"]["path"] == "docs/review-input.md"
+    assert read["data"]["facts"]["subject_page"]["path"] == "docs/review-input.md"
 
 
 def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -> None:
@@ -1466,18 +1465,19 @@ def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -
         {"workflow": "review_manifest", "phase": "inspect", "review_manifest": _manifest(project)},
     )
     inspection_data = inspected["result"]["structuredContent"]["data"]
+    manifest_id = inspection_data["evidence"]["review_manifest_id"]
     read = _tool_call(
         server,
         {
             "workflow": "review_manifest",
             "phase": "read",
-            "review_manifest_id": inspection_data["review_manifest_id"],
+            "review_manifest_id": manifest_id,
             "review_manifest_subject_index": 1,
         },
     )
-    subject_page = read["result"]["structuredContent"]["data"]["subject_page"]
+    subject_page = read["result"]["structuredContent"]["data"]["facts"]["subject_page"]
     assert subject_page["content"] == content
-    assert subject_page["sha256"] == inspection_data["subjects"][0]["sha256"]
+    assert subject_page["sha256"] == inspection_data["facts"]["subjects"][0]["sha256"]
 
 
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:

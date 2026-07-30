@@ -159,6 +159,7 @@ from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_st
 from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
 from runner.app_submission_work_items import AppSubmissionWorkItemCommands
 from runner.commander_projections import CommanderProjectionService
+from runner.commander_contract import commander_response_schema
 from runner.commander_widget import commander_widget_html
 from runner.mcp_commander_app import (
     COMMANDER_APP_MANIFEST_VERSION,
@@ -1186,6 +1187,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             commander_widget_uri=COMMANDER_APP_WIDGET_URI,
         )
         self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER:
+            commander_output_schema = self._build_commander_output_schema()
+            for tool_def in self.tool_defs:
+                if tool_def.name in COMMANDER_EXPOSED_TOOLS:
+                    tool_def.output_schema = copy.deepcopy(commander_output_schema)
         apply_chatgpt_submission_tool_annotations(self.tool_defs)
         if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             if self.work_item_scope_mode != PILOT_SCOPE_MODE:
@@ -3536,6 +3542,37 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 },
             },
             "required": ["ok", "tool"],
+            "additionalProperties": False,
+        }
+
+    def _build_commander_output_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": (
+                "Commander 公共工具统一返回 envelope；data 严格符合 "
+                "commander_response.v1。"
+            ),
+            "properties": {
+                "ok": {
+                    "type": "boolean",
+                    "description": "Whether the public tool envelope was produced safely.",
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": list(COMMANDER_EXPOSED_TOOLS),
+                    "description": "Commander public tool name.",
+                },
+                "data": commander_response_schema(),
+                "error_code": {
+                    "type": "string",
+                    "description": "Stable public error code when ok is false.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Bounded public error message when ok is false.",
+                },
+            },
+            "required": ["ok", "tool", "data"],
             "additionalProperties": False,
         }
 
@@ -6016,6 +6053,21 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._attach_canonical_state_to_operation_status(result, params)
         binding = self._collect_operation_context_binding(tool_name, params)
         if binding is None:
+            workflow = (
+                _normalize_run_mcp_workflow_name(params.get("workflow"))
+                if tool_name == "run_mcp_workflow"
+                else ""
+            )
+            if workflow == GATE_REVIEW_WORKFLOW:
+                # Gate Review keeps its signed Work Item preview as the sole
+                # apply authority.  N1 still exposes the existing base
+                # Context Binding as an observation so the public
+                # confirmation is visibly tied to the routed project without
+                # overlaying a second authorization gate.
+                result["context_binding"] = collect_project_context_binding(
+                    self.project_root,
+                    project_name=self._context_binding_project_name(params),
+                )
             return result
         identity = self._operation_context_identity(tool_name, params)
         if identity is None:

@@ -277,37 +277,37 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         assert response is not None
         structured = response["result"]["structuredContent"]
         assert structured["ok"] is True
-        data = structured["data"]
-        assert data["workflow"] == MCP_RESULT_ARTIFACT_WORKFLOW
-        assert data["read_only"] is True
-        assert data["side_effects"] is False
-        assert data["artifact_id"] == handle.artifact_id
-        assert data["page_count"] == handle.page_count
-        assert data["content_sha256"] == handle.content_sha256
-        assert data["expires_at"] == handle.expires_at
-        page = data["artifact_page"]
+        contract = structured["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "completed"
+        facts = contract["facts"]
+        evidence = contract["evidence"]
+        assert facts["workflow"] == MCP_RESULT_ARTIFACT_WORKFLOW
+        assert facts["read_only"] is True
+        assert facts["side_effects"] is False
+        assert evidence["artifact_id"] == handle.artifact_id
+        assert evidence["page_count"] == handle.page_count
+        assert evidence["content_sha256"] == handle.content_sha256
+        assert evidence["expires_at"] == handle.expires_at
+        page = facts["artifact_page"]
         assert page["artifact_id"] == handle.artifact_id
         assert page["page"] == page_number
         assert page["content_sha256"] == handle.content_sha256
         assert page["expires_at"] == handle.expires_at
         pages.append(page["content"])
         if page_number < handle.page_count:
-            next_read = data["recommended_next_reads"]
-            assert next_read == [
-                {
-                    "kind": "mcp_tool",
-                    "tool": "run_mcp_workflow",
-                    "arguments": {
-                        "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
-                        "phase": "read",
-                        "artifact_id": handle.artifact_id,
-                        "artifact_page": page_number + 1,
-                    },
-                    "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
-                }
-            ]
+            assert contract["next_action"] == {
+                "tool": "run_mcp_workflow",
+                "arguments": {
+                    "workflow": MCP_RESULT_ARTIFACT_WORKFLOW,
+                    "phase": "read",
+                    "artifact_id": handle.artifact_id,
+                    "artifact_page": page_number + 1,
+                },
+                "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
+            }
         else:
-            assert data["recommended_next_reads"] == []
+            assert contract["next_action"] is None
 
     restored = "".join(pages)
     assert restored == expected_content
@@ -335,24 +335,23 @@ def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continua
             {"artifact_id": handle.artifact_id, "artifact_page": page_number},
         )
         assert result["ok"] is True
-        data = result["data"]
-        assert data["read_only"] is True
-        assert data["side_effects"] is False
-        assert data["artifact_id"] == handle.artifact_id
-        assert data["content_sha256"] == handle.content_sha256
-        pages.append(data["artifact_page"]["content"])
+        contract = result["data"]
+        facts = contract["facts"]
+        evidence = contract["evidence"]
+        assert facts["read_only"] is True
+        assert facts["side_effects"] is False
+        assert evidence["artifact_id"] == handle.artifact_id
+        assert evidence["content_sha256"] == handle.content_sha256
+        pages.append(facts["artifact_page"]["content"])
         if page_number < handle.page_count:
-            assert data["recommended_next_reads"] == [
-                {
-                    "kind": "mcp_tool",
-                    "tool": "read_result_artifact",
-                    "arguments": {
-                        "artifact_id": handle.artifact_id,
-                        "artifact_page": page_number + 1,
-                    },
-                    "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
-                }
-            ]
+            assert contract["next_action"] == {
+                "tool": "read_result_artifact",
+                "arguments": {
+                    "artifact_id": handle.artifact_id,
+                    "artifact_page": page_number + 1,
+                },
+                "reason": "继续读取同一短期 artifact 的下一页；artifact_id、expires_at 与 content_sha256 保持不变。",
+            }
 
     restored = "".join(pages)
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
@@ -368,21 +367,21 @@ def test_typed_result_artifact_tool_requires_only_a_known_opaque_handle(tmp_path
 
     missing = server.call_tool_for_agent("read_result_artifact", {})
     assert missing["ok"] is False
-    assert missing["error_code"] == "RESULT_ARTIFACT_ID_REQUIRED"
+    assert missing["error_code"] == "RESOURCE_URI_INVALID"
 
     unknown = server.call_tool_for_agent(
         "read_result_artifact",
         {"artifact_id": "abcdefghijklmnopqrstuvwx", "artifact_page": 1},
     )
     assert unknown["ok"] is False
-    assert unknown["error_code"] == "RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED"
+    assert unknown["error_code"] == "ARTIFACT_EXPIRED"
 
     invalid_phase = server.call_tool_for_agent(
         "read_result_artifact",
         {"artifact_id": "abcdefghijklmnopqrstuvwx", "phase": "verify"},
     )
     assert invalid_phase["ok"] is False
-    assert invalid_phase["error_code"] == "INVALID_RESULT_ARTIFACT_PHASE"
+    assert invalid_phase["error_code"] == "WORKFLOW_NOT_SUPPORTED"
 
 
 def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path) -> None:
@@ -403,7 +402,7 @@ def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path)
         {"workflow": MCP_RESULT_ARTIFACT_WORKFLOW, "phase": "read"},
     )
     assert missing["ok"] is False
-    assert missing["error_code"] == "RESULT_ARTIFACT_ID_REQUIRED"
+    assert missing["error_code"] == "RESOURCE_URI_INVALID"
 
     invalid_page = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -415,7 +414,7 @@ def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path)
         },
     )
     assert invalid_page["ok"] is False
-    assert invalid_page["error_code"] == "INVALID_RESULT_ARTIFACT_PAGE"
+    assert invalid_page["error_code"] == "RESOURCE_URI_INVALID"
 
     missing_or_expired = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -427,7 +426,7 @@ def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path)
         },
     )
     assert missing_or_expired["ok"] is False
-    assert missing_or_expired["error_code"] == "RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED"
+    assert missing_or_expired["error_code"] == "ARTIFACT_EXPIRED"
 
     invalid_phase = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -438,7 +437,7 @@ def test_result_artifact_compatibility_is_read_scoped_and_fails_closed(tmp_path)
         },
     )
     assert invalid_phase["ok"] is False
-    assert invalid_phase["error_code"] == "TOOL_POLICY_DENIED"
+    assert invalid_phase["error_code"] == "SCOPE_VIOLATION"
 
 
 def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_without_project_name(tmp_path) -> None:
@@ -470,7 +469,10 @@ def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_witho
         },
     )
     assert authorized["ok"] is True
-    assert authorized["data"]["artifact_page"]["artifact_id"] == handle.artifact_id
+    assert (
+        authorized["data"]["facts"]["artifact_page"]["artifact_id"]
+        == handle.artifact_id
+    )
 
     typed_authorized = server.call_tool_for_agent(
         "read_result_artifact",
@@ -485,7 +487,10 @@ def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_witho
         },
     )
     assert typed_authorized["ok"] is True
-    assert typed_authorized["data"]["artifact_page"]["artifact_id"] == handle.artifact_id
+    assert (
+        typed_authorized["data"]["facts"]["artifact_page"]["artifact_id"]
+        == handle.artifact_id
+    )
 
     denied = server.call_tool_for_agent(
         "run_mcp_workflow",
@@ -502,7 +507,7 @@ def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_witho
         },
     )
     assert denied["ok"] is False
-    assert denied["error_code"] == "INSUFFICIENT_SCOPE"
+    assert denied["error_code"] == "SCOPE_VIOLATION"
 
     typed_denied = server.call_tool_for_agent(
         "read_result_artifact",
@@ -517,7 +522,7 @@ def test_result_artifact_compatibility_and_typed_read_allow_external_oauth_witho
         },
     )
     assert typed_denied["ok"] is False
-    assert typed_denied["error_code"] == "INSUFFICIENT_SCOPE"
+    assert typed_denied["error_code"] == "SCOPE_VIOLATION"
 
 
 def test_unavailable_artifact_store_never_returns_a_hollow_packaged_manifest(tmp_path, monkeypatch) -> None:
