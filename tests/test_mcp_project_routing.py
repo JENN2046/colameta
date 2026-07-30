@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_project_routing import (
     OPERATOR_TARGET_ISOLATED,
     TOOL_ROUTE_CONTINUATIONS,
@@ -13,6 +16,7 @@ from runner.mcp_project_routing import (
     ProjectRouteServerFactory,
 )
 from runner.mcp_server import MCPPlanningBridgeServer, MCPToolInputError
+from runner.project_registry import ProjectRegistry
 
 
 class _RecordingServer:
@@ -28,6 +32,7 @@ class _RecordingServer:
         self._gate_review_preview_store = object()
         self._review_manifest_store = object()
         self._current_facts_preview_store = object()
+        self._operator_private_state = object()
 
 
 def _recording_serving_server() -> _RecordingServer:
@@ -40,6 +45,49 @@ def _recording_serving_server() -> _RecordingServer:
     server._gate_review_preview_store = object()
     server._review_manifest_store = object()
     server._current_facts_preview_store = object()
+    server._operator_private_state = object()
+    return server
+
+
+def _make_git_checkout(tmp_path: Path, name: str) -> Path:
+    project = tmp_path / name
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", f"{name}@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", name],
+        check=True,
+    )
+    (project / "README.md").write_text(f"{name}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(project), "commit", "-qm", "fixture"], check=True)
+    return project
+
+
+def _service_with_projects(
+    tmp_path: Path,
+    projects: dict[str, Path],
+) -> MCPPlanningBridgeServer:
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    for project_name, project_root in projects.items():
+        registered = registry.register_project(
+            str(project_root),
+            project_name=project_name,
+            project_mode="managed",
+        )
+        assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
     return server
 
 
@@ -78,6 +126,11 @@ def test_factory_constructs_with_only_the_target_root_and_keeps_operator_isolate
     assert target._mcp_result_artifact_store is not serving_server._mcp_result_artifact_store
     assert target._gate_review_preview_store is not serving_server._gate_review_preview_store
     assert target._review_manifest_store is not serving_server._review_manifest_store
+    assert (
+        target._current_facts_preview_store
+        is not serving_server._current_facts_preview_store
+    )
+    assert target._operator_private_state is not serving_server._operator_private_state
 
 
 def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -> None:
@@ -318,3 +371,99 @@ def test_same_root_operator_returns_self_without_calling_factory_or_rejecting_ov
     )
 
     assert selected is server
+
+
+def test_routed_artifact_can_be_read_by_a_later_public_call(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path, "artifact-target")
+    server = _service_with_projects(tmp_path, {"artifact-target": project})
+    server._mcp_result_artifact_store = MCPResultArtifactStore(page_chars=300)
+
+    inspected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "current_facts",
+            "phase": "inspect",
+            "project_name": "artifact-target",
+        },
+    )
+
+    assert inspected["ok"] is True
+    contract = inspected["data"]
+    assert contract["outcome"] == "completed"
+    evidence = contract["evidence"]
+    assert evidence["kind"] == "result_artifact"
+    read = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": evidence["artifact_id"],
+            "artifact_page": 1,
+        },
+    )
+    assert read["ok"] is True
+    assert read["data"]["evidence"]["artifact_id"] == evidence["artifact_id"]
+    assert (
+        read["data"]["facts"]["artifact_page"]["content_sha256"]
+        == evidence["content_sha256"]
+    )
+
+
+def test_project_preview_and_context_binding_cannot_cross_routes(
+    tmp_path: Path,
+) -> None:
+    project_a = _make_git_checkout(tmp_path, "project-a")
+    project_b = _make_git_checkout(tmp_path, "project-b")
+    server = _service_with_projects(
+        tmp_path,
+        {
+            "project-a": project_a,
+            "project-b": project_b,
+        },
+    )
+
+    previewed = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "small_project_patch",
+            "phase": "preview",
+            "project_name": "project-a",
+            "file": "README.md",
+            "old_text": "project-a\n",
+            "new_text": "changed-a\n",
+        },
+    )
+
+    assert previewed["ok"] is True
+    contract = previewed["data"]
+    assert contract["outcome"] == "confirmation_required"
+    assert contract["context_binding"]["project_name"] == "project-a"
+    cross_project_arguments = {
+        **contract["next_action"]["arguments"],
+        "project_name": "project-b",
+    }
+    blocked = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        cross_project_arguments,
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["data"]["outcome"] == "blocked"
+    assert blocked["data"]["error"]["code"] == "PROJECT_CONTEXT_MISMATCH"
+    assert (project_a / "README.md").read_text(encoding="utf-8") == "project-a\n"
+    assert (project_b / "README.md").read_text(encoding="utf-8") == "project-b\n"
+
+
+def test_public_route_returns_project_name_without_project_root(tmp_path: Path) -> None:
+    project = _make_git_checkout(tmp_path, "public-route")
+    server = _service_with_projects(tmp_path, {"public-route": project})
+
+    analyzed = server.call_tool_for_agent(
+        "analyze_project_state",
+        {"project_name": "public-route"},
+    )
+
+    assert analyzed["ok"] is True
+    contract = analyzed["data"]
+    assert contract["context_binding"]["project_name"] == "public-route"
+    serialized = json.dumps(analyzed, ensure_ascii=False)
+    assert str(project) not in serialized
+    assert "project_root" not in serialized
