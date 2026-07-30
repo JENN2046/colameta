@@ -1826,6 +1826,7 @@ def test_call_tool_preserves_exact_operator_public_projection(tmp_path: Path) ->
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     expires_at = "2026-07-19T12:34:56Z"
     context_binding = collect_project_context_binding(str(tmp_path))
+    context_binding["project_name"] = "project"
     server.tools["run_mcp_workflow"] = lambda _params: {
         "ok": True,
         "batch_preview_id": "opb_1234567890123456",

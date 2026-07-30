@@ -282,7 +282,7 @@ def _action_kind(action: dict[str, Any]) -> str:
     if (
         action_name in {"status", "push_status", "pull_status"}
         or phase == "status"
-        or (tool == "analyze_project_state" and not safe_arguments)
+        or tool == "analyze_project_state"
     ):
         return "poll"
     if tool == "manage_validation_run":
@@ -350,6 +350,10 @@ def _synthetic_confirmation_action(
         return None
     project_name = params.get("project_name")
     context_binding = data.get("context_binding")
+    if not isinstance(context_binding, dict):
+        confirmation = data.get("confirmation")
+        if isinstance(confirmation, dict):
+            context_binding = confirmation.get("context_binding")
     continuation: dict[str, Any] = {"preview_id": preview_id}
     if isinstance(project_name, str) and project_name.strip():
         continuation["project_name"] = project_name.strip()

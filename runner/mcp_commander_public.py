@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from runner.canonical_project_state import CANONICAL_PROJECT_STATE_SCHEMA_VERSION
 from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
+    commander_public_key_is_forbidden,
+    commander_public_text,
     validate_commander_response,
 )
 from runner.commander_projections import CommanderProjectionService
@@ -44,6 +46,14 @@ COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES = (
     "manage_files",
     "inspect_executor_activity",
     "manage_workflow_run",
+)
+COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES = frozenset(
+    {
+        *COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
+        "get_git_status",
+        "manage_git_remote",
+        "manage_plan_version",
+    }
 )
 COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS = (
     "artifact_id",
@@ -170,11 +180,29 @@ def _policy_string_param(params: dict[str, Any], key: str) -> str:
 class CommanderPublicProjector:
     """Produce the only ChatGPT-safe public projection of a tool result."""
 
-    def __init__(self, project_root: str | None) -> None:
+    def __init__(
+        self,
+        project_root: str | None,
+        *,
+        hidden_tool_names: Iterable[str] | None = None,
+    ) -> None:
         self._project_root = project_root or ""
+        self._hidden_tool_names = frozenset(
+            hidden_tool_names
+            if hidden_tool_names is not None
+            else COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
+        )
 
-    def sanitize(self, value: Any, *, compact: bool) -> Any:
+    def sanitize(
+        self,
+        value: Any,
+        *,
+        compact: bool,
+        artifact: bool = False,
+    ) -> Any:
         if isinstance(value, dict):
+            if self._is_resource_read_reference(value):
+                return copy.deepcopy(value)
             referenced_tool = value.get("tool")
             if (
                 isinstance(referenced_tool, str)
@@ -206,22 +234,40 @@ class CommanderPublicProjector:
                 if handled:
                     sanitized[clean_key] = self._contract_sanitize(contract_value)
                     continue
-                if self._omit_key(clean_key, nested, compact=compact):
+                if self._omit_key(
+                    clean_key,
+                    nested,
+                    compact=compact,
+                    artifact=artifact,
+                ):
                     continue
-                clean_value = self.sanitize(nested, compact=compact)
+                clean_value = self.sanitize(
+                    nested,
+                    compact=compact,
+                    artifact=artifact,
+                )
                 if clean_value is not None:
                     sanitized[clean_key] = clean_value
             return sanitized
         if isinstance(value, list):
             sanitized_items: list[Any] = []
             for item in value:
-                clean_item = self.sanitize(item, compact=compact)
+                clean_item = self.sanitize(
+                    item,
+                    compact=compact,
+                    artifact=artifact,
+                )
                 if clean_item is not None:
                     sanitized_items.append(clean_item)
             return sanitized_items
         if isinstance(value, str):
             return self._public_string(value)
         return copy.deepcopy(value)
+
+    def sanitize_for_artifact(self, value: Any) -> Any:
+        """Build a non-truncated public-safe payload for opaque evidence."""
+
+        return self.sanitize(value, compact=False, artifact=True)
 
     def project_tool_result(
         self,
@@ -286,6 +332,7 @@ class CommanderPublicProjector:
         # only this typed workflow's value after ordinary sanitization.
         review_manifest_contract_expiry: str | None = None
         review_manifest_page_expiry: str | None = None
+        unsafe_exact_evidence = False
         if is_review_manifest and isinstance(raw_data, dict):
             raw_expiry = raw_data.get("expires_at")
             if isinstance(raw_expiry, str) and raw_expiry:
@@ -296,6 +343,7 @@ class CommanderPublicProjector:
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
+                unsafe_exact_evidence = self._public_string(raw_content) != raw_content
             raw_page_expiry = raw_page.get("expires_at") if isinstance(raw_page, dict) else None
             if isinstance(raw_page_expiry, str) and raw_page_expiry:
                 review_manifest_page_expiry = raw_page_expiry
@@ -325,9 +373,25 @@ class CommanderPublicProjector:
             raw_page = raw_data.get("artifact_page")
             if isinstance(raw_page, dict) and isinstance(raw_page.get("content"), str):
                 result_artifact_page = copy.deepcopy(raw_page)
+                result_artifact_page["tool"] = tool_name
+                unsafe_exact_evidence = (
+                    unsafe_exact_evidence
+                    or self._public_string(raw_page["content"]) != raw_page["content"]
+                )
                 for field in COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS:
                     if field in raw_data:
                         result_artifact_contract_fields[field] = copy.deepcopy(raw_data[field])
+        if unsafe_exact_evidence:
+            return self._wrap_commander_contract(
+                tool_name=tool_name,
+                projected_result={
+                    "ok": False,
+                    "tool": tool_name,
+                    "error_code": "EVIDENCE_UNAVAILABLE",
+                    "message": "证据页包含 Commander 公共边界不允许公开的内容，已安全拒绝返回。",
+                },
+                params=params,
+            )
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
                 (
@@ -385,7 +449,12 @@ class CommanderPublicProjector:
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
             for key, value in public_tool_result.items():
-                if self._omit_key(str(key), value, compact=False):
+                if self._omit_key(
+                    str(key),
+                    value,
+                    compact=False,
+                    artifact=False,
+                ):
                     continue
                 clean_value = self.sanitize(value, compact=False)
                 if clean_value is not None:
@@ -401,7 +470,11 @@ class CommanderPublicProjector:
                 projected["data"] = self._project_project_smoke(data)
             else:
                 compact = tool_name in COMMANDER_PUBLIC_COMPACT_TOOLS
-                clean_data = self.sanitize(data, compact=compact)
+                clean_data = self.sanitize(
+                    data,
+                    compact=compact,
+                    artifact=False,
+                )
                 if isinstance(clean_data, dict):
                     project_name = params.get("project_name") if isinstance(params, dict) else None
                     if (
@@ -479,10 +552,11 @@ class CommanderPublicProjector:
         redacted = value
         if self._project_root:
             redacted = redacted.replace(self._project_root, "<project>")
-        redacted = COMMANDER_PUBLIC_FILE_URI_RE.sub("<local-path>", redacted)
-        redacted = COMMANDER_PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
-        redacted = COMMANDER_PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
-        return COMMANDER_PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
+        return commander_public_text(
+            redacted,
+            preserve_whitespace=True,
+            forbidden_tools=self._hidden_tool_names,
+        )
 
     @staticmethod
     def _value_has_absolute_path(value: Any) -> bool:
@@ -501,8 +575,20 @@ class CommanderPublicProjector:
             return any(CommanderPublicProjector._value_has_absolute_path(item) for item in value.values())
         return False
 
-    def _omit_key(self, key: str, value: Any, *, compact: bool) -> bool:
+    def _omit_key(
+        self,
+        key: str,
+        value: Any,
+        *,
+        compact: bool,
+        artifact: bool,
+    ) -> bool:
         normalized = key.strip().lower()
+        if commander_public_key_is_forbidden(
+            key,
+            include_internal_ids=artifact,
+        ):
+            return True
         if normalized in COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS:
             return True
         if normalized.endswith(("_at", "_time")) or "timestamp" in normalized:

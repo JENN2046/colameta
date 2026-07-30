@@ -247,7 +247,7 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
 def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     payload = {
-        "content": "Literal source text: /home/reviewer/example.md\n" + ("x" * 30000),
+        "content": "Literal bounded public source text\n" + ("x" * 30000),
         "label": "paged compatibility fixture",
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
@@ -311,9 +311,68 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
 
     restored = "".join(pages)
     assert restored == expected_content
-    assert "/home/reviewer/example.md" in restored
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
+
+
+def test_commander_rejects_unsafe_artifact_across_tool_and_resource_reads(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    serialized_probe = json.dumps(
+        {"content": ""},
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    content_start = serialized_probe.index('""') + 1
+    private_path = "/home/reviewer/example.md"
+    prefix = "x" * (12_000 - content_start - 2)
+    payload = {
+        "content": f"{prefix}{private_path}\n",
+        "oauth_token": "must-not-cross-the-public-boundary",
+    }
+    serialized_payload = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    private_path_start = serialized_payload.index(private_path)
+    assert private_path_start < 12_000 < private_path_start + len(private_path)
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "/home/" not in json.dumps(typed, ensure_ascii=False)
+    assert "must-not-cross" not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert "/home/" not in json.dumps(resource, ensure_ascii=False)
+    assert "must-not-cross" not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continuation(tmp_path) -> None:

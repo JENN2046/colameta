@@ -308,9 +308,12 @@ _FACT_EXCLUDED_KEYS = frozenset(
 _FORBIDDEN_PUBLIC_KEYS = frozenset(
     {
         "access_token",
+        "api_key",
         "authorization",
+        "authorization_code",
         "authorization_header",
         "audit_id",
+        "client_secret",
         "cookie",
         "cookies",
         "delegated_tool",
@@ -318,15 +321,22 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "evidence_paths",
         "evidence_refs",
         "event_id",
+        "id_token",
         "loaded_source_root",
         "log",
         "log_path",
         "logs",
         "operator_confirmation_ref",
         "oauth_access_token",
+        "oauth_authorization_code",
+        "oauth_code",
+        "oauth_token",
         "oauth_refresh_token",
+        "password",
+        "passwd",
         "pid",
         "ppid",
+        "private_key",
         "project_id",
         "project_identity",
         "project_root",
@@ -346,12 +356,63 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "stable_runtime_dir",
         "stderr",
         "stdout",
+        "secret",
         "trace_id",
         "token",
         "workflow_id",
         "workflow_record_warning",
         "workspace_root",
     }
+)
+_FACT_INTERNAL_ID_KEYS = frozenset(
+    {
+        "executor_run_id",
+        "run_id",
+        "validation_run_id",
+    }
+)
+_ALLOWED_PUBLIC_OPAQUE_ID_KEYS = frozenset(
+    {
+        "artifact_id",
+        "batch_preview_id",
+        "gate_preview_id",
+        "preview_id",
+        "review_manifest_id",
+    }
+)
+_SENSITIVE_PUBLIC_KEY_RE = re.compile(
+    r"(?i)(?:^|_)(?:"
+    r"access_token"
+    r"|api_key"
+    r"|auth(?:orization)?"
+    r"|authorization_code"
+    r"|client_secret"
+    r"|cookie"
+    r"|credentials?"
+    r"|id_token"
+    r"|oauth(?:_[a-z0-9]+)*(?:_code|_token)"
+    r"|pass(?:word|wd)"
+    r"|private_key"
+    r"|refresh_token"
+    r"|secret"
+    r"|token"
+    r")(?:$|_)"
+)
+_INTERNAL_ID_PUBLIC_KEY_RE = re.compile(
+    r"(?i)^(?:"
+    r"audit"
+    r"|event"
+    r"|executor_run"
+    r"|project"
+    r"|record"
+    r"|report"
+    r"|request"
+    r"|run"
+    r"|session"
+    r"|trace"
+    r"|validation_run"
+    r"|workflow"
+    r")_id$"
 )
 
 _RUNNING_STATUS_VALUES = frozenset(
@@ -454,21 +515,39 @@ _INTERNAL_TOOL_REFERENCE_RE = re.compile(
     r"|manage_p1_release_evidence"
     r"|get_agent_consumer_contract"
     r"|get_agent_operator_flow_packet"
+    r"|get_git_status"
+    r"|manage_git_remote"
+    r"|manage_plan_version"
     r"|resources/read"
     r")(?![A-Za-z0-9_])"
 )
+_TOOL_LIKE_IDENTIFIER_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<name>[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
+    r"(?![A-Za-z0-9_])"
+)
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])(?:"
+    r"(?i)(?<![A-Za-z0-9_])[\"']?(?:"
     r"authorization"
+    r"|authorization_code"
+    r"|api_key"
+    r"|client_secret"
     r"|cookie"
     r"|access_token"
+    r"|id_token"
+    r"|oauth_authorization_code"
     r"|refresh_token"
     r"|oauth_token"
+    r"|password"
+    r"|private_key"
+    r"|secret"
     r"|token"
-    r")\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
+    r")[\"']?\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
 )
 _BEARER_TOKEN_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])bearer\s+[A-Za-z0-9._~+/=-]{8,}"
+    r"(?i)(?<![A-Za-z0-9_])bearer\s+"
+    r"(?!resource_metadata\s*=)"
+    r"[A-Za-z0-9._~+/=-]{8,}"
 )
 
 _OMIT = object()
@@ -597,6 +676,7 @@ def build_commander_response(
                 raw_result=raw_result,
                 params=safe_params,
                 context_binding=context_binding,
+                next_action=next_action,
             )
             if outcome == "confirmation_required"
             else None
@@ -728,6 +808,7 @@ def validate_commander_response(response: dict[str, Any]) -> None:
                 "INTERNAL_RESULT_INVALID",
                 "confirmation_required must expose the matching public confirmation action.",
             )
+        _validate_confirmation_relationship(response)
     elif confirmation is not None:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -753,6 +834,11 @@ def validate_commander_response(response: dict[str, Any]) -> None:
             raise CommanderContractError(
                 "INTERNAL_RESULT_INVALID",
                 "blocked or failed responses cannot recommend a mutation.",
+            )
+        if error.get("recovery") != response.get("next_action"):
+            raise CommanderContractError(
+                "INTERNAL_RESULT_INVALID",
+                "error.recovery must match the single public next_action.",
             )
     elif error is not None:
         raise CommanderContractError(
@@ -945,7 +1031,7 @@ def commander_response_schema() -> dict[str, Any]:
             "expires_at": {"type": "string", "format": "date-time"},
             "context_binding": copy.deepcopy(context_schema),
         },
-        "required": ["decision", "impact", "preview_id"],
+        "required": ["decision", "impact", "preview_id", "context_binding"],
     }
     error_schema = {
         "type": "object",
@@ -1615,7 +1701,12 @@ def _extract_facts(
         facts_source[normalized_key] = value
     if isinstance(source_summary, dict):
         facts_source["source_summary"] = source_summary
-    public = _public_value(facts_source, depth=0, strip_actions=True)
+    public = _public_value(
+        facts_source,
+        depth=0,
+        strip_actions=True,
+        facts=True,
+    )
     facts = public if isinstance(public, dict) else {}
     if artifact_page is not None:
         facts["artifact_page"] = artifact_page
@@ -1656,6 +1747,7 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(tool, str)
         or not tool.strip()
         or len(tool) > 128
+        or tool not in _commander_tools()
         or isinstance(page, bool)
         or not isinstance(page, int)
         or isinstance(page_count, bool)
@@ -1675,6 +1767,7 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
+        or _contains_unsafe_public_text(content)
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -1794,6 +1887,7 @@ def _normalize_review_manifest_page_fact(
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
+        or _contains_unsafe_public_text(content)
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -2014,7 +2108,13 @@ def _normalize_confirmation(
     raw_result: dict[str, Any],
     params: dict[str, Any],
     context_binding: dict[str, Any] | None,
+    next_action: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    if context_binding is None or next_action is None:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation_required must bind one public action to one project context.",
+        )
     containers = _result_containers(raw_result)
     source: dict[str, Any] = {}
     for container in containers:
@@ -2035,6 +2135,31 @@ def _normalize_confirmation(
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
             "confirmation_required must include an opaque preview_id.",
+        )
+    action_arguments = next_action.get("arguments")
+    action_preview_id = _confirmation_action_preview_id(action_arguments)
+    if action_preview_id != preview_id:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation preview_id does not match the selected apply action.",
+        )
+    action_context = (
+        action_arguments.get("context_binding")
+        if isinstance(action_arguments, dict)
+        else None
+    )
+    if (
+        _confirmation_action_requires_context_binding(next_action)
+        and action_context != context_binding
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation action context does not match the response context.",
+        )
+    if action_context is not None and action_context != context_binding:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation action exposes a mismatched project context.",
         )
     decision = _first_string(
         [source],
@@ -2059,6 +2184,11 @@ def _normalize_confirmation(
         confirmation_context = _normalize_context_binding(confirmation_context)
     else:
         confirmation_context = copy.deepcopy(context_binding)
+    if confirmation_context != context_binding:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation context does not match the response context.",
+        )
     result: dict[str, Any] = {
         "decision": _public_text(decision, max_chars=COMMANDER_SUMMARY_MAX_CHARS),
         "impact": impact,
@@ -2068,8 +2198,7 @@ def _normalize_confirmation(
         result["risks"] = risks
     if expires_at is not None:
         result["expires_at"] = expires_at
-    if confirmation_context is not None:
-        result["context_binding"] = confirmation_context
+    result["context_binding"] = confirmation_context
     return result
 
 
@@ -2166,9 +2295,11 @@ def _normalize_error(
         if explicit_recoverable is not None
         else outcome == "blocked"
     )
-    recovery = _explicit_recovery_action(containers)
-    if recovery is None and next_action is not None and not _is_mutating_action(next_action):
-        recovery = copy.deepcopy(next_action)
+    recovery = (
+        copy.deepcopy(next_action)
+        if next_action is not None and not _is_mutating_action(next_action)
+        else None
+    )
     result: dict[str, Any] = {
         "code": public_code,
         "message": message,
@@ -2229,21 +2360,6 @@ def _default_public_error_message(code: str) -> str:
     return messages.get(code, "当前调用被前置条件阻断。")
 
 
-def _explicit_recovery_action(
-    containers: Iterable[dict[str, Any]],
-) -> dict[str, Any] | None:
-    for container in containers:
-        error = container.get("error")
-        if isinstance(error, dict):
-            action = _normalize_action(error.get("recovery"))
-            if action is not None and not _is_mutating_action(action):
-                return action
-        action = _normalize_action(container.get("recovery"))
-        if action is not None and not _is_mutating_action(action):
-            return action
-    return None
-
-
 def _normalize_action(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -2257,7 +2373,12 @@ def _normalize_action(value: Any) -> dict[str, Any] | None:
         arguments = {}
     if _contains_noncommander_tool_reference(arguments):
         return None
-    public_arguments = _public_value(arguments, depth=0, strip_actions=False)
+    public_arguments = _public_value(
+        arguments,
+        depth=0,
+        strip_actions=False,
+        facts=False,
+    )
     if not isinstance(public_arguments, dict):
         return None
     reason = value.get("reason")
@@ -2354,6 +2475,28 @@ def _is_confirmation_action(action: dict[str, Any]) -> bool:
     return _is_mutating_action(action)
 
 
+def _confirmation_action_preview_id(arguments: Any) -> str | None:
+    if not isinstance(arguments, dict):
+        return None
+    for key in ("preview_id", "gate_preview_id", "batch_preview_id"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _confirmation_action_requires_context_binding(
+    action: dict[str, Any],
+) -> bool:
+    if action.get("tool") != "run_mcp_workflow":
+        return True
+    arguments = action.get("arguments")
+    if not isinstance(arguments, dict):
+        return True
+    workflow = _normalized_string(arguments.get("workflow"))
+    return workflow not in {"gate_review_request", "operator_batch"}
+
+
 def _is_poll_action(action: dict[str, Any]) -> bool:
     tool = action.get("tool")
     arguments = action.get("arguments")
@@ -2380,8 +2523,8 @@ def _validate_confirmation(value: Any) -> None:
             "INTERNAL_RESULT_INVALID",
             "confirmation_required must include confirmation.",
         )
-    required = {"decision", "impact", "preview_id"}
-    allowed = required | {"risks", "expires_at", "context_binding"}
+    required = {"decision", "impact", "preview_id", "context_binding"}
+    allowed = required | {"risks", "expires_at"}
     if not required <= set(value) or not set(value) <= allowed:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -2428,6 +2571,59 @@ def _validate_confirmation(value: Any) -> None:
             "confirmation.expires_at is invalid.",
         )
     _validate_context_binding(value.get("context_binding"))
+
+
+def _validate_confirmation_relationship(response: dict[str, Any]) -> None:
+    confirmation = response.get("confirmation")
+    next_action = response.get("next_action")
+    context_binding = response.get("context_binding")
+    if not isinstance(confirmation, dict) or not isinstance(next_action, dict):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation_required must expose one bound confirmation action.",
+        )
+    arguments = next_action.get("arguments")
+    if not isinstance(arguments, dict):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation action arguments are missing.",
+        )
+    if confirmation.get("preview_id") != _confirmation_action_preview_id(
+        arguments
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation.preview_id must match the next action preview handle.",
+        )
+    if confirmation.get("context_binding") != context_binding:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "confirmation.context_binding must match response.context_binding.",
+        )
+    action_context = arguments.get("context_binding")
+    if (
+        _confirmation_action_requires_context_binding(next_action)
+        and action_context != context_binding
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "next_action.context_binding must match response.context_binding.",
+        )
+    if action_context is not None and action_context != context_binding:
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "next_action cannot expose a mismatched context_binding.",
+        )
+    project_name = arguments.get("project_name")
+    if (
+        project_name is not None
+        and isinstance(context_binding, dict)
+        and project_name != context_binding.get("project_name")
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "next_action.project_name must match the bound project.",
+        )
 
 
 def _validate_error(value: Any) -> None:
@@ -2535,6 +2731,7 @@ def _public_value(
     *,
     depth: int,
     strip_actions: bool,
+    facts: bool,
 ) -> Any:
     if depth > COMMANDER_PUBLIC_MAX_DEPTH:
         return _OMIT
@@ -2551,6 +2748,7 @@ def _public_value(
                 item,
                 depth=depth + 1,
                 strip_actions=strip_actions,
+                facts=facts,
             )
             if public is not _OMIT:
                 result.append(public)
@@ -2569,7 +2767,10 @@ def _public_value(
                 break
             clean_key = str(key)
             normalized_key = clean_key.strip().lower()
-            if normalized_key in _FORBIDDEN_PUBLIC_KEYS:
+            if commander_public_key_is_forbidden(
+                clean_key,
+                include_internal_ids=facts,
+            ):
                 continue
             if strip_actions and normalized_key in _ACTION_CONTAINER_KEYS:
                 continue
@@ -2577,6 +2778,7 @@ def _public_value(
                 nested,
                 depth=depth + 1,
                 strip_actions=strip_actions,
+                facts=facts,
             )
             if public is not _OMIT:
                 result_dict[clean_key] = public
@@ -2637,8 +2839,12 @@ def _validate_public_value(
                 "Public value references a non-Commander tool.",
             )
         for key, nested in value.items():
-            normalized_key = str(key).strip().lower()
-            if normalized_key in _FORBIDDEN_PUBLIC_KEYS:
+            clean_key = str(key)
+            normalized_key = clean_key.strip().lower()
+            if commander_public_key_is_forbidden(
+                clean_key,
+                include_internal_ids=facts,
+            ):
                 raise CommanderContractError(
                     "INTERNAL_RESULT_INVALID",
                     f"Public value contains forbidden field {normalized_key}.",
@@ -2680,20 +2886,99 @@ def _validate_public_value(
     )
 
 
-def _public_text(value: str, *, max_chars: int) -> str:
-    normalized = " ".join(str(value).split())
+def commander_public_key_is_forbidden(
+    value: Any,
+    *,
+    include_internal_ids: bool = False,
+) -> bool:
+    """Return whether an object key is unsafe at the Commander boundary."""
+
+    key = str(value)
+    normalized = key.strip().lower()
+    normalized_for_match = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        normalized,
+    ).strip("_")
+    if (
+        not normalized
+        or normalized in _FORBIDDEN_PUBLIC_KEYS
+        or _SENSITIVE_PUBLIC_KEY_RE.search(normalized_for_match)
+        or _contains_private_path(key)
+    ):
+        return True
+    if (
+        include_internal_ids
+        and normalized not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS
+        and (
+            normalized in _FACT_INTERNAL_ID_KEYS
+            or _INTERNAL_ID_PUBLIC_KEY_RE.fullmatch(normalized)
+        )
+    ):
+        return True
+    return False
+
+
+def _redact_noncommander_tool_references(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None = None,
+) -> str:
+    redacted = _INTERNAL_TOOL_REFERENCE_RE.sub("<internal-tool>", value)
+    hidden_tools = (
+        frozenset(forbidden_tools)
+        if forbidden_tools is not None
+        else frozenset()
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group("name")
+        if name in _commander_tools():
+            return name
+        if name in hidden_tools:
+            return "<internal-tool>"
+        return name
+
+    return _TOOL_LIKE_IDENTIFIER_RE.sub(replace, redacted)
+
+
+def commander_public_text(
+    value: str,
+    *,
+    max_chars: int | None = None,
+    preserve_whitespace: bool = True,
+    forbidden_tools: Iterable[str] | None = None,
+) -> str:
+    """Redact unsafe public text, optionally preserving exact line structure."""
+
+    normalized = str(value)
+    if not preserve_whitespace:
+        normalized = " ".join(normalized.split())
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", normalized)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
     redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
     redacted = _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
-    redacted = _INTERNAL_TOOL_REFERENCE_RE.sub("<internal-tool>", redacted)
+    redacted = _redact_noncommander_tool_references(
+        redacted,
+        forbidden_tools=forbidden_tools,
+    )
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", redacted)
     redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+    if max_chars is None:
+        return redacted
     if len(redacted) <= max_chars:
         return redacted
     if max_chars <= 1:
         return redacted[:max_chars]
     return f"{redacted[: max_chars - 1]}…"
+
+
+def _public_text(value: str, *, max_chars: int) -> str:
+    return commander_public_text(
+        value,
+        max_chars=max_chars,
+        preserve_whitespace=False,
+    )
 
 
 def _public_summary(value: str) -> str:
@@ -2720,7 +3005,7 @@ def _contains_private_path(value: str) -> bool:
 
 def _contains_unsafe_public_text(value: str) -> bool:
     return _contains_private_path(value) or bool(
-        _INTERNAL_TOOL_REFERENCE_RE.search(value)
+        _redact_noncommander_tool_references(value) != value
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _BEARER_TOKEN_RE.search(value)
     )

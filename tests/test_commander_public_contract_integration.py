@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -16,6 +17,7 @@ from runner.mcp_commander_public import (
     CommanderPublicProjector,
 )
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_registry import ProjectRegistry
 
 
 PROJECT_NAME = "colameta-self-dev"
@@ -365,6 +367,65 @@ def test_workflow_projection_drops_non_commander_next_action() -> None:
     assert "manage_executor_workflow" not in json.dumps(contract, ensure_ascii=False)
 
 
+def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids() -> None:
+    result = _project(
+        "analyze_project_state",
+        {
+            "ok": True,
+            "context_binding": _base_context_binding(),
+            "safe_fact": "kept",
+            "safe_project_label": "get_started",
+            "oauth_token": "oauth-value-must-not-leak",
+            "id_token": "id-value-must-not-leak",
+            "client_secret": "client-value-must-not-leak",
+            "oauth_authorization_code": "code-value-must-not-leak",
+            "/home/jenn/private/secret.txt": "posix-key-value",
+            r"C:\Users\Jenn\secret.txt": "windows-key-value",
+            "nested": {
+                "safe_nested": True,
+                "run_id": "run-private-123",
+                "validation_run_id": "validation-private-123",
+                "executor_run_id": "executor-private-123",
+            },
+            "guidance": (
+                "Call manage_git_remote, get_git_status, or "
+                "manage_plan_version next."
+            ),
+        },
+        {"project_name": PROJECT_NAME},
+    )
+
+    contract = _assert_contract(
+        result,
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+    assert contract["facts"]["safe_fact"] == "kept"
+    assert contract["facts"]["safe_project_label"] == "get_started"
+    assert contract["facts"]["nested"] == {"safe_nested": True}
+    rendered = json.dumps(result, ensure_ascii=False)
+    for forbidden in (
+        "oauth_token",
+        "id_token",
+        "client_secret",
+        "oauth_authorization_code",
+        "oauth-value-must-not-leak",
+        "id-value-must-not-leak",
+        "client-value-must-not-leak",
+        "code-value-must-not-leak",
+        "/home/jenn",
+        r"C:\Users\Jenn",
+        "manage_git_remote",
+        "get_git_status",
+        "manage_plan_version",
+        "run-private-123",
+        "validation-private-123",
+        "executor-private-123",
+    ):
+        assert forbidden not in rendered
+
+
 @pytest.mark.parametrize(
     ("data", "params", "expected_outcome", "expected_error"),
     [
@@ -609,6 +670,180 @@ def test_normal_profile_keeps_the_existing_broad_output_schema(tmp_path) -> None
 
     assert tool.output_schema["required"] == ["ok", "tool"]
     assert tool.output_schema["properties"]["data"]["additionalProperties"] is True
+
+
+def _make_real_git_project(tmp_path, name: str):
+    project = tmp_path / name
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", "Commander Fixture"],
+        check=True,
+    )
+    (project / "README.md").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "commit", "-qm", "fixture"],
+        check=True,
+    )
+    return project
+
+
+@pytest.mark.parametrize(
+    ("action", "extra_arguments"),
+    [
+        ("status", {}),
+        ("diff", {"mode": "summary"}),
+        ("history_log", {"limit": 5}),
+    ],
+)
+def test_real_manage_git_reads_are_completed_and_context_bound(
+    tmp_path,
+    action: str,
+    extra_arguments: dict[str, object],
+) -> None:
+    project = _make_real_git_project(tmp_path, f"git-read-{action}")
+    (project / "README.md").write_text("bounded change\n", encoding="utf-8")
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    result = server.call_tool_for_agent(
+        "manage_git",
+        {"action": action, **extra_arguments},
+    )
+
+    assert result["ok"] is True
+    contract = result["data"]
+    validate_commander_response(contract)
+    assert contract["outcome"] == "completed"
+    assert contract["journey_stage"] == "close"
+    assert contract["context_binding"] is not None
+    assert contract["context_binding"]["head"]
+    assert contract["confirmation"] is None
+    assert contract["error"] is None
+
+
+def test_real_routed_manage_git_reads_keep_the_registered_context(
+    tmp_path,
+) -> None:
+    project = _make_real_git_project(tmp_path, "routed-git-read")
+    (project / "README.md").write_text("routed bounded change\n", encoding="utf-8")
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "projects.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(project),
+        project_name="routed-git-project",
+        project_mode="managed",
+    )
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+
+    for arguments in (
+        {"action": "status"},
+        {"action": "diff", "mode": "summary"},
+        {"action": "history_log", "limit": 5},
+    ):
+        result = server.call_tool_for_agent(
+            "manage_git",
+            {
+                **arguments,
+                "project_name": "routed-git-project",
+            },
+        )
+        assert result["ok"] is True
+        contract = result["data"]
+        validate_commander_response(contract)
+        assert contract["outcome"] == "completed"
+        assert contract["context_binding"]["project_name"] == (
+            "routed-git-project"
+        )
+
+
+def test_real_large_git_diff_is_preserved_in_a_public_safe_artifact(
+    tmp_path,
+) -> None:
+    project = _make_real_git_project(tmp_path, "large-git-diff")
+    baseline = "".join(
+        f"line {index:05d} before before before\n"
+        for index in range(5_000)
+    )
+    changed = "".join(
+        f"line {index:05d} after after after\n"
+        for index in range(5_000)
+    )
+    (project / "README.md").write_text(baseline, encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "commit", "-qm", "large baseline"],
+        check=True,
+    )
+    (project / "README.md").write_text(changed, encoding="utf-8")
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    result = server.call_tool_for_agent(
+        "manage_git",
+        {
+            "action": "diff",
+            "mode": "page",
+            "file": "README.md",
+            "max_chars": 120_000,
+        },
+    )
+
+    assert result["ok"] is True
+    contract = result["data"]
+    validate_commander_response(contract)
+    assert contract["outcome"] == "completed"
+    assert contract["facts"]["result_packaged"] is True
+    assert contract["facts"]["result_char_estimate"] > 60_000
+    evidence = contract["evidence"]
+    assert evidence["kind"] == "result_artifact"
+    assert evidence["page_count"] > 1
+    assert contract["next_action"]["tool"] == "read_result_artifact"
+    assert "packaged" not in result
+    assert "recommended_next_reads" not in result
+
+    pages: list[str] = []
+    action = contract["next_action"]
+    while action is not None:
+        page_result = server.call_tool_for_agent(
+            action["tool"],
+            action["arguments"],
+        )
+        assert page_result["ok"] is True
+        page_contract = page_result["data"]
+        validate_commander_response(page_contract)
+        assert page_contract["evidence"] == evidence
+        pages.append(page_contract["facts"]["artifact_page"]["content"])
+        action = page_contract["next_action"]
+
+    restored = "".join(pages)
+    assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == evidence[
+        "content_sha256"
+    ]
+    artifact_payload = json.loads(restored)
+    assert artifact_payload["tool"] == "manage_git"
+    assert len(artifact_payload["data"]["diff"]) > 60_000
+    serialized = json.dumps(artifact_payload, ensure_ascii=False)
+    assert str(project) not in serialized
+    assert "get_git_diff" not in serialized
+    assert "delegated_tool" not in serialized
 
 
 def test_real_validation_preview_and_poll_use_the_public_contract(tmp_path) -> None:

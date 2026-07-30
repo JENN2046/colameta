@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
@@ -122,8 +124,12 @@ def test_commander_profile_denies_hidden_tools_even_if_client_cached_them(tmp_pa
     assert result["error_code"] == "TOOL_NOT_EXPOSED"
 
     shaped = server._as_mcp_call_result(result, {"action": "read", "path": "README.md"})
-    assert shaped["structuredContent"]["tool"] == "manage_files"
+    assert shaped["structuredContent"]["tool"] == "<internal-tool>"
     assert shaped["structuredContent"]["error_code"] == "TOOL_NOT_EXPOSED"
+    assert "manage_files" not in json.dumps(
+        shaped["structuredContent"],
+        ensure_ascii=False,
+    )
 
 
 def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:

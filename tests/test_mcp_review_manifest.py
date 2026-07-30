@@ -1454,7 +1454,7 @@ def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path:
     assert read["data"]["facts"]["subject_page"]["path"] == "docs/review-input.md"
 
 
-def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -> None:
+def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     content = "Literal source text: /home/reviewer/example.md\n"
     (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
@@ -1475,9 +1475,12 @@ def test_commander_manifest_read_preserves_exact_bound_content(tmp_path: Path) -
             "review_manifest_subject_index": 1,
         },
     )
-    subject_page = read["result"]["structuredContent"]["data"]["facts"]["subject_page"]
-    assert subject_page["content"] == content
-    assert subject_page["sha256"] == inspection_data["facts"]["subjects"][0]["sha256"]
+    structured = read["result"]["structuredContent"]
+    contract = structured["data"]
+    assert structured["ok"] is False
+    assert contract["outcome"] == "blocked"
+    assert contract["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "/home/reviewer" not in json.dumps(structured, ensure_ascii=False)
 
 
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:

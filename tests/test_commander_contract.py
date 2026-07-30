@@ -537,7 +537,7 @@ def test_result_artifact_evidence_is_normalized_to_opaque_contract() -> None:
 
 
 def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> None:
-    content = "line one\n/home/reviewer/example.md\n"
+    content = "line one\nbounded public evidence\n"
     raw_result = {
         "ok": True,
         "data": {
@@ -545,7 +545,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
             "artifact_id": ARTIFACT_ID,
             "artifact_page": {
                 "artifact_id": ARTIFACT_ID,
-                "tool": "fixture",
+                "tool": "read_result_artifact",
                 "page": 1,
                 "page_count": 2,
                 "page_char_start": 0,
@@ -577,6 +577,41 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         "expires_at": EXPIRES_AT,
     }
     assert response["facts"]["artifact_page"]["content"] == content
+    validate_commander_response(response)
+
+
+def test_result_artifact_page_with_private_content_fails_closed() -> None:
+    content = "line one\n/home/reviewer/example.md\n"
+    raw_result = {
+        "ok": True,
+        "data": {
+            "ok": True,
+            "artifact_id": ARTIFACT_ID,
+            "artifact_page": {
+                "artifact_id": ARTIFACT_ID,
+                "tool": "read_result_artifact",
+                "page": 1,
+                "page_count": 1,
+                "page_char_start": 0,
+                "page_char_end": len(content),
+                "content_sha256": CONTENT_SHA256,
+                "expires_at": EXPIRES_AT,
+                "content": content,
+            },
+            "content_sha256": CONTENT_SHA256,
+            "expires_at": EXPIRES_AT,
+        },
+    }
+
+    response = build_commander_response(
+        tool_name="read_result_artifact",
+        raw_result=raw_result,
+        params={"artifact_id": ARTIFACT_ID, "artifact_page": 1},
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "/home/" not in repr(response)
     validate_commander_response(response)
 
 
@@ -698,6 +733,80 @@ def test_confirmation_is_explicit_and_bound_to_one_apply_action() -> None:
     validate_commander_response(response)
 
 
+def test_builder_fails_closed_when_confirmation_action_uses_another_preview() -> None:
+    binding = _operation_context_binding()
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "requires_confirmation": True,
+                "preview_id": PREVIEW_ID,
+                "context_binding": binding,
+                "next_action": {
+                    "tool": "manage_git",
+                    "arguments": {
+                        "action": "commit_apply",
+                        "preview_id": "another_preview_1234567890",
+                        "context_binding": binding,
+                    },
+                    "reason": "确认后创建本地提交。",
+                },
+            },
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["next_action"]["arguments"].update(
+            preview_id="another_preview_1234567890"
+        ),
+        lambda value: value["next_action"]["arguments"].update(
+            context_binding={
+                **_operation_context_binding(),
+                "head": "d" * 40,
+            }
+        ),
+        lambda value: value["confirmation"].update(
+            context_binding={
+                **_operation_context_binding(),
+                "head": "d" * 40,
+            }
+        ),
+    ],
+)
+def test_validator_enforces_confirmation_preview_and_context_relations(
+    mutate,
+) -> None:
+    binding = _operation_context_binding()
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "requires_confirmation": True,
+                "preview_id": PREVIEW_ID,
+                "context_binding": binding,
+            },
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+    assert response["outcome"] == "confirmation_required"
+    mutate(response)
+
+    with pytest.raises(CommanderContractError):
+        validate_commander_response(response)
+
+
 def test_in_progress_response_has_one_query_action() -> None:
     raw_result = {
         "ok": True,
@@ -792,6 +901,23 @@ def test_blocked_response_maps_nested_error_and_exposes_read_only_recovery() -> 
     assert response["next_action"]["tool"] == "analyze_project_state"
     assert response["confirmation"] is None
     validate_commander_response(response)
+
+
+def test_validator_requires_error_recovery_to_equal_the_single_next_action() -> None:
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": False,
+            "error_code": "GIT_WORKTREE_DIRTY",
+            "message": "当前工作区不满足提交前置条件。",
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+    assert response["outcome"] == "blocked"
+    response["error"]["recovery"]["reason"] = "另一个恢复建议。"
+
+    with pytest.raises(CommanderContractError):
+        validate_commander_response(response)
 
 
 @pytest.mark.parametrize(
@@ -1062,6 +1188,29 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
 ) -> None:
     response = _minimal_completed_response()
     mutate(response)
+
+    with pytest.raises(CommanderContractError):
+        validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "unsafe_key",
+    [
+        "oauth_token",
+        "id_token",
+        "client_secret",
+        "client-secret",
+        "API Key",
+        "oauth_authorization_code",
+        "/home/jenn/private/secret.txt",
+        r"C:\Users\Jenn\secret.txt",
+    ],
+)
+def test_validator_rejects_sensitive_and_absolute_path_object_keys(
+    unsafe_key: str,
+) -> None:
+    response = _minimal_completed_response()
+    response["facts"] = {unsafe_key: "must not be public"}
 
     with pytest.raises(CommanderContractError):
         validate_commander_response(response)
