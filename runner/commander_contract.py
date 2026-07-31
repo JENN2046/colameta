@@ -128,6 +128,7 @@ _INTERNAL_ERROR_CODE_MAP = {
     "REQUEST_CONTEXT_BINDING_MISMATCH": "PROJECT_CONTEXT_MISMATCH",
     "CONTEXT_BINDING_UNAVAILABLE": "STALE_CONTEXT",
     "REVIEW_MANIFEST_CONTEXT_UNAVAILABLE": "STALE_CONTEXT",
+    "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH": "STALE_CONTEXT",
     "PREVIEW_STALE": "STALE_PREVIEW",
     "PREVIEW_INVALID": "STALE_PREVIEW",
     "PREVIEW_KIND_MISMATCH": "STALE_PREVIEW",
@@ -3089,19 +3090,64 @@ def _nested_json_escape_tokens(
         cursor = max(start + 1, end)
 
 
-def _decode_json_escaped_path_separators(value: str) -> str:
+def _decode_json_escapes_with_stack(
+    value: str,
+    *,
+    collapse_escaped_backslashes: bool,
+) -> str:
     rebuilt: list[str] = []
-    cursor = 0
-    for start, end, decoded in _nested_json_escape_tokens(value):
-        if decoded not in "/\\":
-            continue
-        rebuilt.append(value[cursor:start])
-        rebuilt.append(decoded)
-        cursor = end
-    if not rebuilt:
-        return value
-    rebuilt.append(value[cursor:])
-    return "".join(rebuilt)
+    changed = False
+    for character in value:
+        rebuilt.append(character)
+        while True:
+            if (
+                len(rebuilt) >= 6
+                and rebuilt[-6] == "\\"
+                and rebuilt[-5] == "u"
+                and all(
+                    digit in "0123456789abcdefABCDEF"
+                    for digit in rebuilt[-4:]
+                )
+            ):
+                decoded = chr(int("".join(rebuilt[-4:]), 16))
+                del rebuilt[-6:]
+                rebuilt.append(decoded)
+                changed = True
+                continue
+            if (
+                len(rebuilt) >= 2
+                and rebuilt[-2] == "\\"
+                and rebuilt[-1] in _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS
+                and (
+                    rebuilt[-1] != "\\"
+                    or collapse_escaped_backslashes
+                )
+            ):
+                decoded = _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS[rebuilt[-1]]
+                del rebuilt[-2:]
+                rebuilt.append(decoded)
+                changed = True
+                continue
+            break
+    return "".join(rebuilt) if changed else value
+
+
+def _json_escape_path_candidates(value: str) -> Iterable[str]:
+    # The first linear candidate keeps escaped-backslash pairs so an
+    # intermediate UNC path remains observable.  The second is the true
+    # fixed point and catches escapes that generate a new escape introducer.
+    preserved_backslashes = _decode_json_escapes_with_stack(
+        value,
+        collapse_escaped_backslashes=False,
+    )
+    if preserved_backslashes != value:
+        yield preserved_backslashes
+    fixed_point = _decode_json_escapes_with_stack(
+        value,
+        collapse_escaped_backslashes=True,
+    )
+    if fixed_point not in {value, preserved_backslashes}:
+        yield fixed_point
 
 
 def _json_escape_is_path_boundary(decoded: str) -> bool:
@@ -3136,10 +3182,9 @@ def _segment_or_json_boundary_contains_private_path(value: str) -> bool:
 def _contains_private_path_segment(value: str) -> bool:
     if _segment_or_json_boundary_contains_private_path(value):
         return True
-    decoded = _decode_json_escaped_path_separators(value)
-    return (
-        decoded != value
-        and _segment_or_json_boundary_contains_private_path(decoded)
+    return any(
+        _segment_or_json_boundary_contains_private_path(candidate)
+        for candidate in _json_escape_path_candidates(value)
     )
 
 
@@ -3163,10 +3208,9 @@ def _redact_public_path_segment_with_json_boundaries(value: str) -> str:
 
 def _redact_public_path_segment(value: str) -> str:
     redacted = _redact_public_path_segment_with_json_boundaries(value)
-    decoded = _decode_json_escaped_path_separators(redacted)
-    if (
-        decoded != redacted
-        and _segment_or_json_boundary_contains_private_path(decoded)
+    if any(
+        _segment_or_json_boundary_contains_private_path(candidate)
+        for candidate in _json_escape_path_candidates(redacted)
     ):
         return "<local-path>"
     return redacted

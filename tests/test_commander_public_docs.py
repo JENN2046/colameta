@@ -98,3 +98,25 @@ def test_usage_docs_keep_commander_error_recovery_on_the_public_surface() -> Non
             "get_apps_connector_smoke_packet",
         ):
             assert tool_name in COMMANDER_EXPOSED_TOOLS
+
+
+def test_usage_docs_expose_only_the_public_manifest_hash_error() -> None:
+    section_bounds = (
+        (
+            USAGE_DOCS[0],
+            "### Manifest-bound independent review",
+            "### Confirmation-bound actions and canonical project state",
+        ),
+        (
+            USAGE_DOCS[1],
+            "### Manifest 绑定的独立审查",
+            "### 确认性操作上下文绑定与统一项目状态",
+        ),
+    )
+
+    for path, start, end in section_bounds:
+        text = path.read_text(encoding="utf-8")
+        section = text.split(start, maxsplit=1)[1].split(end, maxsplit=1)[0]
+
+        assert "STALE_CONTEXT" in section
+        assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in section

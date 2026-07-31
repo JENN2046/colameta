@@ -1457,6 +1457,19 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
     assert verified["data"]["facts"]["verification"]["context_binding"] == "matched"
     assert verified["data"]["facts"]["verification"]["subject_hashes"] == "matched"
 
+    (project / "docs" / "review-input.md").write_text(
+        "changed after Commander inspect\n",
+        encoding="utf-8",
+    )
+    changed_subject = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "verify", "review_manifest_id": manifest_id},
+    )
+    assert changed_subject["ok"] is False
+    assert changed_subject["error_code"] == "STALE_CONTEXT"
+    assert changed_subject["data"]["outcome"] == "blocked"
+    assert changed_subject["data"]["error"]["code"] == "STALE_CONTEXT"
+
 
 def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
@@ -1547,6 +1560,7 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             "\\u005cReviewer\\u005cprivate.txt"
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

@@ -927,10 +927,11 @@ ChatGPT 的主读取路线，不是任意文件读取；既有 client 仍可使�
 workflow 形式。
 
 公共错误 `PROJECT_CONTEXT_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
-不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
-`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
-符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、push、
-ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与 commit-scoped 确认。
+不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回公共
+错误 `STALE_CONTEXT`，内部哈希不匹配错误码不会公开。即使 manifest 声明，敏感路径、私有
+runtime、符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、
+push、ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与
+commit-scoped 确认。
 
 ### 确认性操作上下文绑定与统一项目状态
 

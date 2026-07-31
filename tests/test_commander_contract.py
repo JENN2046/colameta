@@ -361,6 +361,31 @@ def test_primary_blocker_controls_public_error_and_matching_recovery() -> None:
     validate_commander_response(response)
 
 
+def test_review_manifest_hash_mismatch_maps_to_public_stale_context() -> None:
+    response = build_commander_response(
+        tool_name="review_manifest",
+        raw_result={
+            "ok": False,
+            "tool": "review_manifest",
+            "error_code": "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH",
+            "message": "审查 subject 已变化。",
+        },
+        params={
+            "phase": "read",
+            "project_name": "colameta",
+            "review_manifest_id": MANIFEST_ID,
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "STALE_CONTEXT"
+    assert response["error"]["recoverable"] is True
+    assert response["next_action"]["tool"] == "analyze_project_state"
+    assert response["error"]["recovery"] == response["next_action"]
+    validate_commander_response(response)
+
+
 def test_completed_response_has_exact_fields_and_bounded_public_facts() -> None:
     raw_result = {
         "ok": True,
@@ -559,6 +584,12 @@ def test_public_text_redacts_private_paths_after_json_escaped_boundaries(
         "C:\\u005CUsers\\u005CReviewer\\u005Cprivate.txt",
         "\\u005c\\u005cserver\\u005cshare\\u005cprivate.txt",
         "C:\\\\Users\\\\Reviewer\\\\private.txt",
+        "\\u005cu002fhome/reviewer/private.txt",
+        "\\\\u005cu002fhome/reviewer/private.txt",
+        (
+            "C:\\u005cu005cUsers\\u005cu005cReviewer"
+            "\\u005cu005cprivate.txt"
+        ),
     ],
 )
 def test_public_text_redacts_json_escaped_path_separators(
@@ -1138,6 +1169,7 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "\\u005cprivate.txt"
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
@@ -1322,6 +1354,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "\\u005cReviewer\\u005cprivate.txt"
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

@@ -830,8 +830,9 @@ methods or the legacy generic workflow form.
 Public error `PROJECT_CONTEXT_MISMATCH` means the project route, branch, HEAD, Runner plan,
 or current version no longer matches the manifest. Stop combining evidence,
 request a fresh template, and build a new manifest. A changed subject returns
-`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`. Sensitive, private-runtime, symlinked,
-and high-risk configuration paths are denied even when a manifest names them.
+public error `STALE_CONTEXT`; the internal hash-mismatch code is not exposed.
+Sensitive, private-runtime, symlinked, and high-risk configuration paths are
+denied even when a manifest names them.
 The short-lived manifest session does not authorize executor runs, commits,
 pushes, ReviewDecision, or delivery acceptance. Validation requires the
 separate preview and commit-scoped confirmation described above.
