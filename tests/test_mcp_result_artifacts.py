@@ -247,7 +247,11 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
 def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     payload = {
-        "content": "Literal bounded public source text\n" + ("x" * 30000),
+        "content": (
+            "请读取colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}。\n"
+            + ("x" * 30000)
+        ),
         "label": "paged compatibility fixture",
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)

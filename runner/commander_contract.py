@@ -3045,11 +3045,13 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     preceding = value[index - 1]
     if preceding.isspace() or preceding in "\"'`<>([{":
         return True
+    category = unicodedata.category(preceding)
     return bool(
         not preceding.isascii()
         and (
-            preceding in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
-            or unicodedata.category(preceding) in {"Ps", "Pi"}
+            category.startswith(("L", "N"))
+            or preceding in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or category in {"Ps", "Pi"}
         )
     )
 

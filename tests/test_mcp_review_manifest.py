@@ -1049,6 +1049,11 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         lambda _length: "review_manifest_handle_ending_",
     )
     project = _make_git_checkout(tmp_path)
+    content = (
+        "请读取colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}。\n"
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
 
     response = _tool_call(
@@ -1070,6 +1075,18 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "colameta://review-manifest/review_manifest_handle_ending_"
         "/subjects/1/pages/{page}"
     )
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": evidence["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+    read_structured = read["result"]["structuredContent"]
+    assert read_structured["ok"] is True
+    assert read_structured["data"]["facts"]["subject_page"]["content"] == content
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:

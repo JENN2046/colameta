@@ -863,6 +863,26 @@ def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
     assert commander_public_text(f"{opening}{uri}") == f"{opening}{uri}"
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize("prefix", ["请读取", "版本１"])
+def test_public_text_preserves_opaque_uris_adjacent_to_unicode_prose(
+    prefix: str,
+    uri: str,
+) -> None:
+    value = f"{prefix}{uri}。"
+
+    assert commander_public_text(value) == value
+
+
 def test_public_text_redacts_an_opaque_uri_crossing_the_character_cutoff() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
