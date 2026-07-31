@@ -73,3 +73,28 @@ def test_usage_docs_require_nested_commander_response_paths() -> None:
         assert "packaged=true" not in text
         assert "Read data, then check read_only" not in text
         assert "读取 data；继续看 read_only" not in text
+
+
+def test_usage_docs_keep_commander_error_recovery_on_the_public_surface() -> None:
+    section_bounds = (
+        (USAGE_DOCS[0], "Common errors:", "### Manifest-bound independent review"),
+        (USAGE_DOCS[1], "最常见的错误处理：", "### Manifest 绑定的独立审查"),
+    )
+
+    for path, start, end in section_bounds:
+        text = path.read_text(encoding="utf-8")
+        section = text.split(start, maxsplit=1)[1].split(end, maxsplit=1)[0]
+
+        assert "PROJECT_CONTEXT_MISMATCH" in section
+        assert "INTERNAL_ERROR" in section
+        assert "analyze_project_state" in section
+        assert "get_apps_connector_smoke_packet" in section
+        assert "PROJECT_ROOT_OVERRIDE_NOT_ALLOWED" not in section
+        assert "UNKNOWN_SERVICE_ENTRY_PROFILE" not in section
+        assert "get_agent_consumer_contract" not in section
+        for tool_name in (
+            "list_registered_projects",
+            "analyze_project_state",
+            "get_apps_connector_smoke_packet",
+        ):
+            assert tool_name in COMMANDER_EXPOSED_TOOLS

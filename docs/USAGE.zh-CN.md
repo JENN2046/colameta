@@ -813,11 +813,14 @@ PROJECT_REQUIRED 或 PROJECT_NOT_REGISTERED
   沿 data.next_action 调用 list_registered_projects，再使用返回的
   project_name 重试原调用。
 
-PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
-  服务模式不接受任意 project_root，只能使用 registry 中的 project_name。
+PROJECT_CONTEXT_MISMATCH
+  沿 data.next_action 对同一项目调用 analyze_project_state，重新读取当前事实；
+  旧 preview 或 manifest 必须重新建立，之后才能重试原操作。
 
-UNKNOWN_SERVICE_ENTRY_PROFILE
-  先 get_agent_consumer_contract，看 service_entry_profiles 里的 profile_id。
+INTERNAL_ERROR
+  公共层不会泄漏隐藏 profile 或内部错误细节。先用
+  get_apps_connector_smoke_packet 读取有界连接诊断；仅在连接健康时重试原
+  Commander 调用。如错误重复出现，应停止并报告公共错误码。
 ```
 
 ### Manifest 绑定的独立审查

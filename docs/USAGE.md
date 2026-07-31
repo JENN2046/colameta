@@ -697,13 +697,16 @@ PROJECT_REQUIRED or PROJECT_NOT_REGISTERED
   Follow data.next_action to list_registered_projects, then retry the original
   call with a returned project_name.
 
-PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
-  Service mode does not accept arbitrary project_root. Use registered
-  project_name.
+PROJECT_CONTEXT_MISMATCH
+  Follow data.next_action to analyze_project_state for the same project. Read
+  the current facts again and rebuild any stale preview or manifest before
+  retrying the operation.
 
-UNKNOWN_SERVICE_ENTRY_PROFILE
-  Call get_agent_consumer_contract and choose a profile_id from
-  service_entry_profiles.
+INTERNAL_ERROR
+  No hidden profile or internal error detail is public. Use
+  get_apps_connector_smoke_packet for bounded connection diagnostics, then
+  retry the original Commander call only if the connection is healthy. Stop
+  and report the public error code if it repeats.
 ```
 
 ### Manifest-bound independent review
