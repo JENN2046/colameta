@@ -1394,6 +1394,15 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             '/pages/{page}","invalid":"colameta:\\/\\/'
             'result-artifact\\/short"}'
         ),
+        "Colameta://result-artifact/opaque_handle_123_",
+        (
+            '{"uri":"Colameta:\\/\\/result-artifact\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
+            '\\u002fopaque_handle_123_"}'
+        ),
     ],
 )
 def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
@@ -1438,9 +1447,18 @@ def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
             '{"uri":"colameta:\\u002f\\u002fresult-artifact'
             '\\u002fshort"}'
         ),
+        "Colameta://result-artifact/opaque_handle_123_",
+        (
+            '{"uri":"Colameta:\\/\\/result-artifact\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
+            '\\u002fopaque_handle_123_"}'
+        ),
     ],
 )
-def test_public_text_redacts_json_escaped_disallowed_resource_uri(
+def test_public_text_redacts_case_or_json_escaped_disallowed_resource_uri(
     value: str,
 ) -> None:
     assert commander_public_text(value) == "<resource-uri>"

@@ -507,7 +507,8 @@ _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE = re.compile(
     _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN
 )
 _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
-    r"colameta://[^\s\"'`<>]+"
+    r"colameta://[^\s\"'`<>]+",
+    re.IGNORECASE,
 )
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(

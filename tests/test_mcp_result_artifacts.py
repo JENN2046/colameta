@@ -426,6 +426,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"uri":"colameta:\\u002f\\u002fresult-artifact'
             '\\u002fshort"}'
         ),
+        "Colameta://result-artifact/opaque_handle_123_",
+        (
+            '{"uri":"Colameta:\\/\\/result-artifact\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
+            '\\u002fopaque_handle_123_"}'
+        ),
     )
     for unsafe_uri in unsafe_values:
         handle = server._mcp_result_artifact_store.put(

@@ -1597,6 +1597,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"uri":"colameta:\\u002f\\u002freview-manifest'
             '\\u002fshort"}'
         ),
+        "Colameta://review-manifest/opaque_handle_123_",
+        (
+            '{"uri":"Colameta:\\/\\/review-manifest\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002freview-manifest'
+            '\\u002fopaque_handle_123_"}'
+        ),
     ],
 )
 def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
