@@ -642,7 +642,10 @@ def test_result_artifact_evidence_is_normalized_to_opaque_contract() -> None:
 
 
 def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> None:
-    content = "line one\nbounded public evidence\n"
+    content = (
+        "line one\n"
+        "Read colameta://result-artifact/opaque_handle_123_/pages/{page}\n"
+    )
     raw_result = {
         "ok": True,
         "data": {
@@ -755,6 +758,7 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
     "uri",
     [
         "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        "colameta://result-artifact/manage_files-opaque_123/pages/{page}",
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
@@ -765,10 +769,25 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     uri: str,
 ) -> None:
     assert commander_public_text(uri) == uri
+    embedded = f"Read {uri}\n/home/reviewer/private.txt"
+    assert commander_public_text(embedded) == f"Read {uri}\n<local-path>"
+
+
+def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike() -> None:
+    lookalike = (
+        "Read colameta://result-artifact/opaque_handle_123_"
+        "/pages/{page}/private"
+    )
+
+    assert "<local-path>" in commander_public_text(lookalike)
 
 
 def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
-    content = "# Review input\n\nA bounded subject.\n"
+    content = (
+        "# Review input\n\n"
+        "Read colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}\n"
+    )
     raw_result = {
         "ok": True,
         "data": {

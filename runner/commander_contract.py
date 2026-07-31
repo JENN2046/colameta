@@ -490,12 +490,19 @@ _REVIEW_MANIFEST_URI_RE = re.compile(
     r"^colameta://review-manifest/(?P<manifest_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/subjects/[1-9][0-9]*)?$"
 )
-COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
-    r"^colameta://(?:"
+_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN = (
+    r"colameta://(?:"
     r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
     r"|review-manifest/[A-Za-z0-9_-]{16,128}"
     r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
-    r")$"
+    r")"
+)
+COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
+    rf"^{_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}$"
+)
+_PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-]){_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}"
+    r"(?![A-Za-z0-9_/?#-])"
 )
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
@@ -2970,17 +2977,10 @@ def commander_public_text(
     normalized = str(value)
     if not preserve_whitespace:
         normalized = " ".join(normalized.split())
-    redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", normalized)
-    redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
-    if COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(redacted) is None:
-        redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
-    redacted = _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
-    redacted = _redact_noncommander_tool_references(
-        redacted,
+    redacted = _redact_public_text_preserving_resource_uris(
+        normalized,
         forbidden_tools=forbidden_tools,
     )
-    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", redacted)
-    redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
     if max_chars is None:
         return redacted
     if len(redacted) <= max_chars:
@@ -3011,22 +3011,76 @@ def _summary_sentence_count(value: str) -> int:
     return max(1, count)
 
 
+def _redact_public_path_segment(value: str) -> str:
+    redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
+    redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
+    redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+    return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
+
+
+def _redact_public_non_resource_segment(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None,
+) -> str:
+    redacted = _redact_public_path_segment(value)
+    redacted = _redact_noncommander_tool_references(
+        redacted,
+        forbidden_tools=forbidden_tools,
+    )
+    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", redacted)
+    return _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+
+
+def _redact_public_text_preserving_resource_uris(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None,
+) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE.finditer(value):
+        parts.append(
+            _redact_public_non_resource_segment(
+                value[cursor : match.start()],
+                forbidden_tools=forbidden_tools,
+            )
+        )
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(
+        _redact_public_non_resource_segment(
+            value[cursor:],
+            forbidden_tools=forbidden_tools,
+        )
+    )
+    return "".join(parts)
+
+
+def _public_text_non_resource_segments(value: str) -> Iterable[str]:
+    cursor = 0
+    for match in _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE.finditer(value):
+        yield value[cursor : match.start()]
+        cursor = match.end()
+    yield value[cursor:]
+
+
 def _contains_private_path(value: str) -> bool:
-    if COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(value):
-        return False
-    return bool(
-        _PUBLIC_FILE_URI_RE.search(value)
-        or _PUBLIC_UNC_PATH_RE.search(value)
-        or _PUBLIC_POSIX_PATH_RE.search(value)
-        or _PUBLIC_WINDOWS_PATH_RE.search(value)
+    return any(
+        _PUBLIC_FILE_URI_RE.search(segment)
+        or _PUBLIC_UNC_PATH_RE.search(segment)
+        or _PUBLIC_POSIX_PATH_RE.search(segment)
+        or _PUBLIC_WINDOWS_PATH_RE.search(segment)
+        for segment in _public_text_non_resource_segments(value)
     )
 
 
 def _contains_unsafe_public_text(value: str) -> bool:
-    return _contains_private_path(value) or bool(
-        _redact_noncommander_tool_references(value) != value
-        or _SENSITIVE_ASSIGNMENT_RE.search(value)
-        or _BEARER_TOKEN_RE.search(value)
+    return _contains_private_path(value) or any(
+        _redact_noncommander_tool_references(segment) != segment
+        or _SENSITIVE_ASSIGNMENT_RE.search(segment)
+        or _BEARER_TOKEN_RE.search(segment)
+        for segment in _public_text_non_resource_segments(value)
     )
 
 

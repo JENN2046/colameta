@@ -79,7 +79,7 @@ def test_commander_profile_allows_cached_read_only_smoke_tool(tmp_path) -> None:
 
 def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
-    valid_uri = "colameta://result-artifact/abcdefghijklmnop"
+    valid_uri = "colameta://result-artifact/abcdefghijklmnop_"
 
     projected = server._commander_public_sanitize(
         {
@@ -89,7 +89,8 @@ def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_p
                     "tool": "resources/read",
                     "arguments": {"uri": valid_uri},
                     "reason": (
-                        "Read /home/example/src/private-project; "
+                        f"Read {valid_uri}; "
+                        "compare /home/example/src/private-project; "
                         "oauth_token=synthetic-reason-secret"
                     ),
                     "project_root": "/home/example/src/private-project",
@@ -119,7 +120,9 @@ def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_p
                 "kind": "mcp_resource",
                 "tool": "resources/read",
                 "arguments": {"uri": valid_uri},
-                "reason": "Read <local-path>; <sensitive>",
+                "reason": (
+                    f"Read {valid_uri}; compare <local-path>; <sensitive>"
+                ),
             }
         ]
     }
