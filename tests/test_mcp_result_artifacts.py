@@ -286,6 +286,12 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "serialized_dash_boundaries": json.dumps(
             {"note": f"before—{uri}–continue"}
         ),
+        "paired_punctuation_boundaries": (
+            f"before」{uri}「continue; before”{uri}“continue"
+        ),
+        "serialized_paired_punctuation_boundaries": json.dumps(
+            {"note": f"before）{uri}（continue"}
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),

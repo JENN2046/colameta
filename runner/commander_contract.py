@@ -3422,7 +3422,7 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
         and not value.isascii()
         and (
             value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
-            or unicodedata.category(value) in {"Pd", "Pe", "Pf"}
+            or unicodedata.category(value) in {"Pd", "Pe", "Pf", "Pi", "Ps"}
             or _is_unicode_resource_uri_emoji_base(value)
         )
     )
@@ -3542,7 +3542,7 @@ def _is_resource_uri_left_boundary_character(value: str) -> bool:
         and (
             category.startswith(("L", "N"))
             or value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
-            or category in {"Pd", "Ps", "Pi"}
+            or category in {"Pd", "Pe", "Pf", "Pi", "Ps"}
             or _is_unicode_resource_uri_emoji_base(value)
         )
     )

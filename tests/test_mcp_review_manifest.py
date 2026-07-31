@@ -1069,6 +1069,12 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     serialized_dash_boundaries = json.dumps(
         {"note": dash_boundaries}
     )
+    paired_punctuation_boundaries = (
+        f"before」{uri}「continue; before”{uri}“continue"
+    )
+    serialized_paired_punctuation_boundaries = json.dumps(
+        {"note": f"before）{uri}（continue"}
+    )
     content = (
         f"请读取{uri}。\n"
         f"Read {uri}。Next\n"
@@ -1094,6 +1100,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{nested_short_escape_left_boundary}\n"
         f"{dash_boundaries}\n"
         f"{serialized_dash_boundaries}\n"
+        f"{paired_punctuation_boundaries}\n"
+        f"{serialized_paired_punctuation_boundaries}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"

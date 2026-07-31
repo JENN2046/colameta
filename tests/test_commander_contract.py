@@ -1185,6 +1185,32 @@ def test_public_text_preserves_opaque_uris_at_unicode_dash_boundaries(
     ],
 )
 @pytest.mark.parametrize(
+    ("closing", "opening"),
+    [("」", "「"), ("”", "“"), ("）", "（")],
+)
+def test_public_text_preserves_opaque_uris_at_paired_punctuation_boundaries(
+    uri: str,
+    closing: str,
+    opening: str,
+) -> None:
+    value = f"before{closing}{uri}{opening}continue"
+    serialized = json.dumps({"content": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(serialized) == serialized
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
     "prefix",
     ["请读取", "版本１", "नमस्ते", "مُرَاجَعَةَ", "cafe\u0301"],
 )
