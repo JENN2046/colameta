@@ -3444,6 +3444,16 @@ def _is_unicode_emoji_sequence_component(value: str) -> bool:
     )
 
 
+def _is_unicode_resource_uri_prose_mark(value: str) -> bool:
+    return bool(
+        value
+        and not value.isascii()
+        and value != "\u20e3"
+        and not _is_unicode_emoji_sequence_component(value)
+        and unicodedata.category(value).startswith("M")
+    )
+
+
 def _resource_character_with_start_ending_at(
     value: str,
     index: int,
@@ -3627,6 +3637,16 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     cursor, preceding = current
     if _is_resource_uri_left_boundary_character(preceding):
         return True
+    if _is_unicode_resource_uri_prose_mark(preceding):
+        while cursor > 0:
+            current = _resource_character_with_start_ending_at(value, cursor)
+            if current is None:
+                return False
+            cursor, preceding = current
+            if _is_unicode_resource_uri_prose_mark(preceding):
+                continue
+            return _is_unicode_resource_uri_prose(preceding)
+        return False
     if (
         preceding == "\u200d"
         or not _is_unicode_emoji_sequence_component(preceding)

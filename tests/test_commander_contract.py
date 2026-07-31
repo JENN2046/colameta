@@ -1103,7 +1103,10 @@ def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
         ),
     ],
 )
-@pytest.mark.parametrize("prefix", ["请读取", "版本１"])
+@pytest.mark.parametrize(
+    "prefix",
+    ["请读取", "版本１", "नमस्ते", "مُرَاجَعَةَ"],
+)
 def test_public_text_preserves_opaque_uris_adjacent_to_unicode_prose(
     prefix: str,
     uri: str,
@@ -1154,6 +1157,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     escaped_unicode_then_ascii_delimiters = json.dumps(
         {"note": f"{uri}✅,Next; {uri}」.Next"}
     )
+    escaped_combining_mark_prose = json.dumps(
+        {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}"}
+    )
     fully_escaped_keycap_sequences = (
         f'{{"note":"\\u0031\\ufe0f\\u20e3{uri}'
         '\\u0023\\ufe0f\\u20e3Next"}'
@@ -1187,9 +1193,29 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     assert commander_public_text(escaped_unicode_then_ascii_delimiters) == (
         escaped_unicode_then_ascii_delimiters
     )
+    assert "\\u0947" in escaped_combining_mark_prose
+    assert "\\u064e" in escaped_combining_mark_prose
+    assert commander_public_text(escaped_combining_mark_prose) == (
+        escaped_combining_mark_prose
+    )
     assert commander_public_text(fully_escaped_keycap_sequences) == (
         fully_escaped_keycap_sequences
     )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["\u0301", "A\u0301", "\u20e3", "✅\u20e3"],
+)
+def test_public_text_rejects_opaque_uris_after_orphaned_prose_marks(
+    prefix: str,
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+
+    public = commander_public_text(f"{prefix}{uri}")
+
+    assert uri not in public
+    assert "<resource-uri>" in public
 
 
 def test_public_text_redacts_an_opaque_uri_crossing_the_character_cutoff() -> None:
