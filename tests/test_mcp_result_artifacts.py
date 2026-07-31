@@ -260,6 +260,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"Read {uri}」.Next\n"
             f"नमस्ते{uri}\n"
             f"مُرَاجَعَةَ{uri}\n"
+            f"cafe\u0301{uri}\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
@@ -282,7 +283,12 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             {"note": f"{uri}✅,Next; {uri}」.Next"}
         ),
         "combining_mark_prose_json": json.dumps(
-            {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}"}
+            {
+                "note": (
+                    f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; "
+                    f"cafe\u0301{uri}"
+                )
+            }
         ),
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)

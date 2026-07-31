@@ -1105,7 +1105,7 @@ def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
 )
 @pytest.mark.parametrize(
     "prefix",
-    ["请读取", "版本１", "नमस्ते", "مُرَاجَعَةَ"],
+    ["请读取", "版本１", "नमस्ते", "مُرَاجَعَةَ", "cafe\u0301"],
 )
 def test_public_text_preserves_opaque_uris_adjacent_to_unicode_prose(
     prefix: str,
@@ -1158,7 +1158,11 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
         {"note": f"{uri}✅,Next; {uri}」.Next"}
     )
     escaped_combining_mark_prose = json.dumps(
-        {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}"}
+        {
+            "note": (
+                f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; cafe\u0301{uri}"
+            )
+        }
     )
     fully_escaped_keycap_sequences = (
         f'{{"note":"\\u0031\\ufe0f\\u20e3{uri}'
@@ -1195,6 +1199,7 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert "\\u0947" in escaped_combining_mark_prose
     assert "\\u064e" in escaped_combining_mark_prose
+    assert "\\u0301" in escaped_combining_mark_prose
     assert commander_public_text(escaped_combining_mark_prose) == (
         escaped_combining_mark_prose
     )
@@ -1205,7 +1210,7 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
 
 @pytest.mark.parametrize(
     "prefix",
-    ["\u0301", "A\u0301", "\u20e3", "✅\u20e3"],
+    ["\u0301", "1\u0301", "\u20e3", "✅\u20e3"],
 )
 def test_public_text_rejects_opaque_uris_after_orphaned_prose_marks(
     prefix: str,

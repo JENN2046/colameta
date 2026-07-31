@@ -3646,7 +3646,13 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
             cursor, preceding = current
             if _is_unicode_resource_uri_prose_mark(preceding):
                 continue
-            return _is_unicode_resource_uri_prose(preceding)
+            return bool(
+                _is_unicode_resource_uri_prose(preceding)
+                or (
+                    preceding.isascii()
+                    and preceding.isalpha()
+                )
+            )
         return False
     if (
         preceding == "\u200d"
