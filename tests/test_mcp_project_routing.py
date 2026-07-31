@@ -30,9 +30,11 @@ class _RecordingServer:
         self.work_item_scope_mode = None
         self._mcp_result_artifact_store = object()
         self._commander_public_result_artifact_safety_cache = object()
+        self._commander_public_result_artifact_safety_inflight = object()
         self._gate_review_preview_store = object()
         self._review_manifest_store = object()
         self._commander_public_review_manifest_safety_cache = object()
+        self._commander_public_review_manifest_safety_inflight = object()
         self._current_facts_preview_store = object()
         self._operator_private_state = object()
 
@@ -45,9 +47,11 @@ def _recording_serving_server() -> _RecordingServer:
     server.work_item_scope_mode = "bounded_pilot"
     server._mcp_result_artifact_store = object()
     server._commander_public_result_artifact_safety_cache = object()
+    server._commander_public_result_artifact_safety_inflight = object()
     server._gate_review_preview_store = object()
     server._review_manifest_store = object()
     server._commander_public_review_manifest_safety_cache = object()
+    server._commander_public_review_manifest_safety_inflight = object()
     server._current_facts_preview_store = object()
     server._operator_private_state = object()
     return server
@@ -132,11 +136,19 @@ def test_factory_constructs_with_only_the_target_root_and_keeps_operator_isolate
         target._commander_public_result_artifact_safety_cache
         is not serving_server._commander_public_result_artifact_safety_cache
     )
+    assert (
+        target._commander_public_result_artifact_safety_inflight
+        is not serving_server._commander_public_result_artifact_safety_inflight
+    )
     assert target._gate_review_preview_store is not serving_server._gate_review_preview_store
     assert target._review_manifest_store is not serving_server._review_manifest_store
     assert (
         target._commander_public_review_manifest_safety_cache
         is not serving_server._commander_public_review_manifest_safety_cache
+    )
+    assert (
+        target._commander_public_review_manifest_safety_inflight
+        is not serving_server._commander_public_review_manifest_safety_inflight
     )
     assert (
         target._current_facts_preview_store
@@ -163,11 +175,19 @@ def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -
         first_target._commander_public_result_artifact_safety_cache
         is not serving_server._commander_public_result_artifact_safety_cache
     )
+    assert (
+        first_target._commander_public_result_artifact_safety_inflight
+        is not serving_server._commander_public_result_artifact_safety_inflight
+    )
     assert first_target._gate_review_preview_store is first_gate_store
     assert first_target._review_manifest_store is not serving_server._review_manifest_store
     assert (
         first_target._commander_public_review_manifest_safety_cache
         is not serving_server._commander_public_review_manifest_safety_cache
+    )
+    assert (
+        first_target._commander_public_review_manifest_safety_inflight
+        is not serving_server._commander_public_review_manifest_safety_inflight
     )
 
     latest_result_store = object()
@@ -182,11 +202,19 @@ def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -
         latest_target._commander_public_result_artifact_safety_cache
         is not serving_server._commander_public_result_artifact_safety_cache
     )
+    assert (
+        latest_target._commander_public_result_artifact_safety_inflight
+        is not serving_server._commander_public_result_artifact_safety_inflight
+    )
     assert latest_target._gate_review_preview_store is latest_gate_store
     assert latest_target._review_manifest_store is not serving_server._review_manifest_store
     assert (
         latest_target._commander_public_review_manifest_safety_cache
         is not serving_server._commander_public_review_manifest_safety_cache
+    )
+    assert (
+        latest_target._commander_public_review_manifest_safety_inflight
+        is not serving_server._commander_public_review_manifest_safety_inflight
     )
 
 

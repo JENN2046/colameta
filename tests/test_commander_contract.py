@@ -485,6 +485,27 @@ def test_summary_redacts_inline_authorization_material() -> None:
     validate_commander_response(response)
 
 
+def test_summary_redacts_complete_basic_authorization_material() -> None:
+    response = build_commander_response(
+        tool_name="render_commander_app",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "message": (
+                    "Connector responded with Authorization: "
+                    "Basic dXNlcjpwYXNzd29yZA==."
+                ),
+            },
+        },
+    )
+
+    assert "Authorization" not in response["summary"]
+    assert "dXNlcjpwYXNzd29yZA" not in response["summary"]
+    assert response["summary"] == "Connector responded with <sensitive>"
+    validate_commander_response(response)
+
+
 def test_summary_redacts_complete_quoted_credential_values() -> None:
     response = build_commander_response(
         tool_name="render_commander_app",
@@ -1462,6 +1483,12 @@ def test_public_text_preserves_ordinary_bearer_prose() -> None:
     assert commander_public_text(value) == value
 
 
+def test_public_text_redacts_complete_basic_authorization_value() -> None:
+    value = "Authorization: Basic dXNlcjpwYXNzd29yZA=="
+
+    assert commander_public_text(value) == "<sensitive>"
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -1497,6 +1524,10 @@ def test_public_text_redacts_complete_quoted_sensitive_values(
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         r'{\"password\":\"alpha beta gamma\"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        (
+            '{"reason":"Authorization: '
+            '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
         json.dumps(
             {
                 "wrapped": (

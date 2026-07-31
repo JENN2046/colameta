@@ -738,7 +738,7 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|private_key"
     r"|secret"
     r"|token"
-    r")[\"']?\s*[:=]\s*(?:bearer\s+)?(?:"
+    r")[\"']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?(?:"
     r"\"(?:\\.|[^\"\\])*\""
     r"|'(?:\\.|[^'\\])*'"
     r"|\"(?:\\.|[^\"\\])*$"

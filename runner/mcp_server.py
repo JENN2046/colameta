@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import urllib.request
 from collections import OrderedDict
+from concurrent.futures import Future
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -1081,6 +1082,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._commander_public_result_artifact_safety_cache: OrderedDict[
             tuple[str, str], bool
         ] = OrderedDict()
+        self._commander_public_result_artifact_safety_inflight: dict[
+            tuple[str, str], Future[bool]
+        ] = {}
         self._commander_public_result_artifact_safety_cache_lock = (
             threading.Lock()
         )
@@ -1093,6 +1097,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._commander_public_review_manifest_safety_cache: OrderedDict[
             str, bool
         ] = OrderedDict()
+        self._commander_public_review_manifest_safety_inflight: dict[
+            str, Future[bool]
+        ] = {}
         self._commander_public_review_manifest_safety_cache_lock = (
             threading.Lock()
         )
@@ -2452,6 +2459,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if first is None:
             return None
         cache_key = (artifact_id, first.content_sha256)
+        owns_scan = False
         with self._commander_public_result_artifact_safety_cache_lock:
             cached = self._commander_public_result_artifact_safety_cache.get(
                 cache_key
@@ -2461,55 +2469,97 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     cache_key
                 )
                 return cached
-
-        def remember(safe: bool) -> bool:
-            with self._commander_public_result_artifact_safety_cache_lock:
-                self._commander_public_result_artifact_safety_cache[
-                    cache_key
-                ] = safe
-                self._commander_public_result_artifact_safety_cache.move_to_end(
+            flight = (
+                self._commander_public_result_artifact_safety_inflight.get(
                     cache_key
                 )
-                while (
-                    len(
-                        self._commander_public_result_artifact_safety_cache
-                    )
-                    > COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS
-                ):
-                    self._commander_public_result_artifact_safety_cache.popitem(
-                        last=False
-                    )
-            return safe
-
-        pages: list[str] = []
-        total_chars = 0
-        for page_number in range(1, first.page_count + 1):
-            page = self._mcp_result_artifact_store.read_page(
-                artifact_id,
-                page_number,
             )
+            if flight is None:
+                flight = Future()
+                self._commander_public_result_artifact_safety_inflight[
+                    cache_key
+                ] = flight
+                owns_scan = True
+        if not owns_scan:
+            return flight.result()
+
+        def scan_complete_payload() -> bool:
+            pages: list[str] = []
+            total_chars = 0
+            for page_number in range(1, first.page_count + 1):
+                page = self._mcp_result_artifact_store.read_page(
+                    artifact_id,
+                    page_number,
+                )
+                if (
+                    page is None
+                    or page.content_sha256 != first.content_sha256
+                    or page.page_count != first.page_count
+                ):
+                    return False
+                total_chars += len(page.content)
+                if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
+                    return False
+                pages.append(page.content)
+            content = "".join(pages)
             if (
-                page is None
-                or page.content_sha256 != first.content_sha256
-                or page.page_count != first.page_count
+                hashlib.sha256(content.encode("utf-8")).hexdigest()
+                != first.content_sha256
             ):
-                return remember(False)
-            total_chars += len(page.content)
-            if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
-                return remember(False)
-            pages.append(page.content)
-        content = "".join(pages)
-        if hashlib.sha256(content.encode("utf-8")).hexdigest() != first.content_sha256:
-            return remember(False)
+                return False
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(payload, dict):
+                return False
+            return self._commander_public_result_artifact_payload_safety(
+                payload
+            )
+
         try:
-            payload = json.loads(content)
-        except (TypeError, ValueError):
-            return remember(False)
-        if not isinstance(payload, dict):
-            return remember(False)
-        return remember(
-            self._commander_public_result_artifact_payload_safety(payload)
-        )
+            safe = scan_complete_payload()
+        except BaseException as exc:
+            with self._commander_public_result_artifact_safety_cache_lock:
+                current = (
+                    self._commander_public_result_artifact_safety_inflight.get(
+                        cache_key
+                    )
+                )
+                if current is flight:
+                    del self._commander_public_result_artifact_safety_inflight[
+                        cache_key
+                    ]
+            flight.set_exception(exc)
+            raise
+
+        with self._commander_public_result_artifact_safety_cache_lock:
+            self._commander_public_result_artifact_safety_cache[
+                cache_key
+            ] = safe
+            self._commander_public_result_artifact_safety_cache.move_to_end(
+                cache_key
+            )
+            while (
+                len(
+                    self._commander_public_result_artifact_safety_cache
+                )
+                > COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS
+            ):
+                self._commander_public_result_artifact_safety_cache.popitem(
+                    last=False
+                )
+            current = (
+                self._commander_public_result_artifact_safety_inflight.get(
+                    cache_key
+                )
+            )
+            if current is flight:
+                del self._commander_public_result_artifact_safety_inflight[
+                    cache_key
+                ]
+        flight.set_result(safe)
+        return safe
 
     def _commander_public_result_artifact_payload_safety(
         self,
@@ -2552,6 +2602,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         subject_sha256: str,
         content: str,
     ) -> bool:
+        owns_scan = False
         with self._commander_public_review_manifest_safety_cache_lock:
             cached = self._commander_public_review_manifest_safety_cache.get(
                 subject_sha256
@@ -2561,8 +2612,40 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     subject_sha256
                 )
                 return cached
+            flight = (
+                self._commander_public_review_manifest_safety_inflight.get(
+                    subject_sha256
+                )
+            )
+            if flight is None:
+                flight = Future()
+                self._commander_public_review_manifest_safety_inflight[
+                    subject_sha256
+                ] = flight
+                owns_scan = True
+        if not owns_scan:
+            return flight.result()
 
-        safe = self._commander_public_review_manifest_content_safety(content)
+        try:
+            safe = self._commander_public_review_manifest_content_safety(
+                content
+            )
+        except BaseException as exc:
+            with self._commander_public_review_manifest_safety_cache_lock:
+                current = (
+                    self._commander_public_review_manifest_safety_inflight.get(
+                        subject_sha256
+                    )
+                )
+                if current is flight:
+                    del (
+                        self._commander_public_review_manifest_safety_inflight[
+                            subject_sha256
+                        ]
+                    )
+            flight.set_exception(exc)
+            raise
+
         with self._commander_public_review_manifest_safety_cache_lock:
             self._commander_public_review_manifest_safety_cache[
                 subject_sha256
@@ -2577,6 +2660,16 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 self._commander_public_review_manifest_safety_cache.popitem(
                     last=False
                 )
+            current = (
+                self._commander_public_review_manifest_safety_inflight.get(
+                    subject_sha256
+                )
+            )
+            if current is flight:
+                del self._commander_public_review_manifest_safety_inflight[
+                    subject_sha256
+                ]
+        flight.set_result(safe)
         return safe
 
     def _commander_public_review_manifest_subject_safety(

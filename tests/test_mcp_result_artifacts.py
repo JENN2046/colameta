@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import threading
 
+import runner.mcp_server as mcp_server_module
 from runner.commander_contract import validate_commander_response
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_server import (
@@ -493,6 +496,94 @@ def test_commander_resource_reads_cache_full_artifact_safety_by_digest(
     ) == [(handle.artifact_id, handle.content_sha256)]
 
 
+def test_commander_concurrent_resource_reads_share_one_artifact_safety_scan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "content": "\\" * 24_000 + "relative.txt",
+            "label": "concurrent artifact",
+        },
+    )
+    assert handle is not None
+    assert handle.page_count >= 3
+
+    waiter_entered = threading.Event()
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiter_entered.set()
+            return super().result(timeout=timeout)
+
+    monkeypatch.setattr(mcp_server_module, "Future", ObservedFuture)
+
+    scan_entered = threading.Event()
+    release_scan = threading.Event()
+    scan_lock = threading.Lock()
+    scans = 0
+    original_safety = (
+        server._commander_public_result_artifact_payload_safety
+    )
+
+    def blocking_safety(value: dict) -> bool:
+        nonlocal scans
+        with scan_lock:
+            scans += 1
+        scan_entered.set()
+        assert release_scan.wait(timeout=5)
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_result_artifact_payload_safety",
+        blocking_safety,
+    )
+
+    def read_page(page: int) -> dict:
+        uri = (
+            f"colameta://result-artifact/{handle.artifact_id}"
+            if page == 1
+            else (
+                f"colameta://result-artifact/{handle.artifact_id}"
+                f"/pages/{page}"
+            )
+        )
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": page,
+                "method": "resources/read",
+                "params": {"uri": uri},
+            }
+        )
+        assert response is not None
+        return response
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(read_page, 1)
+        assert scan_entered.wait(timeout=5)
+        second = pool.submit(read_page, 2)
+        try:
+            assert waiter_entered.wait(timeout=5)
+            assert scans == 1
+        finally:
+            release_scan.set()
+        responses = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert all("error" not in response for response in responses)
+    assert scans == 1
+    assert not server._commander_public_result_artifact_safety_inflight
+    assert list(
+        server._commander_public_result_artifact_safety_cache
+    ) == [(handle.artifact_id, handle.content_sha256)]
+
+
 def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
     tmp_path,
 ) -> None:
@@ -557,6 +648,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         'password="alpha beta gamma"',
         r'{\"client_secret\":\"alpha beta gamma\"}',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        (
+            '{"reason":"Authorization: '
+            '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
         json.dumps(

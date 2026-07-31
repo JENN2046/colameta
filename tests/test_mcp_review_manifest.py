@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -8,10 +9,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
 
+import runner.mcp_server as mcp_server_module
 from runner.commander_contract import validate_commander_response
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
@@ -1346,6 +1349,93 @@ def test_commander_resources_read_caches_whole_subject_safety_by_hash(
     ) == [descriptor["sha256"]]
 
 
+def test_commander_concurrent_resource_reads_share_one_manifest_safety_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        '{"content":"'
+        + ("\\" * (REVIEW_MANIFEST_PAGE_CHARS * 2))
+        + 'relative.txt"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    assert descriptor["page_count"] == 3
+
+    waiter_entered = threading.Event()
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiter_entered.set()
+            return super().result(timeout=timeout)
+
+    monkeypatch.setattr(mcp_server_module, "Future", ObservedFuture)
+
+    scan_entered = threading.Event()
+    release_scan = threading.Event()
+    scan_lock = threading.Lock()
+    scans = 0
+    original_safety = (
+        server._commander_public_review_manifest_content_safety
+    )
+
+    def blocking_safety(value: str) -> bool:
+        nonlocal scans
+        with scan_lock:
+            scans += 1
+        scan_entered.set()
+        assert release_scan.wait(timeout=5)
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_review_manifest_content_safety",
+        blocking_safety,
+    )
+
+    def read_page(page: int) -> dict:
+        return _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(read_page, 1)
+        assert scan_entered.wait(timeout=5)
+        second = pool.submit(read_page, 2)
+        try:
+            assert waiter_entered.wait(timeout=5)
+            assert scans == 1
+        finally:
+            release_scan.set()
+        responses = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert all("error" not in response for response in responses)
+    assert scans == 1
+    assert not server._commander_public_review_manifest_safety_inflight
+    assert list(
+        server._commander_public_review_manifest_safety_cache
+    ) == [descriptor["sha256"]]
+
+
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:
     project = tmp_path / "not-a-git-checkout"
     project.mkdir()
@@ -1866,6 +1956,11 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         'password="alpha beta gamma"',
         r'{\"client_secret\":\"alpha beta gamma\"}',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        (
+            '{"reason":"Authorization: '
+            '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
         json.dumps(
