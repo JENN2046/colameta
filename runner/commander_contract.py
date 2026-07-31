@@ -738,7 +738,13 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|private_key"
     r"|secret"
     r"|token"
-    r")[\"']?\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
+    r")[\"']?\s*[:=]\s*(?:bearer\s+)?(?:"
+    r"\"(?:\\.|[^\"\\])*\""
+    r"|'(?:\\.|[^'\\])*'"
+    r"|\"(?:\\.|[^\"\\])*$"
+    r"|'(?:\\.|[^'\\])*$"
+    r"|[^\s,;]+"
+    r")"
 )
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"

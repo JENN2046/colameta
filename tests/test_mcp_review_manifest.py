@@ -1864,6 +1864,8 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '\\u005cprivate.txt"}'
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        'password="alpha beta gamma"',
+        r'{\"client_secret\":\"alpha beta gamma\"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
         json.dumps(

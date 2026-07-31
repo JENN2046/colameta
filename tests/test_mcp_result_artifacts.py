@@ -555,6 +555,8 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '\\u005cprivate.txt"}'
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        'password="alpha beta gamma"',
+        r'{\"client_secret\":\"alpha beta gamma\"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
         json.dumps(

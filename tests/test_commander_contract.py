@@ -485,6 +485,26 @@ def test_summary_redacts_inline_authorization_material() -> None:
     validate_commander_response(response)
 
 
+def test_summary_redacts_complete_quoted_credential_values() -> None:
+    response = build_commander_response(
+        tool_name="render_commander_app",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "message": (
+                    'Connector rejected password="alpha beta gamma". Retry.'
+                ),
+            },
+        },
+    )
+
+    assert response["summary"] == (
+        "Connector rejected <sensitive>. Retry."
+    )
+    validate_commander_response(response)
+
+
 def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
     raw_result = {
         "ok": True,
@@ -1445,7 +1465,37 @@ def test_public_text_preserves_ordinary_bearer_prose() -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        'password="alpha beta gamma"',
+        "client_secret='alpha beta gamma'",
+        'prefix authorization="Bearer alpha beta gamma" suffix',
+        '{"password":"alpha beta gamma","status":"safe"}',
+        r'{\"password\":\"alpha beta gamma\"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    r'password=\"alpha beta gamma\"'
+                )
+            }
+        ),
+        r'password="alpha \"beta\" gamma"',
+        'password="alpha beta gamma',
+    ],
+)
+def test_public_text_redacts_complete_quoted_sensitive_values(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<sensitive>" in public
+    for fragment in ("alpha", "beta", "gamma"):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        r'{\"password\":\"alpha beta gamma\"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         json.dumps(
             {
