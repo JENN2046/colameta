@@ -774,6 +774,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         "line one\n"
         "The bearer of this note may continue.\n"
         f"读取 {uri}。继续\n"
+        f"Read {uri}。Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -918,12 +919,21 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"读取 {uri}{punctuation}继续") == (
             f"读取 {uri}{punctuation}继续"
         )
+        assert commander_public_text(f"Read {uri}{punctuation}Next") == (
+            f"Read {uri}{punctuation}Next"
+        )
     for closing in "）》】”’」』":
         assert commander_public_text(f"读取（{uri}{closing}") == (
             f"读取（{uri}{closing}"
         )
+        assert commander_public_text(f"Read ({uri}{closing}Next") == (
+            f"Read ({uri}{closing}Next"
+        )
     assert commander_public_text(f"读取 {uri}。）继续") == (
         f"读取 {uri}。）继续"
+    )
+    assert commander_public_text(f"Read {uri}。）Next") == (
+        f"Read {uri}。）Next"
     )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
@@ -949,8 +959,8 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "?query=private",
         "??query",
         "??）query",
-        "。）query",
-        "）query",
+        "::）private",
+        "..）suffix",
         "::private",
         "..suffix",
         "／private",
@@ -1051,6 +1061,7 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     escaped_unicode_punctuation = (
         f'{{"uri":"{uri}\\u3002\\u7ee7\\u7eed"}}'
     )
+    escaped_unicode_ascii_prose = f'{{"uri":"{uri}\\u3002Next"}}'
 
     assert commander_public_text(nested) == nested
     assert commander_public_text(escaped_unicode_left) == (
@@ -1061,6 +1072,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert commander_public_text(escaped_unicode_punctuation) == (
         escaped_unicode_punctuation
+    )
+    assert commander_public_text(escaped_unicode_ascii_prose) == (
+        escaped_unicode_ascii_prose
     )
 
 
@@ -1271,6 +1285,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         "# Review input\n\n"
         "The bearer of this note may continue.\n"
         f"Read {uri}\n"
+        f"Read {uri}。Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"

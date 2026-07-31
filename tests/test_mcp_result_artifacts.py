@@ -250,6 +250,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     payload = {
         "content": (
             f"请读取{uri}。\n"
+            f"Read {uri}。Next\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",

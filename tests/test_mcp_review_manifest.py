@@ -1055,6 +1055,7 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     )
     content = (
         f"请读取{uri}。\n"
+        f"Read {uri}。Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
