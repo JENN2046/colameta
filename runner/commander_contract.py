@@ -490,6 +490,13 @@ _REVIEW_MANIFEST_URI_RE = re.compile(
     r"^colameta://review-manifest/(?P<manifest_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/subjects/[1-9][0-9]*)?$"
 )
+COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
+    r"^colameta://(?:"
+    r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
+    r"|review-manifest/[A-Za-z0-9_-]{16,128}"
+    r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
+    r")$"
+)
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -2956,7 +2963,8 @@ def commander_public_text(
         normalized = " ".join(normalized.split())
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", normalized)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
-    redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+    if COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(redacted) is None:
+        redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
     redacted = _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
     redacted = _redact_noncommander_tool_references(
         redacted,
@@ -2995,6 +3003,8 @@ def _summary_sentence_count(value: str) -> int:
 
 
 def _contains_private_path(value: str) -> bool:
+    if COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(value):
+        return False
     return bool(
         _PUBLIC_FILE_URI_RE.search(value)
         or _PUBLIC_UNC_PATH_RE.search(value)

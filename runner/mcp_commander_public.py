@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from runner.canonical_project_state import CANONICAL_PROJECT_STATE_SCHEMA_VERSION
 from runner.commander_contract import (
+    COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE,
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
@@ -148,13 +149,6 @@ COMMANDER_PUBLIC_COMPACT_OMIT_KEYS = frozenset(
         "stable_replacement_hint",
         "unreconciled_direct_versions",
     }
-)
-COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
-    r"^colameta://(?:"
-    r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
-    r"|review-manifest/[A-Za-z0-9_-]{16,128}"
-    r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
-    r")$"
 )
 COMMANDER_PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"

@@ -13,6 +13,7 @@ from runner.commander_contract import (
     COMMANDER_TEXT_MAX_CHARS,
     CommanderContractError,
     build_commander_response,
+    commander_public_text,
     commander_response_schema,
     derive_commander_outcome,
     validate_commander_response,
@@ -690,6 +691,22 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
         "expires_at": EXPIRES_AT,
     }
     validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
+    uri: str,
+) -> None:
+    assert commander_public_text(uri) == uri
 
 
 def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:

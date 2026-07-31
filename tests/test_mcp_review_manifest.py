@@ -1040,7 +1040,14 @@ def test_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> 
     assert descriptor["page_uri_template"].endswith("/subjects/1/pages/{page}")
 
 
-def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_path: Path) -> None:
+def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: "review_manifest_handle_ending_",
+    )
     project = _make_git_checkout(tmp_path)
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
 
@@ -1059,7 +1066,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_pa
     assert evidence["review_manifest_id"]
     assert evidence["resource_uri"].startswith("colameta://review-manifest/")
     assert facts["subjects"][0]["resource_uri"].startswith("colameta://review-manifest/")
-    assert facts["subjects"][0]["page_uri_template"].endswith("/pages/{page}")
+    assert facts["subjects"][0]["page_uri_template"] == (
+        "colameta://review-manifest/review_manifest_handle_ending_"
+        "/subjects/1/pages/{page}"
+    )
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:
