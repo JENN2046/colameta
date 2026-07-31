@@ -313,6 +313,18 @@ def test_project_selection_blockers_expose_project_list_as_single_recovery(
             "tool": "run_mcp_workflow",
             "error_code": error_code,
             "message": "必须重新选择一个已登记项目。",
+            "next_actions": [
+                {
+                    "tool": "run_mcp_workflow",
+                    "arguments": {"workflow": "git_restore_file"},
+                    "reason": "不能绕过项目发现的嵌入恢复动作。",
+                },
+                {
+                    "tool": "analyze_project_state",
+                    "arguments": {},
+                    "reason": "不能绕过项目发现的嵌入轮询动作。",
+                },
+            ],
         },
         params=params,
     )

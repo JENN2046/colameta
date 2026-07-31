@@ -491,6 +491,12 @@ def select_commander_next_action(
     """Select at most one public action using the frozen priority order."""
 
     safe_params = params if isinstance(params, dict) else {}
+    if (
+        outcome == "blocked"
+        and commander_public_error_code_for_result(raw_result)
+        in _PROJECT_SELECTION_PUBLIC_ERROR_CODES
+    ):
+        return _synthetic_recovery_action(safe_params, raw_result)
     candidates: list[tuple[int, int, dict[str, Any]]] = []
     for index, candidate in enumerate(_walk_action_candidates(raw_result)):
         normalized = _normalized_candidate(candidate)

@@ -493,6 +493,21 @@ def test_project_selection_blockers_recover_through_registered_project_list(
     raw_result: dict,
     params: dict,
 ) -> None:
+    raw_result = {
+        **raw_result,
+        "next_actions": [
+            {
+                "tool": "run_mcp_workflow",
+                "arguments": {"workflow": "git_restore_file"},
+                "reason": "Embedded recovery must not bypass project discovery.",
+            },
+            {
+                "tool": "analyze_project_state",
+                "arguments": {},
+                "reason": "Embedded polling must not bypass project discovery.",
+            },
+        ],
+    }
     action = select_commander_next_action(
         tool_name="run_mcp_workflow",
         params=params,
