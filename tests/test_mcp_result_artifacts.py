@@ -252,6 +252,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"请读取{uri}。\n"
             f"Read {uri}。Next\n"
             f"📎{uri}✅Next\n"
+            f"请读取{uri}继续\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
@@ -259,7 +260,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "fraction": "1\\/2",
         "url": "https:\\/\\/example.com",
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
-        "ascii_json": json.dumps({"note": f"取{uri}"}),
+        "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)

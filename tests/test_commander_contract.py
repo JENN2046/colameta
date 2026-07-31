@@ -796,6 +796,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         f"读取 {uri}。继续\n"
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"
+        f"请读取{uri}继续\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -1070,6 +1071,12 @@ def test_public_text_preserves_opaque_uris_adjacent_to_unicode_prose(
     value = f"{prefix}{uri}。"
 
     assert commander_public_text(value) == value
+    assert commander_public_text(f"{prefix}{uri}继续") == (
+        f"{prefix}{uri}继续"
+    )
+    assert commander_public_text(f"{prefix}{uri}１") == (
+        f"{prefix}{uri}１"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1086,7 +1093,7 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     uri: str,
 ) -> None:
     nested = json.dumps({"nested": json.dumps({"uri": uri})})
-    escaped_unicode_left = json.dumps({"note": f"取{uri}"})
+    escaped_unicode_prose = json.dumps({"note": f"取{uri}继续"})
     escaped_ascii_punctuation = f'{{"uri":"{uri}\\u002e"}}'
     escaped_unicode_punctuation = (
         f'{{"uri":"{uri}\\u3002\\u7ee7\\u7eed"}}'
@@ -1097,8 +1104,8 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
 
     assert commander_public_text(nested) == nested
-    assert commander_public_text(escaped_unicode_left) == (
-        escaped_unicode_left
+    assert commander_public_text(escaped_unicode_prose) == (
+        escaped_unicode_prose
     )
     assert commander_public_text(escaped_ascii_punctuation) == (
         escaped_ascii_punctuation
@@ -1332,6 +1339,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         f"Read {uri}\n"
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"
+        f"请读取{uri}继续\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"

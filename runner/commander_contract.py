@@ -3250,6 +3250,14 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
     )
 
 
+def _is_unicode_resource_uri_prose(value: str) -> bool:
+    return bool(
+        value
+        and not value.isascii()
+        and unicodedata.category(value).startswith(("L", "N"))
+    )
+
+
 def _is_resource_uri_left_boundary_character(value: str) -> bool:
     if value.isspace() or value in "\"'`<>([{":
         return True
@@ -3458,6 +3466,14 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
         return True
     following = value[index]
     if following.isspace() or following in "\"'`>":
+        return True
+    if _is_unicode_resource_uri_prose(following):
+        return True
+    decoded_following = _decoded_json_unicode_character_at(value, index)
+    if (
+        decoded_following is not None
+        and _is_unicode_resource_uri_prose(decoded_following)
+    ):
         return True
     if (
         following in ".,;:!?)]}"
