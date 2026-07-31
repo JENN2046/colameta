@@ -29,6 +29,7 @@ class _RecordingServer:
         self.mcp_exposure_profile = "normal"
         self.work_item_scope_mode = None
         self._mcp_result_artifact_store = object()
+        self._commander_public_result_artifact_safety_cache = object()
         self._gate_review_preview_store = object()
         self._review_manifest_store = object()
         self._commander_public_review_manifest_safety_cache = object()
@@ -43,6 +44,7 @@ def _recording_serving_server() -> _RecordingServer:
     server.mcp_exposure_profile = "commander"
     server.work_item_scope_mode = "bounded_pilot"
     server._mcp_result_artifact_store = object()
+    server._commander_public_result_artifact_safety_cache = object()
     server._gate_review_preview_store = object()
     server._review_manifest_store = object()
     server._commander_public_review_manifest_safety_cache = object()
@@ -126,6 +128,10 @@ def test_factory_constructs_with_only_the_target_root_and_keeps_operator_isolate
     assert target.mcp_exposure_profile == "normal"
     assert target.work_item_scope_mode is None
     assert target._mcp_result_artifact_store is not serving_server._mcp_result_artifact_store
+    assert (
+        target._commander_public_result_artifact_safety_cache
+        is not serving_server._commander_public_result_artifact_safety_cache
+    )
     assert target._gate_review_preview_store is not serving_server._gate_review_preview_store
     assert target._review_manifest_store is not serving_server._review_manifest_store
     assert (
@@ -153,6 +159,10 @@ def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -
     first_target = factory.create(context, TOOL_ROUTE_CONTINUATIONS)
 
     assert first_target._mcp_result_artifact_store is first_result_store
+    assert (
+        first_target._commander_public_result_artifact_safety_cache
+        is not serving_server._commander_public_result_artifact_safety_cache
+    )
     assert first_target._gate_review_preview_store is first_gate_store
     assert first_target._review_manifest_store is not serving_server._review_manifest_store
     assert (
@@ -168,6 +178,10 @@ def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -
     latest_target = factory.create(context, TOOL_ROUTE_CONTINUATIONS)
 
     assert latest_target._mcp_result_artifact_store is latest_result_store
+    assert (
+        latest_target._commander_public_result_artifact_safety_cache
+        is not serving_server._commander_public_result_artifact_safety_cache
+    )
     assert latest_target._gate_review_preview_store is latest_gate_store
     assert latest_target._review_manifest_store is not serving_server._review_manifest_store
     assert (

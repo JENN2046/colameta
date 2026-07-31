@@ -295,6 +295,9 @@ MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
 )
 MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
 MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
+COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS = (
+    MCP_RESULT_ARTIFACT_MAX_ITEMS
+)
 COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS = 5_000_000
 MCP_RESULT_ARTIFACT_WORKFLOW = RESULT_ARTIFACT_WORKFLOW
 MCP_RESULT_ARTIFACT_ID_RE = RESULT_ARTIFACT_ID_RE
@@ -1073,6 +1076,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             ttl_seconds=MCP_RESULT_ARTIFACT_TTL_SECONDS,
             page_chars=MCP_RESULT_ARTIFACT_PAGE_CHARS,
             max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
+        )
+        self._commander_public_result_artifact_safety_cache: OrderedDict[
+            tuple[str, str], bool
+        ] = OrderedDict()
+        self._commander_public_result_artifact_safety_cache_lock = (
+            threading.Lock()
         )
         self._gate_review_preview_store = GateReviewPreviewStore()
         self._current_facts_preview_store = process_current_facts_preview_store()
@@ -2436,11 +2445,41 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self,
         artifact_id: str,
     ) -> bool | None:
-        """Check the complete stored JSON payload before exposing any page."""
+        """Check and cache the complete stored JSON payload before page reads."""
 
         first = self._mcp_result_artifact_store.read_page(artifact_id, 1)
         if first is None:
             return None
+        cache_key = (artifact_id, first.content_sha256)
+        with self._commander_public_result_artifact_safety_cache_lock:
+            cached = self._commander_public_result_artifact_safety_cache.get(
+                cache_key
+            )
+            if cached is not None:
+                self._commander_public_result_artifact_safety_cache.move_to_end(
+                    cache_key
+                )
+                return cached
+
+        def remember(safe: bool) -> bool:
+            with self._commander_public_result_artifact_safety_cache_lock:
+                self._commander_public_result_artifact_safety_cache[
+                    cache_key
+                ] = safe
+                self._commander_public_result_artifact_safety_cache.move_to_end(
+                    cache_key
+                )
+                while (
+                    len(
+                        self._commander_public_result_artifact_safety_cache
+                    )
+                    > COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS
+                ):
+                    self._commander_public_result_artifact_safety_cache.popitem(
+                        last=False
+                    )
+            return safe
+
         pages: list[str] = []
         total_chars = 0
         for page_number in range(1, first.page_count + 1):
@@ -2453,20 +2492,28 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 or page.content_sha256 != first.content_sha256
                 or page.page_count != first.page_count
             ):
-                return False
+                return remember(False)
             total_chars += len(page.content)
             if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
-                return False
+                return remember(False)
             pages.append(page.content)
         content = "".join(pages)
         if hashlib.sha256(content.encode("utf-8")).hexdigest() != first.content_sha256:
-            return False
+            return remember(False)
         try:
             payload = json.loads(content)
         except (TypeError, ValueError):
-            return False
+            return remember(False)
         if not isinstance(payload, dict):
-            return False
+            return remember(False)
+        return remember(
+            self._commander_public_result_artifact_payload_safety(payload)
+        )
+
+    def _commander_public_result_artifact_payload_safety(
+        self,
+        payload: dict[str, Any],
+    ) -> bool:
         sanitized = self._commander_public_projector().sanitize_for_artifact(
             payload
         )
