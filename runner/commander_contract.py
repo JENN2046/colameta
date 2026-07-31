@@ -3267,9 +3267,69 @@ def _is_unicode_emoji_sequence_component(value: str) -> bool:
         or 0xFE00 <= codepoint <= 0xFE0F
         or 0xE0100 <= codepoint <= 0xE01EF
         or 0x1F3FB <= codepoint <= 0x1F3FF
-        or codepoint == 0x20E3
         or 0xE0020 <= codepoint <= 0xE007F
     )
+
+
+def _resource_character_with_start_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    decoded = _decoded_json_unicode_character_with_start_ending_at(
+        value,
+        index,
+    )
+    if decoded is not None:
+        return decoded
+    if index <= 0:
+        return None
+    return index - 1, value[index - 1]
+
+
+def _resource_character_with_end_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    decoded = _decoded_json_unicode_character_with_end_at(value, index)
+    if decoded is not None:
+        return decoded
+    if index >= len(value):
+        return None
+    return index + 1, value[index]
+
+
+def _complete_keycap_sequence_start_ending_at(
+    value: str,
+    index: int,
+) -> int | None:
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None or current[1] != "\u20e3":
+        return None
+    cursor = current[0]
+    current = _resource_character_with_start_ending_at(value, cursor)
+    if current is not None and current[1] == "\ufe0f":
+        cursor = current[0]
+        current = _resource_character_with_start_ending_at(value, cursor)
+    if current is None or current[1] not in "#*0123456789":
+        return None
+    return current[0]
+
+
+def _complete_keycap_sequence_end_at(
+    value: str,
+    index: int,
+) -> int | None:
+    current = _resource_character_with_end_at(value, index)
+    if current is None or current[1] not in "#*0123456789":
+        return None
+    cursor = current[0]
+    current = _resource_character_with_end_at(value, cursor)
+    if current is not None and current[1] == "\ufe0f":
+        cursor = current[0]
+        current = _resource_character_with_end_at(value, cursor)
+    if current is None or current[1] != "\u20e3":
+        return None
+    return current[0]
 
 
 def _is_resource_uri_left_boundary_character(value: str) -> bool:
@@ -3386,14 +3446,12 @@ def _decoded_json_unicode_character_at(
 def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     if index <= 0:
         return True
-    decoded = _decoded_json_unicode_character_with_start_ending_at(
-        value,
-        index,
-    )
-    if decoded is not None:
-        cursor, preceding = decoded
-    else:
-        cursor, preceding = index - 1, value[index - 1]
+    if _complete_keycap_sequence_start_ending_at(value, index) is not None:
+        return True
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None:
+        return True
+    cursor, preceding = current
     if _is_resource_uri_left_boundary_character(preceding):
         return True
     if (
@@ -3402,14 +3460,10 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     ):
         return False
     while cursor > 0:
-        decoded = _decoded_json_unicode_character_with_start_ending_at(
-            value,
-            cursor,
-        )
-        if decoded is not None:
-            cursor, preceding = decoded
-        else:
-            cursor, preceding = cursor - 1, value[cursor - 1]
+        current = _resource_character_with_start_ending_at(value, cursor)
+        if current is None:
+            return False
+        cursor, preceding = current
         if unicodedata.category(preceding) == "So":
             return True
         if (
@@ -3464,6 +3518,13 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     emoji_joiner_pending = False
     saw_hard_escaped_delimiter = False
     while cursor < len(value):
+        keycap_end = _complete_keycap_sequence_end_at(value, cursor)
+        if keycap_end is not None:
+            saw_unicode_delimiter = True
+            saw_symbol_delimiter = False
+            emoji_joiner_pending = False
+            cursor = keycap_end
+            continue
         following = value[cursor]
         if following in ".,;:!?)]}":
             saw_ascii_delimiter = True
@@ -3561,6 +3622,8 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
         and _is_unicode_resource_uri_prose(decoded_following)
     ):
         return True
+    if _complete_keycap_sequence_end_at(value, index) is not None:
+        return _is_resource_uri_following_delimiter(value, index)
     if (
         following in ".,;:!?)]}"
         or _is_unicode_resource_uri_delimiter(following)
