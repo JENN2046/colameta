@@ -693,7 +693,8 @@ _PUBLIC_FILE_URI_RE = re.compile(
     re.IGNORECASE,
 )
 _PUBLIC_UNC_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9\\])\\\\[^\\/\s,;\]\[(){}<>\"']+[\\/][^\s,;\]\[(){}<>\"']+"
+    r"(?:(?<![A-Za-z0-9\\])\\\\|(?<![A-Za-z0-9:/\\])/{2,})"
+    r"[^\\/\s,;\]\[(){}<>\"']+[\\/][^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_WINDOWS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",

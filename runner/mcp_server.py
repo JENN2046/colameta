@@ -164,6 +164,7 @@ from runner.app_submission_work_items import AppSubmissionWorkItemCommands
 from runner.commander_projections import CommanderProjectionService
 from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
+    commander_public_error_code,
     commander_response_schema,
     validate_commander_response,
 )
@@ -2992,10 +2993,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                                 )
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
+                        error_code = exc.error_code
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                        ):
+                            error_code = (
+                                commander_public_error_code(error_code)
+                                or "INTERNAL_ERROR"
+                            )
                         return self._protocol_error(
                             req_id,
                             -32602,
-                            exc.error_code,
+                            error_code,
                             exc.message,
                             exc.details,
                         )

@@ -607,12 +607,27 @@ def test_public_text_redacts_json_escaped_path_separators(
     "value",
     [
         r"\\server/share\private.txt",
+        "//server/share/private.txt",
+        "///server/share/private.txt",
         json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
+        json.dumps({"reason": "//server/share/private.txt"}),
+        '{"reason":"\\/\\/server\\/share\\/private.txt"}',
+        (
+            '{"reason":"\\u002f\\u002fserver\\u002fshare'
+            '\\u002fprivate.txt"}'
+        ),
         json.dumps(
             {
                 "nested": json.dumps(
                     {"reason": r"\\server\share\private.txt"}
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": "//server/share/private.txt"}
                 )
             }
         ),
@@ -632,6 +647,7 @@ def test_public_text_redacts_unc_paths_across_serialization(
     [
         "safe\\/relative.txt",
         "1\\/2",
+        "https://example.com/public/readme.txt",
         "https:\\/\\/example.com",
         "safe\\u002fhome/reviewer/private.txt",
     ],
@@ -2423,6 +2439,8 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",
         r"\\server/share\secret.txt",
+        "//server/share/secret.txt",
+        "///server/share/secret.txt",
     ],
 )
 def test_validator_rejects_sensitive_and_absolute_path_object_keys(

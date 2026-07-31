@@ -1671,6 +1671,33 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
     assert changed_subject["data"]["error"]["code"] == "STALE_CONTEXT"
 
 
+def test_commander_manifest_resource_read_maps_subject_drift_to_stale_context(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    subject_uri = inspected["data"]["facts"]["subjects"][0]["resource_uri"]
+    (project / "docs" / "review-input.md").write_text(
+        "changed after Commander inspect\n",
+        encoding="utf-8",
+    )
+
+    response = _resource_read(server, subject_uri)
+
+    assert response["error"]["data"]["error_code"] == "STALE_CONTEXT"
+    assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in repr(response)
+
+
 def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     registry = ProjectRegistry(
@@ -1770,8 +1797,23 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
         r"\\server/share\private.txt",
+        "//server/share/private.txt",
+        "///server/share/private.txt",
         json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
+        json.dumps({"reason": "//server/share/private.txt"}),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": "//server/share/private.txt"}
+                )
+            }
+        ),
+        '{"reason":"\\/\\/server\\/share\\/private.txt"}',
+        (
+            '{"reason":"\\u002f\\u002fserver\\u002fshare'
+            '\\u002fprivate.txt"}'
+        ),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
