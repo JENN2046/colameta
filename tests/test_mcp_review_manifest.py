@@ -1587,6 +1587,8 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
         ),
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
     ],
 )
 def test_commander_manifest_read_rejects_unsafe_uri_boundaries(

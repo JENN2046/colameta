@@ -1238,6 +1238,39 @@ def test_public_text_preserves_ordinary_bearer_prose() -> None:
     assert commander_public_text(value) == value
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"oauth\\\\u005ftoken":'
+                    '"nested-synthetic-secret"}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_json_escaped_sensitive_material(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == "<sensitive>"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"oauth\\u005ftokenizer":"synthetic-safe-value"}',
+        '{"reason":"\\u0042earer of this note may continue."}',
+        '{"reason":"\\u0042earer resource_metadata=available"}',
+    ],
+)
+def test_public_text_preserves_safe_json_escaped_prose(value: str) -> None:
+    assert commander_public_text(value) == value
+
+
 def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
@@ -1271,6 +1304,8 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "Bearer "
             "colameta://result-artifact/opaque_handle_123_/pages/{page}"
         ),
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
@@ -1473,6 +1508,8 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
         ),
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}::private"

@@ -3305,7 +3305,7 @@ def _decode_escaped_backslash_layer(value: str) -> str:
     return "".join(rebuilt) if changed else value
 
 
-def _json_escape_path_candidates(value: str) -> Iterable[str]:
+def _json_escape_decoded_candidates(value: str) -> Iterable[str]:
     # First decode escape-generated introducers while retaining backslash
     # pairs.  Then decode escaped-backslash pairs one serialization layer at a
     # time: four serialized leading backslashes must be observable as the UNC
@@ -3365,7 +3365,7 @@ def _contains_private_path_segment(value: str) -> bool:
         return True
     return any(
         _segment_or_json_boundary_contains_private_path(candidate)
-        for candidate in _json_escape_path_candidates(value)
+        for candidate in _json_escape_decoded_candidates(value)
     )
 
 
@@ -3390,7 +3390,7 @@ def _redact_public_path_segment(value: str) -> str:
     redacted = _redact_public_path_segment_with_json_boundaries(value)
     if any(
         _segment_or_json_boundary_contains_private_path(candidate)
-        for candidate in _json_escape_path_candidates(redacted)
+        for candidate in _json_escape_decoded_candidates(redacted)
     ):
         return "<local-path>"
     return redacted
@@ -3870,9 +3870,29 @@ def _redact_public_non_resource_segment(
     return _redact_sensitive_material(redacted)
 
 
+def _matches_sensitive_material(value: str) -> bool:
+    return bool(
+        _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _BEARER_TOKEN_RE.search(value)
+    )
+
+
+def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
+    return bool(
+        "\\" in value
+        and any(
+            _matches_sensitive_material(candidate)
+            for candidate in _json_escape_decoded_candidates(value)
+        )
+    )
+
+
 def _redact_sensitive_material(value: str) -> str:
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
-    return _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+    redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+    if _decoded_candidate_contains_sensitive_material(value):
+        return "<sensitive>"
+    return redacted
 
 
 def _redact_public_text_preserving_resource_uris(
@@ -3918,8 +3938,8 @@ def _contains_private_path(value: str) -> bool:
 
 def _contains_unsafe_public_text(value: str) -> bool:
     return bool(
-        _SENSITIVE_ASSIGNMENT_RE.search(value)
-        or _BEARER_TOKEN_RE.search(value)
+        _matches_sensitive_material(value)
+        or _decoded_candidate_contains_sensitive_material(value)
         or _contains_private_path(value)
     ) or any(
         _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)

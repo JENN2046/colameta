@@ -414,6 +414,8 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
         ),
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
     )
     for unsafe_uri in unsafe_values:
         handle = server._mcp_result_artifact_store.put(
