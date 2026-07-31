@@ -1056,6 +1056,7 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     combining_mark_prose_json = json.dumps(
         {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; cafe\u0301{uri}"}
     )
+    escaped_space_json = json.dumps({"note": f"{uri}\\u0020Next"})
     content = (
         f"请读取{uri}。\n"
         f"Read {uri}。Next\n"
@@ -1072,6 +1073,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
+        f"Read {uri}\\u0020Next\n"
+        f"{escaped_space_json}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1620,6 +1623,20 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         (
             '{"uri":"COLAMETA:\\u002f\\u002freview-manifest'
             '\\u002fopaque_handle_123_"}'
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "result-artifact\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://review-manifest/opaque_handle_123_"
+                    "/subjects/1/pages/{page}\\u0020"
+                    "Colameta:\\u002f\\u002fresult-artifact\\u002fshort"
+                )
+            }
         ),
     ],
 )

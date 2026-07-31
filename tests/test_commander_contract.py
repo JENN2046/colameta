@@ -650,6 +650,19 @@ def test_public_text_scans_a_full_page_of_escaped_separators_in_linear_time(
     assert elapsed < 2.0
 
 
+def test_public_text_scans_repeated_literal_uri_suffixes_in_linear_time(
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    value = '{"content":"' + (f"{uri}\\u0020Next " * 150) + '"}'
+
+    started = time.perf_counter()
+    public = commander_public_text(value, max_chars=len(value) + 1)
+    elapsed = time.perf_counter() - started
+
+    assert public == value
+    assert elapsed < 2.0
+
+
 def test_nested_internal_tool_reference_removes_the_public_action() -> None:
     response = build_commander_response(
         tool_name="render_commander_app",
@@ -934,6 +947,12 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     embedded = f"Read {uri}\n/home/reviewer/private.txt"
     assert commander_public_text(embedded) == f"Read {uri}\n<local-path>"
     assert commander_public_text(f'{{"uri":"{uri}"}}') == f'{{"uri":"{uri}"}}'
+    escaped_space = f"{uri}\\u0020Next"
+    assert commander_public_text(escaped_space) == escaped_space
+    serialized_escaped_space = json.dumps({"note": escaped_space})
+    assert commander_public_text(serialized_escaped_space) == (
+        serialized_escaped_space
+    )
     for punctuation in ".,;:!?":
         assert commander_public_text(f"Read {uri}{punctuation} Next") == (
             f"Read {uri}{punctuation} Next"
@@ -1433,6 +1452,20 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             '/pages/{page}","invalid":"colameta:\\/\\/'
             'result-artifact\\/short"}'
         ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "review-manifest\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://result-artifact/opaque_handle_123_"
+                    "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+                    "review-manifest\\u002fshort"
+                )
+            }
+        ),
         "Colameta://result-artifact/opaque_handle_123_",
         (
             '{"uri":"Colameta:\\/\\/result-artifact\\/'
@@ -1494,6 +1527,20 @@ def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
         (
             '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
             '\\u002fopaque_handle_123_"}'
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "review-manifest\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://result-artifact/opaque_handle_123_"
+                    "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+                    "review-manifest\\u002fshort"
+                )
+            }
         ),
     ],
 )
@@ -1670,6 +1717,20 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "@colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "result-artifact\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://review-manifest/opaque_handle_123_"
+                    "/subjects/1/pages/{page}\\u0020"
+                    "Colameta:\\u002f\\u002fresult-artifact\\u002fshort"
+                )
+            }
         ),
     ],
 )

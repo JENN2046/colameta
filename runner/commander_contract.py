@@ -510,6 +510,10 @@ _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+",
     re.IGNORECASE,
 )
+_PUBLIC_COLAMETA_URI_SCHEME_RE = re.compile(
+    r"colameta://",
+    re.IGNORECASE,
+)
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
@@ -4000,17 +4004,49 @@ def _contains_disallowed_public_resource_uri(value: str) -> bool:
     )
 
 
+def _mask_literal_resource_uri_tokens_for_decoded_scan(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    search_cursor = 0
+    while True:
+        match = _PUBLIC_COLAMETA_URI_SCHEME_RE.search(
+            value,
+            search_cursor,
+        )
+        if match is None:
+            break
+        parts.append(value[cursor : match.start()])
+        parts.append("<literal-resource-uri>")
+        token_cursor = match.end()
+        while (
+            token_cursor < len(value)
+            and not value[token_cursor].isspace()
+            and value[token_cursor] not in "\"'`<>"
+        ):
+            if value[token_cursor] == "\\":
+                _end, decoded = _scan_nested_json_escape(
+                    value,
+                    token_cursor,
+                )
+                if decoded is not None:
+                    break
+            token_cursor += 1
+        cursor = token_cursor
+        search_cursor = cursor
+    if not parts:
+        return value
+    parts.append(value[cursor:])
+    return "".join(parts)
+
+
 def _decoded_candidate_contains_disallowed_public_resource_uri(
     value: str,
 ) -> bool:
-    # Literal tokens are checked against exact URI spans in the original
-    # text.  Mask them here so decoded surrogate or delimiter intermediates
-    # cannot reinterpret their boundaries; this pass is only for schemes that
-    # JSON escapes reconstruct.
-    encoded_only = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub(
-        "<literal-resource-uri>",
-        value,
-    )
+    # Literal tokens are checked against exact URI spans in the original text.
+    # Retain every token suffix beginning at its first JSON escape so a decoded
+    # delimiter followed by another encoded URI cannot hide inside the greedy
+    # literal-token match.
+    encoded_only = _mask_literal_resource_uri_tokens_for_decoded_scan(value)
     return bool(
         "\\" in encoded_only
         and any(

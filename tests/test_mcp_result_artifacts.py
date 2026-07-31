@@ -267,6 +267,10 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "relative_value": "safe\\/relative.txt",
         "fraction": "1\\/2",
         "url": "https:\\/\\/example.com",
+        "escaped_space_suffix": f"{uri}\\u0020Next",
+        "serialized_escaped_space_suffix": json.dumps(
+            {"note": f"{uri}\\u0020Next"}
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
@@ -444,6 +448,20 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         (
             '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
             '\\u002fopaque_handle_123_"}'
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "review-manifest\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://result-artifact/opaque_handle_123_"
+                    "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+                    "review-manifest\\u002fshort"
+                )
+            }
         ),
     )
     for unsafe_uri in unsafe_values:
