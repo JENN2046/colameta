@@ -8,6 +8,7 @@ transport-specific packaging and its existing path-redaction boundary.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import copy
 from datetime import datetime
 import math
@@ -511,6 +512,163 @@ _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
+)
+# Unicode 17.0 ``Emoji`` property ranges from
+# https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt, compacted only
+# across adjacent entries. ASCII keycap bases are intentionally excluded and
+# recognized solely as complete keycap sequences.
+_PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES = (
+    (0x00A9, 0x00A9),
+    (0x00AE, 0x00AE),
+    (0x203C, 0x203C),
+    (0x2049, 0x2049),
+    (0x2122, 0x2122),
+    (0x2139, 0x2139),
+    (0x2194, 0x2199),
+    (0x21A9, 0x21AA),
+    (0x231A, 0x231B),
+    (0x2328, 0x2328),
+    (0x23CF, 0x23CF),
+    (0x23E9, 0x23F3),
+    (0x23F8, 0x23FA),
+    (0x24C2, 0x24C2),
+    (0x25AA, 0x25AB),
+    (0x25B6, 0x25B6),
+    (0x25C0, 0x25C0),
+    (0x25FB, 0x25FE),
+    (0x2600, 0x2604),
+    (0x260E, 0x260E),
+    (0x2611, 0x2611),
+    (0x2614, 0x2615),
+    (0x2618, 0x2618),
+    (0x261D, 0x261D),
+    (0x2620, 0x2620),
+    (0x2622, 0x2623),
+    (0x2626, 0x2626),
+    (0x262A, 0x262A),
+    (0x262E, 0x262F),
+    (0x2638, 0x263A),
+    (0x2640, 0x2640),
+    (0x2642, 0x2642),
+    (0x2648, 0x2653),
+    (0x265F, 0x2660),
+    (0x2663, 0x2663),
+    (0x2665, 0x2666),
+    (0x2668, 0x2668),
+    (0x267B, 0x267B),
+    (0x267E, 0x267F),
+    (0x2692, 0x2697),
+    (0x2699, 0x2699),
+    (0x269B, 0x269C),
+    (0x26A0, 0x26A1),
+    (0x26A7, 0x26A7),
+    (0x26AA, 0x26AB),
+    (0x26B0, 0x26B1),
+    (0x26BD, 0x26BE),
+    (0x26C4, 0x26C5),
+    (0x26C8, 0x26C8),
+    (0x26CE, 0x26CF),
+    (0x26D1, 0x26D1),
+    (0x26D3, 0x26D4),
+    (0x26E9, 0x26EA),
+    (0x26F0, 0x26F5),
+    (0x26F7, 0x26FA),
+    (0x26FD, 0x26FD),
+    (0x2702, 0x2702),
+    (0x2705, 0x2705),
+    (0x2708, 0x270D),
+    (0x270F, 0x270F),
+    (0x2712, 0x2712),
+    (0x2714, 0x2714),
+    (0x2716, 0x2716),
+    (0x271D, 0x271D),
+    (0x2721, 0x2721),
+    (0x2728, 0x2728),
+    (0x2733, 0x2734),
+    (0x2744, 0x2744),
+    (0x2747, 0x2747),
+    (0x274C, 0x274C),
+    (0x274E, 0x274E),
+    (0x2753, 0x2755),
+    (0x2757, 0x2757),
+    (0x2763, 0x2764),
+    (0x2795, 0x2797),
+    (0x27A1, 0x27A1),
+    (0x27B0, 0x27B0),
+    (0x27BF, 0x27BF),
+    (0x2934, 0x2935),
+    (0x2B05, 0x2B07),
+    (0x2B1B, 0x2B1C),
+    (0x2B50, 0x2B50),
+    (0x2B55, 0x2B55),
+    (0x3030, 0x3030),
+    (0x303D, 0x303D),
+    (0x3297, 0x3297),
+    (0x3299, 0x3299),
+    (0x1F004, 0x1F004),
+    (0x1F0CF, 0x1F0CF),
+    (0x1F170, 0x1F171),
+    (0x1F17E, 0x1F17F),
+    (0x1F18E, 0x1F18E),
+    (0x1F191, 0x1F19A),
+    (0x1F1E6, 0x1F1FF),
+    (0x1F201, 0x1F202),
+    (0x1F21A, 0x1F21A),
+    (0x1F22F, 0x1F22F),
+    (0x1F232, 0x1F23A),
+    (0x1F250, 0x1F251),
+    (0x1F300, 0x1F321),
+    (0x1F324, 0x1F393),
+    (0x1F396, 0x1F397),
+    (0x1F399, 0x1F39B),
+    (0x1F39E, 0x1F3F0),
+    (0x1F3F3, 0x1F3F5),
+    (0x1F3F7, 0x1F4FD),
+    (0x1F4FF, 0x1F53D),
+    (0x1F549, 0x1F54E),
+    (0x1F550, 0x1F567),
+    (0x1F56F, 0x1F570),
+    (0x1F573, 0x1F57A),
+    (0x1F587, 0x1F587),
+    (0x1F58A, 0x1F58D),
+    (0x1F590, 0x1F590),
+    (0x1F595, 0x1F596),
+    (0x1F5A4, 0x1F5A5),
+    (0x1F5A8, 0x1F5A8),
+    (0x1F5B1, 0x1F5B2),
+    (0x1F5BC, 0x1F5BC),
+    (0x1F5C2, 0x1F5C4),
+    (0x1F5D1, 0x1F5D3),
+    (0x1F5DC, 0x1F5DE),
+    (0x1F5E1, 0x1F5E1),
+    (0x1F5E3, 0x1F5E3),
+    (0x1F5E8, 0x1F5E8),
+    (0x1F5EF, 0x1F5EF),
+    (0x1F5F3, 0x1F5F3),
+    (0x1F5FA, 0x1F64F),
+    (0x1F680, 0x1F6C5),
+    (0x1F6CB, 0x1F6D2),
+    (0x1F6D5, 0x1F6D8),
+    (0x1F6DC, 0x1F6E5),
+    (0x1F6E9, 0x1F6E9),
+    (0x1F6EB, 0x1F6EC),
+    (0x1F6F0, 0x1F6F0),
+    (0x1F6F3, 0x1F6FC),
+    (0x1F7E0, 0x1F7EB),
+    (0x1F7F0, 0x1F7F0),
+    (0x1F90C, 0x1F93A),
+    (0x1F93C, 0x1F945),
+    (0x1F947, 0x1F9FF),
+    (0x1FA70, 0x1FA7C),
+    (0x1FA80, 0x1FA8A),
+    (0x1FA8E, 0x1FAC6),
+    (0x1FAC8, 0x1FAC8),
+    (0x1FACD, 0x1FADC),
+    (0x1FADF, 0x1FAEA),
+    (0x1FAEF, 0x1FAF8),
+)
+_PUBLIC_RESOURCE_URI_EMOJI_BASE_STARTS = tuple(
+    start for start, _ in _PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES
 )
 _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
     '"': '"',
@@ -3238,6 +3396,21 @@ def _redact_public_path_segment(value: str) -> str:
     return redacted
 
 
+def _is_unicode_resource_uri_emoji_base(value: str) -> bool:
+    if len(value) != 1:
+        return False
+    codepoint = ord(value)
+    range_index = bisect_right(
+        _PUBLIC_RESOURCE_URI_EMOJI_BASE_STARTS,
+        codepoint,
+    ) - 1
+    return bool(
+        range_index >= 0
+        and codepoint
+        <= _PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES[range_index][1]
+    )
+
+
 def _is_unicode_resource_uri_delimiter(value: str) -> bool:
     return (
         bool(value)
@@ -3245,7 +3418,7 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
         and (
             value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
             or unicodedata.category(value) in {"Pe", "Pf"}
-            or unicodedata.category(value) == "So"
+            or _is_unicode_resource_uri_emoji_base(value)
         )
     )
 
@@ -3342,7 +3515,7 @@ def _is_resource_uri_left_boundary_character(value: str) -> bool:
             category.startswith(("L", "N"))
             or value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
             or category in {"Ps", "Pi"}
-            or category == "So"
+            or _is_unicode_resource_uri_emoji_base(value)
         )
     )
 
@@ -3464,7 +3637,7 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
         if current is None:
             return False
         cursor, preceding = current
-        if unicodedata.category(preceding) == "So":
+        if _is_unicode_resource_uri_emoji_base(preceding):
             return True
         if (
             preceding == "\u200d"
@@ -3514,36 +3687,41 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
     saw_ascii_delimiter = False
     saw_unicode_delimiter = False
-    saw_symbol_delimiter = False
+    saw_emoji_base = False
     emoji_joiner_pending = False
     saw_hard_escaped_delimiter = False
     while cursor < len(value):
         keycap_end = _complete_keycap_sequence_end_at(value, cursor)
         if keycap_end is not None:
+            if emoji_joiner_pending:
+                break
             saw_unicode_delimiter = True
-            saw_symbol_delimiter = False
-            emoji_joiner_pending = False
+            saw_emoji_base = False
             cursor = keycap_end
             continue
         following = value[cursor]
         if following in ".,;:!?)]}":
             saw_ascii_delimiter = True
+            saw_emoji_base = False
             cursor += 1
             continue
         if _is_unicode_resource_uri_delimiter(following):
+            is_emoji_base = _is_unicode_resource_uri_emoji_base(
+                following
+            )
             if (
                 emoji_joiner_pending
-                and unicodedata.category(following) != "So"
+                and not is_emoji_base
             ):
                 break
             saw_unicode_delimiter = True
-            if unicodedata.category(following) == "So":
-                saw_symbol_delimiter = True
+            saw_emoji_base = is_emoji_base
+            if is_emoji_base:
                 emoji_joiner_pending = False
             cursor += 1
             continue
         if (
-            saw_symbol_delimiter
+            saw_emoji_base
             and _is_unicode_emoji_sequence_component(following)
         ):
             if emoji_joiner_pending:
@@ -3558,25 +3736,30 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
         if escaped_delimiter is not None:
             end, decoded = escaped_delimiter
             if _is_unicode_emoji_sequence_component(decoded):
-                if not saw_symbol_delimiter or emoji_joiner_pending:
+                if not saw_emoji_base or emoji_joiner_pending:
                     break
                 emoji_joiner_pending = decoded == "\u200d"
                 cursor = end
                 continue
             if _is_resource_uri_hard_delimiter(decoded):
                 saw_hard_escaped_delimiter = True
+                saw_emoji_base = False
             elif _is_unicode_resource_uri_delimiter(decoded):
+                is_emoji_base = _is_unicode_resource_uri_emoji_base(
+                    decoded
+                )
                 if (
                     emoji_joiner_pending
-                    and unicodedata.category(decoded) != "So"
+                    and not is_emoji_base
                 ):
                     break
                 saw_unicode_delimiter = True
-                if unicodedata.category(decoded) == "So":
-                    saw_symbol_delimiter = True
+                saw_emoji_base = is_emoji_base
+                if is_emoji_base:
                     emoji_joiner_pending = False
             else:
                 saw_ascii_delimiter = True
+                saw_emoji_base = False
             cursor = end
             continue
         break

@@ -799,6 +799,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         f"请读取{uri}继续\n"
         f"❤️{uri}👩‍💻Next\n"
         f"1️⃣{uri}#️⃣Next\n"
+        f"↔️{uri}〰️Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -970,6 +971,11 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"Read {uri}{keycap}Next") == (
             f"Read {uri}{keycap}Next"
         )
+    for emoji in ("↔️", "〰️"):
+        assert commander_public_text(f"{emoji}{uri}") == f"{emoji}{uri}"
+        assert commander_public_text(f"Read {uri}{emoji}Next") == (
+            f"Read {uri}{emoji}Next"
+        )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
     long_form_serialized = f'{{"content":"读取 {uri}。\\u000a继续"}}'
@@ -1002,6 +1008,10 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "1\\ufe0f",
         "1️⃣/private",
         "1\\ufe0f\\u20e3/private",
+        "🙼private",
+        "\\ud83d\\ude7cprivate",
+        "⌿private",
+        "\\u233fprivate",
         "::）private",
         "..）suffix",
         "::private",
@@ -1049,6 +1059,10 @@ def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
         "＿",
         "‿",
         "—",
+        "🙼",
+        "\\ud83d\\ude7c",
+        "⌿",
+        "\\u233f",
     ],
 )
 def test_public_text_does_not_preserve_a_prefixed_opaque_uri_lookalike(
@@ -1126,6 +1140,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     escaped_keycap_sequences = json.dumps(
         {"note": f"1️⃣{uri}#️⃣Next"}
     )
+    escaped_non_so_emoji_sequences = json.dumps(
+        {"note": f"↔️{uri}〰️Next"}
+    )
     fully_escaped_keycap_sequences = (
         f'{{"note":"\\u0031\\ufe0f\\u20e3{uri}'
         '\\u0023\\ufe0f\\u20e3Next"}'
@@ -1152,6 +1169,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert commander_public_text(escaped_keycap_sequences) == (
         escaped_keycap_sequences
+    )
+    assert commander_public_text(escaped_non_so_emoji_sequences) == (
+        escaped_non_so_emoji_sequences
     )
     assert commander_public_text(fully_escaped_keycap_sequences) == (
         fully_escaped_keycap_sequences
@@ -1379,6 +1399,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         f"请读取{uri}继续\n"
         f"❤️{uri}👩‍💻Next\n"
         f"1️⃣{uri}#️⃣Next\n"
+        f"↔️{uri}〰️Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
