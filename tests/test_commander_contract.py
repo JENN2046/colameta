@@ -1268,6 +1268,41 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
 
 
 @pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize("delimiter", ["\b", "\f", "\n", "\r", "\t"])
+def test_public_text_preserves_opaque_uris_after_json_short_escapes(
+    uri: str,
+    delimiter: str,
+) -> None:
+    serialized = json.dumps({"content": f"{delimiter}{uri}"})
+    nested = json.dumps({"nested": serialized})
+
+    assert commander_public_text(serialized) == serialized
+    assert commander_public_text(nested) == nested
+
+
+@pytest.mark.parametrize("encoded_prefix", [r"\/", r"\\"])
+def test_public_text_rejects_opaque_uris_after_non_delimiter_short_escapes(
+    encoded_prefix: str,
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    serialized = f'{{"content":"{encoded_prefix}{uri}"}}'
+
+    public = commander_public_text(serialized)
+
+    assert uri not in public
+    assert "<resource-uri>" in public
+
+
+@pytest.mark.parametrize(
     "prefix",
     ["\u0301", "1\u0301", "\u20e3", "✅\u20e3"],
 )

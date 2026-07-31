@@ -3467,6 +3467,11 @@ def _resource_character_with_start_ending_at(
         value,
         index,
     )
+    if decoded is None:
+        decoded = _decoded_json_short_character_with_start_ending_at(
+            value,
+            index,
+        )
     if decoded is not None:
         return decoded
     if index <= 0:
@@ -3525,9 +3530,13 @@ def _is_resource_uri_whitespace(value: str) -> bool:
 
 
 def _is_resource_uri_left_boundary_character(value: str) -> bool:
-    if _is_resource_uri_whitespace(value) or value in "\"'`<>([{":
-        return True
     category = unicodedata.category(value)
+    if (
+        _is_resource_uri_whitespace(value)
+        or value in "\"'`<>([{"
+        or category == "Cc"
+    ):
+        return True
     return bool(
         not value.isascii()
         and (
@@ -3555,6 +3564,26 @@ def _json_unicode_escape_ending_at(
     if end != index or decoded is None:
         return None
     return escape_start, ord(decoded)
+
+
+def _decoded_json_short_character_with_start_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    if index <= 1:
+        return None
+    token = value[index - 1]
+    if token not in _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS:
+        return None
+    escape_start = index - 1
+    while escape_start > 0 and value[escape_start - 1] == "\\":
+        escape_start -= 1
+    if escape_start == index - 1:
+        return None
+    end, decoded = _scan_nested_json_escape(value, escape_start)
+    if end != index or decoded is None:
+        return None
+    return escape_start, decoded
 
 
 def _json_unicode_escape_at(
