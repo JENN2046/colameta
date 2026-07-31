@@ -511,9 +511,6 @@ _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
-_PUBLIC_JSON_ESCAPE_CANDIDATE_RE = re.compile(
-    r'\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4})'
-)
 _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
     '"': '"',
     "\\": "\\",
@@ -525,14 +522,14 @@ _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
     "t": "\t",
 }
 _PUBLIC_POSIX_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
+    r"(?<![A-Za-z0-9:/\\])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_FILE_URI_RE = re.compile(
     r"(?<![A-Za-z0-9])file:(?://(?:localhost)?/|/)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
 )
 _PUBLIC_UNC_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9\\])\\\\[^\\\s,;\]\[(){}<>\"']+\\[^\s,;\]\[(){}<>\"']+"
+    r"(?<![A-Za-z0-9\\])\\\\[^\\/\s,;\]\[(){}<>\"']+\\[^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_WINDOWS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",
@@ -3050,45 +3047,64 @@ def _segment_contains_private_path(value: str) -> bool:
     )
 
 
-def _decoded_json_escape_character(match: re.Match[str]) -> str:
-    token = match.group(0)[1:]
-    if token.startswith("u"):
-        return chr(int(token[1:], 16))
-    return _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS[token]
+def _scan_nested_json_escape(
+    value: str,
+    index: int,
+) -> tuple[int, str | None]:
+    if index >= len(value) or value[index] != "\\":
+        return index, None
+    cursor = index
+    while cursor < len(value) and value[cursor] == "\\":
+        cursor += 1
+    if cursor >= len(value):
+        return cursor, None
+    token = value[cursor]
+    if token == "u":
+        digits = value[cursor + 1 : cursor + 5]
+        if len(digits) == 4 and all(
+            character in "0123456789abcdefABCDEF"
+            for character in digits
+        ):
+            return cursor + 5, chr(int(digits, 16))
+        return cursor, None
+    decoded = _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS.get(token)
+    if decoded is None:
+        return cursor, None
+    return cursor + 1, decoded
 
 
-def _json_escape_decoding_candidates(value: str) -> Iterable[str]:
-    decoded = value
-    while True:
-        next_value, count = _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.subn(
-            _decoded_json_escape_character,
-            decoded,
-        )
-        if count == 0 or next_value == decoded:
+def _nested_json_escape_tokens(
+    value: str,
+) -> Iterable[tuple[int, int, str]]:
+    cursor = 0
+    while cursor < len(value):
+        start = value.find("\\", cursor)
+        if start < 0:
             return
-        yield next_value
-        decoded = next_value
+        end, decoded = _scan_nested_json_escape(value, start)
+        if decoded is not None:
+            yield start, end, decoded
+            cursor = end
+            continue
+        cursor = max(start + 1, end)
 
 
-def _json_escaped_path_suffix_candidates(value: str) -> Iterable[str]:
-    sources = (value, *_json_escape_decoding_candidates(value))
-    for source in sources:
-        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(source):
-            decoded = _decoded_json_escape_character(match)
-            if decoded not in "/\\":
-                continue
-            suffix = f"{decoded}{source[match.end() :]}"
-            yield suffix
-            yield from _json_escape_decoding_candidates(suffix)
+def _decode_json_escaped_path_separators(value: str) -> str:
+    rebuilt: list[str] = []
+    cursor = 0
+    for start, end, decoded in _nested_json_escape_tokens(value):
+        if decoded not in "/\\":
+            continue
+        rebuilt.append(value[cursor:start])
+        rebuilt.append(decoded)
+        cursor = end
+    if not rebuilt:
+        return value
+    rebuilt.append(value[cursor:])
+    return "".join(rebuilt)
 
 
-def _json_escape_is_control_boundary(match: re.Match[str]) -> bool:
-    decoded = _decoded_json_escape_character(match)
-    return decoded.isspace() or unicodedata.category(decoded) == "Cc"
-
-
-def _json_escape_is_path_boundary(match: re.Match[str]) -> bool:
-    decoded = _decoded_json_escape_character(match)
+def _json_escape_is_path_boundary(decoded: str) -> bool:
     # Mirror the characters that block an absolute POSIX path at its left edge.
     return not (
         decoded.isascii()
@@ -3098,58 +3114,59 @@ def _json_escape_is_path_boundary(match: re.Match[str]) -> bool:
 
 def _json_escaped_path_boundary_matches(
     value: str,
-) -> Iterable[re.Match[str]]:
+) -> Iterable[tuple[int, int]]:
     return (
-        match
-        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(value)
-        if _json_escape_is_path_boundary(match)
+        (start, end)
+        for start, end, decoded in _nested_json_escape_tokens(value)
+        if _json_escape_is_path_boundary(decoded)
     )
 
 
-def _contains_private_path_segment(value: str) -> bool:
+def _segment_or_json_boundary_contains_private_path(value: str) -> bool:
     if _segment_contains_private_path(value):
         return True
     cursor = 0
-    for match in _json_escaped_path_boundary_matches(value):
-        if _segment_contains_private_path(value[cursor : match.start()]):
+    for start, end in _json_escaped_path_boundary_matches(value):
+        if _segment_contains_private_path(value[cursor:start]):
             return True
-        cursor = match.end()
-    if _segment_contains_private_path(value[cursor:]):
+        cursor = end
+    return _segment_contains_private_path(value[cursor:])
+
+
+def _contains_private_path_segment(value: str) -> bool:
+    if _segment_or_json_boundary_contains_private_path(value):
         return True
-    if any(
-        _segment_contains_private_path(candidate)
-        for candidate in _json_escape_decoding_candidates(value)
-    ):
-        return True
-    return any(
-        _segment_contains_private_path(candidate)
-        for candidate in _json_escaped_path_suffix_candidates(value)
+    decoded = _decode_json_escaped_path_separators(value)
+    return (
+        decoded != value
+        and _segment_or_json_boundary_contains_private_path(decoded)
     )
 
 
-def _redact_public_path_segment(value: str) -> str:
+def _redact_public_path_segment_with_json_boundaries(value: str) -> str:
     redacted = _redact_public_path_segment_once(value)
     rebuilt: list[str] = []
     cursor = 0
-    for match in _json_escaped_path_boundary_matches(redacted):
+    for start, end in _json_escaped_path_boundary_matches(redacted):
         rebuilt.append(
             _redact_public_path_segment_once(
-                redacted[cursor : match.start()]
+                redacted[cursor:start]
             )
         )
-        rebuilt.append(match.group(0))
-        cursor = match.end()
+        rebuilt.append(redacted[start:end])
+        cursor = end
     if rebuilt:
         rebuilt.append(_redact_public_path_segment_once(redacted[cursor:]))
-        redacted = "".join(rebuilt)
-    if any(
-        _segment_contains_private_path(candidate)
-        for candidate in _json_escape_decoding_candidates(redacted)
-    ):
-        return "<local-path>"
-    if any(
-        _segment_contains_private_path(candidate)
-        for candidate in _json_escaped_path_suffix_candidates(redacted)
+        return "".join(rebuilt)
+    return redacted
+
+
+def _redact_public_path_segment(value: str) -> str:
+    redacted = _redact_public_path_segment_with_json_boundaries(value)
+    decoded = _decode_json_escaped_path_separators(redacted)
+    if (
+        decoded != redacted
+        and _segment_or_json_boundary_contains_private_path(decoded)
     ):
         return "<local-path>"
     return redacted
@@ -3166,41 +3183,141 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
     )
 
 
-def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
-    if index <= 0:
+def _is_resource_uri_left_boundary_character(value: str) -> bool:
+    if value.isspace() or value in "\"'`<>([{":
         return True
-    preceding = value[index - 1]
-    if preceding.isspace() or preceding in "\"'`<>([{":
-        return True
-    category = unicodedata.category(preceding)
+    category = unicodedata.category(value)
     return bool(
-        not preceding.isascii()
+        not value.isascii()
         and (
             category.startswith(("L", "N"))
-            or preceding in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
             or category in {"Ps", "Pi"}
         )
     )
 
 
-def _json_escaped_control_boundary_match(
+def _json_unicode_escape_ending_at(
     value: str,
     index: int,
-) -> re.Match[str] | None:
-    match = _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.match(value, index)
-    if match is None or not _json_escape_is_control_boundary(match):
+) -> tuple[int, int] | None:
+    token_start = index - 5
+    if token_start < 1 or value[token_start] != "u":
         return None
-    return match
+    escape_start = token_start
+    while escape_start > 0 and value[escape_start - 1] == "\\":
+        escape_start -= 1
+    if escape_start == token_start:
+        return None
+    end, decoded = _scan_nested_json_escape(value, escape_start)
+    if end != index or decoded is None:
+        return None
+    return escape_start, ord(decoded)
 
 
-def _is_json_escaped_control_boundary(value: str, index: int) -> bool:
-    return _json_escaped_control_boundary_match(value, index) is not None
+def _json_unicode_escape_at(
+    value: str,
+    index: int,
+) -> tuple[int, int] | None:
+    cursor = index
+    while cursor < len(value) and value[cursor] == "\\":
+        cursor += 1
+    if cursor >= len(value) or value[cursor] != "u":
+        return None
+    end, decoded = _scan_nested_json_escape(value, index)
+    if decoded is None:
+        return None
+    return end, ord(decoded)
+
+
+def _decoded_json_unicode_character_ending_at(
+    value: str,
+    index: int,
+) -> str | None:
+    current = _json_unicode_escape_ending_at(value, index)
+    if current is None:
+        return None
+    start, codepoint = current
+    if 0xDC00 <= codepoint <= 0xDFFF:
+        previous = _json_unicode_escape_ending_at(value, start)
+        if previous is not None:
+            _, high = previous
+            if 0xD800 <= high <= 0xDBFF:
+                combined = (
+                    0x10000
+                    + ((high - 0xD800) << 10)
+                    + (codepoint - 0xDC00)
+                )
+                return chr(combined)
+    return chr(codepoint)
+
+
+def _decoded_json_unicode_character_at(
+    value: str,
+    index: int,
+) -> str | None:
+    current = _json_unicode_escape_at(value, index)
+    if current is None:
+        return None
+    end, codepoint = current
+    if 0xD800 <= codepoint <= 0xDBFF:
+        following = _json_unicode_escape_at(value, end)
+        if following is not None:
+            _, low = following
+            if 0xDC00 <= low <= 0xDFFF:
+                combined = (
+                    0x10000
+                    + ((codepoint - 0xD800) << 10)
+                    + (low - 0xDC00)
+                )
+                return chr(combined)
+    return chr(codepoint)
+
+
+def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
+    if index <= 0:
+        return True
+    if _is_resource_uri_left_boundary_character(value[index - 1]):
+        return True
+    decoded = _decoded_json_unicode_character_ending_at(value, index)
+    return bool(
+        decoded is not None
+        and _is_resource_uri_left_boundary_character(decoded)
+    )
+
+
+def _is_resource_uri_hard_delimiter(value: str) -> bool:
+    return bool(
+        value.isspace()
+        or unicodedata.category(value) == "Cc"
+        or value in "\"'`>"
+    )
+
+
+def _json_escaped_resource_delimiter(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    end, decoded = _scan_nested_json_escape(value, index)
+    if decoded is None:
+        return None
+    if (
+        _is_resource_uri_hard_delimiter(decoded)
+        or decoded in ".,;:!?)]}"
+        or _is_unicode_resource_uri_delimiter(decoded)
+    ):
+        return end, decoded
+    return None
+
+
+def _is_json_escaped_resource_delimiter(value: str, index: int) -> bool:
+    return _json_escaped_resource_delimiter(value, index) is not None
 
 
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
     saw_unicode_delimiter = False
-    saw_escaped_control_boundary = False
+    saw_hard_escaped_delimiter = False
     while cursor < len(value):
         following = value[cursor]
         if following in ".,;:!?)]}":
@@ -3210,31 +3327,42 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             saw_unicode_delimiter = True
             cursor += 1
             continue
-        escaped_control = _json_escaped_control_boundary_match(
+        escaped_delimiter = _json_escaped_resource_delimiter(
             value,
             cursor,
         )
-        if escaped_control is not None:
-            saw_escaped_control_boundary = True
-            cursor = escaped_control.end()
+        if escaped_delimiter is not None:
+            end, decoded = escaped_delimiter
+            if _is_resource_uri_hard_delimiter(decoded):
+                saw_hard_escaped_delimiter = True
+            elif _is_unicode_resource_uri_delimiter(decoded):
+                saw_unicode_delimiter = True
+            cursor = end
             continue
         break
     if cursor >= len(value):
         return True
-    if (
-        saw_escaped_control_boundary
-        and _contains_private_path_segment(value[cursor:])
-    ):
-        return False
     following = value[cursor]
+    decoded_following = _decoded_json_unicode_character_at(value, cursor)
     return bool(
         following.isspace()
         or following in "\"'`>"
-        or saw_escaped_control_boundary
+        or saw_hard_escaped_delimiter
         or (
             saw_unicode_delimiter
-            and not following.isascii()
-            and unicodedata.category(following).startswith(("L", "N"))
+            and (
+                (
+                    not following.isascii()
+                    and unicodedata.category(following).startswith(("L", "N"))
+                )
+                or (
+                    decoded_following is not None
+                    and not decoded_following.isascii()
+                    and unicodedata.category(decoded_following).startswith(
+                        ("L", "N")
+                    )
+                )
+            )
         )
     )
 
@@ -3248,7 +3376,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     if (
         following in ".,;:!?)]}"
         or _is_unicode_resource_uri_delimiter(following)
-        or _is_json_escaped_control_boundary(value, index)
+        or _is_json_escaped_resource_delimiter(value, index)
     ):
         return _is_resource_uri_following_delimiter(value, index)
     return False

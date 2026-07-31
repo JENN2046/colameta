@@ -1049,9 +1049,17 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         lambda _length: "review_manifest_handle_ending_",
     )
     project = _make_git_checkout(tmp_path)
+    uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
     content = (
-        "请读取colameta://review-manifest/opaque_handle_123_"
-        "/subjects/1/pages/{page}。\n"
+        f"请读取{uri}。\n"
+        "safe\\/relative.txt\n"
+        "1\\/2\n"
+        "https:\\/\\/example.com\n"
+        f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
+        f"{json.dumps({'note': f'取{uri}'})}\n"
     )
     (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
@@ -1087,6 +1095,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     read_structured = read["result"]["structuredContent"]
     assert read_structured["ok"] is True
     assert read_structured["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, facts["subjects"][0]["resource_uri"])
+    resource_page = json.loads(resource["result"]["contents"][0]["text"])
+    assert resource_page["content"] == content
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:
@@ -1534,7 +1546,7 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             "/subjects/1/pages/{page}.\\nC:\\u005cUsers"
             "\\u005cReviewer\\u005cprivate.txt"
         ),
-        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import time
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -570,6 +572,33 @@ def test_public_text_redacts_json_escaped_path_separators(
     assert "<local-path>" in public
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "safe\\/relative.txt",
+        "1\\/2",
+        "https:\\/\\/example.com",
+        "safe\\u002fhome/reviewer/private.txt",
+    ],
+)
+def test_public_text_preserves_context_for_escaped_relative_separators(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+def test_public_text_scans_a_full_page_of_escaped_separators_in_linear_time(
+) -> None:
+    value = '{"content":"' + ("\\" * 12_000) + 'relative.txt"}'
+
+    started = time.perf_counter()
+    public = commander_public_text(value, max_chars=len(value) + 1)
+    elapsed = time.perf_counter() - started
+
+    assert public == value
+    assert elapsed < 2.0
+
+
 def test_nested_internal_tool_reference_removes_the_public_action() -> None:
     response = build_commander_response(
         tool_name="render_commander_app",
@@ -707,10 +736,18 @@ def test_result_artifact_evidence_is_normalized_to_opaque_contract() -> None:
 
 
 def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    nested = json.dumps({"nested": json.dumps({"uri": uri})})
+    escaped_unicode = json.dumps({"note": f"取{uri}"})
     content = (
         "line one\n"
         "The bearer of this note may continue.\n"
-        "读取 colameta://result-artifact/opaque_handle_123_/pages/{page}。继续\n"
+        f"读取 {uri}。继续\n"
+        "safe\\/relative.txt\n"
+        "1\\/2\n"
+        "https:\\/\\/example.com\n"
+        f"{nested}\n"
+        f"{escaped_unicode}\n"
     )
     raw_result = {
         "ok": True,
@@ -964,6 +1001,38 @@ def test_public_text_preserves_opaque_uris_adjacent_to_unicode_prose(
     assert commander_public_text(value) == value
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
+    uri: str,
+) -> None:
+    nested = json.dumps({"nested": json.dumps({"uri": uri})})
+    escaped_unicode_left = json.dumps({"note": f"取{uri}"})
+    escaped_ascii_punctuation = f'{{"uri":"{uri}\\u002e"}}'
+    escaped_unicode_punctuation = (
+        f'{{"uri":"{uri}\\u3002\\u7ee7\\u7eed"}}'
+    )
+
+    assert commander_public_text(nested) == nested
+    assert commander_public_text(escaped_unicode_left) == (
+        escaped_unicode_left
+    )
+    assert commander_public_text(escaped_ascii_punctuation) == (
+        escaped_ascii_punctuation
+    )
+    assert commander_public_text(escaped_unicode_punctuation) == (
+        escaped_unicode_punctuation
+    )
+
+
 def test_public_text_redacts_an_opaque_uri_crossing_the_character_cutoff() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
@@ -1068,7 +1137,7 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "/pages/{page}.\\nC:\\u005cUsers\\u005cReviewer"
             "\\u005cprivate.txt"
         ),
-        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
@@ -1160,11 +1229,21 @@ def test_result_artifact_page_rejects_an_extended_opaque_uri_lookalike() -> None
 
 
 def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
+    uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    nested = json.dumps({"nested": json.dumps({"uri": uri})})
+    escaped_unicode = json.dumps({"note": f"取{uri}"})
     content = (
         "# Review input\n\n"
         "The bearer of this note may continue.\n"
-        "Read colameta://review-manifest/opaque_handle_123_"
-        "/subjects/1/pages/{page}\n"
+        f"Read {uri}\n"
+        "safe\\/relative.txt\n"
+        "1\\/2\n"
+        "https:\\/\\/example.com\n"
+        f"{nested}\n"
+        f"{escaped_unicode}\n"
     )
     raw_result = {
         "ok": True,
@@ -1242,7 +1321,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "/subjects/1/pages/{page}.\\nC:\\u005cUsers"
             "\\u005cReviewer\\u005cprivate.txt"
         ),
-        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

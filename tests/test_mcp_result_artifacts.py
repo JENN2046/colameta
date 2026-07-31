@@ -246,13 +246,18 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
 
 def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     payload = {
         "content": (
-            "请读取colameta://result-artifact/opaque_handle_123_"
-            "/pages/{page}。\n"
+            f"请读取{uri}。\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
+        "relative_value": "safe\\/relative.txt",
+        "fraction": "1\\/2",
+        "url": "https:\\/\\/example.com",
+        "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
+        "ascii_json": json.dumps({"note": f"取{uri}"}),
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
 
@@ -318,6 +323,31 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
 
+    resource_pages: list[str] = []
+    for page_number in range(1, handle.page_count + 1):
+        resource_uri = (
+            f"colameta://result-artifact/{handle.artifact_id}"
+            if page_number == 1
+            else (
+                f"colameta://result-artifact/{handle.artifact_id}"
+                f"/pages/{page_number}"
+            )
+        )
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": page_number,
+                "method": "resources/read",
+                "params": {"uri": resource_uri},
+            }
+        )
+        assert resource is not None
+        resource_page = json.loads(
+            resource["result"]["contents"][0]["text"]
+        )
+        resource_pages.append(resource_page["content"])
+    assert "".join(resource_pages) == expected_content
+
 
 def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
     tmp_path,
@@ -348,7 +378,7 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "/pages/{page}.\\nC:\\u005cUsers\\u005cReviewer"
             "\\u005cprivate.txt"
         ),
-        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
