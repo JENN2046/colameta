@@ -565,7 +565,7 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
-    r"[A-Za-z0-9._~+/=-]{8,}"
+    r"[^\s,;]+"
 )
 
 _OMIT = object()
@@ -3034,12 +3034,15 @@ def _is_unicode_punctuation(value: str) -> bool:
 
 
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
-    if index >= len(value):
+    cursor = index
+    while cursor < len(value) and value[cursor] in ".,;:!?)]}":
+        cursor += 1
+    if cursor >= len(value):
         return True
-    following = value[index]
+    following = value[cursor]
     return bool(
         following.isspace()
-        or following in "\"'`>.,;:!?)]}"
+        or following in "\"'`>"
         or _is_unicode_punctuation(following)
     )
 
@@ -3053,7 +3056,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     if _is_unicode_punctuation(following):
         return True
     if following in ".,;:!?)]}":
-        return _is_resource_uri_following_delimiter(value, index + 1)
+        return _is_resource_uri_following_delimiter(value, index)
     return False
 
 
@@ -3103,7 +3106,11 @@ def _redact_public_non_resource_segment(
         redacted,
         forbidden_tools=forbidden_tools,
     )
-    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", redacted)
+    return _redact_sensitive_material(redacted)
+
+
+def _redact_sensitive_material(value: str) -> str:
+    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
     return _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
 
 
@@ -3112,6 +3119,7 @@ def _redact_public_text_preserving_resource_uris(
     *,
     forbidden_tools: Iterable[str] | None,
 ) -> str:
+    value = _redact_sensitive_material(value)
     parts: list[str] = []
     cursor = 0
     for match in _public_resource_uri_spans(value):
@@ -3151,11 +3159,13 @@ def _contains_private_path(value: str) -> bool:
 
 
 def _contains_unsafe_public_text(value: str) -> bool:
-    return _contains_private_path(value) or any(
+    return bool(
+        _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _BEARER_TOKEN_RE.search(value)
+        or _contains_private_path(value)
+    ) or any(
         _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)
         or _redact_noncommander_tool_references(segment) != segment
-        or _SENSITIVE_ASSIGNMENT_RE.search(segment)
-        or _BEARER_TOKEN_RE.search(segment)
         for segment in _public_text_non_resource_segments(value)
     )
 

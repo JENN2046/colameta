@@ -776,6 +776,10 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"Read {uri}{punctuation} Next") == (
             f"Read {uri}{punctuation} Next"
         )
+    for punctuation in ("?!", ").", "}:"):
+        assert commander_public_text(f"Read {uri}{punctuation} Next") == (
+            f"Read {uri}{punctuation} Next"
+        )
     for punctuation in "。，；：！？":
         assert commander_public_text(f"读取 {uri}{punctuation}继续") == (
             f"读取 {uri}{punctuation}继续"
@@ -796,6 +800,9 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "=private",
         "&private",
         "?query=private",
+        "??query",
+        "::private",
+        "..suffix",
     ],
 )
 def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
@@ -830,6 +837,25 @@ def test_public_text_preserves_an_opaque_uri_ending_at_the_character_cutoff() ->
     assert len(public) == max_chars
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "oauth_token="
+            "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+        ),
+        (
+            "Bearer "
+            "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+        ),
+    ],
+)
+def test_public_text_redacts_sensitive_values_that_are_valid_opaque_uris(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == "<sensitive>"
+
+
 def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
@@ -849,6 +875,57 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
     assert response["outcome"] == "blocked"
     assert response["error"]["code"] == "WORKTREE_DIRTY"
     assert response["error"]["message"] == f"{prefix} <resource-uri>"
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "oauth_token="
+            "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+        ),
+        (
+            "Bearer "
+            "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}??query"
+        ),
+    ],
+)
+def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
+    content: str,
+) -> None:
+    response = build_commander_response(
+        tool_name="read_result_artifact",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "artifact_id": ARTIFACT_ID,
+                "artifact_page": {
+                    "artifact_id": ARTIFACT_ID,
+                    "tool": "read_result_artifact",
+                    "page": 1,
+                    "page_count": 1,
+                    "page_char_start": 0,
+                    "page_char_end": len(content),
+                    "content_sha256": CONTENT_SHA256,
+                    "expires_at": EXPIRES_AT,
+                    "content": content,
+                },
+                "content_sha256": CONTENT_SHA256,
+                "expires_at": EXPIRES_AT,
+            },
+        },
+        params={"artifact_id": ARTIFACT_ID, "artifact_page": 1},
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "opaque_handle_123_" not in repr(response)
     validate_commander_response(response)
 
 
@@ -931,6 +1008,65 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
 
     assert response["facts"]["subject_page"]["content"] == content
     assert response["facts"]["subject_page"]["path"] == "docs/review-input.md"
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "oauth_token="
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            "Bearer "
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}::private"
+        ),
+    ],
+)
+def test_typed_review_manifest_page_rejects_unsafe_opaque_uri_text(
+    content: str,
+) -> None:
+    response = build_commander_response(
+        tool_name="review_manifest",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "context_binding": _operation_context_binding(),
+                "review_manifest_id": MANIFEST_ID,
+                "manifest_resource_uri": (
+                    f"colameta://review-manifest/{MANIFEST_ID}"
+                ),
+                "manifest_sha256": CONTENT_SHA256,
+                "expires_at": EXPIRES_AT,
+                "subject_page": {
+                    "review_manifest_id": MANIFEST_ID,
+                    "review_unit": "git-commit-preview",
+                    "subject_index": 1,
+                    "path": "docs/review-input.md",
+                    "sha256": "d" * 64,
+                    "page": 1,
+                    "page_count": 1,
+                    "page_char_start": 0,
+                    "page_char_end": len(content),
+                    "expires_at": EXPIRES_AT,
+                    "content": content,
+                },
+            },
+        },
+        params={"phase": "read", "review_manifest_id": MANIFEST_ID},
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "opaque_handle_123_" not in repr(response)
     validate_commander_response(response)
 
 
