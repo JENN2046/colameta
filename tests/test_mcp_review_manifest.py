@@ -25,6 +25,7 @@ from runner.mcp_validation_run import (
 )
 from runner.project_registry import ProjectRegistry
 from runner.review_manifest import (
+    REVIEW_MANIFEST_PAGE_CHARS,
     REVIEW_MANIFEST_SCHEMA_VERSION,
     ReviewManifestStore,
     collect_review_context_binding,
@@ -1129,6 +1130,86 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     resource = _resource_read(server, facts["subjects"][0]["resource_uri"])
     resource_page = json.loads(resource["result"]["contents"][0]["text"])
     assert resource_page["content"] == content
+
+
+def test_commander_resources_read_validates_whole_subject_before_paging(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    resource_uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    uri_start = REVIEW_MANIFEST_PAGE_CHARS - (len(resource_uri) // 2)
+    content = f"{'x' * (uri_start - 1)} {resource_uri}\n"
+    assert content.index(resource_uri) < REVIEW_MANIFEST_PAGE_CHARS
+    assert (
+        content.index(resource_uri) + len(resource_uri)
+        > REVIEW_MANIFEST_PAGE_CHARS
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection_data = inspected["result"]["structuredContent"]["data"]
+    descriptor = inspection_data["facts"]["subjects"][0]
+    assert descriptor["page_count"] == 2
+
+    pages: list[str] = []
+    for page_number in (1, 2):
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert "error" not in response
+        page = json.loads(response["result"]["contents"][0]["text"])
+        assert page["page"] == page_number
+        pages.append(page["content"])
+
+    assert pages[0] == content[:REVIEW_MANIFEST_PAGE_CHARS]
+    assert pages[1] == content[REVIEW_MANIFEST_PAGE_CHARS:]
+    assert "".join(pages) == content
+
+
+def test_commander_resources_read_rejects_unsafe_whole_subject_across_pages(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    unsafe_uri = "Colameta://review-manifest/opaque_handle_123_"
+    uri_start = REVIEW_MANIFEST_PAGE_CHARS - (len(unsafe_uri) // 2)
+    content = f"{'x' * (uri_start - 1)} {unsafe_uri}\n"
+    assert content.index(unsafe_uri) < REVIEW_MANIFEST_PAGE_CHARS
+    assert content.index(unsafe_uri) + len(unsafe_uri) > REVIEW_MANIFEST_PAGE_CHARS
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    assert descriptor["page_count"] == 2
+
+    for page_number in (1, 2):
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert response["error"]["data"]["error_code"] == "evidence_unavailable"
+        assert unsafe_uri not in json.dumps(response, ensure_ascii=False)
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:

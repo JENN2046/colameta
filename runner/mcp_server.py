@@ -114,6 +114,7 @@ from runner.review_manifest import (
     StoredReviewManifest,
     collect_review_context_binding,
     inspect_review_manifest,
+    read_manifest_subject_file,
     read_stored_review_manifest_page,
     verify_stored_review_context,
     verify_stored_review_manifest,
@@ -2471,6 +2472,71 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         return isinstance(sanitized, dict) and sanitized == resource_result
 
+    def _commander_public_review_manifest_subject_content(
+        self,
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> str | None:
+        """Load and verify a complete Manifest subject before page slicing."""
+
+        review_manifest_id, subject_index, _page = parsed_review_manifest
+        if subject_index is None:
+            return None
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return None
+        current_context = collect_review_context_binding(
+            stored.project_root,
+            project_name=str(stored.context_binding.get("project_name") or ""),
+        )
+        verify_stored_review_context(
+            stored,
+            current_context_binding=current_context,
+        )
+        if subject_index < 1 or subject_index > len(stored.subjects):
+            return None
+        subject = stored.subjects[subject_index - 1]
+        raw, text = read_manifest_subject_file(stored.project_root, subject.path)
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if not secrets.compare_digest(actual_sha256, subject.sha256):
+            raise ReviewManifestError(
+                "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH",
+                f"manifest subject 的 SHA-256 与当前文件不一致：{subject.path}",
+                {
+                    "path": subject.path,
+                    "expected_sha256": subject.sha256,
+                    "actual_sha256": actual_sha256,
+                },
+            )
+        if len(text) > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
+            return None
+        return text
+
+    def _commander_public_review_manifest_page_envelope_safety(
+        self,
+        resource_result: dict[str, Any],
+    ) -> bool:
+        """Validate page metadata and sibling keys without reinterpreting a slice."""
+
+        candidate = copy.deepcopy(resource_result)
+        contents = candidate.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if not isinstance(content_item, dict):
+            return False
+        serialized_page = content_item.get("text")
+        if not isinstance(serialized_page, str):
+            return False
+        try:
+            page = json.loads(serialized_page)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(page, dict) or not isinstance(page.get("content"), str):
+            return False
+        page["content"] = ""
+        content_item["text"] = json.dumps(page, ensure_ascii=False)
+        return self._commander_public_resource_read_safety(candidate)
+
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
         return MCPResourcesService.result_artifact_next_read(artifact_fields)
@@ -2787,6 +2853,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             "evidence_unavailable",
                             "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
                         )
+                whole_subject_content: str | None = None
                 if is_review_manifest:
                     access_error = self._mcp_read_scoped_resource_access_error(
                         auth_context,
@@ -2796,6 +2863,34 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         error_code, message = access_error
                         return self._protocol_error(req_id, -32602, error_code, message)
                     try:
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            and parsed_review_manifest is not None
+                            and parsed_review_manifest[1] is not None
+                        ):
+                            whole_subject_content = (
+                                self._commander_public_review_manifest_subject_content(
+                                    parsed_review_manifest
+                                )
+                            )
+                            if whole_subject_content is not None:
+                                whole_subject = {"content": whole_subject_content}
+                                sanitized_subject = (
+                                    self._commander_public_projector().sanitize_for_artifact(
+                                        whole_subject
+                                    )
+                                )
+                                if (
+                                    not isinstance(sanitized_subject, dict)
+                                    or sanitized_subject != whole_subject
+                                ):
+                                    return self._protocol_error(
+                                        req_id,
+                                        -32602,
+                                        "evidence_unavailable",
+                                        "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
+                                    )
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
                         return self._protocol_error(
@@ -2830,8 +2925,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     self.mcp_exposure_profile
                     == MCP_EXPOSURE_PROFILE_COMMANDER
                     and parsed_review_manifest is not None
-                    and not self._commander_public_resource_read_safety(
-                        resource_result
+                    and not (
+                        self._commander_public_review_manifest_page_envelope_safety(
+                            resource_result
+                        )
+                        if parsed_review_manifest[1] is not None
+                        and whole_subject_content is not None
+                        else self._commander_public_resource_read_safety(
+                            resource_result
+                        )
                     )
                 ):
                     return self._protocol_error(
