@@ -3685,7 +3685,7 @@ def _is_json_escaped_resource_delimiter(value: str, index: int) -> bool:
 
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
-    saw_ascii_delimiter = False
+    ascii_before_unicode_delimiter = False
     saw_unicode_delimiter = False
     saw_emoji_base = False
     emoji_joiner_pending = False
@@ -3701,7 +3701,8 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             continue
         following = value[cursor]
         if following in ".,;:!?)]}":
-            saw_ascii_delimiter = True
+            if not saw_unicode_delimiter:
+                ascii_before_unicode_delimiter = True
             saw_emoji_base = False
             cursor += 1
             continue
@@ -3758,7 +3759,8 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
                 if is_emoji_base:
                     emoji_joiner_pending = False
             else:
-                saw_ascii_delimiter = True
+                if not saw_unicode_delimiter:
+                    ascii_before_unicode_delimiter = True
                 saw_emoji_base = False
             cursor = end
             continue
@@ -3777,7 +3779,7 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             saw_unicode_delimiter
             # A preceding ASCII punctuation run can still be an invalid URI
             # continuation (for example, ``??）query``).
-            and not saw_ascii_delimiter
+            and not ascii_before_unicode_delimiter
             and (
                 unicodedata.category(following).startswith(("L", "N"))
                 or (

@@ -800,6 +800,8 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         f"❤️{uri}👩‍💻Next\n"
         f"1️⃣{uri}#️⃣Next\n"
         f"↔️{uri}〰️Next\n"
+        f"Read {uri}✅,Next\n"
+        f"Read {uri}」.Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -976,6 +978,12 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"Read {uri}{emoji}Next") == (
             f"Read {uri}{emoji}Next"
         )
+    assert commander_public_text(f"Read {uri}✅,Next") == (
+        f"Read {uri}✅,Next"
+    )
+    assert commander_public_text(f"Read {uri}」.Next") == (
+        f"Read {uri}」.Next"
+    )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
     long_form_serialized = f'{{"content":"读取 {uri}。\\u000a继续"}}'
@@ -1143,6 +1151,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     escaped_non_so_emoji_sequences = json.dumps(
         {"note": f"↔️{uri}〰️Next"}
     )
+    escaped_unicode_then_ascii_delimiters = json.dumps(
+        {"note": f"{uri}✅,Next; {uri}」.Next"}
+    )
     fully_escaped_keycap_sequences = (
         f'{{"note":"\\u0031\\ufe0f\\u20e3{uri}'
         '\\u0023\\ufe0f\\u20e3Next"}'
@@ -1172,6 +1183,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert commander_public_text(escaped_non_so_emoji_sequences) == (
         escaped_non_so_emoji_sequences
+    )
+    assert commander_public_text(escaped_unicode_then_ascii_delimiters) == (
+        escaped_unicode_then_ascii_delimiters
     )
     assert commander_public_text(fully_escaped_keycap_sequences) == (
         fully_escaped_keycap_sequences
@@ -1400,6 +1414,8 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         f"❤️{uri}👩‍💻Next\n"
         f"1️⃣{uri}#️⃣Next\n"
         f"↔️{uri}〰️Next\n"
+        f"Read {uri}✅,Next\n"
+        f"Read {uri}」.Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"

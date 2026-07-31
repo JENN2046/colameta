@@ -256,6 +256,8 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"❤️{uri}👩‍💻Next\n"
             f"1️⃣{uri}#️⃣Next\n"
             f"↔️{uri}〰️Next\n"
+            f"Read {uri}✅,Next\n"
+            f"Read {uri}」.Next\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
@@ -273,6 +275,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         ),
         "non_so_emoji_sequence_json": json.dumps(
             {"note": f"↔️{uri}〰️Next"}
+        ),
+        "mixed_delimiter_json": json.dumps(
+            {"note": f"{uri}✅,Next; {uri}」.Next"}
         ),
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
