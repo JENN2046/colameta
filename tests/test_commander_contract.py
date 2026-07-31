@@ -809,6 +809,49 @@ def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
     assert commander_public_text(lookalike) == "Read <resource-uri>"
 
 
+def test_public_text_redacts_an_opaque_uri_crossing_the_character_cutoff() -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    prefix = "x" * 570
+
+    public = commander_public_text(f"{prefix} {uri}", max_chars=600)
+
+    assert public == f"{prefix} <resource-uri>"
+    assert len(public) <= 600
+
+
+def test_public_text_preserves_an_opaque_uri_ending_at_the_character_cutoff() -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    max_chars = 100
+    prefix = "x" * (max_chars - 2 - len(uri))
+
+    public = commander_public_text(f"{prefix} {uri} tail", max_chars=max_chars)
+
+    assert public == f"{prefix} {uri}…"
+    assert len(public) == max_chars
+
+
+def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    prefix = "x" * 570
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": False,
+            "error": {
+                "code": "GIT_WORKTREE_DIRTY",
+                "message": f"{prefix} {uri}",
+                "recoverable": True,
+            },
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "WORKTREE_DIRTY"
+    assert response["error"]["message"] == f"{prefix} <resource-uri>"
+    validate_commander_response(response)
+
+
 def test_result_artifact_page_rejects_an_extended_opaque_uri_lookalike() -> None:
     content = (
         "colameta://result-artifact/opaquehandle12345"

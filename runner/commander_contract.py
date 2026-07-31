@@ -507,6 +507,7 @@ _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE = re.compile(
 _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+"
 )
+_PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -2990,7 +2991,10 @@ def commander_public_text(
         return redacted
     if max_chars <= 1:
         return redacted[:max_chars]
-    return f"{redacted[: max_chars - 1]}…"
+    return _truncate_public_text_preserving_resource_uris(
+        redacted,
+        max_chars=max_chars,
+    )
 
 
 def _public_text(value: str, *, max_chars: int) -> str:
@@ -3059,12 +3063,41 @@ def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
             yield match
 
 
+def _truncate_public_text_preserving_resource_uris(
+    value: str,
+    *,
+    max_chars: int,
+) -> str:
+    bounded = value
+    cutoff = max_chars - 1
+    while len(bounded) > max_chars:
+        crossing = next(
+            (
+                match
+                for match in _public_resource_uri_spans(bounded)
+                if match.start() < cutoff < match.end()
+            ),
+            None,
+        )
+        if crossing is None:
+            return f"{bounded[:cutoff]}…"
+        bounded = (
+            f"{bounded[: crossing.start()]}"
+            f"{_PUBLIC_RESOURCE_URI_PLACEHOLDER}"
+            f"{bounded[crossing.end() :]}"
+        )
+    return bounded
+
+
 def _redact_public_non_resource_segment(
     value: str,
     *,
     forbidden_tools: Iterable[str] | None,
 ) -> str:
-    redacted = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub("<resource-uri>", value)
+    redacted = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub(
+        _PUBLIC_RESOURCE_URI_PLACEHOLDER,
+        value,
+    )
     redacted = _redact_public_path_segment(redacted)
     redacted = _redact_noncommander_tool_references(
         redacted,
