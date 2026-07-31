@@ -606,6 +606,8 @@ def test_public_text_redacts_json_escaped_path_separators(
 @pytest.mark.parametrize(
     "value",
     [
+        r"\\server/share\private.txt",
+        json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
         json.dumps(
             {
@@ -616,7 +618,9 @@ def test_public_text_redacts_json_escaped_path_separators(
         ),
     ],
 )
-def test_public_text_redacts_json_serialized_unc_paths(value: str) -> None:
+def test_public_text_redacts_unc_paths_across_serialization(
+    value: str,
+) -> None:
     public = commander_public_text(value)
 
     assert "server" not in public
@@ -1453,6 +1457,8 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\\server/share\private.txt",
+        json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
@@ -1729,6 +1735,8 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\\server/share\private.txt",
+        json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
@@ -2331,6 +2339,7 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "oauth_authorization_code",
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",
+        r"\\server/share\secret.txt",
     ],
 )
 def test_validator_rejects_sensitive_and_absolute_path_object_keys(

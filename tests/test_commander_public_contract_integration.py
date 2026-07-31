@@ -381,6 +381,7 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
             "oauth_authorization_code": "code-value-must-not-leak",
             "/home/jenn/private/secret.txt": "posix-key-value",
             r"C:\Users\Jenn\secret.txt": "windows-key-value",
+            r"\\server/share\secret.txt": "unc-key-value",
             "nested": {
                 "safe_nested": True,
                 "run_id": "run-private-123",
@@ -416,6 +417,8 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "code-value-must-not-leak",
         "/home/jenn",
         r"C:\Users\Jenn",
+        r"\\server/share",
+        "unc-key-value",
         "manage_git_remote",
         "get_git_status",
         "manage_plan_version",
