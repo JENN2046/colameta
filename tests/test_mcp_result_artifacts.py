@@ -282,6 +282,10 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "nested_short_escape_left_boundary": json.dumps(
             {"nested": json.dumps({"content": f"\t{uri}"})}
         ),
+        "dash_boundaries": f"before—{uri}–continue",
+        "serialized_dash_boundaries": json.dumps(
+            {"note": f"before—{uri}–continue"}
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),

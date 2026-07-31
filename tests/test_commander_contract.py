@@ -1089,7 +1089,7 @@ def test_public_text_preserves_zero_width_space_resource_boundaries(
         "⧸private",
         "＿private",
         "‿private",
-        "—private",
+        "−private",
     ],
 )
 def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
@@ -1125,7 +1125,7 @@ def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
         "⧸",
         "＿",
         "‿",
-        "—",
+        "−",
         "🙼",
         "\\ud83d\\ude7c",
         "⌿",
@@ -1150,6 +1150,28 @@ def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
 
     assert commander_public_text(f"{opening}{uri}") == f"{opening}{uri}"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize("dash", ["–", "—"])
+def test_public_text_preserves_opaque_uris_at_unicode_dash_boundaries(
+    uri: str,
+    dash: str,
+) -> None:
+    value = f"before{dash}{uri}{dash}continue"
+    serialized = json.dumps({"content": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(serialized) == serialized
 
 
 @pytest.mark.parametrize(
@@ -1791,7 +1813,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"
-            "/subjects/1/pages/{page}—private"
+            "/subjects/1/pages/{page}−private"
         ),
         (
             "@colameta://review-manifest/opaque_handle_123_"
