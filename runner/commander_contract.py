@@ -511,7 +511,16 @@ _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
-_PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE = re.compile(r"\\[bnrtf]")
+_PUBLIC_JSON_ESCAPE_CANDIDATE_RE = re.compile(
+    r"\\(?:[bnrtf]|u[0-9A-Fa-f]{4})"
+)
+_PUBLIC_JSON_SHORT_CONTROL_CHARACTERS = {
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -3038,26 +3047,73 @@ def _segment_contains_private_path(value: str) -> bool:
     )
 
 
+def _decoded_json_escape_character(match: re.Match[str]) -> str:
+    token = match.group(0)[1:]
+    if token.startswith("u"):
+        return chr(int(token[1:], 16))
+    return _PUBLIC_JSON_SHORT_CONTROL_CHARACTERS[token]
+
+
+def _json_escape_is_control_boundary(match: re.Match[str]) -> bool:
+    decoded = _decoded_json_escape_character(match)
+    return decoded.isspace() or unicodedata.category(decoded) == "Cc"
+
+
+def _json_escape_is_path_boundary(match: re.Match[str]) -> bool:
+    decoded = _decoded_json_escape_character(match)
+    # Mirror the characters that block an absolute POSIX path at its left edge.
+    return not (
+        decoded.isascii()
+        and (decoded.isalnum() or decoded in ":/")
+    )
+
+
+def _json_escaped_control_boundary_matches(
+    value: str,
+) -> Iterable[re.Match[str]]:
+    return (
+        match
+        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(value)
+        if _json_escape_is_control_boundary(match)
+    )
+
+
+def _json_escaped_path_boundary_matches(
+    value: str,
+) -> Iterable[re.Match[str]]:
+    return (
+        match
+        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(value)
+        if _json_escape_is_path_boundary(match)
+    )
+
+
 def _contains_private_path_segment(value: str) -> bool:
     if _segment_contains_private_path(value):
         return True
-    return any(
-        _segment_contains_private_path(part)
-        for part in _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.split(value)
-    )
+    cursor = 0
+    for match in _json_escaped_path_boundary_matches(value):
+        if _segment_contains_private_path(value[cursor : match.start()]):
+            return True
+        cursor = match.end()
+    return _segment_contains_private_path(value[cursor:])
 
 
 def _redact_public_path_segment(value: str) -> str:
     redacted = _redact_public_path_segment_once(value)
-    parts = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.split(redacted)
-    if len(parts) == 1:
-        return redacted
-    boundaries = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.findall(redacted)
     rebuilt: list[str] = []
-    for index, part in enumerate(parts):
-        if index:
-            rebuilt.append(boundaries[index - 1])
-        rebuilt.append(_redact_public_path_segment_once(part))
+    cursor = 0
+    for match in _json_escaped_path_boundary_matches(redacted):
+        rebuilt.append(
+            _redact_public_path_segment_once(
+                redacted[cursor : match.start()]
+            )
+        )
+        rebuilt.append(match.group(0))
+        cursor = match.end()
+    if not rebuilt:
+        return redacted
+    rebuilt.append(_redact_public_path_segment_once(redacted[cursor:]))
     return "".join(rebuilt)
 
 
@@ -3089,8 +3145,18 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     )
 
 
+def _json_escaped_control_boundary_match(
+    value: str,
+    index: int,
+) -> re.Match[str] | None:
+    match = _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.match(value, index)
+    if match is None or not _json_escape_is_control_boundary(match):
+        return None
+    return match
+
+
 def _is_json_escaped_control_boundary(value: str, index: int) -> bool:
-    return _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.match(value, index) is not None
+    return _json_escaped_control_boundary_match(value, index) is not None
 
 
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
@@ -3106,7 +3172,7 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             saw_unicode_delimiter = True
             cursor += 1
             continue
-        escaped_control = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.match(
+        escaped_control = _json_escaped_control_boundary_match(
             value,
             cursor,
         )

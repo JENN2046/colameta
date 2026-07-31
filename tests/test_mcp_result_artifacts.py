@@ -335,6 +335,10 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}.\\n/home/reviewer/private.txt"
         ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\u000a/home/reviewer/private.txt"
+        ),
     )
     for unsafe_uri in unsafe_values:
         handle = server._mcp_result_artifact_store.put(

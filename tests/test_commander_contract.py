@@ -516,9 +516,25 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
 )
 @pytest.mark.parametrize(
     "escaped_boundary",
-    ["\\n", "\\r", "\\t", "\\b", "\\f", "\\n\\t"],
+    [
+        "\\n",
+        "\\r",
+        "\\t",
+        "\\b",
+        "\\f",
+        "\\n\\t",
+        "\\u0000",
+        "\\u000a",
+        "\\u000A",
+        "\\u001f",
+        "\\u007f",
+        "\\u0085",
+        "\\u2028",
+        "\\u002e",
+        "\\u3002",
+    ],
 )
-def test_public_text_redacts_private_paths_after_json_escaped_controls(
+def test_public_text_redacts_private_paths_after_json_escaped_boundaries(
     escaped_boundary: str,
     private_path: str,
 ) -> None:
@@ -819,6 +835,8 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
+    long_form_serialized = f'{{"content":"读取 {uri}。\\u000a继续"}}'
+    assert commander_public_text(long_form_serialized) == long_form_serialized
     serialized_private_path = (
         f'{{"content":"读取 {uri}.\\n/home/reviewer/private.txt"}}'
     )
@@ -1015,6 +1033,10 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\u000a/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}／private"
         ),
         (
@@ -1168,6 +1190,10 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\u000a/home/reviewer/private.txt"
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"
