@@ -366,6 +366,14 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}∕private"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u2215private"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}.\\n/home/reviewer/private.txt"
         ),
         (

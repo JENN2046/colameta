@@ -3245,7 +3245,7 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
         and (
             value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
             or unicodedata.category(value) in {"Pe", "Pf"}
-            or unicodedata.category(value).startswith("S")
+            or unicodedata.category(value) == "So"
         )
     )
 
@@ -3260,7 +3260,7 @@ def _is_resource_uri_left_boundary_character(value: str) -> bool:
             category.startswith(("L", "N"))
             or value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
             or category in {"Ps", "Pi"}
-            or category.startswith("S")
+            or category == "So"
         )
     )
 

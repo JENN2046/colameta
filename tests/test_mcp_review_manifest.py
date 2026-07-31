@@ -1547,6 +1547,14 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}∕private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}\\u2215private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}.\\n/home/reviewer/private.txt"
         ),
         (
