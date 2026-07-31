@@ -1510,6 +1510,46 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
     assert "/home/reviewer" not in json.dumps(structured, ensure_ascii=False)
 
 
+def test_commander_manifest_read_rejects_unicode_delimiter_uri_extension(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    unsafe_uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}??）query"
+    )
+    (project / "docs" / "review-input.md").write_text(
+        f"{unsafe_uri}\n",
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection_data = inspected["result"]["structuredContent"]["data"]
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspection_data["evidence"]["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    structured = read["result"]["structuredContent"]
+    assert structured["ok"] is False
+    assert structured["data"]["outcome"] == "blocked"
+    assert structured["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert unsafe_uri not in json.dumps(structured, ensure_ascii=False)
+
+
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
     registry = ProjectRegistry(

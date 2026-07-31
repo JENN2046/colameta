@@ -789,6 +789,11 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"读取（{uri}{closing}") == (
             f"读取（{uri}{closing}"
         )
+    assert commander_public_text(f"读取 {uri}。）继续") == (
+        f"读取 {uri}。）继续"
+    )
+    serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
+    assert commander_public_text(serialized) == serialized
 
 
 @pytest.mark.parametrize(
@@ -802,6 +807,9 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "&private",
         "?query=private",
         "??query",
+        "??）query",
+        "。）query",
+        "）query",
         "::private",
         "..suffix",
         "／private",
@@ -968,6 +976,10 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}??）query"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}／private"
         ),
         (
@@ -1113,6 +1125,10 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}::private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}??）query"
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"

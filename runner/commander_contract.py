@@ -3058,15 +3058,34 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
 
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
-    while cursor < len(value) and value[cursor] in ".,;:!?)]}":
-        cursor += 1
+    saw_unicode_delimiter = False
+    while cursor < len(value):
+        following = value[cursor]
+        if following in ".,;:!?)]}":
+            cursor += 1
+            continue
+        if _is_unicode_resource_uri_delimiter(following):
+            saw_unicode_delimiter = True
+            cursor += 1
+            continue
+        break
     if cursor >= len(value):
         return True
     following = value[cursor]
     return bool(
         following.isspace()
         or following in "\"'`>"
-        or _is_unicode_resource_uri_delimiter(following)
+        or (
+            # Artifact pages are JSON text, where control-space boundaries are escaped.
+            following == "\\"
+            and cursor + 1 < len(value)
+            and value[cursor + 1] in "bnrtf"
+        )
+        or (
+            saw_unicode_delimiter
+            and not following.isascii()
+            and unicodedata.category(following).startswith(("L", "N"))
+        )
     )
 
 
@@ -3076,9 +3095,10 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     following = value[index]
     if following.isspace() or following in "\"'`>":
         return True
-    if _is_unicode_resource_uri_delimiter(following):
-        return True
-    if following in ".,;:!?)]}":
+    if (
+        following in ".,;:!?)]}"
+        or _is_unicode_resource_uri_delimiter(following)
+    ):
         return _is_resource_uri_following_delimiter(value, index)
     return False
 
