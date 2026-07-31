@@ -502,7 +502,12 @@ COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
 )
 _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE = re.compile(
     rf"(?<![A-Za-z0-9_-]){_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}"
-    r"(?![A-Za-z0-9_/?#-])"
+    r"(?=$|[\s\"'`>]|"
+    r"[.,;:!?](?=$|[\s\"'`>)\]}])|"
+    r"[)\]}](?=$|[\s\"'`>.,;:!?]))"
+)
+_PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
+    r"colameta://[^\s\"'`<>]+"
 )
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
@@ -3023,7 +3028,8 @@ def _redact_public_non_resource_segment(
     *,
     forbidden_tools: Iterable[str] | None,
 ) -> str:
-    redacted = _redact_public_path_segment(value)
+    redacted = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub("<resource-uri>", value)
+    redacted = _redact_public_path_segment(redacted)
     redacted = _redact_noncommander_tool_references(
         redacted,
         forbidden_tools=forbidden_tools,
@@ -3077,7 +3083,8 @@ def _contains_private_path(value: str) -> bool:
 
 def _contains_unsafe_public_text(value: str) -> bool:
     return _contains_private_path(value) or any(
-        _redact_noncommander_tool_references(segment) != segment
+        _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)
+        or _redact_noncommander_tool_references(segment) != segment
         or _SENSITIVE_ASSIGNMENT_RE.search(segment)
         or _BEARER_TOKEN_RE.search(segment)
         for segment in _public_text_non_resource_segments(value)

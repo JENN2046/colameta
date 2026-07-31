@@ -771,15 +771,72 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     assert commander_public_text(uri) == uri
     embedded = f"Read {uri}\n/home/reviewer/private.txt"
     assert commander_public_text(embedded) == f"Read {uri}\n<local-path>"
+    assert commander_public_text(f'{{"uri":"{uri}"}}') == f'{{"uri":"{uri}"}}'
+    for punctuation in ".,;:!?":
+        assert commander_public_text(f"Read {uri}{punctuation} Next") == (
+            f"Read {uri}{punctuation} Next"
+        )
 
 
-def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike() -> None:
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "/private",
+        "%2Fprivate",
+        "@private",
+        ":private",
+        "=private",
+        "&private",
+        "?query=private",
+    ],
+)
+def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
+    suffix: str,
+) -> None:
     lookalike = (
         "Read colameta://result-artifact/opaque_handle_123_"
-        "/pages/{page}/private"
+        f"/pages/{{page}}{suffix}"
     )
 
-    assert "<local-path>" in commander_public_text(lookalike)
+    assert commander_public_text(lookalike) == "Read <resource-uri>"
+
+
+def test_result_artifact_page_rejects_an_extended_opaque_uri_lookalike() -> None:
+    content = (
+        "colameta://result-artifact/opaquehandle12345"
+        "/pages/{page}%2Fprivate"
+    )
+    raw_result = {
+        "ok": True,
+        "data": {
+            "ok": True,
+            "artifact_id": ARTIFACT_ID,
+            "artifact_page": {
+                "artifact_id": ARTIFACT_ID,
+                "tool": "read_result_artifact",
+                "page": 1,
+                "page_count": 1,
+                "page_char_start": 0,
+                "page_char_end": len(content),
+                "content_sha256": CONTENT_SHA256,
+                "expires_at": EXPIRES_AT,
+                "content": content,
+            },
+            "content_sha256": CONTENT_SHA256,
+            "expires_at": EXPIRES_AT,
+        },
+    }
+
+    response = build_commander_response(
+        tool_name="read_result_artifact",
+        raw_result=raw_result,
+        params={"artifact_id": ARTIFACT_ID, "artifact_page": 1},
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "%2Fprivate" not in repr(response)
+    validate_commander_response(response)
 
 
 def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
