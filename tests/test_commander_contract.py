@@ -795,6 +795,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         "The bearer of this note may continue.\n"
         f"读取 {uri}。继续\n"
         f"Read {uri}。Next\n"
+        f"📎{uri}✅Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -955,6 +956,9 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     assert commander_public_text(f"Read {uri}。）Next") == (
         f"Read {uri}。）Next"
     )
+    assert commander_public_text(f"📎{uri}✅Next") == (
+        f"📎{uri}✅Next"
+    )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
     long_form_serialized = f'{{"content":"读取 {uri}。\\u000a继续"}}'
@@ -1082,6 +1086,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
         f'{{"uri":"{uri}\\u3002\\u7ee7\\u7eed"}}'
     )
     escaped_unicode_ascii_prose = f'{{"uri":"{uri}\\u3002Next"}}'
+    escaped_symbol_boundaries = json.dumps(
+        {"note": f"📎{uri}✅Next"}
+    )
 
     assert commander_public_text(nested) == nested
     assert commander_public_text(escaped_unicode_left) == (
@@ -1095,6 +1102,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert commander_public_text(escaped_unicode_ascii_prose) == (
         escaped_unicode_ascii_prose
+    )
+    assert commander_public_text(escaped_symbol_boundaries) == (
+        escaped_symbol_boundaries
     )
 
 
@@ -1307,6 +1317,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         "The bearer of this note may continue.\n"
         f"Read {uri}\n"
         f"Read {uri}。Next\n"
+        f"📎{uri}✅Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
