@@ -51,6 +51,13 @@ _COMPATIBILITY_ONLY_WORKFLOWS = frozenset({"auto_preview"})
 _RECOVERY_GIT_ACTIONS = frozenset(
     {"restore_file_preview", "restore_file_apply", "revert_preview", "revert_apply"}
 )
+_PROJECT_SELECTION_BLOCKER_CODES = frozenset(
+    {
+        "PROJECT_NAME_REQUIRED",
+        "PROJECT_REQUIRED",
+        "PROJECT_NOT_REGISTERED",
+    }
+)
 _ACTION_CONTAINER_KEYS = frozenset(
     {
         "next_action",
@@ -336,6 +343,41 @@ def _first_string(value: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _contains_error_code(
+    value: Any,
+    expected_codes: frozenset[str],
+    *,
+    allow_code: bool = False,
+) -> bool:
+    if isinstance(value, dict):
+        candidate_keys = ("error_code", "code") if allow_code else ("error_code",)
+        for key in candidate_keys:
+            candidate = value.get(key)
+            if (
+                isinstance(candidate, str)
+                and candidate.strip().upper() in expected_codes
+            ):
+                return True
+        for key, nested in value.items():
+            if _contains_error_code(
+                nested,
+                expected_codes,
+                allow_code=key in {"error", "errors"},
+            ):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(
+            _contains_error_code(
+                nested,
+                expected_codes,
+                allow_code=allow_code,
+            )
+            for nested in value
+        )
+    return False
+
+
 def _synthetic_confirmation_action(
     tool_name: str,
     params: dict[str, Any],
@@ -453,7 +495,14 @@ def _synthetic_poll_action(
 
 def _synthetic_recovery_action(
     params: dict[str, Any],
+    raw_result: dict[str, Any],
 ) -> dict[str, Any]:
+    if _contains_error_code(raw_result, _PROJECT_SELECTION_BLOCKER_CODES):
+        return {
+            "tool": "list_registered_projects",
+            "arguments": {},
+            "reason": "列出可用项目后，使用有效 project_name 重试原调用。",
+        }
     project_name = params.get("project_name")
     return {
         "tool": "analyze_project_state",
@@ -492,5 +541,5 @@ def select_commander_next_action(
     if outcome == "in_progress":
         return _synthetic_poll_action(tool_name, safe_params, raw_result)
     if outcome == "blocked":
-        return _synthetic_recovery_action(safe_params)
+        return _synthetic_recovery_action(safe_params, raw_result)
     return None

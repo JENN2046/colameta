@@ -202,7 +202,7 @@ class CommanderPublicProjector:
     ) -> Any:
         if isinstance(value, dict):
             if self._is_resource_read_reference(value):
-                return copy.deepcopy(value)
+                return self._project_resource_read_reference(value)
             referenced_tool = value.get("tool")
             if (
                 isinstance(referenced_tool, str)
@@ -617,6 +617,23 @@ class CommanderPublicProjector:
             return False
         uri = arguments.get("uri")
         return isinstance(uri, str) and COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(uri) is not None
+
+    def _project_resource_read_reference(
+        self,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild an opaque resource continuation from an exact public allowlist."""
+
+        arguments = value["arguments"]
+        projected: dict[str, Any] = {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": arguments["uri"]},
+        }
+        reason = value.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            projected["reason"] = self._public_string(reason)
+        return projected
 
     @staticmethod
     def _is_context_binding(value: Any) -> bool:

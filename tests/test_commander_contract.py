@@ -254,6 +254,52 @@ def test_connector_smoke_not_ready_is_blocked_even_when_read_succeeds() -> None:
     validate_commander_response(response)
 
 
+@pytest.mark.parametrize(
+    ("error_code", "public_error_code", "params"),
+    [
+        (
+            "PROJECT_NAME_REQUIRED",
+            "PROJECT_REQUIRED",
+            {"workflow": "project_status"},
+        ),
+        (
+            "PROJECT_NOT_REGISTERED",
+            "PROJECT_NOT_REGISTERED",
+            {
+                "workflow": "project_status",
+                "project_name": "stale-project",
+            },
+        ),
+    ],
+)
+def test_project_selection_blockers_expose_project_list_as_single_recovery(
+    error_code: str,
+    public_error_code: str,
+    params: dict,
+) -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": False,
+            "tool": "run_mcp_workflow",
+            "error_code": error_code,
+            "message": "必须重新选择一个已登记项目。",
+        },
+        params=params,
+    )
+
+    expected_action = {
+        "tool": "list_registered_projects",
+        "arguments": {},
+        "reason": "列出可用项目后，使用有效 project_name 重试原调用。",
+    }
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == public_error_code
+    assert response["next_action"] == expected_action
+    assert response["error"]["recovery"] == expected_action
+    validate_commander_response(response)
+
+
 def test_completed_response_has_exact_fields_and_bounded_public_facts() -> None:
     raw_result = {
         "ok": True,

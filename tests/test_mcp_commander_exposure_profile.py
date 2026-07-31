@@ -88,6 +88,15 @@ def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_p
                     "kind": "mcp_resource",
                     "tool": "resources/read",
                     "arguments": {"uri": valid_uri},
+                    "reason": (
+                        "Read /home/example/src/private-project; "
+                        "oauth_token=synthetic-reason-secret"
+                    ),
+                    "project_root": "/home/example/src/private-project",
+                    "oauth_token": "synthetic-token-must-not-leak",
+                    "diagnostics": {
+                        "stderr": "synthetic diagnostic must not leak",
+                    },
                 },
                 {
                     "kind": "mcp_resource",
@@ -110,6 +119,7 @@ def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_p
                 "kind": "mcp_resource",
                 "tool": "resources/read",
                 "arguments": {"uri": valid_uri},
+                "reason": "Read <local-path>; <sensitive>",
             }
         ]
     }

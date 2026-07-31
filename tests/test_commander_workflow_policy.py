@@ -417,7 +417,12 @@ def test_blocked_without_explicit_recovery_rereads_project_facts() -> None:
             "workflow": "small_project_patch",
             "project_name": "colameta",
         },
-        raw_result={"data": {"error_code": "SCOPE_VIOLATION"}},
+        raw_result={
+            "data": {
+                "error_code": "SCOPE_VIOLATION",
+                "code": "PROJECT_NOT_REGISTERED",
+            }
+        },
         outcome="blocked",
     )
 
@@ -425,6 +430,44 @@ def test_blocked_without_explicit_recovery_rereads_project_facts() -> None:
         "tool": "analyze_project_state",
         "arguments": {"project_name": "colameta"},
         "reason": "重新读取项目事实后再决定如何解除阻断。",
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw_result", "params"),
+    [
+        (
+            {"error_code": "PROJECT_NAME_REQUIRED"},
+            {"workflow": "project_status"},
+        ),
+        (
+            {"error_code": "PROJECT_REQUIRED"},
+            {"workflow": "project_status"},
+        ),
+        (
+            {"error": {"code": "PROJECT_NOT_REGISTERED"}},
+            {
+                "workflow": "project_status",
+                "project_name": "stale-project",
+            },
+        ),
+    ],
+)
+def test_project_selection_blockers_recover_through_registered_project_list(
+    raw_result: dict,
+    params: dict,
+) -> None:
+    action = select_commander_next_action(
+        tool_name="run_mcp_workflow",
+        params=params,
+        raw_result=raw_result,
+        outcome="blocked",
+    )
+
+    assert action == {
+        "tool": "list_registered_projects",
+        "arguments": {},
+        "reason": "列出可用项目后，使用有效 project_name 重试原调用。",
     }
 
 
