@@ -3921,6 +3921,8 @@ def _redact_public_text_preserving_resource_uris(
     forbidden_tools: Iterable[str] | None,
 ) -> str:
     value = _redact_sensitive_material(value)
+    if _decoded_candidate_contains_disallowed_public_resource_uri(value):
+        return _PUBLIC_RESOURCE_URI_PLACEHOLDER
     parts: list[str] = []
     cursor = 0
     for match in _public_resource_uri_spans(value):
@@ -3956,14 +3958,42 @@ def _contains_private_path(value: str) -> bool:
     )
 
 
+def _contains_disallowed_public_resource_uri(value: str) -> bool:
+    return any(
+        _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)
+        for segment in _public_text_non_resource_segments(value)
+    )
+
+
+def _decoded_candidate_contains_disallowed_public_resource_uri(
+    value: str,
+) -> bool:
+    # Literal tokens are checked against exact URI spans in the original
+    # text.  Mask them here so decoded surrogate or delimiter intermediates
+    # cannot reinterpret their boundaries; this pass is only for schemes that
+    # JSON escapes reconstruct.
+    encoded_only = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub(
+        "<literal-resource-uri>",
+        value,
+    )
+    return bool(
+        "\\" in encoded_only
+        and any(
+            _contains_disallowed_public_resource_uri(candidate)
+            for candidate in _json_escape_decoded_candidates(encoded_only)
+        )
+    )
+
+
 def _contains_unsafe_public_text(value: str) -> bool:
     return bool(
         _matches_sensitive_material(value)
         or _decoded_candidate_contains_sensitive_material(value)
         or _contains_private_path(value)
+        or _contains_disallowed_public_resource_uri(value)
+        or _decoded_candidate_contains_disallowed_public_resource_uri(value)
     ) or any(
-        _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)
-        or _redact_noncommander_tool_references(segment) != segment
+        _redact_noncommander_tool_references(segment) != segment
         for segment in _public_text_non_resource_segments(value)
     )
 

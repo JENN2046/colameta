@@ -421,6 +421,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"uri":"colameta:\\/\\/result-artifact\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002fresult-artifact'
+            '\\u002fshort"}'
+        ),
     )
     for unsafe_uri in unsafe_values:
         handle = server._mcp_result_artifact_store.put(

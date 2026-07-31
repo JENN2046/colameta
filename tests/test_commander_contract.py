@@ -1384,6 +1384,16 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "/colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}"
         ),
+        '{"uri":"colameta:\\/\\/result-artifact\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002fresult-artifact'
+            '\\u002fshort"}'
+        ),
+        (
+            '{"valid":"colameta://result-artifact/opaque_handle_123_'
+            '/pages/{page}","invalid":"colameta:\\/\\/'
+            'result-artifact\\/short"}'
+        ),
     ],
 )
 def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
@@ -1418,6 +1428,22 @@ def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
     assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
     assert "opaque_handle_123_" not in repr(response)
     validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"uri":"colameta:\\/\\/result-artifact\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002fresult-artifact'
+            '\\u002fshort"}'
+        ),
+    ],
+)
+def test_public_text_redacts_json_escaped_disallowed_resource_uri(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == "<resource-uri>"
 
 
 def test_result_artifact_page_rejects_an_extended_opaque_uri_lookalike() -> None:

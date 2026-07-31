@@ -1592,6 +1592,11 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"uri":"colameta:\\/\\/review-manifest\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002freview-manifest'
+            '\\u002fshort"}'
+        ),
     ],
 )
 def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
