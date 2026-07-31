@@ -4,9 +4,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 
+from runner.commander_contract import validate_commander_response
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_server import (
     COMMANDER_APP_WIDGET_URI,
+    MCP_RESULT_ARTIFACT_PAGE_CHARS,
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_RESULT_ARTIFACT_WORKFLOW,
     MCPPlanningBridgeServer,
@@ -778,6 +780,74 @@ def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continua
     restored = "".join(pages)
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
+
+
+def test_typed_result_artifact_validates_whole_payload_before_slicing_resource_uri(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    resource_uri = (
+        "colameta://result-artifact/opaque_handle_123_"
+        "/pages/{page}"
+    )
+    target_start = (
+        MCP_RESULT_ARTIFACT_PAGE_CHARS - (len(resource_uri) // 2)
+    )
+    probe = json.dumps(
+        {"content": f" {resource_uri}\n"},
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    filler_chars = target_start - probe.index(resource_uri)
+    payload = {
+        "content": f"{'x' * filler_chars} {resource_uri}\n",
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    uri_start = serialized.index(resource_uri)
+    assert (
+        uri_start
+        < MCP_RESULT_ARTIFACT_PAGE_CHARS
+        < uri_start + len(resource_uri)
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    assert handle.page_count == 2
+    pages: list[str] = []
+    for page_number in (1, 2):
+        result = server.call_tool_for_agent(
+            "read_result_artifact",
+            {
+                "artifact_id": handle.artifact_id,
+                "artifact_page": page_number,
+            },
+        )
+
+        assert result["ok"] is True
+        contract = result["data"]
+        validate_commander_response(
+            contract,
+            exact_evidence_prevalidated=True,
+        )
+        page = contract["facts"]["artifact_page"]
+        assert page["page"] == page_number
+        pages.append(page["content"])
+
+    assert pages[0] == serialized[:MCP_RESULT_ARTIFACT_PAGE_CHARS]
+    assert pages[1] == serialized[MCP_RESULT_ARTIFACT_PAGE_CHARS:]
+    assert "".join(pages) == serialized
 
 
 def test_typed_result_artifact_tool_requires_only_a_known_opaque_handle(tmp_path) -> None:

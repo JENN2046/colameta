@@ -824,11 +824,14 @@ def build_commander_response(
     tool_name: str,
     raw_result: dict[str, Any],
     params: dict[str, Any] | None = None,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
     """Build one validated ``commander_response.v1`` data object.
 
     Policy lookup is intentionally lazy so this pure contract module remains
-    independent of the public projector's import graph.
+    independent of the public projector's import graph.  The exact-evidence
+    override is reserved for typed pages whose complete hash-bound content was
+    already verified before slicing.
     """
 
     safe_params = params if isinstance(params, dict) else {}
@@ -893,7 +896,12 @@ def build_commander_response(
             "summary": _summary_for(tool_name, raw_result, outcome),
             "journey_stage": journey_stage,
             "context_binding": context_binding,
-            "facts": _extract_facts(tool_name, raw_result),
+            "facts": _extract_facts(
+                tool_name,
+                raw_result,
+                params=safe_params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            ),
             "evidence": evidence,
             "next_action": next_action,
             "confirmation": confirmation,
@@ -904,7 +912,10 @@ def build_commander_response(
                 "INTERNAL_RESULT_INVALID",
                 "confirmation_required 缺少可验证的公开确认动作。",
             )
-        validate_commander_response(response)
+        validate_commander_response(
+            response,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
         return response
     except CommanderContractError as exc:
         return _safe_failed_response(
@@ -926,8 +937,17 @@ def build_commander_response(
         )
 
 
-def validate_commander_response(response: dict[str, Any]) -> None:
-    """Fail closed unless ``response`` is an exact public contract object."""
+def validate_commander_response(
+    response: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
+) -> None:
+    """Fail closed unless ``response`` is an exact public contract object.
+
+    ``exact_evidence_prevalidated`` is valid only after the complete
+    hash-bound Artifact payload or Manifest subject passed public safety
+    projection before its requested page was sliced.
+    """
 
     if not isinstance(response, dict):
         raise CommanderContractError(
@@ -976,11 +996,24 @@ def validate_commander_response(response: dict[str, Any]) -> None:
             "INTERNAL_RESULT_INVALID",
             "Commander facts must be an object.",
         )
-    _validate_public_value(facts, depth=0, facts=True)
+    _validate_public_value(
+        facts,
+        depth=0,
+        facts=True,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     evidence = response.get("evidence")
     _validate_evidence(evidence)
-    _validate_artifact_page_binding(facts, evidence)
-    _validate_review_manifest_page_binding(facts, evidence)
+    _validate_artifact_page_binding(
+        facts,
+        evidence,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
+    _validate_review_manifest_page_binding(
+        facts,
+        evidence,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     _validate_action(response.get("next_action"))
 
     confirmation = response.get("confirmation")
@@ -1866,7 +1899,11 @@ def _validate_context_binding(value: Any) -> None:
 def _extract_facts(
     tool_name: str,
     raw_result: dict[str, Any],
+    *,
+    params: dict[str, Any] | None = None,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
+    safe_params = params if isinstance(params, dict) else {}
     payload = raw_result.get("data")
     if not isinstance(payload, dict):
         payload = raw_result
@@ -1882,7 +1919,22 @@ def _extract_facts(
         payload.get("artifact_page"),
         dict,
     ):
-        artifact_page = _normalize_artifact_page_fact(payload["artifact_page"])
+        requested_artifact_id = safe_params.get("artifact_id")
+        if isinstance(requested_artifact_id, str):
+            requested_artifact_id = requested_artifact_id.strip()
+        if (
+            exact_evidence_prevalidated
+            and payload["artifact_page"].get("artifact_id")
+            != requested_artifact_id
+        ):
+            raise CommanderContractError(
+                "INTERNAL_RESULT_INVALID",
+                "Prevalidated artifact page does not match the requested handle.",
+            )
+        artifact_page = _normalize_artifact_page_fact(
+            payload["artifact_page"],
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
     is_review_manifest_read = tool_name == "review_manifest" or (
         tool_name == "run_mcp_workflow"
         and payload_workflow == "review_manifest"
@@ -1893,7 +1945,27 @@ def _extract_facts(
         payload.get("subject_page"),
         dict,
     ):
-        subject_page = _normalize_review_manifest_page_fact(payload["subject_page"])
+        if exact_evidence_prevalidated:
+            requested_page = safe_params.get("review_manifest_page", 1)
+            requested_manifest_id = safe_params.get("review_manifest_id")
+            if isinstance(requested_manifest_id, str):
+                requested_manifest_id = requested_manifest_id.strip()
+            raw_page = payload["subject_page"]
+            if (
+                raw_page.get("review_manifest_id")
+                != requested_manifest_id
+                or raw_page.get("subject_index")
+                != safe_params.get("review_manifest_subject_index")
+                or raw_page.get("page") != requested_page
+            ):
+                raise CommanderContractError(
+                    "INTERNAL_RESULT_INVALID",
+                    "Prevalidated manifest page does not match the requested subject.",
+                )
+        subject_page = _normalize_review_manifest_page_fact(
+            payload["subject_page"],
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
     facts_source: dict[str, Any] = {}
     source_summary = payload.get("summary")
     for key, value in payload.items():
@@ -1921,7 +1993,11 @@ def _extract_facts(
     return facts
 
 
-def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
+def _normalize_artifact_page_fact(
+    value: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
+) -> dict[str, Any]:
     required = {
         "artifact_id",
         "tool",
@@ -1973,7 +2049,10 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
-        or _contains_unsafe_public_text(content)
+        or (
+            not exact_evidence_prevalidated
+            and _contains_unsafe_public_text(content)
+        )
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -1998,6 +2077,8 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
 def _validate_artifact_page_binding(
     facts: dict[str, Any],
     evidence: Any,
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     artifact_page = facts.get("artifact_page")
     if artifact_page is None:
@@ -2007,7 +2088,10 @@ def _validate_artifact_page_binding(
             "INTERNAL_RESULT_INVALID",
             "facts.artifact_page must be an object.",
         )
-    normalized = _normalize_artifact_page_fact(artifact_page)
+    normalized = _normalize_artifact_page_fact(
+        artifact_page,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     if normalized != artifact_page:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -2029,6 +2113,8 @@ def _validate_artifact_page_binding(
 
 def _normalize_review_manifest_page_fact(
     value: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
     required = {
         "review_manifest_id",
@@ -2093,7 +2179,10 @@ def _normalize_review_manifest_page_fact(
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
-        or _contains_unsafe_public_text(content)
+        or (
+            not exact_evidence_prevalidated
+            and _contains_unsafe_public_text(content)
+        )
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -2119,6 +2208,8 @@ def _normalize_review_manifest_page_fact(
 def _validate_review_manifest_page_binding(
     facts: dict[str, Any],
     evidence: Any,
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     subject_page = facts.get("subject_page")
     if subject_page is None:
@@ -2128,7 +2219,10 @@ def _validate_review_manifest_page_binding(
             "INTERNAL_RESULT_INVALID",
             "facts.subject_page must be an object.",
         )
-    normalized = _normalize_review_manifest_page_fact(subject_page)
+    normalized = _normalize_review_manifest_page_fact(
+        subject_page,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     if normalized != subject_page:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -2996,6 +3090,7 @@ def _validate_public_value(
     *,
     depth: int,
     facts: bool,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     if depth > COMMANDER_PUBLIC_MAX_DEPTH:
         raise CommanderContractError(
@@ -3025,7 +3120,12 @@ def _validate_public_value(
                 "Public list exceeds the item limit.",
             )
         for item in value:
-            _validate_public_value(item, depth=depth + 1, facts=facts)
+            _validate_public_value(
+                item,
+                depth=depth + 1,
+                facts=facts,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            )
         return
     if isinstance(value, dict):
         if len(value) > COMMANDER_OBJECT_MAX_FIELDS:
@@ -3065,7 +3165,15 @@ def _validate_public_value(
                         "INTERNAL_RESULT_INVALID",
                         "facts.artifact_page must be an object.",
                     )
-                if _normalize_artifact_page_fact(nested) != nested:
+                if (
+                    _normalize_artifact_page_fact(
+                        nested,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
+                    != nested
+                ):
                     raise CommanderContractError(
                         "INTERNAL_RESULT_INVALID",
                         "facts.artifact_page is not in canonical form.",
@@ -3077,13 +3185,26 @@ def _validate_public_value(
                         "INTERNAL_RESULT_INVALID",
                         "facts.subject_page must be an object.",
                     )
-                if _normalize_review_manifest_page_fact(nested) != nested:
+                if (
+                    _normalize_review_manifest_page_fact(
+                        nested,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
+                    != nested
+                ):
                     raise CommanderContractError(
                         "INTERNAL_RESULT_INVALID",
                         "facts.subject_page is not in canonical form.",
                     )
                 continue
-            _validate_public_value(nested, depth=depth + 1, facts=facts)
+            _validate_public_value(
+                nested,
+                depth=depth + 1,
+                facts=facts,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            )
         return
     raise CommanderContractError(
         "INTERNAL_RESULT_INVALID",

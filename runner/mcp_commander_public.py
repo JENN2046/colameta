@@ -267,6 +267,8 @@ class CommanderPublicProjector:
         self,
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
+        *,
+        exact_evidence_prevalidated: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(tool_result, dict):
             return tool_result
@@ -279,7 +281,12 @@ class CommanderPublicProjector:
             and raw_data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
             try:
-                validate_commander_response(raw_data)
+                validate_commander_response(
+                    raw_data,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
             except Exception:
                 return self._wrap_commander_contract(
                     tool_name=tool_name,
@@ -290,6 +297,9 @@ class CommanderPublicProjector:
                         "message": "Commander 公共响应重复投影校验失败。",
                     },
                     params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
                 )
             projected_contract: dict[str, Any] = {
                 "ok": public_tool_result.get("ok") is True
@@ -337,7 +347,10 @@ class CommanderPublicProjector:
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
-                unsafe_exact_evidence = self._public_string(raw_content) != raw_content
+                unsafe_exact_evidence = (
+                    not exact_evidence_prevalidated
+                    and self._public_string(raw_content) != raw_content
+                )
             raw_page_expiry = raw_page.get("expires_at") if isinstance(raw_page, dict) else None
             if isinstance(raw_page_expiry, str) and raw_page_expiry:
                 review_manifest_page_expiry = raw_page_expiry
@@ -370,7 +383,11 @@ class CommanderPublicProjector:
                 result_artifact_page["tool"] = tool_name
                 unsafe_exact_evidence = (
                     unsafe_exact_evidence
-                    or self._public_string(raw_page["content"]) != raw_page["content"]
+                    or (
+                        not exact_evidence_prevalidated
+                        and self._public_string(raw_page["content"])
+                        != raw_page["content"]
+                    )
                 )
                 for field in COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS:
                     if field in raw_data:
@@ -385,6 +402,7 @@ class CommanderPublicProjector:
                     "message": "证据页包含 Commander 公共边界不允许公开的内容，已安全拒绝返回。",
                 },
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
@@ -429,6 +447,7 @@ class CommanderPublicProjector:
                 tool_name=tool_name,
                 projected_result=projected,
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if (
             tool_name == "run_mcp_workflow"
@@ -439,6 +458,7 @@ class CommanderPublicProjector:
                 tool_name=tool_name,
                 projected_result=self._project_gate_review_result(public_tool_result),
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
@@ -509,6 +529,7 @@ class CommanderPublicProjector:
                 clean_result if isinstance(clean_result, dict) else projected
             ),
             params=params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
         )
 
     @staticmethod
@@ -517,13 +538,18 @@ class CommanderPublicProjector:
         tool_name: str,
         projected_result: dict[str, Any],
         params: dict[str, Any] | None,
+        exact_evidence_prevalidated: bool = False,
     ) -> dict[str, Any]:
         response = build_commander_response(
             tool_name=tool_name,
             raw_result=projected_result,
             params=params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
         )
-        validate_commander_response(response)
+        validate_commander_response(
+            response,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
         result: dict[str, Any] = {
             "ok": projected_result.get("ok") is True
             and response["outcome"] != "failed",

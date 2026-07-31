@@ -103,11 +103,16 @@ data.evidence.content_sha256
 data.evidence.expires_at
 ```
 
-ChatGPT follows the single `data.next_action` to `read_result_artifact`.
-Resource-capable MCP clients may read the opaque ColaMeta URI through
-`resources/read`. A public resource continuation is rebuilt from an exact
-allowlist: `kind`, `tool`, `arguments.uri`, and an optional sanitized `reason`.
-Sibling paths, credentials, IDs, or diagnostics are never copied.
+When `data.outcome=completed`, ChatGPT follows the single `data.next_action` to
+`read_result_artifact`. For `confirmation_required`, the single
+`data.next_action` remains the exact context-bound confirmation action. Read
+the packaged preview first by calling `read_result_artifact` with
+`data.evidence.artifact_id` and `artifact_page=1`, or use `resources/read`;
+never invoke the confirmation action merely to read evidence. Resource-capable
+MCP clients may read the opaque ColaMeta URI through `resources/read`. A public
+resource continuation is rebuilt from an exact allowlist: `kind`, `tool`,
+`arguments.uri`, and an optional sanitized `reason`. Sibling paths,
+credentials, IDs, or diagnostics are never copied.
 
 ## Public minimization
 

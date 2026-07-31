@@ -681,11 +681,16 @@ data.outcome=blocked or failed
   When recovery exists, it is identical to the single data.next_action.
 
 data.evidence.kind=result_artifact
-  In ChatGPT, follow data.next_action to read_result_artifact. Each read returns
-  one page in data.facts.artifact_page while data.evidence preserves the same
-  artifact_id, page_count, expires_at, and content_sha256. Concatenate pages in
-  order and verify the hash. Resource-capable MCP clients may instead read the
-  opaque data.evidence.resource_uri through resources/read and continue through
+  When data.outcome=completed, follow data.next_action to read_result_artifact.
+  For confirmation_required, retain the exact apply/confirmation
+  data.next_action: read the preview evidence first by calling
+  read_result_artifact with data.evidence.artifact_id and artifact_page=1, or
+  use resources/read. Do not invoke the confirmation action merely to read the
+  artifact. Each artifact read returns one page in data.facts.artifact_page
+  while data.evidence preserves the same artifact_id, page_count, expires_at,
+  and content_sha256. Concatenate pages in order and verify the hash.
+  Resource-capable MCP clients may instead read the opaque
+  data.evidence.resource_uri through resources/read and continue through
   data.evidence.page_uri_template. Artifacts are read-only and grant no
   workflow, executor, Git, or delivery authority.
 ```

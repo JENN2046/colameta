@@ -2621,6 +2621,83 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             content=text,
         )
 
+    def _commander_public_typed_evidence_safety(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> bool | None:
+        """Preflight complete typed evidence before projecting an exact page."""
+
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_artifact_read = tool_name == "read_result_artifact" or (
+            tool_name == "run_mcp_workflow"
+            and workflow == MCP_RESULT_ARTIFACT_WORKFLOW
+            and phase == "read"
+        )
+        if is_artifact_read:
+            artifact_id = params.get("artifact_id")
+            if (
+                not isinstance(artifact_id, str)
+                or MCP_RESULT_ARTIFACT_ID_RE.fullmatch(
+                    artifact_id.strip()
+                )
+                is None
+            ):
+                return None
+            return self._commander_public_result_artifact_safety(
+                artifact_id.strip()
+            )
+
+        is_review_manifest_read = (
+            (
+                tool_name == "review_manifest"
+                or (
+                    tool_name == "run_mcp_workflow"
+                    and workflow == REVIEW_MANIFEST_WORKFLOW
+                )
+            )
+            and phase == "read"
+        )
+        if not is_review_manifest_read:
+            return None
+        review_manifest_id = params.get("review_manifest_id")
+        subject_index = params.get("review_manifest_subject_index")
+        page = params.get("review_manifest_page")
+        if (
+            not isinstance(review_manifest_id, str)
+            or not review_manifest_id.strip()
+            or isinstance(subject_index, bool)
+            or not isinstance(subject_index, int)
+            or subject_index < 1
+            or (
+                page is not None
+                and (
+                    isinstance(page, bool)
+                    or not isinstance(page, int)
+                    or page < 1
+                )
+            )
+        ):
+            return None
+        parsed = self._parse_mcp_review_manifest_uri(
+            self._mcp_review_manifest_uri(
+                review_manifest_id.strip(),
+                subject_index=subject_index,
+                page=page,
+            )
+        )
+        if parsed is None:
+            return None
+        return self._commander_public_review_manifest_subject_safety(
+            parsed
+        )
+
     def _commander_public_review_manifest_page_envelope_safety(
         self,
         resource_result: dict[str, Any],
@@ -3554,21 +3631,63 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
             return tool_result
         projector = self._commander_public_projector()
+        tool_name = str(tool_result.get("tool") or "unknown_tool")
+        try:
+            exact_evidence_safety = (
+                self._commander_public_typed_evidence_safety(
+                    tool_name,
+                    params,
+                )
+            )
+        except ReviewManifestError as exc:
+            public_error_code = (
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR"
+            )
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    public_error_code,
+                    exc.message,
+                ),
+                params,
+            )
+        if exact_evidence_safety is False:
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    "EVIDENCE_UNAVAILABLE",
+                    "完整证据未通过 Commander 公共安全校验，已拒绝读取。",
+                ),
+                params,
+            )
+        exact_evidence_prevalidated = exact_evidence_safety is True
         data = tool_result.get("data") if isinstance(tool_result, dict) else None
         if (
             isinstance(data, dict)
             and data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
-            return projector.project_tool_result(tool_result, params)
+            return projector.project_tool_result(
+                tool_result,
+                params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+            )
 
-        tool_name = str(tool_result.get("tool") or "unknown_tool")
         target_chars = (
             MCP_HARD_TOOL_RESULT_CHARS
             if tool_name == "render_commander_app"
             else MCP_TARGET_TOOL_RESULT_CHARS
         )
         if self._json_char_count(tool_result) <= target_chars:
-            return projector.project_tool_result(tool_result, params)
+            return projector.project_tool_result(
+                tool_result,
+                params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+            )
 
         safe_artifact_payload = projector.sanitize_for_artifact(tool_result)
         if not isinstance(safe_artifact_payload, dict):
@@ -3580,6 +3699,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法建立安全的 Commander 公共证据。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
             )
         artifact_fields = self._store_packaged_result_artifact(
             tool_name,
@@ -3594,9 +3716,16 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法建立可恢复的 Commander 公共证据。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
             )
 
-        projected = projector.project_tool_result(tool_result, params)
+        projected = projector.project_tool_result(
+            tool_result,
+            params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
         contract = projected.get("data") if isinstance(projected, dict) else None
         if not isinstance(contract, dict):
             return projector.project_tool_result(
@@ -3607,6 +3736,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果的 Commander 公共响应构建失败。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
             )
         packaged_contract = copy.deepcopy(contract)
         packaged_contract["evidence"] = {
@@ -3639,7 +3771,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "reason": "读取完整公共安全结果的第 1 页并核对内容哈希。",
             }
         try:
-            validate_commander_response(packaged_contract)
+            validate_commander_response(
+                packaged_contract,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+            )
         except Exception:
             return projector.project_tool_result(
                 {
@@ -3649,6 +3786,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法满足 Commander 公共响应契约。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
             )
         packaged_result = copy.deepcopy(projected)
         packaged_result["data"] = packaged_contract
@@ -4507,32 +4647,25 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
-        is_commander_artifact_read = (
-            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
-            and (
-                name == "read_result_artifact"
-                or (
-                    name == "run_mcp_workflow"
-                    and _policy_string_param(params, "workflow")
-                    == MCP_RESULT_ARTIFACT_WORKFLOW
-                    and _policy_string_param(params, "phase") == "read"
+        try:
+            exact_evidence_safety = (
+                self._commander_public_typed_evidence_safety(
+                    name,
+                    params,
                 )
             )
-        )
-        artifact_id = params.get("artifact_id")
-        if (
-            is_commander_artifact_read
-            and isinstance(artifact_id, str)
-            and MCP_RESULT_ARTIFACT_ID_RE.fullmatch(artifact_id.strip())
-            and self._commander_public_result_artifact_safety(
-                artifact_id.strip()
+        except ReviewManifestError as exc:
+            return self._tool_error(
+                name,
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR",
+                exc.message,
             )
-            is False
-        ):
+        if exact_evidence_safety is False:
             return self._tool_error(
                 name,
                 "EVIDENCE_UNAVAILABLE",
-                "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
+                "完整证据未通过 Commander 公共安全校验，已拒绝读取。",
             )
         operator_request = (
             name == "run_mcp_workflow"

@@ -75,6 +75,22 @@ def test_usage_docs_require_nested_commander_response_paths() -> None:
         assert "读取 data；继续看 read_only" not in text
 
 
+def test_public_docs_keep_artifact_reads_separate_from_confirmation_actions() -> None:
+    english = USAGE_DOCS[0].read_text(encoding="utf-8")
+    chinese = USAGE_DOCS[1].read_text(encoding="utf-8")
+    contract = CONTRACT_DOC.read_text(encoding="utf-8")
+
+    assert "When data.outcome=completed" in english
+    assert "For confirmation_required" in english
+    assert "Do not invoke the confirmation action" in english
+    assert "仅当 data.outcome=completed" in chinese
+    assert "对于 confirmation_required" in chinese
+    assert "不得为了读取 Artifact 而执行确认动作" in chinese
+    assert "When `data.outcome=completed`" in contract
+    assert "For `confirmation_required`" in contract
+    assert "never invoke the confirmation action" in contract
+
+
 def test_usage_docs_keep_commander_error_recovery_on_the_public_surface() -> None:
     section_bounds = (
         (USAGE_DOCS[0], "Common errors:", "### Manifest-bound independent review"),

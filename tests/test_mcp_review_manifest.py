@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from runner.commander_contract import validate_commander_response
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
@@ -1192,8 +1193,30 @@ def test_commander_resources_read_validates_whole_subject_before_paging(
     descriptor = inspection_data["facts"]["subjects"][0]
     assert descriptor["page_count"] == 2
 
+    typed_pages: list[str] = []
     pages: list[str] = []
     for page_number in (1, 2):
+        typed = server.call_tool_for_agent(
+            "review_manifest",
+            {
+                "phase": "read",
+                "review_manifest_id": inspection_data["evidence"][
+                    "review_manifest_id"
+                ],
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": page_number,
+            },
+        )
+        assert typed["ok"] is True
+        typed_contract = typed["data"]
+        validate_commander_response(
+            typed_contract,
+            exact_evidence_prevalidated=True,
+        )
+        typed_page = typed_contract["facts"]["subject_page"]
+        assert typed_page["page"] == page_number
+        typed_pages.append(typed_page["content"])
+
         response = _resource_read(
             server,
             f"{descriptor['resource_uri']}/pages/{page_number}",
@@ -1205,6 +1228,7 @@ def test_commander_resources_read_validates_whole_subject_before_paging(
 
     assert pages[0] == content[:REVIEW_MANIFEST_PAGE_CHARS]
     assert pages[1] == content[REVIEW_MANIFEST_PAGE_CHARS:]
+    assert typed_pages == pages
     assert "".join(pages) == content
 
 
@@ -1231,9 +1255,26 @@ def test_commander_resources_read_rejects_unsafe_whole_subject_across_pages(
     descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
         "subjects"
     ][0]
+    review_manifest_id = inspected["result"]["structuredContent"]["data"][
+        "evidence"
+    ]["review_manifest_id"]
     assert descriptor["page_count"] == 2
 
     for page_number in (1, 2):
+        typed = server.call_tool_for_agent(
+            "review_manifest",
+            {
+                "phase": "read",
+                "review_manifest_id": review_manifest_id,
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": page_number,
+            },
+        )
+        assert typed["ok"] is False
+        assert typed["data"]["outcome"] == "blocked"
+        assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert unsafe_uri not in json.dumps(typed, ensure_ascii=False)
+
         response = _resource_read(
             server,
             f"{descriptor['resource_uri']}/pages/{page_number}",

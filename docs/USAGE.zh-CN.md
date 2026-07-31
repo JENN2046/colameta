@@ -798,12 +798,16 @@ data.outcome=blocked 或 failed
   如存在恢复动作，它与唯一的 data.next_action 完全相同。
 
 data.evidence.kind=result_artifact
-  ChatGPT 沿 data.next_action 调用 read_result_artifact。每次读取的一页位于
-  data.facts.artifact_page；data.evidence 保持同一 artifact_id、page_count、
-  expires_at 和 content_sha256。按页拼接并校验哈希。支持资源方法的 MCP
-  client 也可通过 resources/read 读取 opaque data.evidence.resource_uri，再按
-  data.evidence.page_uri_template 续读。Artifact 只读，不授予 workflow、
-  executor、Git 或 delivery authority。
+  仅当 data.outcome=completed 时，ChatGPT 才沿 data.next_action 调用
+  read_result_artifact。对于 confirmation_required，必须保留精确的
+  apply/confirmation data.next_action；先使用 data.evidence.artifact_id 和
+  artifact_page=1 直接调用 read_result_artifact，或使用 resources/read
+  阅读 preview 证据。不得为了读取 Artifact 而执行确认动作。每次读取的一页
+  位于 data.facts.artifact_page；data.evidence 保持同一 artifact_id、
+  page_count、expires_at 和 content_sha256。按页拼接并校验哈希。支持资源
+  方法的 MCP client 也可通过 resources/read 读取 opaque
+  data.evidence.resource_uri，再按 data.evidence.page_uri_template 续读。
+  Artifact 只读，不授予 workflow、executor、Git 或 delivery authority。
 ```
 
 最常见的错误处理：
