@@ -579,7 +579,7 @@ def derive_commander_outcome(
         return "failed"
 
     containers = _result_containers(result)
-    public_error_code = _public_error_code(_raw_error_code(result))
+    public_error_code = commander_public_error_code(_raw_error_code(result))
     if public_error_code in _FAILED_PUBLIC_ERROR_CODES:
         return "failed"
 
@@ -1255,7 +1255,9 @@ def _first_nested_string(
     return None
 
 
-def _public_error_code(value: Any) -> str | None:
+def commander_public_error_code(value: Any) -> str | None:
+    """Map one internal or public error code to the stable Commander code."""
+
     if not isinstance(value, str) or not value.strip():
         return None
     normalized = re.sub(r"[^A-Z0-9_]+", "_", value.strip().upper()).strip("_")
@@ -2260,7 +2262,7 @@ def _normalize_error(
 ) -> dict[str, Any]:
     containers = _result_containers(raw_result)
     raw_code = _raw_error_code(raw_result)
-    public_code = _public_error_code(raw_code)
+    public_code = commander_public_error_code(raw_code)
     if public_code is None:
         public_code = _infer_blocker_error_code(_blocker_values(containers))
     if (

@@ -10,6 +10,8 @@ import copy
 import re
 from typing import Any, Iterable
 
+from runner.commander_contract import commander_public_error_code
+
 
 COMMANDER_JOURNEY_STAGES = frozenset(
     {"connect", "observe", "plan", "execute", "review", "validate", "close", "recover"}
@@ -51,12 +53,8 @@ _COMPATIBILITY_ONLY_WORKFLOWS = frozenset({"auto_preview"})
 _RECOVERY_GIT_ACTIONS = frozenset(
     {"restore_file_preview", "restore_file_apply", "revert_preview", "revert_apply"}
 )
-_PROJECT_SELECTION_BLOCKER_CODES = frozenset(
-    {
-        "PROJECT_NAME_REQUIRED",
-        "PROJECT_REQUIRED",
-        "PROJECT_NOT_REGISTERED",
-    }
+_PROJECT_SELECTION_PUBLIC_ERROR_CODES = frozenset(
+    {"PROJECT_REQUIRED", "PROJECT_NOT_REGISTERED"}
 )
 _ACTION_CONTAINER_KEYS = frozenset(
     {
@@ -343,9 +341,9 @@ def _first_string(value: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _contains_error_code(
+def _contains_public_error_code(
     value: Any,
-    expected_codes: frozenset[str],
+    expected_public_codes: frozenset[str],
     *,
     allow_code: bool = False,
 ) -> bool:
@@ -354,23 +352,23 @@ def _contains_error_code(
         for key in candidate_keys:
             candidate = value.get(key)
             if (
-                isinstance(candidate, str)
-                and candidate.strip().upper() in expected_codes
+                commander_public_error_code(candidate)
+                in expected_public_codes
             ):
                 return True
         for key, nested in value.items():
-            if _contains_error_code(
+            if _contains_public_error_code(
                 nested,
-                expected_codes,
+                expected_public_codes,
                 allow_code=key in {"error", "errors"},
             ):
                 return True
         return False
     if isinstance(value, list):
         return any(
-            _contains_error_code(
+            _contains_public_error_code(
                 nested,
-                expected_codes,
+                expected_public_codes,
                 allow_code=allow_code,
             )
             for nested in value
@@ -497,7 +495,10 @@ def _synthetic_recovery_action(
     params: dict[str, Any],
     raw_result: dict[str, Any],
 ) -> dict[str, Any]:
-    if _contains_error_code(raw_result, _PROJECT_SELECTION_BLOCKER_CODES):
+    if _contains_public_error_code(
+        raw_result,
+        _PROJECT_SELECTION_PUBLIC_ERROR_CODES,
+    ):
         return {
             "tool": "list_registered_projects",
             "arguments": {},

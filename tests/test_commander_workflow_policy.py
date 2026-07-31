@@ -445,10 +445,28 @@ def test_blocked_without_explicit_recovery_rereads_project_facts() -> None:
             {"workflow": "project_status"},
         ),
         (
+            {"error_code": "INVALID_PROJECT_NAME"},
+            {"workflow": "project_status"},
+        ),
+        (
             {"error": {"code": "PROJECT_NOT_REGISTERED"}},
             {
                 "workflow": "project_status",
                 "project_name": "stale-project",
+            },
+        ),
+        (
+            {"error_code": "PROJECT_UNAVAILABLE"},
+            {
+                "workflow": "project_status",
+                "project_name": "unavailable-project",
+            },
+        ),
+        (
+            {"error_code": "PROJECT_ROOT_UNAVAILABLE"},
+            {
+                "workflow": "project_status",
+                "project_name": "missing-root-project",
             },
         ),
     ],

@@ -264,11 +264,37 @@ def test_connector_smoke_not_ready_is_blocked_even_when_read_succeeds() -> None:
             {"workflow": "project_status"},
         ),
         (
+            "PROJECT_REQUIRED",
+            "PROJECT_REQUIRED",
+            {"workflow": "project_status"},
+        ),
+        (
+            "INVALID_PROJECT_NAME",
+            "PROJECT_REQUIRED",
+            {"workflow": "project_status"},
+        ),
+        (
             "PROJECT_NOT_REGISTERED",
             "PROJECT_NOT_REGISTERED",
             {
                 "workflow": "project_status",
                 "project_name": "stale-project",
+            },
+        ),
+        (
+            "PROJECT_UNAVAILABLE",
+            "PROJECT_NOT_REGISTERED",
+            {
+                "workflow": "project_status",
+                "project_name": "unavailable-project",
+            },
+        ),
+        (
+            "PROJECT_ROOT_UNAVAILABLE",
+            "PROJECT_NOT_REGISTERED",
+            {
+                "workflow": "project_status",
+                "project_name": "missing-root-project",
             },
         ),
     ],
