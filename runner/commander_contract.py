@@ -3527,7 +3527,7 @@ def _complete_keycap_sequence_end_at(
 
 
 def _is_resource_uri_whitespace(value: str) -> bool:
-    return value.isspace() or value == "\u200b"
+    return value.isspace() or value in {"\u200b", "\ufeff"}
 
 
 def _is_resource_uri_left_boundary_character(value: str) -> bool:

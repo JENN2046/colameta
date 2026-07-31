@@ -276,6 +276,11 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "serialized_zero_width_space_suffix": json.dumps(
             {"note": f"{uri}\u200bNext"}
         ),
+        "bom_prefix": f"\ufeff{uri}",
+        "escaped_bom_prefix": f"\\ufeff{uri}",
+        "serialized_bom_prefix": json.dumps(
+            {"note": f"\ufeff{uri}"}
+        ),
         "short_escape_left_boundary": json.dumps(
             {"content": f"\n{uri}"}
         ),

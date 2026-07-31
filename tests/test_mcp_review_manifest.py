@@ -1059,6 +1059,7 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     )
     escaped_space_json = json.dumps({"note": f"{uri}\\u0020Next"})
     zero_width_space_json = json.dumps({"note": f"{uri}\u200bNext"})
+    bom_prefix_json = json.dumps({"note": f"\ufeff{uri}"})
     short_escape_left_boundary = json.dumps(
         {"content": f"\n{uri}"}
     )
@@ -1076,6 +1077,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         {"note": f"before）{uri}（continue"}
     )
     content = (
+        f"\ufeff{uri}\n"
+        f"\\ufeff{uri}\n"
+        f"{bom_prefix_json}\n"
         f"请读取{uri}。\n"
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"

@@ -1057,8 +1057,11 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         ),
     ],
 )
-@pytest.mark.parametrize("separator", ["\u200b", "\\u200b"])
-def test_public_text_preserves_zero_width_space_resource_boundaries(
+@pytest.mark.parametrize(
+    "separator",
+    ["\u200b", "\\u200b", "\ufeff", "\\ufeff"],
+)
+def test_public_text_preserves_format_separator_resource_boundaries(
     uri: str,
     separator: str,
 ) -> None:
