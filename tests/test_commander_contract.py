@@ -1016,6 +1016,42 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
 
 
 @pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize("separator", ["\u200b", "\\u200b"])
+def test_public_text_preserves_zero_width_space_resource_boundaries(
+    uri: str,
+    separator: str,
+) -> None:
+    following = f"{uri}{separator}Next"
+    preceding = f"Before{separator}{uri}"
+
+    assert commander_public_text(following) == following
+    assert commander_public_text(preceding) == preceding
+    serialized = json.dumps({"following": following, "preceding": preceding})
+    assert commander_public_text(serialized) == serialized
+    private_suffix = f"{uri}{separator}/home/reviewer/private.txt"
+    public_private_suffix = commander_public_text(private_suffix)
+    assert uri in public_private_suffix
+    assert "/home/reviewer" not in public_private_suffix
+    assert "<local-path>" in public_private_suffix
+    disallowed_suffix = (
+        f"{uri}{separator}Colameta://review-manifest/opaque_handle_123_"
+    )
+    public_disallowed_suffix = commander_public_text(disallowed_suffix)
+    assert uri in public_disallowed_suffix
+    assert "Colameta://" not in public_disallowed_suffix
+    assert "<resource-uri>" in public_disallowed_suffix
+
+
+@pytest.mark.parametrize(
     "suffix",
     [
         "/private",

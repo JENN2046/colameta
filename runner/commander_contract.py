@@ -3520,8 +3520,12 @@ def _complete_keycap_sequence_end_at(
     return current[0]
 
 
+def _is_resource_uri_whitespace(value: str) -> bool:
+    return value.isspace() or value == "\u200b"
+
+
 def _is_resource_uri_left_boundary_character(value: str) -> bool:
-    if value.isspace() or value in "\"'`<>([{":
+    if _is_resource_uri_whitespace(value) or value in "\"'`<>([{":
         return True
     category = unicodedata.category(value)
     return bool(
@@ -3680,7 +3684,7 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
 
 def _is_resource_uri_hard_delimiter(value: str) -> bool:
     return bool(
-        value.isspace()
+        _is_resource_uri_whitespace(value)
         or unicodedata.category(value) == "Cc"
         or value in "\"'`>"
     )
@@ -3803,7 +3807,7 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     following = value[cursor]
     decoded_following = _decoded_json_unicode_character_at(value, cursor)
     return bool(
-        following.isspace()
+        _is_resource_uri_whitespace(following)
         or following in "\"'`>"
         or saw_hard_escaped_delimiter
         or (
@@ -3828,7 +3832,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     if index >= len(value):
         return True
     following = value[index]
-    if following.isspace() or following in "\"'`>":
+    if _is_resource_uri_whitespace(following) or following in "\"'`>":
         return True
     if _is_unicode_resource_uri_prose(following):
         return True
@@ -4020,7 +4024,7 @@ def _mask_literal_resource_uri_tokens_for_decoded_scan(value: str) -> str:
         token_cursor = match.end()
         while (
             token_cursor < len(value)
-            and not value[token_cursor].isspace()
+            and not _is_resource_uri_whitespace(value[token_cursor])
             and value[token_cursor] not in "\"'`<>"
         ):
             if value[token_cursor] == "\\":

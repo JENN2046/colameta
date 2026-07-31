@@ -1058,6 +1058,7 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; cafe\u0301{uri}"}
     )
     escaped_space_json = json.dumps({"note": f"{uri}\\u0020Next"})
+    zero_width_space_json = json.dumps({"note": f"{uri}\u200bNext"})
     content = (
         f"请读取{uri}。\n"
         f"Read {uri}。Next\n"
@@ -1076,6 +1077,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "https:\\/\\/example.com\n"
         f"Read {uri}\\u0020Next\n"
         f"{escaped_space_json}\n"
+        f"Read {uri}\u200bNext\n"
+        f"Read {uri}\\u200bNext\n"
+        f"{zero_width_space_json}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1210,6 +1214,69 @@ def test_commander_resources_read_rejects_unsafe_whole_subject_across_pages(
         )
         assert response["error"]["data"]["error_code"] == "evidence_unavailable"
         assert unsafe_uri not in json.dumps(response, ensure_ascii=False)
+
+
+def test_commander_resources_read_caches_whole_subject_safety_by_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        '{"content":"'
+        + ("\\" * (REVIEW_MANIFEST_PAGE_CHARS * 2))
+        + 'relative.txt"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    assert descriptor["page_count"] == 3
+
+    scans = 0
+    original_safety = (
+        server._commander_public_review_manifest_content_safety
+    )
+
+    def counting_safety(value: str) -> bool:
+        nonlocal scans
+        scans += 1
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_review_manifest_content_safety",
+        counting_safety,
+    )
+
+    pages: list[str] = []
+    for page_number in range(1, descriptor["page_count"] + 1):
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert "error" not in response
+        page = json.loads(response["result"]["contents"][0]["text"])
+        pages.append(page["content"])
+    repeated = _resource_read(
+        server,
+        f"{descriptor['resource_uri']}/pages/1",
+    )
+
+    assert "error" not in repeated
+    assert "".join(pages) == content
+    assert scans == 1
+    assert list(
+        server._commander_public_review_manifest_safety_cache
+    ) == [descriptor["sha256"]]
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:

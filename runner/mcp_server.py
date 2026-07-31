@@ -10,6 +10,7 @@ import time
 import hashlib
 import hmac
 import urllib.request
+from collections import OrderedDict
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -106,6 +107,7 @@ from runner.mcp_private_operator import (
 from runner.mcp_result_artifacts import MCPResultArtifactStore, ResultArtifactHandle
 from runner.current_facts_artifact import process_current_facts_preview_store
 from runner.review_manifest import (
+    REVIEW_MANIFEST_MAX_SUBJECTS,
     REVIEW_MANIFEST_WORKFLOW,
     ReviewManifestError,
     ReviewManifestHandle,
@@ -304,6 +306,9 @@ MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
     minimum=60,
 )
 MCP_REVIEW_MANIFEST_MAX_ITEMS = 32
+COMMANDER_PUBLIC_REVIEW_MANIFEST_SAFETY_CACHE_MAX_ITEMS = (
+    MCP_REVIEW_MANIFEST_MAX_ITEMS * REVIEW_MANIFEST_MAX_SUBJECTS
+)
 MCP_REVIEW_MANIFEST_URI_RE = REVIEW_MANIFEST_URI_RE
 MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES = REVIEW_MANIFEST_RESOURCE_TEMPLATES
 COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION = _COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION
@@ -1074,6 +1079,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._review_manifest_store = ReviewManifestStore(
             ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
             max_items=MCP_REVIEW_MANIFEST_MAX_ITEMS,
+        )
+        self._commander_public_review_manifest_safety_cache: OrderedDict[
+            str, bool
+        ] = OrderedDict()
+        self._commander_public_review_manifest_safety_cache_lock = (
+            threading.Lock()
         )
         self._project_route_server_factory = ProjectRouteServerFactory(self)
         self.bridge = PlanningBridge()
@@ -2472,11 +2483,59 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         return isinstance(sanitized, dict) and sanitized == resource_result
 
-    def _commander_public_review_manifest_subject_content(
+    def _commander_public_review_manifest_content_safety(
+        self,
+        content: str,
+    ) -> bool:
+        whole_subject = {"content": content}
+        sanitized_subject = (
+            self._commander_public_projector().sanitize_for_artifact(
+                whole_subject
+            )
+        )
+        return (
+            isinstance(sanitized_subject, dict)
+            and sanitized_subject == whole_subject
+        )
+
+    def _commander_public_review_manifest_cached_safety(
+        self,
+        *,
+        subject_sha256: str,
+        content: str,
+    ) -> bool:
+        with self._commander_public_review_manifest_safety_cache_lock:
+            cached = self._commander_public_review_manifest_safety_cache.get(
+                subject_sha256
+            )
+            if cached is not None:
+                self._commander_public_review_manifest_safety_cache.move_to_end(
+                    subject_sha256
+                )
+                return cached
+
+        safe = self._commander_public_review_manifest_content_safety(content)
+        with self._commander_public_review_manifest_safety_cache_lock:
+            self._commander_public_review_manifest_safety_cache[
+                subject_sha256
+            ] = safe
+            self._commander_public_review_manifest_safety_cache.move_to_end(
+                subject_sha256
+            )
+            while (
+                len(self._commander_public_review_manifest_safety_cache)
+                > COMMANDER_PUBLIC_REVIEW_MANIFEST_SAFETY_CACHE_MAX_ITEMS
+            ):
+                self._commander_public_review_manifest_safety_cache.popitem(
+                    last=False
+                )
+        return safe
+
+    def _commander_public_review_manifest_subject_safety(
         self,
         parsed_review_manifest: tuple[str, int | None, int | None],
-    ) -> str | None:
-        """Load and verify a complete Manifest subject before page slicing."""
+    ) -> bool | None:
+        """Verify and cache complete-subject safety before page slicing."""
 
         review_manifest_id, subject_index, _page = parsed_review_manifest
         if subject_index is None:
@@ -2508,8 +2567,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 },
             )
         if len(text) > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
-            return None
-        return text
+            return False
+        return self._commander_public_review_manifest_cached_safety(
+            subject_sha256=subject.sha256,
+            content=text,
+        )
 
     def _commander_public_review_manifest_page_envelope_safety(
         self,
@@ -2853,7 +2915,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             "evidence_unavailable",
                             "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
                         )
-                whole_subject_content: str | None = None
+                whole_subject_safety: bool | None = None
                 if is_review_manifest:
                     access_error = self._mcp_read_scoped_resource_access_error(
                         auth_context,
@@ -2869,28 +2931,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             and parsed_review_manifest is not None
                             and parsed_review_manifest[1] is not None
                         ):
-                            whole_subject_content = (
-                                self._commander_public_review_manifest_subject_content(
+                            whole_subject_safety = (
+                                self._commander_public_review_manifest_subject_safety(
                                     parsed_review_manifest
                                 )
                             )
-                            if whole_subject_content is not None:
-                                whole_subject = {"content": whole_subject_content}
-                                sanitized_subject = (
-                                    self._commander_public_projector().sanitize_for_artifact(
-                                        whole_subject
-                                    )
+                            if whole_subject_safety is False:
+                                return self._protocol_error(
+                                    req_id,
+                                    -32602,
+                                    "evidence_unavailable",
+                                    "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
                                 )
-                                if (
-                                    not isinstance(sanitized_subject, dict)
-                                    or sanitized_subject != whole_subject
-                                ):
-                                    return self._protocol_error(
-                                        req_id,
-                                        -32602,
-                                        "evidence_unavailable",
-                                        "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
-                                    )
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
                         return self._protocol_error(
@@ -2930,7 +2982,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             resource_result
                         )
                         if parsed_review_manifest[1] is not None
-                        and whole_subject_content is not None
+                        and whole_subject_safety is True
                         else self._commander_public_resource_read_safety(
                             resource_result
                         )

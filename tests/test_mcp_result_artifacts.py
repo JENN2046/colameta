@@ -271,6 +271,11 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "serialized_escaped_space_suffix": json.dumps(
             {"note": f"{uri}\\u0020Next"}
         ),
+        "zero_width_space_suffix": f"{uri}\u200bNext",
+        "escaped_zero_width_space_suffix": f"{uri}\\u200bNext",
+        "serialized_zero_width_space_suffix": json.dumps(
+            {"note": f"{uri}\u200bNext"}
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
