@@ -19,7 +19,7 @@ def test_chatgpt_development_contract_rehearsal_covers_the_typed_public_paths() 
     assert result["release_eligible"] is False
     assert tuple(result["commander_tool_inventory"]["observed"]) == COMMANDER_EXPOSED_TOOLS
     assert result["context_binding_negative"] == {
-        "error_code": "CONTEXT_BINDING_MISMATCH",
+        "error_code": "PROJECT_CONTEXT_MISMATCH",
         "archive_written": False,
     }
     assert result["review_manifest"]["page_count"] > 1

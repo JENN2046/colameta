@@ -62,7 +62,20 @@ def _tool_data(
     _require(result.get("tool") == tool_name, f"{tool_name} returned an unexpected tool name")
     data = result.get("data")
     _require(isinstance(data, dict), f"{tool_name} returned non-object data")
+    _require(
+        data.get("schema_version") == "commander_response.v1",
+        f"{tool_name} returned an unexpected public schema",
+    )
     return data
+
+
+def _contract_object(
+    contract: dict[str, Any],
+    field: str,
+) -> dict[str, Any]:
+    value = contract.get(field)
+    _require(isinstance(value, dict), f"Commander contract omitted object field {field}")
+    return value
 
 
 def _tool_error(
@@ -199,11 +212,14 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             {
                 "workflow": "current_facts",
                 "phase": "apply",
-                "preview_id": current_facts_preview["preview_id"],
+                "preview_id": _contract_object(
+                    current_facts_preview,
+                    "confirmation",
+                )["preview_id"],
             },
         )
         _require(
-            missing_binding.get("error_code") == "CONTEXT_BINDING_MISMATCH",
+            missing_binding.get("error_code") == "PROJECT_CONTEXT_MISMATCH",
             f"unexpected context mismatch result: {missing_binding}",
         )
         _require(
@@ -217,7 +233,9 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             "review_manifest",
             {"phase": "inspect", "review_manifest": _review_manifest(project)},
         )
-        subjects = inspected.get("subjects")
+        inspected_facts = _contract_object(inspected, "facts")
+        inspected_evidence = _contract_object(inspected, "evidence")
+        subjects = inspected_facts.get("subjects")
         _require(isinstance(subjects, list) and len(subjects) == 1, "review inspect returned wrong subject set")
         subject = subjects[0]
         _require(isinstance(subject, dict), "review inspect returned malformed subject")
@@ -228,7 +246,7 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
 
         review_pages: list[str] = []
         review_ranges: list[tuple[int, int]] = []
-        review_expiry = inspected.get("expires_at")
+        review_expiry = inspected_evidence.get("expires_at")
         _require(
             isinstance(review_expiry, str) and review_expiry,
             "review inspect omitted expiry",
@@ -240,16 +258,25 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
                 "review_manifest",
                 {
                     "phase": "read",
-                    "review_manifest_id": inspected["review_manifest_id"],
+                    "review_manifest_id": inspected_evidence["review_manifest_id"],
                     "review_manifest_subject_index": subject_index,
                     "review_manifest_page": page,
                 },
             )
-            read_page = read.get("subject_page")
+            read_facts = _contract_object(read, "facts")
+            read_evidence = _contract_object(read, "evidence")
+            read_page = read_facts.get("subject_page")
             _require(isinstance(read_page, dict), "review read omitted subject_page")
-            _require(read_page.get("review_manifest_id") == inspected["review_manifest_id"], "review handle changed")
+            _require(
+                read_page.get("review_manifest_id")
+                == inspected_evidence["review_manifest_id"],
+                "review handle changed",
+            )
             _require(read_page.get("sha256") == subject["sha256"], "review subject hash changed")
-            _require(read.get("expires_at") == review_expiry, "review read expiry changed")
+            _require(
+                read_evidence.get("expires_at") == review_expiry,
+                "review read expiry changed",
+            )
             _require(read_page.get("expires_at") == review_expiry, "review expiry changed")
             _require(read_page.get("page") == page, "review page number changed")
             content = read_page.get("content")
@@ -270,11 +297,18 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             commander,
             trace,
             "review_manifest",
-            {"phase": "verify", "review_manifest_id": inspected["review_manifest_id"]},
+            {
+                "phase": "verify",
+                "review_manifest_id": inspected_evidence["review_manifest_id"],
+            },
         )
-        verification = verified.get("verification")
+        verification = _contract_object(verified, "facts").get("verification")
         _require(isinstance(verification, dict), "review verify omitted verification")
-        _require(verified.get("expires_at") == review_expiry, "review verify expiry changed")
+        _require(
+            _contract_object(verified, "evidence").get("expires_at")
+            == review_expiry,
+            "review verify expiry changed",
+        )
         _require(verification.get("context_binding") == "matched", "review verify did not match context")
         _require(verification.get("subject_hashes") == "matched", "review verify did not match hashes")
 
@@ -284,10 +318,11 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             "run_mcp_workflow",
             {"workflow": "current_facts", "phase": "inspect"},
         )
-        artifact_id = current_facts.get("artifact_id")
-        artifact_page_count = current_facts.get("page_count")
-        artifact_sha256 = current_facts.get("content_sha256")
-        artifact_expiry = current_facts.get("expires_at")
+        current_facts_evidence = _contract_object(current_facts, "evidence")
+        artifact_id = current_facts_evidence.get("artifact_id")
+        artifact_page_count = current_facts_evidence.get("page_count")
+        artifact_sha256 = current_facts_evidence.get("content_sha256")
+        artifact_expiry = current_facts_evidence.get("expires_at")
         _require(isinstance(artifact_id, str) and artifact_id, "current facts omitted artifact_id")
         _require(isinstance(artifact_page_count, int) and artifact_page_count > 1, "current facts did not package")
         _require(isinstance(artifact_sha256, str) and len(artifact_sha256) == 64, "current facts omitted artifact SHA")
@@ -302,11 +337,19 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
                 "read_result_artifact",
                 {"artifact_id": artifact_id, "artifact_page": page},
             )
-            artifact_page = read.get("artifact_page")
+            read_facts = _contract_object(read, "facts")
+            read_evidence = _contract_object(read, "evidence")
+            artifact_page = read_facts.get("artifact_page")
             _require(isinstance(artifact_page, dict), "artifact read omitted artifact_page")
-            _require(read.get("artifact_id") == artifact_id, "artifact handle changed")
-            _require(read.get("content_sha256") == artifact_sha256, "artifact SHA changed")
-            _require(read.get("expires_at") == artifact_expiry, "artifact expiry changed")
+            _require(read_evidence.get("artifact_id") == artifact_id, "artifact handle changed")
+            _require(
+                read_evidence.get("content_sha256") == artifact_sha256,
+                "artifact SHA changed",
+            )
+            _require(
+                read_evidence.get("expires_at") == artifact_expiry,
+                "artifact expiry changed",
+            )
             _require(artifact_page.get("page") == page, "artifact page number changed")
             content = artifact_page.get("content")
             _require(isinstance(content, str), "artifact page content is not text")
@@ -354,7 +397,7 @@ def run_chatgpt_development_contract_rehearsal() -> dict[str, Any]:
             "advanced_examples_absent_from_chatgpt": True,
         },
         "context_binding_negative": {
-            "error_code": "CONTEXT_BINDING_MISMATCH",
+            "error_code": "PROJECT_CONTEXT_MISMATCH",
             "archive_written": False,
         },
         "review_manifest": {

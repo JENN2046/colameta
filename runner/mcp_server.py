@@ -159,6 +159,11 @@ from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR, get_st
 from runner.stable_promotion_evidence import MCPStablePromotionEvidenceManager
 from runner.app_submission_work_items import AppSubmissionWorkItemCommands
 from runner.commander_projections import CommanderProjectionService
+from runner.commander_contract import (
+    COMMANDER_RESPONSE_SCHEMA_VERSION,
+    commander_response_schema,
+    validate_commander_response,
+)
 from runner.commander_widget import commander_widget_html
 from runner.mcp_commander_app import (
     COMMANDER_APP_MANIFEST_VERSION,
@@ -287,6 +292,7 @@ MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
 )
 MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
 MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
+COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS = 5_000_000
 MCP_RESULT_ARTIFACT_WORKFLOW = RESULT_ARTIFACT_WORKFLOW
 MCP_RESULT_ARTIFACT_ID_RE = RESULT_ARTIFACT_ID_RE
 MCP_RESULT_ARTIFACT_URI_RE = RESULT_ARTIFACT_URI_RE
@@ -410,6 +416,10 @@ _OPERATOR_BATCH_INTERNAL_DISPATCH: ContextVar[bool] = ContextVar(
 )
 _CURRENT_FACTS_INTERNAL_ANALYZE: ContextVar[bool] = ContextVar(
     "current_facts_internal_analyze",
+    default=False,
+)
+_COMMANDER_PUBLIC_REQUEST: ContextVar[bool] = ContextVar(
+    "commander_public_request",
     default=False,
 )
 _normalize_run_mcp_workflow_name = normalize_workflow_name
@@ -1186,6 +1196,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             commander_widget_uri=COMMANDER_APP_WIDGET_URI,
         )
         self.tool_defs.extend(self._work_item_tool_definitions(common_output_schema))
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER:
+            commander_output_schema = self._build_commander_output_schema()
+            for tool_def in self.tool_defs:
+                if tool_def.name in COMMANDER_EXPOSED_TOOLS:
+                    tool_def.output_schema = copy.deepcopy(commander_output_schema)
         apply_chatgpt_submission_tool_annotations(self.tool_defs)
         if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             if self.work_item_scope_mode != PILOT_SCOPE_MODE:
@@ -2387,6 +2402,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         tool_name: str,
         structured_tool_result: dict[str, Any],
     ) -> dict[str, Any] | None:
+        if _COMMANDER_PUBLIC_REQUEST.get():
+            public_payload = self._commander_public_projector().sanitize_for_artifact(
+                structured_tool_result
+            )
+            if not isinstance(public_payload, dict):
+                return None
+            structured_tool_result = public_payload
         return self._mcp_resources_service().store_packaged_result_artifact(
             tool_name,
             structured_tool_result,
@@ -2397,6 +2419,46 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         handle: ResultArtifactHandle,
     ) -> dict[str, Any]:
         return self._mcp_resources_service().result_artifact_manifest_fields(handle)
+
+    def _commander_public_result_artifact_safety(
+        self,
+        artifact_id: str,
+    ) -> bool | None:
+        """Check the complete stored JSON payload before exposing any page."""
+
+        first = self._mcp_result_artifact_store.read_page(artifact_id, 1)
+        if first is None:
+            return None
+        pages: list[str] = []
+        total_chars = 0
+        for page_number in range(1, first.page_count + 1):
+            page = self._mcp_result_artifact_store.read_page(
+                artifact_id,
+                page_number,
+            )
+            if (
+                page is None
+                or page.content_sha256 != first.content_sha256
+                or page.page_count != first.page_count
+            ):
+                return False
+            total_chars += len(page.content)
+            if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
+                return False
+            pages.append(page.content)
+        content = "".join(pages)
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != first.content_sha256:
+            return False
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        sanitized = self._commander_public_projector().sanitize_for_artifact(
+            payload
+        )
+        return isinstance(sanitized, dict) and sanitized == payload
 
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
@@ -2693,6 +2755,24 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     if access_error is not None:
                         error_code, message = access_error
                         return self._protocol_error(req_id, -32602, error_code, message)
+                    parsed_artifact = self._parse_mcp_result_artifact_uri(
+                        normalized_uri
+                    )
+                    if (
+                        self.mcp_exposure_profile
+                        == MCP_EXPOSURE_PROFILE_COMMANDER
+                        and parsed_artifact is not None
+                        and self._commander_public_result_artifact_safety(
+                            parsed_artifact[0]
+                        )
+                        is False
+                    ):
+                        return self._protocol_error(
+                            req_id,
+                            -32602,
+                            "evidence_unavailable",
+                            "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
+                        )
                 if is_review_manifest:
                     access_error = self._mcp_read_scoped_resource_access_error(
                         auth_context,
@@ -3215,6 +3295,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
 
 
+    def _commander_public_projector(self) -> CommanderPublicProjector:
+        hidden_tool_names = {
+            tool_name
+            for profile_tools in _PROFILE_ORDERS.values()
+            for tool_name in profile_tools
+            if tool_name not in COMMANDER_EXPOSED_TOOLS
+        }
+        return CommanderPublicProjector(
+            self.project_root,
+            hidden_tool_names=hidden_tool_names,
+        )
+
     def _commander_public_project_tool_result(
         self,
         tool_result: dict[str, Any],
@@ -3222,7 +3314,106 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> dict[str, Any]:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
             return tool_result
-        return self._commander_public_projector().project_tool_result(tool_result, params)
+        projector = self._commander_public_projector()
+        data = tool_result.get("data") if isinstance(tool_result, dict) else None
+        if (
+            isinstance(data, dict)
+            and data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
+        ):
+            return projector.project_tool_result(tool_result, params)
+
+        tool_name = str(tool_result.get("tool") or "unknown_tool")
+        target_chars = (
+            MCP_HARD_TOOL_RESULT_CHARS
+            if tool_name == "render_commander_app"
+            else MCP_TARGET_TOOL_RESULT_CHARS
+        )
+        if self._json_char_count(tool_result) <= target_chars:
+            return projector.project_tool_result(tool_result, params)
+
+        safe_artifact_payload = projector.sanitize_for_artifact(tool_result)
+        if not isinstance(safe_artifact_payload, dict):
+            return projector.project_tool_result(
+                {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error_code": "PUBLIC_PROJECTION_FAILED",
+                    "message": "大结果无法建立安全的 Commander 公共证据。",
+                },
+                params,
+            )
+        artifact_fields = self._store_packaged_result_artifact(
+            tool_name,
+            safe_artifact_payload,
+        )
+        if artifact_fields is None:
+            return projector.project_tool_result(
+                {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error_code": "PUBLIC_PROJECTION_FAILED",
+                    "message": "大结果无法建立可恢复的 Commander 公共证据。",
+                },
+                params,
+            )
+
+        projected = projector.project_tool_result(tool_result, params)
+        contract = projected.get("data") if isinstance(projected, dict) else None
+        if not isinstance(contract, dict):
+            return projector.project_tool_result(
+                {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error_code": "PUBLIC_PROJECTION_FAILED",
+                    "message": "大结果的 Commander 公共响应构建失败。",
+                },
+                params,
+            )
+        packaged_contract = copy.deepcopy(contract)
+        packaged_contract["evidence"] = {
+            "kind": "result_artifact",
+            **artifact_fields,
+        }
+        facts = packaged_contract.get("facts")
+        if not isinstance(facts, dict):
+            facts = {}
+        else:
+            facts = {
+                key: value
+                for index, (key, value) in enumerate(facts.items())
+                if index < 150
+            }
+        packaged_contract["facts"] = facts
+        facts["result_packaged"] = True
+        facts["result_char_estimate"] = self._json_char_count(tool_result)
+        facts["artifact_projection"] = "public_sanitized_full_result"
+        if packaged_contract.get("outcome") == "completed":
+            packaged_contract["summary"] = (
+                "当前调用已完成；完整公共安全结果已保存为短期分页证据。"
+            )
+            packaged_contract["next_action"] = {
+                "tool": "read_result_artifact",
+                "arguments": {
+                    "artifact_id": artifact_fields["artifact_id"],
+                    "artifact_page": 1,
+                },
+                "reason": "读取完整公共安全结果的第 1 页并核对内容哈希。",
+            }
+        try:
+            validate_commander_response(packaged_contract)
+        except Exception:
+            return projector.project_tool_result(
+                {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error_code": "PUBLIC_PROJECTION_FAILED",
+                    "message": "大结果无法满足 Commander 公共响应契约。",
+                },
+                params,
+            )
+        packaged_result = copy.deepcopy(projected)
+        packaged_result["data"] = packaged_contract
+        return packaged_result
     def _visible_tool_names(self) -> list[str]:
         return [tool.name for tool in self._filter_tools_by_exposure_profile(self.tool_defs)]
 
@@ -3536,6 +3727,37 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 },
             },
             "required": ["ok", "tool"],
+            "additionalProperties": False,
+        }
+
+    def _build_commander_output_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": (
+                "Commander 公共工具统一返回 envelope；data 严格符合 "
+                "commander_response.v1。"
+            ),
+            "properties": {
+                "ok": {
+                    "type": "boolean",
+                    "description": "Whether the public tool envelope was produced safely.",
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": list(COMMANDER_EXPOSED_TOOLS),
+                    "description": "Commander public tool name.",
+                },
+                "data": commander_response_schema(),
+                "error_code": {
+                    "type": "string",
+                    "description": "Stable public error code when ok is false.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Bounded public error message when ok is false.",
+                },
+            },
+            "required": ["ok", "tool", "data"],
             "additionalProperties": False,
         }
 
@@ -4046,9 +4268,40 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
+        is_commander_artifact_read = (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+            and (
+                name == "read_result_artifact"
+                or (
+                    name == "run_mcp_workflow"
+                    and _policy_string_param(params, "workflow")
+                    == MCP_RESULT_ARTIFACT_WORKFLOW
+                    and _policy_string_param(params, "phase") == "read"
+                )
+            )
+        )
+        artifact_id = params.get("artifact_id")
+        if (
+            is_commander_artifact_read
+            and isinstance(artifact_id, str)
+            and MCP_RESULT_ARTIFACT_ID_RE.fullmatch(artifact_id.strip())
+            and self._commander_public_result_artifact_safety(
+                artifact_id.strip()
+            )
+            is False
+        ):
+            return self._tool_error(
+                name,
+                "EVIDENCE_UNAVAILABLE",
+                "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
+            )
         operator_request = (
             name == "run_mcp_workflow"
             and _policy_string_param(params, "workflow") == "operator_batch"
+        )
+        commander_request_token = _COMMANDER_PUBLIC_REQUEST.set(
+            _COMMANDER_PUBLIC_REQUEST.get()
+            or self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
         )
         try:
             with operator_authenticated_request_scope(auth_context), work_item_authenticated_request_scope(
@@ -4079,6 +4332,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             if operator_request:
                 return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
             return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。", {"message": str(e)})
+        finally:
+            _COMMANDER_PUBLIC_REQUEST.reset(commander_request_token)
 
     def _stop_authoritative_canary_if_inactive(self) -> None:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
@@ -6016,6 +6271,53 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._attach_canonical_state_to_operation_status(result, params)
         binding = self._collect_operation_context_binding(tool_name, params)
         if binding is None:
+            action_raw = params.get("action")
+            action = (
+                action_raw.strip().lower()
+                if isinstance(action_raw, str)
+                else ""
+            )
+            commander_routed_read = (
+                self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                or isinstance(params.get("__context_binding_project_name"), str)
+            )
+            if (
+                tool_name == "manage_git"
+                and commander_routed_read
+                and action
+                in {
+                    "diff",
+                    "diff_commits",
+                    "history_log",
+                    "history_show",
+                    "review_context",
+                    "status",
+                }
+            ):
+                # Read-only Git facts still bind to the observed project,
+                # branch, HEAD, Runner plan and current version.  This base
+                # binding is evidence only; it is not an operation authority
+                # and does not add a confirmation gate.
+                result["context_binding"] = collect_project_context_binding(
+                    self._context_binding_project_root(params),
+                    project_name=self._context_binding_project_name(params),
+                )
+                return result
+            workflow = (
+                _normalize_run_mcp_workflow_name(params.get("workflow"))
+                if tool_name == "run_mcp_workflow"
+                else ""
+            )
+            if workflow == GATE_REVIEW_WORKFLOW:
+                # Gate Review keeps its signed Work Item preview as the sole
+                # apply authority.  N1 still exposes the existing base
+                # Context Binding as an observation so the public
+                # confirmation is visibly tied to the routed project without
+                # overlaying a second authorization gate.
+                result["context_binding"] = collect_project_context_binding(
+                    self.project_root,
+                    project_name=self._context_binding_project_name(params),
+                )
             return result
         identity = self._operation_context_identity(tool_name, params)
         if identity is None:

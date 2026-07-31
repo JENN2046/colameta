@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
@@ -10,6 +12,31 @@ from runner.mcp_commander_public import (
     COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
     COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
 )
+
+GIT_HEAD = "c" * 40
+PLAN_SHA256 = "b" * 64
+MANIFEST_SHA256 = "d" * 64
+
+
+def _base_context_binding() -> dict[str, object]:
+    return {
+        "project_name": "colameta-self-dev",
+        "branch": "codex/nuobao-commander-contract-v1",
+        "head": GIT_HEAD,
+        "runner_plan": {
+            "mode": "managed",
+            "plan_sha256": PLAN_SHA256,
+        },
+        "current_version": "N1",
+    }
+
+
+def _operation_context_binding() -> dict[str, object]:
+    return {
+        **_base_context_binding(),
+        "review_unit": "commander-contract-preview",
+        "workflow_intent": "continue-bound-operation",
+    }
 
 
 def _nested_keys(value: object) -> set[str]:
@@ -97,8 +124,12 @@ def test_commander_profile_denies_hidden_tools_even_if_client_cached_them(tmp_pa
     assert result["error_code"] == "TOOL_NOT_EXPOSED"
 
     shaped = server._as_mcp_call_result(result, {"action": "read", "path": "README.md"})
-    assert shaped["structuredContent"]["tool"] == "manage_files"
+    assert shaped["structuredContent"]["tool"] == "<internal-tool>"
     assert shaped["structuredContent"]["error_code"] == "TOOL_NOT_EXPOSED"
+    assert "manage_files" not in json.dumps(
+        shaped["structuredContent"],
+        ensure_ascii=False,
+    )
 
 
 def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
@@ -161,8 +192,12 @@ def test_commander_public_project_list_returns_only_selection_fields(tmp_path) -
     result = server._call_tool("list_registered_projects", {})
 
     assert COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION == "commander_public_minimal.v1"
-    assert result["data"] == {
-        "ok": True,
+    contract = result["data"]
+    assert contract["schema_version"] == "commander_response.v1"
+    assert contract["outcome"] == "completed"
+    assert contract["journey_stage"] == "connect"
+    assert contract["context_binding"] is None
+    assert contract["facts"] == {
         "project_count": 1,
         "projects": [
             {
@@ -206,6 +241,7 @@ def test_commander_public_compact_tools_omit_local_diagnostics_and_hidden_action
         "ignored_files": [".colameta/runtime/private.json"],
         "safe_action": {"tool": "manage_git", "arguments": {"action": "status"}},
         "hidden_action": {"tool": "manage_files", "arguments": {"action": "read"}},
+        "context_binding": _base_context_binding(),
     }
 
     for tool_name in (
@@ -218,8 +254,11 @@ def test_commander_public_compact_tools_omit_local_diagnostics_and_hidden_action
             {"project_name": "colameta-self-dev"},
         )
         assert not (_nested_keys(projected) & forbidden_keys)
-        assert projected["data"]["safe_action"]["tool"] == "manage_git"
-        assert "hidden_action" not in projected["data"]
+        contract = projected["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "completed"
+        assert contract["facts"]["safe_action"]["tool"] == "manage_git"
+        assert "hidden_action" not in contract["facts"]
 
 
 def test_commander_public_projection_preserves_cc_s01_contract_facts(tmp_path) -> None:
@@ -290,12 +329,16 @@ def test_commander_public_projection_preserves_cc_s01_contract_facts(tmp_path) -
                 "executor": {"canonical_continuation_decision": canonical},
                 "evidence_provenance": provenance,
                 "authority_boundary": {"does_not_authorize_executor_run": True},
+                "context_binding": _base_context_binding(),
             },
         },
         {"project_name": "colameta-self-dev"},
     )
 
-    public_decision = projected["data"]["executor"]["canonical_continuation_decision"]
+    contract = projected["data"]
+    assert contract["outcome"] == "completed"
+    assert contract["context_binding"] == _base_context_binding()
+    public_decision = contract["facts"]["executor"]["canonical_continuation_decision"]
     assert public_decision["recommended_action"] == "human_review"
     assert public_decision["resume_allowed"] is False
     assert public_decision["start_new_allowed"] is False
@@ -307,14 +350,14 @@ def test_commander_public_projection_preserves_cc_s01_contract_facts(tmp_path) -
     assert "current_head" not in public_classification
     assert "session_id" not in public_classification["evidence"]
     assert "raw_logs" not in public_classification["evidence"]
-    public_provenance = projected["data"]["evidence_provenance"]
+    public_provenance = contract["facts"]["evidence_provenance"]
     assert public_provenance["entries"][0]["subject_path"] == "$.master_taskbook_hash"
     assert public_provenance["entries"][0]["execution_performed"] is False
     assert "session_id" not in public_provenance["entries"][0]
     assert "raw_logs" not in public_provenance["entries"][0]
     assert "record_id" not in public_provenance["entries"][0]["binding"]
     assert public_provenance["authority_boundary"]["eligible_means_accepted"] is False
-    assert projected["data"]["authority_boundary"]["does_not_authorize_executor_run"] is True
+    assert contract["facts"]["authority_boundary"]["does_not_authorize_executor_run"] is True
 
 
 def test_commander_public_smoke_replaces_runtime_heads_with_alignment_fact(tmp_path) -> None:
@@ -337,7 +380,7 @@ def test_commander_public_smoke_replaces_runtime_heads_with_alignment_fact(tmp_p
         {"project_name": "colameta-self-dev"},
     )
 
-    assert projected["data"]["runtime"] == {
+    assert projected["data"]["facts"]["runtime"] == {
         "runtime_aligned": True,
         "runtime_loaded_code_stale": False,
         "reload_needed_for_verification": False,
@@ -347,107 +390,156 @@ def test_commander_public_smoke_replaces_runtime_heads_with_alignment_fact(tmp_p
 
 def test_commander_public_operational_tools_keep_required_continuation_fields(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
-    fixture = {
-        "ok": True,
-        "preview_id": "preview_required_for_followup",
-        "run_id": "run_required_for_status",
-        "validation_run_id": "validation_required_for_status",
-        "workflow_id": "internal_record_id",
-        "updated_at": "2026-07-19T00:00:00Z",
-        "project_root": "/home/example/src/project",
-        "changed_files": ["runner/mcp_server.py"],
-        "message": "Prepared from /home/example/src/project without applying changes.",
-        "next_action": {"tool": "manage_git", "arguments": {"action": "status"}},
-        "hidden_action": {"tool": "manage_files", "arguments": {"action": "read"}},
-    }
+    workflow = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "run_mcp_workflow",
+            "data": {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "changed_files": ["runner/mcp_server.py"],
+                "message": "Prepared from /home/example/src/project without applying changes.",
+                "next_action": {
+                    "tool": "manage_validation_run",
+                    "arguments": {"action": "inspect"},
+                },
+                "hidden_action": {"tool": "manage_files", "arguments": {"action": "read"}},
+                "workflow_id": "internal_record_id",
+                "updated_at": "2026-07-19T00:00:00Z",
+                "project_root": "/home/example/src/project",
+            },
+        },
+        {"workflow": "docs_update", "project_name": "colameta-self-dev"},
+    )
+    workflow_contract = workflow["data"]
+    assert workflow_contract["outcome"] == "completed"
+    assert workflow_contract["facts"]["changed_files"] == ["runner/mcp_server.py"]
+    assert workflow_contract["next_action"]["tool"] == "manage_validation_run"
+    assert "hidden_action" not in workflow_contract["facts"]
 
-    for tool_name in ("run_mcp_workflow", "manage_validation_run", "manage_git"):
-        projected = server._commander_public_project_tool_result(
-            {"ok": True, "tool": tool_name, "data": fixture},
-            {"project_name": "colameta-self-dev"},
-        )
-        data = projected["data"]
-        assert data["preview_id"] == "preview_required_for_followup"
-        assert data["run_id"] == "run_required_for_status"
-        assert data["validation_run_id"] == "validation_required_for_status"
-        assert data["changed_files"] == ["runner/mcp_server.py"]
-        assert data["project_name"] == "colameta-self-dev"
-        assert "workflow_id" not in data
-        assert "updated_at" not in data
-        assert "project_root" not in data
-        assert "hidden_action" not in data
-        assert "/home/example" not in data["message"]
+    validation = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "manage_validation_run",
+            "data": {
+                "ok": True,
+                "status": "running",
+                "run_id": "validation_required_for_status",
+                "context_binding": _base_context_binding(),
+            },
+        },
+        {"action": "status", "project_name": "colameta-self-dev"},
+    )
+    validation_contract = validation["data"]
+    assert validation_contract["outcome"] == "in_progress"
+    assert validation_contract["next_action"] == {
+        "tool": "manage_validation_run",
+        "arguments": {
+            "action": "status",
+            "run_id": "validation_required_for_status",
+            "project_name": "colameta-self-dev",
+        },
+        "reason": "查询当前验证运行状态。",
+    }
+    assert "run_id" not in validation_contract["facts"]
+
+    git_preview = server._commander_public_project_tool_result(
+        {
+            "ok": True,
+            "tool": "manage_git",
+            "data": {
+                "ok": True,
+                "requires_confirmation": True,
+                "preview_id": "preview_required_for_followup",
+                "context_binding": _operation_context_binding(),
+                "changed_files": ["runner/mcp_server.py"],
+            },
+        },
+        {
+            "action": "commit_preview",
+            "project_name": "colameta-self-dev",
+        },
+    )
+    git_contract = git_preview["data"]
+    assert git_contract["outcome"] == "confirmation_required"
+    assert git_contract["confirmation"]["preview_id"] == "preview_required_for_followup"
+    assert git_contract["next_action"]["tool"] == "manage_git"
+    assert git_contract["next_action"]["arguments"]["action"] == "commit_apply"
+    assert git_contract["facts"]["changed_files"] == ["runner/mcp_server.py"]
+    assert not (
+        _nested_keys(workflow_contract)
+        & {"workflow_id", "updated_at", "project_root", "hidden_action"}
+    )
 
 
 def test_commander_public_review_manifest_preserves_expiry_contract(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     expiry = "2026-07-24T02:54:41.298082+00:00"
+    manifest_id = "manifest_contract_fixture"
+
+    def manifest_result(phase: str) -> dict[str, object]:
+        return {
+            "ok": True,
+            "workflow": "review_manifest",
+            "phase": phase,
+            "review_manifest_id": manifest_id,
+            "manifest_resource_uri": f"colameta://review-manifest/{manifest_id}",
+            "manifest_sha256": MANIFEST_SHA256,
+            "expires_at": expiry,
+            "context_binding": _operation_context_binding(),
+        }
 
     inspected = server._commander_public_project_tool_result(
         {
             "ok": True,
             "tool": "review_manifest",
-            "data": {
-                "ok": True,
-                "workflow": "review_manifest",
-                "phase": "inspect",
-                "review_manifest_id": "manifest_contract_fixture",
-                "expires_at": expiry,
-            },
+            "data": manifest_result("inspect"),
         },
         {"phase": "inspect"},
     )
-    assert inspected["data"]["expires_at"] == expiry
+    assert inspected["data"]["evidence"]["expires_at"] == expiry
 
     verified = server._commander_public_project_tool_result(
         {
             "ok": True,
             "tool": "review_manifest",
-            "data": {
-                "ok": True,
-                "workflow": "review_manifest",
-                "phase": "verify",
-                "review_manifest_id": "manifest_contract_fixture",
-                "expires_at": expiry,
-            },
+            "data": manifest_result("verify"),
         },
         {"phase": "verify"},
     )
-    assert verified["data"]["expires_at"] == expiry
+    assert verified["data"]["evidence"]["expires_at"] == expiry
 
+    read_data = manifest_result("read")
+    read_data["subject_page"] = {
+        "review_manifest_id": manifest_id,
+        "review_unit": "commander-contract-preview",
+        "subject_index": 1,
+        "path": "runner/mcp_commander_public.py",
+        "sha256": "e" * 64,
+        "page": 1,
+        "page_count": 1,
+        "page_char_start": 0,
+        "page_char_end": 12,
+        "expires_at": expiry,
+        "content": "bounded text",
+    }
     read = server._commander_public_project_tool_result(
         {
             "ok": True,
             "tool": "review_manifest",
-            "data": {
-                "ok": True,
-                "workflow": "review_manifest",
-                "phase": "read",
-                "review_manifest_id": "manifest_contract_fixture",
-                "expires_at": expiry,
-                "subject_page": {
-                    "review_manifest_id": "manifest_contract_fixture",
-                    "subject_index": 1,
-                    "page": 1,
-                    "page_count": 1,
-                    "page_char_start": 0,
-                    "page_char_end": 12,
-                    "expires_at": expiry,
-                    "content": "bounded text",
-                },
-            },
+            "data": read_data,
         },
         {"phase": "read"},
     )
 
-    assert read["data"]["expires_at"] == expiry
-    assert read["data"]["subject_page"]["expires_at"] == expiry
-    assert read["data"]["subject_page"]["content"] == "bounded text"
+    assert read["data"]["evidence"]["expires_at"] == expiry
+    assert read["data"]["facts"]["subject_page"]["expires_at"] == expiry
+    assert read["data"]["facts"]["subject_page"]["content"] == "bounded text"
 
     mcp_read = server._as_mcp_call_result(read, {"phase": "read"})
     mcp_data = mcp_read["structuredContent"]["data"]
-    assert mcp_data["expires_at"] == expiry
-    assert mcp_data["subject_page"]["expires_at"] == expiry
+    assert mcp_data["evidence"]["expires_at"] == expiry
+    assert mcp_data["facts"]["subject_page"]["expires_at"] == expiry
 
 
 def test_commander_public_path_redaction_covers_all_absolute_local_roots(
@@ -464,12 +556,17 @@ def test_commander_public_path_redaction_covers_all_absolute_local_roots(
         {
             "ok": False,
             "tool": "manage_git",
-            "data": {"ok": False, "message": message},
+            "data": {
+                "ok": False,
+                "error_code": "WORKTREE_DIRTY",
+                "message": message,
+            },
         },
         {"project_name": "colameta-self-dev"},
     )
 
-    public_message = projected["data"]["message"]
+    assert projected["data"]["outcome"] == "blocked"
+    public_message = projected["data"]["error"]["message"]
     assert public_message.count("<local-path>") == 5
     for private_path in (
         "/etc/colameta/config.json",
@@ -496,12 +593,13 @@ def test_commander_legacy_agent_error_omits_internal_details(tmp_path) -> None:
 
     result = server.call_tool_for_agent("manage_git", {"action": "status"})
 
-    assert result == {
-        "ok": False,
-        "tool": "manage_git",
-        "error_code": "TOOL_EXEC_ERROR",
-        "message": "工具执行失败。",
-    }
+    assert result["ok"] is False
+    assert result["tool"] == "manage_git"
+    assert result["error_code"] == "INTERNAL_ERROR"
+    assert result["message"] == "工具执行失败，内部诊断未公开。"
+    assert result["data"]["schema_version"] == "commander_response.v1"
+    assert result["data"]["outcome"] == "failed"
+    assert result["data"]["error"]["code"] == "INTERNAL_ERROR"
 
 
 def test_normal_legacy_agent_error_keeps_existing_diagnostics(tmp_path) -> None:
@@ -529,7 +627,11 @@ def test_commander_file_uri_and_unc_redaction_applies_to_all_three_envelopes(
         f"local evidence {private_file_uri} and {private_unc}; "
         "docs https://example.com/operator/help"
     )
-    data = {"ok": True, "message": message}
+    data = {
+        "ok": True,
+        "message": message,
+        "context_binding": _base_context_binding(),
+    }
     raw_result = {"ok": True, "tool": "manage_git", "data": data}
     server.tools["manage_git"] = lambda _: data
 
@@ -538,7 +640,7 @@ def test_commander_file_uri_and_unc_redaction_applies_to_all_three_envelopes(
     actions = server._package_actions_rest_response("manage_git", params, raw_result)
 
     for envelope in (legacy, mcp, actions):
-        public_message = envelope["data"]["message"]
+        public_message = envelope["data"]["summary"]
         assert public_message.count("<local-path>") == 2
         assert private_file_uri not in public_message
         assert private_unc not in public_message
@@ -565,9 +667,11 @@ def test_commander_projection_applies_to_mcp_and_actions_envelopes(tmp_path) -> 
     }
 
     shaped = server._as_mcp_call_result(result, {"project_name": "colameta-self-dev"})
-    assert shaped["structuredContent"]["data"]["project_name"] == "colameta-self-dev"
-    assert "project_root" not in shaped["structuredContent"]["data"]
-    assert "pid" not in shaped["structuredContent"]["data"]
+    shaped_contract = shaped["structuredContent"]["data"]
+    assert shaped_contract["schema_version"] == "commander_response.v1"
+    assert shaped_contract["facts"]["project_name"] == "colameta-self-dev"
+    assert "project_root" not in shaped_contract["facts"]
+    assert "pid" not in shaped_contract["facts"]
     assert shaped["_meta"]["ui"]["resourceUri"] == "ui://colameta/commander/v1.html"
 
     actions = server._package_actions_rest_response(
@@ -575,9 +679,9 @@ def test_commander_projection_applies_to_mcp_and_actions_envelopes(tmp_path) -> 
         {"project_name": "colameta-self-dev"},
         result,
     )
-    assert "project_root" not in actions["data"]
-    assert "pid" not in actions["data"]
-    assert actions["data"]["safe_action"]["tool"] == "manage_git"
+    assert "project_root" not in actions["data"]["facts"]
+    assert "pid" not in actions["data"]["facts"]
+    assert actions["data"]["facts"]["safe_action"]["tool"] == "manage_git"
 
 
 def test_normal_profile_keeps_full_result_without_public_projection(tmp_path) -> None:

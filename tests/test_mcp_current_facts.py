@@ -60,33 +60,33 @@ def test_current_facts_inspect_uses_a_recoverable_typed_result_artifact(tmp_path
         )
     )
 
-    assert inspect["workflow"] == "current_facts"
-    assert inspect["phase"] == "inspect"
-    assert inspect["read_only"] is True
-    assert inspect["side_effects"] is False
-    assert inspect["current_facts"]["authority"] == "observation_only"
-    assert inspect["artifact_id"] == inspect["result_artifact"]["artifact_id"]
-    assert inspect["page_count"] > 1
-    assert inspect["expires_at"] == inspect["result_artifact"]["expires_at"]
-    assert inspect["recommended_next_reads"][0]["tool"] == "read_result_artifact"
+    facts = inspect["facts"]
+    evidence = inspect["evidence"]
+    assert facts["workflow"] == "current_facts"
+    assert facts["phase"] == "inspect"
+    assert facts["read_only"] is True
+    assert facts["side_effects"] is False
+    assert facts["current_facts"]["authority"] == "observation_only"
+    assert evidence["page_count"] > 1
+    assert inspect["next_action"]["tool"] == "read_result_artifact"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
     pages: list[str] = []
-    for page in range(1, inspect["page_count"] + 1):
+    for page in range(1, evidence["page_count"] + 1):
         read = _data(
             server.call_tool_for_agent(
                 "read_result_artifact",
-                {"artifact_id": inspect["artifact_id"], "artifact_page": page},
+                {"artifact_id": evidence["artifact_id"], "artifact_page": page},
             )
         )
-        assert read["read_only"] is True
-        assert read["side_effects"] is False
-        assert read["content_sha256"] == inspect["content_sha256"]
-        assert read["expires_at"] == inspect["expires_at"]
-        pages.append(read["artifact_page"]["content"])
+        assert read["facts"]["read_only"] is True
+        assert read["facts"]["side_effects"] is False
+        assert read["evidence"]["content_sha256"] == evidence["content_sha256"]
+        assert read["evidence"]["expires_at"] == evidence["expires_at"]
+        pages.append(read["facts"]["artifact_page"]["content"])
 
     restored = "".join(pages)
-    assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == inspect["content_sha256"]
+    assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == evidence["content_sha256"]
     payload = json.loads(restored)
     assert payload["data"]["workflow"] == "current_facts"
     assert payload["data"]["current_facts"]["authority_boundary"]["snapshot_is_observation_only"] is True
@@ -124,23 +124,24 @@ def test_routed_current_facts_artifact_remains_in_the_serving_store(
         )
     )
 
+    evidence = inspect["evidence"]
     pages: list[str] = []
-    for page in range(1, inspect["page_count"] + 1):
+    for page in range(1, evidence["page_count"] + 1):
         read = _data(
             server.call_tool_for_agent(
                 "read_result_artifact",
                 {
-                    "artifact_id": inspect["artifact_id"],
+                    "artifact_id": evidence["artifact_id"],
                     "artifact_page": page,
                 },
             )
         )
-        assert read["content_sha256"] == inspect["content_sha256"]
-        pages.append(read["artifact_page"]["content"])
+        assert read["evidence"]["content_sha256"] == evidence["content_sha256"]
+        pages.append(read["facts"]["artifact_page"]["content"])
 
     restored = "".join(pages)
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == (
-        inspect["content_sha256"]
+        evidence["content_sha256"]
     )
     payload = json.loads(restored)
     assert payload["data"]["workflow"] == "current_facts"
@@ -158,8 +159,8 @@ def test_current_facts_preview_is_observational_until_its_explicit_apply(tmp_pat
         )
     )
 
-    assert preview["read_only"] is True
-    assert preview["side_effects"] is False
+    assert preview["facts"]["read_only"] is True
+    assert preview["facts"]["side_effects"] is False
     assert _git_status(project) == ""
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
@@ -174,7 +175,7 @@ def test_current_facts_archive_apply_requires_context_and_writes_only_after_prev
             {"workflow": "current_facts", "phase": "preview"},
         )
     )
-    assert preview["requires_confirmation"] is True
+    assert preview["outcome"] == "confirmation_required"
     assert preview["context_binding"]["workflow_intent"] == "workflow:current_facts"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
@@ -183,28 +184,32 @@ def test_current_facts_archive_apply_requires_context_and_writes_only_after_prev
         {
             "workflow": "current_facts",
             "phase": "apply",
-            "preview_id": preview["preview_id"],
+            "preview_id": preview["confirmation"]["preview_id"],
         },
     )
     assert missing_binding["ok"] is False
-    assert missing_binding["error_code"] == "CONTEXT_BINDING_MISMATCH"
+    assert missing_binding["error_code"] == "PROJECT_CONTEXT_MISMATCH"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
-    apply_action = next(
-        action
-        for action in preview["next_actions"]
-        if action.get("tool") == "run_mcp_workflow"
-        and action.get("params", {}).get("phase") == "apply"
+    apply_action = preview["next_action"]
+    applied = _data(
+        server.call_tool_for_agent(
+            "run_mcp_workflow",
+            apply_action["arguments"],
+        )
     )
-    applied = _data(server.call_tool_for_agent("run_mcp_workflow", apply_action["params"]))
-    assert applied["context_binding_verification"]["status"] == "matched"
-    assert applied["side_effects"] is True
-    assert applied["archive"]["status"] == "written"
-    assert applied["changed_files"] == [
-        item["path"] for item in applied["archive"]["files"]
+    applied_facts = applied["facts"]
+    assert applied_facts["context_binding_verification"]["status"] == "matched"
+    assert applied_facts["side_effects"] is True
+    assert applied_facts["archive"]["status"] == "written"
+    assert applied_facts["changed_files"] == [
+        item["path"] for item in applied_facts["archive"]["files"]
     ]
-    assert all(path.startswith(f"{CURRENT_FACTS_ARCHIVE_ROOT}/") for path in applied["changed_files"])
-    assert all((project / path).is_file() for path in applied["changed_files"])
+    assert all(
+        path.startswith(f"{CURRENT_FACTS_ARCHIVE_ROOT}/")
+        for path in applied_facts["changed_files"]
+    )
+    assert all((project / path).is_file() for path in applied_facts["changed_files"])
 
 
 def test_current_facts_apply_fails_closed_when_the_previewed_observation_changes(tmp_path: Path) -> None:
@@ -226,16 +231,15 @@ def test_current_facts_apply_fails_closed_when_the_previewed_observation_changes
         )
     )
     current_state["warnings"] = ["observation_changed_after_preview"]
-    apply_action = next(
-        action
-        for action in preview["next_actions"]
-        if action.get("params", {}).get("phase") == "apply"
+    apply_action = preview["next_action"]
+
+    stale = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        apply_action["arguments"],
     )
 
-    stale = server.call_tool_for_agent("run_mcp_workflow", apply_action["params"])
-
     assert stale["ok"] is False
-    assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"
+    assert stale["error_code"] == "STALE_PREVIEW"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
 
 
@@ -279,17 +283,13 @@ def test_current_facts_apply_rejects_refreshed_source_timestamp(
     current_state["currently_observed"]["runtime"]["observed_at"] = (
         "2026-07-24T08:10:00Z"
     )
-    apply_action = next(
-        action
-        for action in preview["next_actions"]
-        if action.get("params", {}).get("phase") == "apply"
-    )
+    apply_action = preview["next_action"]
 
     stale = server.call_tool_for_agent(
         "run_mcp_workflow",
-        apply_action["params"],
+        apply_action["arguments"],
     )
 
     assert stale["ok"] is False
-    assert stale["error_code"] == "CURRENT_FACTS_PREVIEW_STALE"
+    assert stale["error_code"] == "STALE_PREVIEW"
     assert not (project / CURRENT_FACTS_ARCHIVE_ROOT).exists()
