@@ -502,7 +502,7 @@ COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
     rf"^{_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}$"
 )
 _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE = re.compile(
-    rf"(?<![A-Za-z0-9_-]){_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}"
+    _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN
 )
 _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+"
@@ -3039,6 +3039,21 @@ def _is_unicode_resource_uri_delimiter(value: str) -> bool:
     )
 
 
+def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
+    if index <= 0:
+        return True
+    preceding = value[index - 1]
+    if preceding.isspace() or preceding in "\"'`<>([{":
+        return True
+    return bool(
+        not preceding.isascii()
+        and (
+            preceding in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or unicodedata.category(preceding) in {"Ps", "Pi"}
+        )
+    )
+
+
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
     while cursor < len(value) and value[cursor] in ".,;:!?)]}":
@@ -3068,7 +3083,10 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
 
 def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
     for match in _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE.finditer(value):
-        if _is_resource_uri_boundary(value, match.end()):
+        if _is_resource_uri_left_boundary(
+            value,
+            match.start(),
+        ) and _is_resource_uri_boundary(value, match.end()):
             yield match
 
 

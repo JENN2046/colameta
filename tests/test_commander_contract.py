@@ -821,6 +821,48 @@ def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
     assert commander_public_text(lookalike) == "Read <resource-uri>"
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "/",
+        "\\",
+        "@",
+        "%",
+        ":",
+        "=",
+        "&",
+        "?",
+        "#",
+        "+",
+        "_",
+        "-",
+        ".",
+        "／",
+        "＿",
+        "‿",
+        "—",
+    ],
+)
+def test_public_text_does_not_preserve_a_prefixed_opaque_uri_lookalike(
+    prefix: str,
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+
+    public = commander_public_text(f"Read {prefix}{uri}")
+
+    assert uri not in public
+    assert "<resource-uri>" in public
+
+
+@pytest.mark.parametrize("opening", ["(", "[", "{", "<", "（", "【", "“"])
+def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
+    opening: str,
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+
+    assert commander_public_text(f"{opening}{uri}") == f"{opening}{uri}"
+
+
 def test_public_text_redacts_an_opaque_uri_crossing_the_character_cutoff() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
@@ -911,6 +953,10 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}‿private"
+        ),
+        (
+            "/colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}"
         ),
     ],
 )
@@ -1055,6 +1101,10 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}—private"
+        ),
+        (
+            "@colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
         ),
     ],
 )
