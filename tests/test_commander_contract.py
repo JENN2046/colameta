@@ -644,7 +644,7 @@ def test_result_artifact_evidence_is_normalized_to_opaque_contract() -> None:
 def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> None:
     content = (
         "line one\n"
-        "Read colameta://result-artifact/opaque_handle_123_/pages/{page}\n"
+        "读取 colameta://result-artifact/opaque_handle_123_/pages/{page}。继续\n"
     )
     raw_result = {
         "ok": True,
@@ -775,6 +775,14 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     for punctuation in ".,;:!?":
         assert commander_public_text(f"Read {uri}{punctuation} Next") == (
             f"Read {uri}{punctuation} Next"
+        )
+    for punctuation in "。，；：！？":
+        assert commander_public_text(f"读取 {uri}{punctuation}继续") == (
+            f"读取 {uri}{punctuation}继续"
+        )
+    for closing in "）》】”’":
+        assert commander_public_text(f"读取（{uri}{closing}") == (
+            f"读取（{uri}{closing}"
         )
 
 

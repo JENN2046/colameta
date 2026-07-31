@@ -504,7 +504,8 @@ _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE = re.compile(
     rf"(?<![A-Za-z0-9_-]){_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}"
     r"(?=$|[\s\"'`>]|"
     r"[.,;:!?](?=$|[\s\"'`>)\]}])|"
-    r"[)\]}](?=$|[\s\"'`>.,;:!?]))"
+    r"[)\]}](?=$|[\s\"'`>.,;:!?])|"
+    r"[。，；：！？）》】”’])"
 )
 _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+"
