@@ -34,7 +34,16 @@ the nested `data` object as the workflow contract:
     "outcome": "completed",
     "summary": "Current project state was read.",
     "journey_stage": "observe",
-    "context_binding": {},
+    "context_binding": {
+      "project_name": "colameta",
+      "branch": "codex/example",
+      "head": "0123456789abcdef0123456789abcdef01234567",
+      "runner_plan": {
+        "mode": "managed",
+        "plan_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "current_version": "N1"
+    },
     "facts": {},
     "evidence": null,
     "next_action": null,

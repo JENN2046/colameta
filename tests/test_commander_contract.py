@@ -780,7 +780,7 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"读取 {uri}{punctuation}继续") == (
             f"读取 {uri}{punctuation}继续"
         )
-    for closing in "）》】”’":
+    for closing in "）》】”’」』":
         assert commander_public_text(f"读取（{uri}{closing}") == (
             f"读取（{uri}{closing}"
         )

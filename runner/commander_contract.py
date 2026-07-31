@@ -12,6 +12,7 @@ import copy
 from datetime import datetime
 import math
 import re
+import unicodedata
 from typing import Any, Iterable
 
 from runner.project_context_binding import (
@@ -500,12 +501,8 @@ _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN = (
 COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
     rf"^{_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}$"
 )
-_PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE = re.compile(
+_PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE = re.compile(
     rf"(?<![A-Za-z0-9_-]){_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}"
-    r"(?=$|[\s\"'`>]|"
-    r"[.,;:!?](?=$|[\s\"'`>)\]}])|"
-    r"[)\]}](?=$|[\s\"'`>.,;:!?])|"
-    r"[。，；：！？）》】”’])"
 )
 _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+"
@@ -3024,6 +3021,44 @@ def _redact_public_path_segment(value: str) -> str:
     return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
 
 
+def _is_unicode_punctuation(value: str) -> bool:
+    return (
+        bool(value)
+        and not value.isascii()
+        and unicodedata.category(value).startswith("P")
+    )
+
+
+def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
+    if index >= len(value):
+        return True
+    following = value[index]
+    return bool(
+        following.isspace()
+        or following in "\"'`>.,;:!?)]}"
+        or _is_unicode_punctuation(following)
+    )
+
+
+def _is_resource_uri_boundary(value: str, index: int) -> bool:
+    if index >= len(value):
+        return True
+    following = value[index]
+    if following.isspace() or following in "\"'`>":
+        return True
+    if _is_unicode_punctuation(following):
+        return True
+    if following in ".,;:!?)]}":
+        return _is_resource_uri_following_delimiter(value, index + 1)
+    return False
+
+
+def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
+    for match in _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE.finditer(value):
+        if _is_resource_uri_boundary(value, match.end()):
+            yield match
+
+
 def _redact_public_non_resource_segment(
     value: str,
     *,
@@ -3046,7 +3081,7 @@ def _redact_public_text_preserving_resource_uris(
 ) -> str:
     parts: list[str] = []
     cursor = 0
-    for match in _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE.finditer(value):
+    for match in _public_resource_uri_spans(value):
         parts.append(
             _redact_public_non_resource_segment(
                 value[cursor : match.start()],
@@ -3066,7 +3101,7 @@ def _redact_public_text_preserving_resource_uris(
 
 def _public_text_non_resource_segments(value: str) -> Iterable[str]:
     cursor = 0
-    for match in _PUBLIC_OPAQUE_RESOURCE_URI_SPAN_RE.finditer(value):
+    for match in _public_resource_uri_spans(value):
         yield value[cursor : match.start()]
         cursor = match.end()
     yield value[cursor:]
