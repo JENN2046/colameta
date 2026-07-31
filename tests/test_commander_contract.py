@@ -606,6 +606,26 @@ def test_public_text_redacts_json_escaped_path_separators(
 @pytest.mark.parametrize(
     "value",
     [
+        json.dumps({"reason": r"\\server\share\private.txt"}),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": r"\\server\share\private.txt"}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_json_serialized_unc_paths(value: str) -> None:
+    public = commander_public_text(value)
+
+    assert "server" not in public
+    assert "<local-path>" in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "safe\\/relative.txt",
         "1\\/2",
         "https:\\/\\/example.com",
@@ -1184,6 +1204,7 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
@@ -1370,6 +1391,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

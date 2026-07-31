@@ -381,6 +381,7 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'

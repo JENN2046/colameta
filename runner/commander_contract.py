@@ -3132,21 +3132,46 @@ def _decode_json_escapes_with_stack(
     return "".join(rebuilt) if changed else value
 
 
+def _decode_escaped_backslash_layer(value: str) -> str:
+    rebuilt: list[str] = []
+    cursor = 0
+    changed = False
+    while cursor < len(value):
+        if value[cursor : cursor + 2] == "\\\\":
+            rebuilt.append("\\")
+            cursor += 2
+            changed = True
+            continue
+        rebuilt.append(value[cursor])
+        cursor += 1
+    return "".join(rebuilt) if changed else value
+
+
 def _json_escape_path_candidates(value: str) -> Iterable[str]:
-    # The first linear candidate keeps escaped-backslash pairs so an
-    # intermediate UNC path remains observable.  The second is the true
-    # fixed point and catches escapes that generate a new escape introducer.
+    # First decode escape-generated introducers while retaining backslash
+    # pairs.  Then decode escaped-backslash pairs one serialization layer at a
+    # time: four serialized leading backslashes must be observable as the UNC
+    # pair before a later layer collapses it to one.  The final fixed point
+    # catches other escape-generated absolute paths without recursive suffix
+    # rescans.
     preserved_backslashes = _decode_json_escapes_with_stack(
         value,
         collapse_escaped_backslashes=False,
     )
     if preserved_backslashes != value:
         yield preserved_backslashes
+    candidate = preserved_backslashes
+    while True:
+        decoded = _decode_escaped_backslash_layer(candidate)
+        if decoded == candidate:
+            break
+        yield decoded
+        candidate = decoded
     fixed_point = _decode_json_escapes_with_stack(
         value,
         collapse_escaped_backslashes=True,
     )
-    if fixed_point not in {value, preserved_backslashes}:
+    if fixed_point not in {value, preserved_backslashes, candidate}:
         yield fixed_point
 
 

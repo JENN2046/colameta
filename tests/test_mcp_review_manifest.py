@@ -1562,6 +1562,7 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        json.dumps({"reason": r"\\server\share\private.txt"}),
         (
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
