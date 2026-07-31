@@ -512,9 +512,12 @@ _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
 _PUBLIC_JSON_ESCAPE_CANDIDATE_RE = re.compile(
-    r"\\(?:[bnrtf]|u[0-9A-Fa-f]{4})"
+    r'\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4})'
 )
-_PUBLIC_JSON_SHORT_CONTROL_CHARACTERS = {
+_PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
     "b": "\b",
     "f": "\f",
     "n": "\n",
@@ -3051,7 +3054,32 @@ def _decoded_json_escape_character(match: re.Match[str]) -> str:
     token = match.group(0)[1:]
     if token.startswith("u"):
         return chr(int(token[1:], 16))
-    return _PUBLIC_JSON_SHORT_CONTROL_CHARACTERS[token]
+    return _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS[token]
+
+
+def _json_escape_decoding_candidates(value: str) -> Iterable[str]:
+    decoded = value
+    while True:
+        next_value, count = _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.subn(
+            _decoded_json_escape_character,
+            decoded,
+        )
+        if count == 0 or next_value == decoded:
+            return
+        yield next_value
+        decoded = next_value
+
+
+def _json_escaped_path_suffix_candidates(value: str) -> Iterable[str]:
+    sources = (value, *_json_escape_decoding_candidates(value))
+    for source in sources:
+        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(source):
+            decoded = _decoded_json_escape_character(match)
+            if decoded not in "/\\":
+                continue
+            suffix = f"{decoded}{source[match.end() :]}"
+            yield suffix
+            yield from _json_escape_decoding_candidates(suffix)
 
 
 def _json_escape_is_control_boundary(match: re.Match[str]) -> bool:
@@ -3064,17 +3092,7 @@ def _json_escape_is_path_boundary(match: re.Match[str]) -> bool:
     # Mirror the characters that block an absolute POSIX path at its left edge.
     return not (
         decoded.isascii()
-        and (decoded.isalnum() or decoded in ":/")
-    )
-
-
-def _json_escaped_control_boundary_matches(
-    value: str,
-) -> Iterable[re.Match[str]]:
-    return (
-        match
-        for match in _PUBLIC_JSON_ESCAPE_CANDIDATE_RE.finditer(value)
-        if _json_escape_is_control_boundary(match)
+        and (decoded.isalnum() or decoded in ":/\\")
     )
 
 
@@ -3096,7 +3114,17 @@ def _contains_private_path_segment(value: str) -> bool:
         if _segment_contains_private_path(value[cursor : match.start()]):
             return True
         cursor = match.end()
-    return _segment_contains_private_path(value[cursor:])
+    if _segment_contains_private_path(value[cursor:]):
+        return True
+    if any(
+        _segment_contains_private_path(candidate)
+        for candidate in _json_escape_decoding_candidates(value)
+    ):
+        return True
+    return any(
+        _segment_contains_private_path(candidate)
+        for candidate in _json_escaped_path_suffix_candidates(value)
+    )
 
 
 def _redact_public_path_segment(value: str) -> str:
@@ -3111,10 +3139,20 @@ def _redact_public_path_segment(value: str) -> str:
         )
         rebuilt.append(match.group(0))
         cursor = match.end()
-    if not rebuilt:
-        return redacted
-    rebuilt.append(_redact_public_path_segment_once(redacted[cursor:]))
-    return "".join(rebuilt)
+    if rebuilt:
+        rebuilt.append(_redact_public_path_segment_once(redacted[cursor:]))
+        redacted = "".join(rebuilt)
+    if any(
+        _segment_contains_private_path(candidate)
+        for candidate in _json_escape_decoding_candidates(redacted)
+    ):
+        return "<local-path>"
+    if any(
+        _segment_contains_private_path(candidate)
+        for candidate in _json_escaped_path_suffix_candidates(redacted)
+    ):
+        return "<local-path>"
+    return redacted
 
 
 def _is_unicode_resource_uri_delimiter(value: str) -> bool:

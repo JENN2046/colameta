@@ -546,6 +546,30 @@ def test_public_text_redacts_private_paths_after_json_escaped_boundaries(
     assert "<local-path>" in public
 
 
+@pytest.mark.parametrize(
+    "encoded_path",
+    [
+        "\\u002fhome/reviewer/private.txt",
+        "\\u002Fhome/reviewer/private.txt",
+        "\\/home/reviewer/private.txt",
+        "\\\\u002fhome/reviewer/private.txt",
+        "C:\\u005cUsers\\u005cReviewer\\u005cprivate.txt",
+        "C:\\u005CUsers\\u005CReviewer\\u005Cprivate.txt",
+        "\\u005c\\u005cserver\\u005cshare\\u005cprivate.txt",
+        "C:\\\\Users\\\\Reviewer\\\\private.txt",
+    ],
+)
+def test_public_text_redacts_json_escaped_path_separators(
+    encoded_path: str,
+) -> None:
+    serialized = f'{{"content":"{encoded_path}"}}'
+
+    public = commander_public_text(serialized)
+
+    assert encoded_path not in public
+    assert "<local-path>" in public
+
+
 def test_nested_internal_tool_reference_removes_the_public_action() -> None:
     response = build_commander_response(
         tool_name="render_commander_app",
@@ -1037,6 +1061,20 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\n\\u002fhome/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\nC:\\u005cUsers\\u005cReviewer"
+            "\\u005cprivate.txt"
+        ),
+        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        (
+            '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
+            '\\u005cprivate.txt"}'
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}／private"
         ),
         (
@@ -1194,6 +1232,20 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}.\\u000a/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n\\u002fhome/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\nC:\\u005cUsers"
+            "\\u005cReviewer\\u005cprivate.txt"
+        ),
+        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        (
+            '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
+            '\\u005cprivate.txt"}'
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"

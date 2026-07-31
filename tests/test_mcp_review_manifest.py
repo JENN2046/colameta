@@ -1525,6 +1525,20 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}.\\u000a/home/reviewer/private.txt"
         ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n\\u002fhome/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\nC:\\u005cUsers"
+            "\\u005cReviewer\\u005cprivate.txt"
+        ),
+        '{"reason":"safe\\u002fhome/reviewer/private.txt"}',
+        (
+            '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
+            '\\u005cprivate.txt"}'
+        ),
     ],
 )
 def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
