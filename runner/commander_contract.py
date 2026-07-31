@@ -565,7 +565,7 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
-    r"[^\s,;]+"
+    r"(?:colameta://[^\s,;]*|[A-Za-z0-9._~+/=-]{8,})"
 )
 
 _OMIT = object()

@@ -644,6 +644,7 @@ def test_result_artifact_evidence_is_normalized_to_opaque_contract() -> None:
 def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> None:
     content = (
         "line one\n"
+        "The bearer of this note may continue.\n"
         "读取 colameta://result-artifact/opaque_handle_123_/pages/{page}。继续\n"
     )
     raw_result = {
@@ -856,6 +857,12 @@ def test_public_text_redacts_sensitive_values_that_are_valid_opaque_uris(
     assert commander_public_text(value) == "<sensitive>"
 
 
+def test_public_text_preserves_ordinary_bearer_prose() -> None:
+    value = "The bearer of this note may continue."
+
+    assert commander_public_text(value) == value
+
+
 def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None:
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     prefix = "x" * 570
@@ -970,6 +977,7 @@ def test_result_artifact_page_rejects_an_extended_opaque_uri_lookalike() -> None
 def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
     content = (
         "# Review input\n\n"
+        "The bearer of this note may continue.\n"
         "Read colameta://review-manifest/opaque_handle_123_"
         "/subjects/1/pages/{page}\n"
     )
