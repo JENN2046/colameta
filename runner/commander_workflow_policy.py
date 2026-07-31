@@ -10,7 +10,7 @@ import copy
 import re
 from typing import Any, Iterable
 
-from runner.commander_contract import commander_public_error_code
+from runner.commander_contract import commander_public_error_code_for_result
 
 
 COMMANDER_JOURNEY_STAGES = frozenset(
@@ -341,41 +341,6 @@ def _first_string(value: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _contains_public_error_code(
-    value: Any,
-    expected_public_codes: frozenset[str],
-    *,
-    allow_code: bool = False,
-) -> bool:
-    if isinstance(value, dict):
-        candidate_keys = ("error_code", "code") if allow_code else ("error_code",)
-        for key in candidate_keys:
-            candidate = value.get(key)
-            if (
-                commander_public_error_code(candidate)
-                in expected_public_codes
-            ):
-                return True
-        for key, nested in value.items():
-            if _contains_public_error_code(
-                nested,
-                expected_public_codes,
-                allow_code=key in {"error", "errors"},
-            ):
-                return True
-        return False
-    if isinstance(value, list):
-        return any(
-            _contains_public_error_code(
-                nested,
-                expected_public_codes,
-                allow_code=allow_code,
-            )
-            for nested in value
-        )
-    return False
-
-
 def _synthetic_confirmation_action(
     tool_name: str,
     params: dict[str, Any],
@@ -495,9 +460,9 @@ def _synthetic_recovery_action(
     params: dict[str, Any],
     raw_result: dict[str, Any],
 ) -> dict[str, Any]:
-    if _contains_public_error_code(
-        raw_result,
-        _PROJECT_SELECTION_PUBLIC_ERROR_CODES,
+    if (
+        commander_public_error_code_for_result(raw_result)
+        in _PROJECT_SELECTION_PUBLIC_ERROR_CODES
     ):
         return {
             "tool": "list_registered_projects",

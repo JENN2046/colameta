@@ -579,7 +579,7 @@ def derive_commander_outcome(
         return "failed"
 
     containers = _result_containers(result)
-    public_error_code = commander_public_error_code(_raw_error_code(result))
+    public_error_code = commander_public_error_code_for_result(result)
     if public_error_code in _FAILED_PUBLIC_ERROR_CODES:
         return "failed"
 
@@ -1264,6 +1264,14 @@ def commander_public_error_code(value: Any) -> str | None:
     if normalized in COMMANDER_PUBLIC_ERROR_CODES:
         return normalized
     return _INTERNAL_ERROR_CODE_MAP.get(normalized, "INTERNAL_ERROR")
+
+
+def commander_public_error_code_for_result(
+    result: dict[str, Any],
+) -> str | None:
+    """Select and map the primary error code using the public contract order."""
+
+    return commander_public_error_code(_raw_error_code(result))
 
 
 def _raw_error_code(result: dict[str, Any]) -> str | None:
@@ -2261,8 +2269,7 @@ def _normalize_error(
     next_action: dict[str, Any] | None,
 ) -> dict[str, Any]:
     containers = _result_containers(raw_result)
-    raw_code = _raw_error_code(raw_result)
-    public_code = commander_public_error_code(raw_code)
+    public_code = commander_public_error_code_for_result(raw_result)
     if public_code is None:
         public_code = _infer_blocker_error_code(_blocker_values(containers))
     if (

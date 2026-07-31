@@ -327,6 +327,38 @@ def test_project_selection_blockers_expose_project_list_as_single_recovery(
     validate_commander_response(response)
 
 
+def test_primary_blocker_controls_public_error_and_matching_recovery() -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": False,
+            "tool": "run_mcp_workflow",
+            "error_code": "SCOPE_VIOLATION",
+            "message": "当前请求超出允许范围。",
+            "result": {
+                "diagnostics": {
+                    "error_code": "PROJECT_UNAVAILABLE",
+                }
+            },
+        },
+        params={
+            "workflow": "small_project_patch",
+            "project_name": "colameta",
+        },
+    )
+
+    expected_action = {
+        "tool": "analyze_project_state",
+        "arguments": {"project_name": "colameta"},
+        "reason": "重新读取项目事实后再决定如何解除阻断。",
+    }
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "SCOPE_VIOLATION"
+    assert response["next_action"] == expected_action
+    assert response["error"]["recovery"] == expected_action
+    validate_commander_response(response)
+
+
 def test_completed_response_has_exact_fields_and_bounded_public_facts() -> None:
     raw_result = {
         "ok": True,

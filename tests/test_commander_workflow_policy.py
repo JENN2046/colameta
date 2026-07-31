@@ -421,6 +421,11 @@ def test_blocked_without_explicit_recovery_rereads_project_facts() -> None:
             "data": {
                 "error_code": "SCOPE_VIOLATION",
                 "code": "PROJECT_NOT_REGISTERED",
+                "steps": [
+                    {
+                        "error_code": "PROJECT_UNAVAILABLE",
+                    }
+                ],
             }
         },
         outcome="blocked",
@@ -467,6 +472,19 @@ def test_blocked_without_explicit_recovery_rereads_project_facts() -> None:
             {
                 "workflow": "project_status",
                 "project_name": "missing-root-project",
+            },
+        ),
+        (
+            {
+                "result": {
+                    "diagnostics": {
+                        "error_code": "PROJECT_UNAVAILABLE",
+                    }
+                }
+            },
+            {
+                "workflow": "project_status",
+                "project_name": "unavailable-project",
             },
         ),
     ],
