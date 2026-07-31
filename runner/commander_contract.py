@@ -511,6 +511,7 @@ _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
+_PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE = re.compile(r"\\[bnrtf]")
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -3021,11 +3022,43 @@ def _summary_sentence_count(value: str) -> int:
     return max(1, count)
 
 
-def _redact_public_path_segment(value: str) -> str:
+def _redact_public_path_segment_once(value: str) -> str:
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
     redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
     return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
+
+
+def _segment_contains_private_path(value: str) -> bool:
+    return bool(
+        _PUBLIC_FILE_URI_RE.search(value)
+        or _PUBLIC_UNC_PATH_RE.search(value)
+        or _PUBLIC_POSIX_PATH_RE.search(value)
+        or _PUBLIC_WINDOWS_PATH_RE.search(value)
+    )
+
+
+def _contains_private_path_segment(value: str) -> bool:
+    if _segment_contains_private_path(value):
+        return True
+    return any(
+        _segment_contains_private_path(part)
+        for part in _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.split(value)
+    )
+
+
+def _redact_public_path_segment(value: str) -> str:
+    redacted = _redact_public_path_segment_once(value)
+    parts = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.split(redacted)
+    if len(parts) == 1:
+        return redacted
+    boundaries = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.findall(redacted)
+    rebuilt: list[str] = []
+    for index, part in enumerate(parts):
+        if index:
+            rebuilt.append(boundaries[index - 1])
+        rebuilt.append(_redact_public_path_segment_once(part))
+    return "".join(rebuilt)
 
 
 def _is_unicode_resource_uri_delimiter(value: str) -> bool:
@@ -3056,9 +3089,14 @@ def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     )
 
 
+def _is_json_escaped_control_boundary(value: str, index: int) -> bool:
+    return _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.match(value, index) is not None
+
+
 def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
     saw_unicode_delimiter = False
+    saw_escaped_control_boundary = False
     while cursor < len(value):
         following = value[cursor]
         if following in ".,;:!?)]}":
@@ -3068,19 +3106,27 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             saw_unicode_delimiter = True
             cursor += 1
             continue
+        escaped_control = _PUBLIC_JSON_ESCAPED_CONTROL_BOUNDARY_RE.match(
+            value,
+            cursor,
+        )
+        if escaped_control is not None:
+            saw_escaped_control_boundary = True
+            cursor = escaped_control.end()
+            continue
         break
     if cursor >= len(value):
         return True
+    if (
+        saw_escaped_control_boundary
+        and _contains_private_path_segment(value[cursor:])
+    ):
+        return False
     following = value[cursor]
     return bool(
         following.isspace()
         or following in "\"'`>"
-        or (
-            # Artifact pages are JSON text, where control-space boundaries are escaped.
-            following == "\\"
-            and cursor + 1 < len(value)
-            and value[cursor + 1] in "bnrtf"
-        )
+        or saw_escaped_control_boundary
         or (
             saw_unicode_delimiter
             and not following.isascii()
@@ -3098,6 +3144,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     if (
         following in ".,;:!?)]}"
         or _is_unicode_resource_uri_delimiter(following)
+        or _is_json_escaped_control_boundary(value, index)
     ):
         return _is_resource_uri_following_delimiter(value, index)
     return False
@@ -3196,10 +3243,7 @@ def _public_text_non_resource_segments(value: str) -> Iterable[str]:
 
 def _contains_private_path(value: str) -> bool:
     return any(
-        _PUBLIC_FILE_URI_RE.search(segment)
-        or _PUBLIC_UNC_PATH_RE.search(segment)
-        or _PUBLIC_POSIX_PATH_RE.search(segment)
-        or _PUBLIC_WINDOWS_PATH_RE.search(segment)
+        _contains_private_path_segment(segment)
         for segment in _public_text_non_resource_segments(value)
     )
 

@@ -505,6 +505,31 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
     validate_commander_response(response)
 
 
+@pytest.mark.parametrize(
+    "private_path",
+    [
+        "/home/reviewer/private.txt",
+        "file:///home/reviewer/private.txt",
+        r"C:\Users\Reviewer\private.txt",
+        r"\\server\share\private.txt",
+    ],
+)
+@pytest.mark.parametrize(
+    "escaped_boundary",
+    ["\\n", "\\r", "\\t", "\\b", "\\f", "\\n\\t"],
+)
+def test_public_text_redacts_private_paths_after_json_escaped_controls(
+    escaped_boundary: str,
+    private_path: str,
+) -> None:
+    serialized = f'{{"content":"safe{escaped_boundary}{private_path}"}}'
+
+    public = commander_public_text(serialized)
+
+    assert private_path not in public
+    assert "<local-path>" in public
+
+
 def test_nested_internal_tool_reference_removes_the_public_action() -> None:
     response = build_commander_response(
         tool_name="render_commander_app",
@@ -794,6 +819,12 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
+    serialized_private_path = (
+        f'{{"content":"读取 {uri}.\\n/home/reviewer/private.txt"}}'
+    )
+    public = commander_public_text(serialized_private_path)
+    assert "/home/reviewer" not in public
+    assert "<resource-uri>" in public or "<local-path>" in public
 
 
 @pytest.mark.parametrize(
@@ -980,6 +1011,10 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}／private"
         ),
         (
@@ -1129,6 +1164,10 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}??）query"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n/home/reviewer/private.txt"
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"

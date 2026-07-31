@@ -319,45 +319,52 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     assert json.loads(restored) == payload
 
 
-def test_commander_rejects_unicode_delimiter_uri_extension_across_artifact_reads(
+def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
     tmp_path,
 ) -> None:
     server = MCPPlanningBridgeServer(
         str(tmp_path),
         exposure_profile="commander",
     )
-    unsafe_uri = (
-        "colameta://result-artifact/opaque_handle_123_"
-        "/pages/{page}??）query"
+    unsafe_values = (
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}??）query"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
     )
-    handle = server._mcp_result_artifact_store.put(
-        tool="fixture",
-        payload={"content": unsafe_uri},
-    )
+    for unsafe_uri in unsafe_values:
+        handle = server._mcp_result_artifact_store.put(
+            tool="fixture",
+            payload={"content": unsafe_uri},
+        )
 
-    assert handle is not None
-    typed = server.call_tool_for_agent(
-        "read_result_artifact",
-        {"artifact_id": handle.artifact_id, "artifact_page": 1},
-    )
-    assert typed["ok"] is False
-    assert typed["data"]["outcome"] == "blocked"
-    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
-    assert unsafe_uri not in json.dumps(typed, ensure_ascii=False)
+        assert handle is not None
+        typed = server.call_tool_for_agent(
+            "read_result_artifact",
+            {"artifact_id": handle.artifact_id, "artifact_page": 1},
+        )
+        assert typed["ok"] is False
+        assert typed["data"]["outcome"] == "blocked"
+        assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert unsafe_uri not in json.dumps(typed, ensure_ascii=False)
 
-    resource = server._handle_jsonrpc_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "resources/read",
-            "params": {
-                "uri": f"colameta://result-artifact/{handle.artifact_id}",
-            },
-        }
-    )
-    assert resource is not None
-    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
-    assert unsafe_uri not in json.dumps(resource, ensure_ascii=False)
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/read",
+                "params": {
+                    "uri": f"colameta://result-artifact/{handle.artifact_id}",
+                },
+            }
+        )
+        assert resource is not None
+        assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+        assert unsafe_uri not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_commander_rejects_unsafe_artifact_across_tool_and_resource_reads(

@@ -1510,14 +1510,24 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
     assert "/home/reviewer" not in json.dumps(structured, ensure_ascii=False)
 
 
-def test_commander_manifest_read_rejects_unicode_delimiter_uri_extension(
+@pytest.mark.parametrize(
+    "unsafe_uri",
+    [
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}??）query"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
+    ],
+)
+def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
     tmp_path: Path,
+    unsafe_uri: str,
 ) -> None:
     project = _make_git_checkout(tmp_path)
-    unsafe_uri = (
-        "colameta://review-manifest/opaque_handle_123_"
-        "/subjects/1/pages/{page}??）query"
-    )
     (project / "docs" / "review-input.md").write_text(
         f"{unsafe_uri}\n",
         encoding="utf-8",
