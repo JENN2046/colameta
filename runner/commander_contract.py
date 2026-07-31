@@ -3890,11 +3890,39 @@ def _redact_public_non_resource_segment(
         value,
     )
     redacted = _redact_public_path_segment(redacted)
+    if _decoded_candidate_contains_noncommander_tool_reference(
+        redacted,
+        forbidden_tools=forbidden_tools,
+    ):
+        return "<internal-tool>"
     redacted = _redact_noncommander_tool_references(
         redacted,
         forbidden_tools=forbidden_tools,
     )
     return _redact_sensitive_material(redacted)
+
+
+def _decoded_candidate_contains_noncommander_tool_reference(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None = None,
+) -> bool:
+    hidden_tools = (
+        None
+        if forbidden_tools is None
+        else frozenset(forbidden_tools)
+    )
+    return bool(
+        "\\" in value
+        and any(
+            _redact_noncommander_tool_references(
+                candidate,
+                forbidden_tools=hidden_tools,
+            )
+            != candidate
+            for candidate in _json_escape_decoded_candidates(value)
+        )
+    )
 
 
 def _matches_sensitive_material(value: str) -> bool:
@@ -4001,6 +4029,7 @@ def _contains_unsafe_public_text(value: str) -> bool:
         or _decoded_candidate_contains_disallowed_public_resource_uri(value)
     ) or any(
         _redact_noncommander_tool_references(segment) != segment
+        or _decoded_candidate_contains_noncommander_tool_reference(segment)
         for segment in _public_text_non_resource_segments(value)
     )
 

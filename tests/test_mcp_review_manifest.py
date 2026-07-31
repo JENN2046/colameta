@@ -1103,6 +1103,13 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "colameta://review-manifest/review_manifest_handle_ending_"
         "/subjects/1/pages/{page}"
     )
+    manifest_resource = _resource_read(server, evidence["resource_uri"])
+    manifest_summary = json.loads(
+        manifest_resource["result"]["contents"][0]["text"]
+    )
+    assert manifest_summary["review_manifest_id"] == evidence[
+        "review_manifest_id"
+    ]
     read = _tool_call(
         server,
         {
@@ -1596,6 +1603,10 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"reason":"manage\\u005ffiles"}',
+        json.dumps(
+            {"reason": '{"tool":"manage\\u005fexecutor\\u005fworkflow"}'}
+        ),
         '{"uri":"colameta:\\/\\/review-manifest\\/short"}',
         (
             '{"uri":"colameta:\\u002f\\u002freview-manifest'
@@ -1632,6 +1643,9 @@ def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
         },
     )
     inspection_data = inspected["result"]["structuredContent"]["data"]
+    subject_resource_uri = inspection_data["facts"]["subjects"][0][
+        "resource_uri"
+    ]
     read = _tool_call(
         server,
         {
@@ -1647,6 +1661,10 @@ def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
     assert structured["data"]["outcome"] == "blocked"
     assert structured["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
     assert unsafe_uri not in json.dumps(structured, ensure_ascii=False)
+
+    resource = _resource_read(server, subject_resource_uri)
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert unsafe_uri not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:

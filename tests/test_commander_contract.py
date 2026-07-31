@@ -1293,9 +1293,43 @@ def test_public_text_redacts_json_escaped_sensitive_material(
 @pytest.mark.parametrize(
     "value",
     [
+        '{"reason":"manage\\u005ffiles"}',
+        (
+            '{"reason":"manage\\u005fexecutor'
+            '\\u005fworkflow"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"reason":"manage\\u005ffiles"}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_json_escaped_noncommander_tools(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == "<internal-tool>"
+
+
+def test_public_text_redacts_json_escaped_dynamic_hidden_tool() -> None:
+    value = '{"reason":"private\\u005frunner\\u005ftool"}'
+
+    assert commander_public_text(
+        value,
+        forbidden_tools={"private_runner_tool"},
+    ) == "<internal-tool>"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         '{"oauth\\u005ftokenizer":"synthetic-safe-value"}',
         '{"reason":"\\u0042earer of this note may continue."}',
         '{"reason":"\\u0042earer resource_metadata=available"}',
+        '{"reason":"manage\\u005ffiling remains public prose"}',
+        '{"tool":"read\\u005fresult\\u005fartifact"}',
     ],
 )
 def test_public_text_preserves_safe_json_escaped_prose(value: str) -> None:
@@ -2167,6 +2201,9 @@ def test_public_inventories_are_closed_and_reuse_the_nine_tool_source() -> None:
         lambda value: value.update(error={"code": "INTERNAL_ERROR"}),
         lambda value: value["facts"].update(project_root="/home/jenn/private"),
         lambda value: value["facts"].update(note="Call manage_files next."),
+        lambda value: value["facts"].update(
+            note='{"reason":"manage\\u005ffiles"}'
+        ),
         lambda value: value.update(
             next_action={
                 "tool": "manage_files",

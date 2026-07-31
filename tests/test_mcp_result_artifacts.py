@@ -427,6 +427,10 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"reason":"manage\\u005ffiles"}',
+        json.dumps(
+            {"reason": '{"tool":"manage\\u005fexecutor\\u005fworkflow"}'}
+        ),
         '{"uri":"colameta:\\/\\/result-artifact\\/short"}',
         (
             '{"uri":"colameta:\\u002f\\u002fresult-artifact'

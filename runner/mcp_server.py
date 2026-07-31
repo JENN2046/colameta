@@ -2460,6 +2460,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         return isinstance(sanitized, dict) and sanitized == payload
 
+    def _commander_public_resource_read_safety(
+        self,
+        resource_result: dict[str, Any],
+    ) -> bool:
+        """Require an exact public projection for opaque evidence resources."""
+
+        sanitized = self._commander_public_projector().sanitize_for_artifact(
+            resource_result
+        )
+        return isinstance(sanitized, dict) and sanitized == resource_result
+
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
         return MCPResourcesService.result_artifact_next_read(artifact_fields)
@@ -2738,7 +2749,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     return self._protocol_error(req_id, -32602, "invalid_resource_uri", "resources/read 需要 uri。")
                 normalized_uri = uri.strip()
                 is_result_artifact = self._parse_mcp_result_artifact_uri(normalized_uri) is not None
-                is_review_manifest = self._parse_mcp_review_manifest_uri(normalized_uri) is not None
+                parsed_review_manifest = self._parse_mcp_review_manifest_uri(
+                    normalized_uri
+                )
+                is_review_manifest = parsed_review_manifest is not None
                 if (
                     normalized_uri != COMMANDER_APP_WIDGET_URI
                     and not is_result_artifact
@@ -2811,6 +2825,20 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             if is_review_manifest
                             else f"未知 resource uri：{normalized_uri}"
                         ),
+                    )
+                if (
+                    self.mcp_exposure_profile
+                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    and parsed_review_manifest is not None
+                    and not self._commander_public_resource_read_safety(
+                        resource_result
+                    )
+                ):
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        "evidence_unavailable",
+                        "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
                     )
                 return self._result(req_id, resource_result)
             if method in ("call_tool", "tools/call"):
