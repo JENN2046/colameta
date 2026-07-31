@@ -781,7 +781,7 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         assert commander_public_text(f"Read {uri}{punctuation} Next") == (
             f"Read {uri}{punctuation} Next"
         )
-    for punctuation in "。，；：！？":
+    for punctuation in "。，、；：！？…．｡":
         assert commander_public_text(f"读取 {uri}{punctuation}继续") == (
             f"读取 {uri}{punctuation}继续"
         )
@@ -804,6 +804,10 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "??query",
         "::private",
         "..suffix",
+        "／private",
+        "＿private",
+        "‿private",
+        "—private",
     ],
 )
 def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
@@ -899,6 +903,14 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}／private"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}‿private"
         ),
     ],
 )
@@ -1035,6 +1047,14 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}::private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}＿private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}—private"
         ),
     ],
 )

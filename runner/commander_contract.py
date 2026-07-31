@@ -508,6 +508,9 @@ _PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
     r"colameta://[^\s\"'`<>]+"
 )
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
+_PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
+    "。，、；：！？…．｡"
+)
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -3025,11 +3028,14 @@ def _redact_public_path_segment(value: str) -> str:
     return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
 
 
-def _is_unicode_punctuation(value: str) -> bool:
+def _is_unicode_resource_uri_delimiter(value: str) -> bool:
     return (
         bool(value)
         and not value.isascii()
-        and unicodedata.category(value).startswith("P")
+        and (
+            value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or unicodedata.category(value) in {"Pe", "Pf"}
+        )
     )
 
 
@@ -3043,7 +3049,7 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     return bool(
         following.isspace()
         or following in "\"'`>"
-        or _is_unicode_punctuation(following)
+        or _is_unicode_resource_uri_delimiter(following)
     )
 
 
@@ -3053,7 +3059,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     following = value[index]
     if following.isspace() or following in "\"'`>":
         return True
-    if _is_unicode_punctuation(following):
+    if _is_unicode_resource_uri_delimiter(following):
         return True
     if following in ".,;:!?)]}":
         return _is_resource_uri_following_delimiter(value, index)
