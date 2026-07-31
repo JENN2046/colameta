@@ -3258,6 +3258,20 @@ def _is_unicode_resource_uri_prose(value: str) -> bool:
     )
 
 
+def _is_unicode_emoji_sequence_component(value: str) -> bool:
+    if not value:
+        return False
+    codepoint = ord(value)
+    return bool(
+        value == "\u200d"
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+        or codepoint == 0x20E3
+        or 0xE0020 <= codepoint <= 0xE007F
+    )
+
+
 def _is_resource_uri_left_boundary_character(value: str) -> bool:
     if value.isspace() or value in "\"'`<>([{":
         return True
@@ -3306,10 +3320,10 @@ def _json_unicode_escape_at(
     return end, ord(decoded)
 
 
-def _decoded_json_unicode_character_ending_at(
+def _decoded_json_unicode_character_with_start_ending_at(
     value: str,
     index: int,
-) -> str | None:
+) -> tuple[int, str] | None:
     current = _json_unicode_escape_ending_at(value, index)
     if current is None:
         return None
@@ -3317,15 +3331,26 @@ def _decoded_json_unicode_character_ending_at(
     if 0xDC00 <= codepoint <= 0xDFFF:
         previous = _json_unicode_escape_ending_at(value, start)
         if previous is not None:
-            _, high = previous
+            previous_start, high = previous
             if 0xD800 <= high <= 0xDBFF:
                 combined = (
                     0x10000
                     + ((high - 0xD800) << 10)
                     + (codepoint - 0xDC00)
                 )
-                return chr(combined)
-    return chr(codepoint)
+                return previous_start, chr(combined)
+    return start, chr(codepoint)
+
+
+def _decoded_json_unicode_character_ending_at(
+    value: str,
+    index: int,
+) -> str | None:
+    decoded = _decoded_json_unicode_character_with_start_ending_at(
+        value,
+        index,
+    )
+    return decoded[1] if decoded is not None else None
 
 
 def _decoded_json_unicode_character_with_end_at(
@@ -3361,13 +3386,38 @@ def _decoded_json_unicode_character_at(
 def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
     if index <= 0:
         return True
-    if _is_resource_uri_left_boundary_character(value[index - 1]):
-        return True
-    decoded = _decoded_json_unicode_character_ending_at(value, index)
-    return bool(
-        decoded is not None
-        and _is_resource_uri_left_boundary_character(decoded)
+    decoded = _decoded_json_unicode_character_with_start_ending_at(
+        value,
+        index,
     )
+    if decoded is not None:
+        cursor, preceding = decoded
+    else:
+        cursor, preceding = index - 1, value[index - 1]
+    if _is_resource_uri_left_boundary_character(preceding):
+        return True
+    if (
+        preceding == "\u200d"
+        or not _is_unicode_emoji_sequence_component(preceding)
+    ):
+        return False
+    while cursor > 0:
+        decoded = _decoded_json_unicode_character_with_start_ending_at(
+            value,
+            cursor,
+        )
+        if decoded is not None:
+            cursor, preceding = decoded
+        else:
+            cursor, preceding = cursor - 1, value[cursor - 1]
+        if unicodedata.category(preceding) == "So":
+            return True
+        if (
+            preceding == "\u200d"
+            or not _is_unicode_emoji_sequence_component(preceding)
+        ):
+            return False
+    return False
 
 
 def _is_resource_uri_hard_delimiter(value: str) -> bool:
@@ -3396,6 +3446,7 @@ def _json_escaped_resource_delimiter(
         _is_resource_uri_hard_delimiter(decoded)
         or decoded in ".,;:!?)]}"
         or _is_unicode_resource_uri_delimiter(decoded)
+        or _is_unicode_emoji_sequence_component(decoded)
     ):
         return end, decoded
     return None
@@ -3409,6 +3460,8 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
     cursor = index
     saw_ascii_delimiter = False
     saw_unicode_delimiter = False
+    saw_symbol_delimiter = False
+    emoji_joiner_pending = False
     saw_hard_escaped_delimiter = False
     while cursor < len(value):
         following = value[cursor]
@@ -3417,7 +3470,24 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
             cursor += 1
             continue
         if _is_unicode_resource_uri_delimiter(following):
+            if (
+                emoji_joiner_pending
+                and unicodedata.category(following) != "So"
+            ):
+                break
             saw_unicode_delimiter = True
+            if unicodedata.category(following) == "So":
+                saw_symbol_delimiter = True
+                emoji_joiner_pending = False
+            cursor += 1
+            continue
+        if (
+            saw_symbol_delimiter
+            and _is_unicode_emoji_sequence_component(following)
+        ):
+            if emoji_joiner_pending:
+                break
+            emoji_joiner_pending = following == "\u200d"
             cursor += 1
             continue
         escaped_delimiter = _json_escaped_resource_delimiter(
@@ -3426,15 +3496,31 @@ def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
         )
         if escaped_delimiter is not None:
             end, decoded = escaped_delimiter
+            if _is_unicode_emoji_sequence_component(decoded):
+                if not saw_symbol_delimiter or emoji_joiner_pending:
+                    break
+                emoji_joiner_pending = decoded == "\u200d"
+                cursor = end
+                continue
             if _is_resource_uri_hard_delimiter(decoded):
                 saw_hard_escaped_delimiter = True
             elif _is_unicode_resource_uri_delimiter(decoded):
+                if (
+                    emoji_joiner_pending
+                    and unicodedata.category(decoded) != "So"
+                ):
+                    break
                 saw_unicode_delimiter = True
+                if unicodedata.category(decoded) == "So":
+                    saw_symbol_delimiter = True
+                    emoji_joiner_pending = False
             else:
                 saw_ascii_delimiter = True
             cursor = end
             continue
         break
+    if emoji_joiner_pending:
+        return False
     if cursor >= len(value):
         return True
     following = value[cursor]

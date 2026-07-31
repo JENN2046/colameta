@@ -797,6 +797,7 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"
         f"请读取{uri}继续\n"
+        f"❤️{uri}👩‍💻Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
@@ -960,6 +961,9 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
     assert commander_public_text(f"📎{uri}✅Next") == (
         f"📎{uri}✅Next"
     )
+    assert commander_public_text(f"❤️{uri}👩‍💻Next") == (
+        f"❤️{uri}👩‍💻Next"
+    )
     serialized = f'{{"content":"读取 {uri}。\\n继续"}}'
     assert commander_public_text(serialized) == serialized
     long_form_serialized = f'{{"content":"读取 {uri}。\\u000a继续"}}'
@@ -984,6 +988,8 @@ def test_public_text_preserves_valid_opaque_uri_templates_ending_in_underscore(
         "?query=private",
         "??query",
         "??）query",
+        "✅\u200dprivate",
+        "✅\\u200dprivate",
         "::）private",
         "..）suffix",
         "::private",
@@ -1102,6 +1108,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     escaped_symbol_boundaries = json.dumps(
         {"note": f"📎{uri}✅Next"}
     )
+    escaped_emoji_sequences = json.dumps(
+        {"note": f"❤️{uri}👩‍💻Next"}
+    )
 
     assert commander_public_text(nested) == nested
     assert commander_public_text(escaped_unicode_prose) == (
@@ -1118,6 +1127,9 @@ def test_public_text_preserves_opaque_uris_at_json_escaped_boundaries(
     )
     assert commander_public_text(escaped_symbol_boundaries) == (
         escaped_symbol_boundaries
+    )
+    assert commander_public_text(escaped_emoji_sequences) == (
+        escaped_emoji_sequences
     )
 
 
@@ -1340,6 +1352,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"
         f"请读取{uri}继续\n"
+        f"❤️{uri}👩‍💻Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"

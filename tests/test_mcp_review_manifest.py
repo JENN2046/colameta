@@ -1058,12 +1058,14 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"Read {uri}。Next\n"
         f"📎{uri}✅Next\n"
         f"请读取{uri}继续\n"
+        f"❤️{uri}👩‍💻Next\n"
         "safe\\/relative.txt\n"
         "1\\/2\n"
         "https:\\/\\/example.com\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
+        f"{json.dumps({'note': f'❤️{uri}👩‍💻Next'})}\n"
     )
     (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
