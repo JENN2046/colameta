@@ -55,6 +55,10 @@ SYNTHETIC_GITHUB_OAUTH_TOKEN = "gho_" + ("B2" * 18)
 SYNTHETIC_GITHUB_FINE_GRAINED_PAT = (
     "github_pat_" + ("Ab_" * 27) + "Z"
 )
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -931,6 +935,56 @@ def test_public_text_redacts_percent_encoded_private_paths(
     ],
 )
 def test_public_text_preserves_percent_encoded_public_locations(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "root:/home/jenn/secret.txt",
+        "checkout:/tmp/private.txt",
+        r"root:\Users\Jenn\secret.txt",
+        r"checkout:\temp\private.txt",
+        '{"note":"root:\\u002fhome\\u002fjenn\\u002fsecret.txt"}',
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        "root:%2Fhome%2Fjenn%2Fsecret.txt",
+        json.dumps(
+            {
+                "wrapped": (
+                    "checkout%253A%252Ftmp%252Fprivate.txt"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_labeled_absolute_paths(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<local-path>" in public
+    for fragment in ("home", "Users", "tmp", "secret.txt", "private.txt"):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/public/readme.txt",
+        "custom://public.example/docs/readme.txt",
+        "root://public.example/docs/readme.txt",
+        "root:docs/README.md",
+        "checkout:relative/project",
+        "root:C:relative.txt",
+        "urn:isbn:9780141036144",
+    ],
+)
+def test_public_text_preserves_url_schemes_and_labeled_relative_paths(
     value: str,
 ) -> None:
     assert commander_public_text(value) == value
@@ -2115,6 +2169,19 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        (
+            "https://huggingface.example.invalid/callback?token="
+            f"{SYNTHETIC_HUGGING_FACE_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         (
             "https://registry.npmjs.org/callback?token="
@@ -2259,6 +2326,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in public
     assert "gho_" not in public
     assert "github_pat_" not in public
+    assert "hf_" not in public
     assert "dckr_pat_" not in public
     assert "SG." not in public
 
@@ -3102,6 +3170,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "ghp_" + ("A1" * 17) + "A",
         "ghp_" + ("A1" * 18) + "A",
         "github_pat_<redacted>",
+        "hf_" + ("A" * 33),
+        "hf_<redacted>",
+        "hf_" + ("A" * 35),
+        "xhf_" + ("A" * 34),
         "npm_short",
         "npm_<redacted>",
         "npm_" + ("A" * 37),

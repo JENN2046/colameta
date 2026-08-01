@@ -44,6 +44,10 @@ RUN_ID = "validation_contract_1234567890"
 TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 EXPIRES_AT = "2026-08-01T18:00:00+08:00"
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -593,6 +597,19 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        (
+            "https://huggingface.example.invalid/callback?token="
+            f"{SYNTHETIC_HUGGING_FACE_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
         json.dumps(
@@ -701,6 +718,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
 
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
+    assert "hf_" not in json.dumps(contract, ensure_ascii=False)
     assert "npm_" not in json.dumps(contract, ensure_ascii=False)
     assert "pypi-" not in json.dumps(contract, ensure_ascii=False)
     assert "SG." not in json.dumps(contract, ensure_ascii=False)
@@ -944,6 +962,15 @@ def test_projection_redacts_curl_user_password_options(
             '{"url":"https:\\/\\/example.test\\/download'
             '?file=\\u00252Fhome\\u00252Fjenn'
             '\\u00252Fsecret.txt"}',
+            "<local-path>",
+        ),
+        (
+            "root:/home/jenn/summary-secret.txt",
+            "<local-path>",
+        ),
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005csummary-secret.txt"}',
             "<local-path>",
         ),
     ],

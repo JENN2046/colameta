@@ -706,6 +706,11 @@ _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/\\])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
+_PUBLIC_LABELED_POSIX_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])"
+    r"[A-Za-z_][A-Za-z0-9_.-]{0,127}:[ \t]*"
+    r"/(?!/)[^\s,;\]\[(){}<>\"']+"
+)
 _PUBLIC_FILE_URI_RE = re.compile(
     r"(?<![A-Za-z0-9])file:(?://(?:localhost)?/|/)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
@@ -721,8 +726,7 @@ _PUBLIC_WINDOWS_PATH_RE = re.compile(
 # A single leading backslash is rooted on the current Windows drive.  Keep
 # JSON short/Unicode escape introducers out of the one-segment form; decoded
 # multi-segment paths are checked again by the fixed-point candidate scan.
-_PUBLIC_WINDOWS_ROOTED_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9:\\])"
+_PUBLIC_WINDOWS_ROOTED_PATH_BODY = (
     r"\\(?!\\)(?=[\w.-])(?:"
     r"(?![uU][0-9A-Fa-f]{4})"
     r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
@@ -730,6 +734,14 @@ _PUBLIC_WINDOWS_ROOTED_PATH_RE = re.compile(
     r"|(?!(?:[bfnrt]|[uU][0-9A-Fa-f]{4}))"
     r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
     r")"
+)
+_PUBLIC_WINDOWS_ROOTED_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:\\])" + _PUBLIC_WINDOWS_ROOTED_PATH_BODY
+)
+_PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])"
+    r"[A-Za-z_][A-Za-z0-9_.-]{0,127}:[ \t]*"
+    + _PUBLIC_WINDOWS_ROOTED_PATH_BODY
 )
 _SUMMARY_SENTENCE_END_RE = re.compile(r"[。！？!?]+|\.+(?=\s|$)")
 _INTERNAL_TOOL_REFERENCE_RE = re.compile(
@@ -877,6 +889,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
+    r"|hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])"
     r"dckr_pat_[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
@@ -3628,7 +3641,15 @@ def _summary_sentence_count(value: str) -> int:
 def _redact_public_path_segment_once(value: str) -> str:
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
+    redacted = _PUBLIC_LABELED_POSIX_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
     redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+    redacted = _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
     redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
         "<local-path>",
         redacted,
@@ -3640,7 +3661,9 @@ def _segment_contains_private_path(value: str) -> bool:
     return bool(
         _PUBLIC_FILE_URI_RE.search(value)
         or _PUBLIC_UNC_PATH_RE.search(value)
+        or _PUBLIC_LABELED_POSIX_PATH_RE.search(value)
         or _PUBLIC_POSIX_PATH_RE.search(value)
+        or _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_PATH_RE.search(value)
     )
@@ -3802,7 +3825,8 @@ def _segment_or_json_boundary_contains_private_path(value: str) -> bool:
 
 def _contains_private_path_segment(value: str) -> bool:
     if (
-        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
+        _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.search(value)
+        or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
         or _segment_or_json_boundary_contains_private_path(value)
     ):
         return True
@@ -3831,9 +3855,13 @@ def _redact_public_path_segment_with_json_boundaries(value: str) -> str:
 
 
 def _redact_public_path_segment(value: str) -> str:
-    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+    redacted = _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.sub(
         "<local-path>",
         value,
+    )
+    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
     )
     redacted = _redact_public_path_segment_with_json_boundaries(redacted)
     if _decoded_candidate_matches(

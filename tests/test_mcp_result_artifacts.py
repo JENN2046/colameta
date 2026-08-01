@@ -39,6 +39,10 @@ SYNTHETIC_JWT = (
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -958,6 +962,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         (
             "https://registry.npmjs.org/callback?token="
@@ -1259,6 +1272,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"url":"https:\\/\\/example.test\\/download'
             '?file=\\u00252Fhome\\u00252Fjenn'
             '\\u00252Fartifact-secret.txt"}'
+        ),
+        "root:/home/jenn/artifact-labeled-secret.txt",
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005cartifact-labeled-secret.txt"}'
         ),
         EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
         EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
