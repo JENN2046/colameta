@@ -79,6 +79,12 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
         "\\u0070ypi-",
     )
 )
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1258,6 +1264,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "pypi-short\n"
         "pypi-<redacted>\n"
         f"pypi-{'A' * 84}\n"
+        f"SG.{'A' * 21}.{'B' * 43}\n"
+        f"SG.{'A' * 22}.{'B' * 42}\n"
+        f"SG.{'A' * 22}.{'B' * 44}\n"
+        "SG.<redacted>.<redacted>\n"
         f"{MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE}\n"
         "tool --user alice:note\n"
         "curl --user alice https://example.invalid\n"
@@ -2217,6 +2227,20 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        (
+            "https://api.sendgrid.com/v3/?access="
+            f"{SYNTHETIC_SENDGRID_API_KEY}"
+        ),
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
                 )
             }
         ),

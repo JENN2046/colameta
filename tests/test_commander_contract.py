@@ -73,6 +73,12 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
         "\\u0070ypi-",
     )
 )
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1183,6 +1189,41 @@ def test_result_artifact_page_can_rebuild_its_existing_resource_contract() -> No
     validate_commander_response(response)
 
 
+def test_prevalidated_result_artifact_page_rejects_requested_page_mismatch(
+) -> None:
+    content = "page two must not satisfy a page-one request"
+    response = build_commander_response(
+        tool_name="read_result_artifact",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "artifact_id": ARTIFACT_ID,
+                "artifact_page": {
+                    "artifact_id": ARTIFACT_ID,
+                    "tool": "read_result_artifact",
+                    "page": 2,
+                    "page_count": 2,
+                    "page_char_start": len(content),
+                    "page_char_end": len(content) * 2,
+                    "content_sha256": CONTENT_SHA256,
+                    "expires_at": EXPIRES_AT,
+                    "content": content,
+                },
+                "content_sha256": CONTENT_SHA256,
+                "expires_at": EXPIRES_AT,
+            },
+        },
+        params={"artifact_id": ARTIFACT_ID, "artifact_page": 1},
+        exact_evidence_prevalidated=True,
+    )
+
+    assert response["outcome"] == "failed"
+    assert response["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert content not in repr(response)
+    validate_commander_response(response)
+
+
 def test_result_artifact_page_with_private_content_fails_closed() -> None:
     content = "line one\n/home/reviewer/example.md\n"
     raw_result = {
@@ -1928,6 +1969,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        (
+            "https://api.sendgrid.com/v3/?access="
+            f"{SYNTHETIC_SENDGRID_API_KEY}"
+        ),
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         (
             "https://gitlab.example.invalid/callback?token="
@@ -2016,6 +2071,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in public
     assert "gho_" not in public
     assert "github_pat_" not in public
+    assert "SG." not in public
 
 
 @pytest.mark.parametrize(
@@ -2575,6 +2631,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "pypi-short",
         "pypi-<redacted>",
         "pypi-" + ("A" * 84),
+        f"SG.{'A' * 21}.{'B' * 43}",
+        f"SG.{'A' * 22}.{'B' * 42}",
+        f"SG.{'A' * 22}.{'B' * 44}",
+        "SG.<redacted>.<redacted>",
+        f"xSG.{'A' * 22}.{'B' * 43}",
         "glpat-short",
         "glpat-<redacted>",
         "glpat-" + ("A" * 21),

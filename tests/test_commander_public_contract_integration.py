@@ -62,6 +62,12 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
         "\\u0070ypi-",
     )
 )
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -605,6 +611,16 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -685,6 +701,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
     assert "npm_" not in json.dumps(contract, ensure_ascii=False)
     assert "pypi-" not in json.dumps(contract, ensure_ascii=False)
+    assert "SG." not in json.dumps(contract, ensure_ascii=False)
     assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
     assert "AIza" not in json.dumps(contract, ensure_ascii=False)
     assert "AKIA" not in json.dumps(contract, ensure_ascii=False)

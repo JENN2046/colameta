@@ -847,13 +847,17 @@ _STANDALONE_JWT_RE = re.compile(
     r"(?![A-Za-z0-9_-])"
 )
 # PyPI's Base64URL Macaroon suffix is at least 85 characters and may grow
-# without a fixed upper bound as caveats are added.
+# without a fixed upper bound as caveats are added.  SendGrid API keys use
+# the fixed 69-character ``SG.<22>.<43>`` Base64URL shape.
 _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|pypi-[A-Za-z0-9_-]{85,}(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])"
+    r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}"
+    r"(?![A-Za-z0-9_-])"
     r"|glpat-[A-Za-z0-9_-]{20}(?![A-Za-z0-9_-])"
     r"|AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9_-])"
@@ -2051,14 +2055,20 @@ def _extract_facts(
         requested_artifact_id = safe_params.get("artifact_id")
         if isinstance(requested_artifact_id, str):
             requested_artifact_id = requested_artifact_id.strip()
+        requested_page = safe_params.get("artifact_page", 1)
+        raw_page = payload["artifact_page"]
         if (
             exact_evidence_prevalidated
-            and payload["artifact_page"].get("artifact_id")
-            != requested_artifact_id
+            and (
+                raw_page.get("artifact_id") != requested_artifact_id
+                or isinstance(requested_page, bool)
+                or not isinstance(requested_page, int)
+                or raw_page.get("page") != requested_page
+            )
         ):
             raise CommanderContractError(
                 "INTERNAL_RESULT_INVALID",
-                "Prevalidated artifact page does not match the requested handle.",
+                "Prevalidated artifact page does not match the requested handle or page.",
             )
         artifact_page = _normalize_artifact_page_fact(
             payload["artifact_page"],

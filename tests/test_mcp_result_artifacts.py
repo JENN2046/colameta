@@ -56,6 +56,12 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
         "\\u0070ypi-",
     )
 )
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -449,6 +455,14 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "index_marker_short": "pypi-short",
         "index_marker_placeholder": "pypi-<redacted>",
         "index_marker_underlength": "pypi-" + ("A" * 84),
+        "mail_marker_first_underlength": (
+            f"SG.{'A' * 21}.{'B' * 43}"
+        ),
+        "mail_marker_second_underlength": (
+            f"SG.{'A' * 22}.{'B' * 42}"
+        ),
+        "mail_marker_overlength": f"SG.{'A' * 22}.{'B' * 44}",
+        "mail_marker_placeholder": "SG.<redacted>.<redacted>",
         "max_budget_percent_encoded_safe_prose": (
             MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE
         ),
@@ -924,6 +938,20 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        (
+            "https://api.sendgrid.com/v3/?access="
+            f"{SYNTHETIC_SENDGRID_API_KEY}"
+        ),
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -1350,6 +1378,69 @@ def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continua
     restored = "".join(pages)
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
+
+
+def test_typed_result_artifact_rejects_a_mismatched_prevalidated_page(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "content": (
+            ("a" * 13000)
+            + "synthetic-page-two-only-marker"
+        )
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    assert handle.page_count == 2
+    original_read_page = server._mcp_result_artifact_store.read_page
+    wrong_page = original_read_page(handle.artifact_id, 2)
+    assert wrong_page is not None
+    assert "synthetic-page-two-only-marker" in wrong_page.content
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_result_artifact_safety",
+        lambda _artifact_id: True,
+    )
+
+    def read_mismatched_page(
+        artifact_id: str,
+        page: int = 1,
+    ):
+        if artifact_id == handle.artifact_id and page == 1:
+            return wrong_page
+        return original_read_page(artifact_id, page)
+
+    monkeypatch.setattr(
+        server._mcp_result_artifact_store,
+        "read_page",
+        read_mismatched_page,
+    )
+
+    result = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["data"]["outcome"] == "failed"
+    assert result["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "synthetic-page-two-only-marker" not in json.dumps(
+        result,
+        ensure_ascii=False,
+    )
 
 
 def test_typed_result_artifact_validates_whole_payload_before_slicing_resource_uri(
