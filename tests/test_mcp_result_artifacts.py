@@ -956,6 +956,12 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
         "apiKey=delta epsilon zeta",
         "private-key=synthetic-private-key-value",
+        "<password>synthetic-xml-artifact-secret</password>",
+        (
+            '{"xml":"\\u003cclientSecret\\u003e'
+            'synthetic-encoded-xml-artifact-secret'
+            '\\u003c/clientSecret\\u003e"}'
+        ),
         (
             "client-key-data: "
             "c3ludGhldGljLWFydGlmYWN0LWt1YmUta2V5"

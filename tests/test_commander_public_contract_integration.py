@@ -894,6 +894,42 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
 @pytest.mark.parametrize(
     "summary",
     [
+        "<password>synthetic-xml-summary-secret</password>",
+        (
+            "<config:clientSecret>"
+            "synthetic-namespaced-xml-summary-secret"
+            "</config:clientSecret>"
+        ),
+        (
+            '{"xml":"\\u003capi-key\\u003e'
+            'synthetic-encoded-xml-summary-secret'
+            '\\u003c/api-key\\u003e"}'
+        ),
+    ],
+)
+def test_projection_redacts_sensitive_xml_elements(summary: str) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
         (
             "https://provider.example.invalid/callback"
             "?api+key=synthetic-form-summary-secret"

@@ -2899,6 +2899,64 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
 @pytest.mark.parametrize(
     "value",
     [
+        "<password>synthetic-xml-secret</password>",
+        "<clientSecret>synthetic-camel-xml-secret</clientSecret>",
+        (
+            "<config:api-key>"
+            "synthetic-namespaced-xml-secret"
+            "</config:api-key>"
+        ),
+        (
+            '{"xml":"\\u003cpassword\\u003e'
+            'synthetic-encoded-xml-secret'
+            '\\u003c/password\\u003e"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "\\u003cclient-secret\\u003e"
+                    "synthetic-nested-xml-secret"
+                    "\\u003c/client-secret\\u003e"
+                )
+            }
+        ),
+        (
+            "<password>"
+            "colameta://result-artifact/opaque_handle_123_"
+            "</password>"
+        ),
+        '<password value="synthetic-xml-attribute-secret"/>',
+        "<password " + ("x" * 4_097),
+    ],
+)
+def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+    assert "colameta://" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<status>public-ready</status>",
+        "<public-key>synthetic-public-material</public-key>",
+        "Discuss the <password> element without including a body.",
+    ],
+)
+def test_public_text_does_not_redact_safe_xml_prose(value: str) -> None:
+    public = commander_public_text(value)
+
+    assert public != "<sensitive>"
+    assert "public-ready" in public or "synthetic-public-material" in public or (
+        "without including a body" in public
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "AccountKey=synthetic-azure-account-key",
         "StorageAccountKey=synthetic-storage-account-key",
         "SharedAccessKey=synthetic-shared-access-key",

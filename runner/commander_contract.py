@@ -877,6 +877,12 @@ _ASSIGNMENT_KEY_RE = re.compile(
     r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. \t-]{0,127})"
     r")\s*[:=]"
 )
+_XML_ELEMENT_TAG_RE = re.compile(
+    r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
+    r"(?=[\t\n\r />])"
+)
+_SENSITIVE_XML_MAX_OPEN_ELEMENTS = 256
+_SENSITIVE_XML_MAX_TAG_HEADER_CHARS = 4_096
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
@@ -4692,6 +4698,7 @@ def _matches_sensitive_material(value: str) -> bool:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_sensitive_xml_element(value)
         or _contains_sensitive_cli_option_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
         or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
@@ -5091,6 +5098,43 @@ def _contains_forbidden_key_assignment(value: str) -> bool:
     )
 
 
+def _contains_sensitive_xml_element(value: str) -> bool:
+    """Detect credential-bearing XML elements by their bounded tag name."""
+
+    open_elements: list[str] = []
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        if not commander_public_key_is_forbidden(tag):
+            continue
+        normalized_tag = _normalize_public_key_for_match(tag)
+        if match.group("closing"):
+            if normalized_tag in open_elements:
+                return True
+            continue
+        header_end = value.find(
+            ">",
+            match.end(),
+            min(
+                len(value),
+                match.end() + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS + 1,
+            ),
+        )
+        if header_end < 0:
+            # A forbidden tag whose header exceeds the bounded parser cannot
+            # be interpreted safely.
+            return True
+        if value.find("<", match.end(), header_end) >= 0:
+            return True
+        # Attributes and self-closing syntax can carry the credential without
+        # a later body, so their sensitive tag is sufficient evidence.
+        if value[match.end() : header_end].strip():
+            return True
+        if len(open_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        open_elements.append(normalized_tag)
+    return False
+
+
 def _contains_sensitive_cli_option_credential(value: str) -> bool:
     return any(
         commander_public_key_is_forbidden(match.group("key"))
@@ -5123,6 +5167,7 @@ def _redact_sensitive_material(value: str) -> str:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_sensitive_xml_element(value)
         or _contains_netrc_password_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
         or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
