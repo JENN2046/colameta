@@ -454,22 +454,24 @@ ColaMeta 更推荐和 GPTs 配合使用。
 - [AGENTS.md 生成规则](assets/gpts/agents-generation-rules.zh-CN.md)
 - [项目记忆规则](assets/gpts/project-memory-rules.zh-CN.md)
 
-## 私人 App 与七工具 Commander
+## 私人 App 与九工具 Commander
 
 ChatGPT/Codex 私人 App 使用聚焦的 Commander surface，不直接暴露完整 advanced MCP catalog。
-它恰好提供 7 个高层工具：
+它恰好提供 9 个高层工具：
 
 ```text
 list_registered_projects
 get_apps_connector_smoke_packet
 render_commander_app
 analyze_project_state
+review_manifest
+read_result_artifact
 run_mcp_workflow
 manage_validation_run
 manage_git
 ```
 
-Work Item Gate review 不会增加第 8 个工具。通过 `run_mcp_workflow` 调用
+Work Item Gate review 不会增加第 10 个工具。通过 `run_mcp_workflow` 调用
 `workflow=gate_review_request`：先做只读 `phase=inspect`，再生成仅在服务端保存的有界签名
 preview；客户端只需原样回传 copyable apply call 中的 opaque continuation handle。服务端仍会
 用完整 preview 核对精确 bindings、所需 OAuth/Work Item 权限和显式确认，全部通过后才允许

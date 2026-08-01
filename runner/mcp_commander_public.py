@@ -13,6 +13,7 @@ from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
+    commander_public_mapping_is_private_jwk,
     commander_public_text,
     validate_commander_response,
 )
@@ -320,6 +321,8 @@ class CommanderPublicProjector:
         artifact: bool = False,
     ) -> Any:
         if isinstance(value, dict):
+            if commander_public_mapping_is_private_jwk(value):
+                return None
             if self._is_resource_read_reference(value):
                 return self._project_resource_read_reference(value)
             referenced_tool = value.get("tool")

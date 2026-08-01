@@ -14,6 +14,27 @@ USAGE_DOCS = (
     ROOT / "docs" / "USAGE.md",
     ROOT / "docs" / "USAGE.zh-CN.md",
 )
+CURRENT_COMMANDER_GUIDES = (
+    ROOT / "README.md",
+    ROOT / "README.zh-CN.md",
+    ROOT / "docs" / "ONBOARDING.md",
+    ROOT / "docs" / "ONBOARDING.zh-CN.md",
+    ROOT / "docs" / "agent-consumer-contract.zh-CN.md",
+    ROOT / "docs" / "connector-runtime-health-observability.md",
+    ROOT / "docs" / "jenn-private-operator-protocol.md",
+    ROOT / "docs" / "private-beta-systemd.md",
+    ROOT / "docs" / "remote-https-mcp-service.md",
+    ROOT / "docs" / "runtime-loaded-code-verification.md",
+    ROOT / "docs" / "web-gpt-service-entrypoint.zh-CN.md",
+)
+COMMANDER_INVENTORY_GUIDES = (
+    ROOT / "README.md",
+    ROOT / "README.zh-CN.md",
+    ROOT / "docs" / "ONBOARDING.md",
+    ROOT / "docs" / "ONBOARDING.zh-CN.md",
+    ROOT / "docs" / "agent-consumer-contract.zh-CN.md",
+    ROOT / "docs" / "web-gpt-service-entrypoint.zh-CN.md",
+)
 RESPONSE_FIELDS = (
     "schema_version",
     "outcome",
@@ -26,6 +47,31 @@ RESPONSE_FIELDS = (
     "confirmation",
     "error",
 )
+
+
+def test_current_commander_guides_do_not_restore_the_seven_tool_contract() -> None:
+    stale_inventory = re.compile(
+        r"(?i)(?:"
+        r"exactly seven(?: public| commander)? tools"
+        r"|seven[- ]tool(?: commander| private app| contract| profile| surface)?"
+        r"|七工具"
+        r"|7\s*个工具"
+        r")"
+    )
+
+    for path in CURRENT_COMMANDER_GUIDES:
+        text = path.read_text(encoding="utf-8")
+        assert stale_inventory.search(text) is None, path
+
+
+def test_current_commander_inventory_guides_list_all_nine_public_tools() -> None:
+    assert len(COMMANDER_EXPOSED_TOOLS) == 9
+    for path in COMMANDER_INVENTORY_GUIDES:
+        text = path.read_text(encoding="utf-8")
+        for tool_name in COMMANDER_EXPOSED_TOOLS:
+            assert tool_name in text, (path, tool_name)
+        assert "review_manifest" in text
+        assert "read_result_artifact" in text
 
 
 def test_commander_contract_doc_tracks_current_schema_and_tool_inventory() -> None:

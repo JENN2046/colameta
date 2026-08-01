@@ -2372,11 +2372,44 @@ def test_commander_manifest_resource_read_maps_subject_drift_to_stale_context(
             "review_manifest": _manifest(project),
         },
     )
-    subject_uri = inspected["data"]["facts"]["subjects"][0]["resource_uri"]
+    subject = inspected["data"]["facts"]["subjects"][0]
+    subject_uri = subject["resource_uri"]
+    arguments = subject["read_call"]["arguments"]
     (project / "docs" / "review-input.md").write_text(
         "changed after Commander inspect\n",
         encoding="utf-8",
     )
+
+    for method in ("tools/call", "call_tool", "review_manifest"):
+        params = (
+            {"name": "review_manifest", "arguments": arguments}
+            if method in {"tools/call", "call_tool"}
+            else arguments
+        )
+        tool_response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": method,
+                "method": method,
+                "params": params,
+            }
+        )
+
+        assert tool_response is not None
+        result = tool_response["result"]
+        structured = (
+            result["structuredContent"]
+            if method == "tools/call"
+            else result
+        )
+        assert structured["ok"] is False
+        contract = structured["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "blocked"
+        assert contract["error"]["code"] == "STALE_CONTEXT"
+        assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in repr(
+            tool_response
+        )
 
     response = _resource_read(server, subject_uri)
 
@@ -2446,6 +2479,65 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
     assert contract["outcome"] == "blocked"
     assert contract["error"]["code"] == "EVIDENCE_UNAVAILABLE"
     assert "/home/reviewer" not in json.dumps(structured, ensure_ascii=False)
+
+
+def test_commander_manifest_reads_reject_private_jwk_material(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    private_coordinate = "synthetic-manifest-private-jwk-coordinate"
+    content = json.dumps(
+        {
+            "keys": [
+                {
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": "synthetic-public-x",
+                    "y": "synthetic-public-y",
+                    "d": private_coordinate,
+                }
+            ]
+        }
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert private_coordinate not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert private_coordinate not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
 
 
 @pytest.mark.parametrize(

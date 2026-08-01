@@ -60,20 +60,22 @@ MCP Endpoint: healthy
 
 ## 3. Agent 首读顺序
 
-Agent 连接 MCP 后不要先 run，也不要先写状态。私人 App Commander 按七工具入口读取：
+Agent 连接 MCP 后不要先 run，也不要先写状态。私人 App Commander 按九工具入口读取：
 
 ```text
 list_registered_projects
 get_apps_connector_smoke_packet
 render_commander_app
 analyze_project_state
+哈希绑定的独立审查使用 review_manifest
+opaque 结果续读使用 read_result_artifact
 只在需要 read/preview workflow 时调用 run_mcp_workflow
 有界验证使用 manage_validation_run
 审查后的 Git 操作使用 manage_git
 ```
 
 consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint，
-不是七工具私人 App contract。
+不是九工具私人 App contract。
 
 项目级工具必须带 `project_name`。如果不知道项目名，先 `list_registered_projects`。
 

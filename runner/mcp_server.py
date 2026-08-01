@@ -3773,10 +3773,20 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     return self._result(req_id, self._tool_error("call_tool", "INVALID_PARAMS", "params 必须是对象。"))
                 name = params.get("name")
                 arguments = params.get("arguments", {})
-                tool_result = self._call_tool(name, arguments, auth_context=auth_context)
+                tool_result = self._call_tool(
+                    name,
+                    arguments,
+                    auth_context=auth_context,
+                )
                 if method == "tools/call":
                     return self._result(req_id, self._as_mcp_call_result(tool_result, arguments))
-                return self._result(req_id, tool_result)
+                return self._result(
+                    req_id,
+                    self._commander_public_project_tool_result(
+                        tool_result,
+                        arguments,
+                    ),
+                )
             if method == "apply_plan_patch":
                 return self._result(
                     req_id,
@@ -3794,7 +3804,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "direct_tool_method_disabled",
                         "Direct named JSON-RPC tool methods are disabled; use tools/call.",
                     )
-                return self._result(req_id, self._call_tool(method, params, auth_context=auth_context))
+                return self._result(
+                    req_id,
+                    self._commander_public_project_tool_result(
+                        self._call_tool(
+                            method,
+                            params,
+                            auth_context=auth_context,
+                        ),
+                        params,
+                    ),
+                )
             return self._protocol_error(req_id, -32601, "method_not_found", f"未知方法：{method}")
         except Exception as e:
             return self._result(

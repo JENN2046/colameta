@@ -1533,6 +1533,122 @@ def test_commander_rejects_unsafe_artifact_across_tool_and_resource_reads(
     assert "must-not-cross" not in json.dumps(resource, ensure_ascii=False)
 
 
+def test_commander_private_jwk_preflight_errors_use_contract_on_every_tool_route(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    private_coordinate = "synthetic-artifact-private-jwk-coordinate"
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "jwk": {
+                "kty": "RSA",
+                "n": "synthetic-public-modulus",
+                "e": "AQAB",
+                "d": private_coordinate,
+            }
+        },
+    )
+
+    assert handle is not None
+    arguments = {
+        "artifact_id": handle.artifact_id,
+        "artifact_page": 1,
+    }
+    for method in (
+        "tools/call",
+        "call_tool",
+        "read_result_artifact",
+    ):
+        params = (
+            {
+                "name": "read_result_artifact",
+                "arguments": arguments,
+            }
+            if method in {"tools/call", "call_tool"}
+            else arguments
+        )
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": method,
+                "method": method,
+                "params": params,
+            }
+        )
+
+        assert response is not None
+        result = response["result"]
+        structured = (
+            result["structuredContent"]
+            if method == "tools/call"
+            else result
+        )
+        assert structured["ok"] is False
+        contract = structured["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "blocked"
+        assert contract["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert private_coordinate not in json.dumps(
+            response,
+            ensure_ascii=False,
+        )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": "resource",
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert private_coordinate not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_artifact_read_preserves_public_jwk(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    public_jwk = {
+        "kty": "RSA",
+        "n": "synthetic-public-modulus",
+        "e": "AQAB",
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"jwk": public_jwk},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    page_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(page_content)["jwk"] == public_jwk
+
+
 def test_commander_artifact_scan_rejects_unsafe_resource_reference_siblings(
     tmp_path,
 ) -> None:

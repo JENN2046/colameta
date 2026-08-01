@@ -9,9 +9,9 @@ not provide a persistent per-user systemd manager. The stack has one ownership
 boundary:
 
 - `colameta-stable.service`: local Web on `127.0.0.1:8801` and the focused
-  seven-tool Commander MCP on `127.0.0.1:8766`;
+  nine-tool Commander MCP on `127.0.0.1:8766`;
 - `colameta-mcp-remote.service`: external-OAuth MCP origin on
-  `127.0.0.1:8767`, also using the seven-tool Commander profile;
+  `127.0.0.1:8767`, also using the nine-tool Commander profile;
 - `colameta-mcp-advanced.service`: loopback-only advanced MCP on
   `127.0.0.1:8768`, retaining the complete 82-tool normal profile;
 - `cloudflared-colameta-mcp-prod.service`: public tunnel, ordered after the
@@ -128,7 +128,7 @@ After the local and public health checks pass:
 1. call `list_registered_projects` through the existing ChatGPT Apps connector
    and confirm it includes `colameta-self-dev`;
 2. call `analyze_project_state(project_name="colameta-self-dev")` and confirm
-   the Commander profile exposes exactly seven tools and the expected deployed
+   the Commander profile exposes exactly nine tools and the expected deployed
    code HEAD;
 3. call `run_mcp_workflow` with `workflow=gate_review_request` and
    `phase=inspect`;

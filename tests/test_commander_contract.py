@@ -3199,6 +3199,146 @@ def test_public_text_redacts_private_key_file_markers(value: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        json.dumps(
+            {
+                "kty": "RSA",
+                "n": "synthetic-public-modulus",
+                "e": "AQAB",
+                "d": "synthetic-private-rsa-coordinate",
+            }
+        ),
+        json.dumps(
+            {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "synthetic-public-x",
+                "y": "synthetic-public-y",
+                "d": "synthetic-private-ec-coordinate",
+            }
+        ),
+        json.dumps(
+            {
+                "keys": [
+                    {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "x": "synthetic-public-x",
+                        "d": "synthetic-private-okp-coordinate",
+                    }
+                ]
+            }
+        ),
+        json.dumps(
+            {
+                "kty": "oct",
+                "k": "synthetic-symmetric-key-material",
+            }
+        ),
+        (
+            'JWK fixture: {"kty":"RSA","e":"AQAB",'
+            '"d":"synthetic-embedded-private-coordinate"}'
+        ),
+        (
+            '{"\\u006bty":"RSA","\\u0064":'
+            '"synthetic-escaped-private-coordinate"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "kty": "EC",
+                        "d": "synthetic-nested-private-coordinate",
+                    }
+                )
+            }
+        ),
+        _percent_encode_layers(
+            json.dumps(
+                {
+                    "kty": "RSA",
+                    "d": "synthetic-percent-private-coordinate",
+                }
+            ),
+            1,
+        ),
+    ],
+)
+def test_public_text_redacts_structured_private_jwk_material(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps(
+            {
+                "kty": "RSA",
+                "n": "synthetic-public-modulus",
+                "e": "AQAB",
+            }
+        ),
+        json.dumps(
+            {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "synthetic-public-x",
+                "y": "synthetic-public-y",
+            }
+        ),
+        json.dumps(
+            {
+                "d": "ordinary-derivative-field",
+                "note": "No JWK key type is present.",
+            }
+        ),
+        json.dumps(
+            {
+                "kty": "document-kind",
+                "d": "ordinary-document-field",
+            }
+        ),
+        json.dumps({"kty": "RSA", "d": ""}),
+    ],
+)
+def test_public_text_preserves_public_jwk_and_unrelated_d_fields(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+def test_commander_response_omits_structured_private_jwk_facts() -> None:
+    private_coordinate = "synthetic-structured-private-coordinate"
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "message": "Project state read.",
+            "status": "clean",
+            "crypto": {
+                "kty": "RSA",
+                "n": "synthetic-public-modulus",
+                "e": "AQAB",
+                "d": private_coordinate,
+            },
+        },
+        params={},
+    )
+
+    rendered = json.dumps(response, ensure_ascii=False)
+    assert private_coordinate not in rendered
+    assert response["facts"]["status"] == "clean"
+    assert "crypto" not in response["facts"]
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "https://alice:synthetic-password@example.com/repo",
         "postgresql://dbuser:synthetic-db-password@db.example/app",
         (

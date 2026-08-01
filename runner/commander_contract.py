@@ -895,6 +895,10 @@ _PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])"
     r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
 )
+_PRIVATE_JWK_ASYMMETRIC_KEY_TYPES = frozenset({"RSA", "EC", "OKP"})
+_PRIVATE_JWK_MAX_JSON_CANDIDATES = 64
+_PRIVATE_JWK_MAX_NODES = 4_096
+_PRIVATE_JWK_MAX_NESTED_STRING_DEPTH = 4
 _STANDALONE_JWT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])"
     r"(?P<header>[A-Za-z0-9_-]{8,1024})\."
@@ -3388,6 +3392,8 @@ def _public_value(
                 result.append(public)
         return result
     if isinstance(value, dict):
+        if commander_public_mapping_is_private_jwk(value):
+            return _OMIT
         referenced_tool = value.get("tool")
         if (
             isinstance(referenced_tool, str)
@@ -3463,6 +3469,11 @@ def _validate_public_value(
             )
         return
     if isinstance(value, dict):
+        if commander_public_mapping_is_private_jwk(value):
+            raise CommanderContractError(
+                "INTERNAL_RESULT_INVALID",
+                "Public value contains private JWK material.",
+            )
         if len(value) > COMMANDER_OBJECT_MAX_FIELDS:
             raise CommanderContractError(
                 "INTERNAL_RESULT_INVALID",
@@ -4594,6 +4605,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _contains_private_jwk_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
@@ -4734,6 +4746,122 @@ def _contains_standalone_jwt(value: str) -> bool:
     )
 
 
+def commander_public_mapping_is_private_jwk(
+    value: dict[Any, Any],
+) -> bool:
+    key_type = value.get("kty")
+    if not isinstance(key_type, str):
+        return False
+    normalized_key_type = key_type.strip().upper()
+    if normalized_key_type in _PRIVATE_JWK_ASYMMETRIC_KEY_TYPES:
+        private_coordinate = value.get("d")
+    elif normalized_key_type == "OCT":
+        private_coordinate = value.get("k")
+    else:
+        return False
+    return (
+        isinstance(private_coordinate, str)
+        and bool(private_coordinate.strip())
+    )
+
+
+def _private_jwk_text_hint(value: str) -> bool:
+    lowered = value.lower()
+    return "kty" in lowered and (
+        '"d"' in lowered
+        or "'d'" in lowered
+        or '"k"' in lowered
+        or "'k'" in lowered
+    )
+
+
+def _contains_private_jwk_material(value: str) -> bool:
+    """Detect bounded structured private JWKs without treating ``d`` as secret.
+
+    Public evidence may contain a JSON object, a JWK Set, JSON embedded in
+    prose, or a serialized JSON string. Only a recognized JWK ``kty`` value
+    establishes the context in which asymmetric ``d`` (or symmetric ``oct``
+    member ``k``) is private material. Candidate and node budgets keep
+    malformed or adversarial evidence bounded; suspicious exhaustion fails
+    closed.
+    """
+
+    stack: list[tuple[Any, int]] = []
+    remaining_candidates = _PRIVATE_JWK_MAX_JSON_CANDIDATES
+
+    def enqueue_json_containers(text: str, depth: int) -> bool:
+        nonlocal remaining_candidates
+        stripped = text.strip()
+        if not stripped or ("{" not in stripped and "[" not in stripped):
+            return False
+        try:
+            parsed = json.loads(stripped)
+        except (RecursionError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            stack.append((parsed, depth))
+            return False
+
+        decoder = json.JSONDecoder()
+        cursor = 0
+        while cursor < len(text):
+            object_start = text.find("{", cursor)
+            array_start = text.find("[", cursor)
+            starts = [
+                start
+                for start in (object_start, array_start)
+                if start >= 0
+            ]
+            if not starts:
+                return False
+            start = min(starts)
+            if remaining_candidates <= 0:
+                return _private_jwk_text_hint(text)
+            remaining_candidates -= 1
+            try:
+                candidate, end = decoder.raw_decode(text, start)
+            except (RecursionError, ValueError):
+                cursor = start + 1
+                continue
+            if isinstance(candidate, (dict, list)):
+                stack.append((candidate, depth))
+            cursor = max(start + 1, end)
+        return False
+
+    if enqueue_json_containers(value, 0):
+        return True
+
+    visited_nodes = 0
+    while stack:
+        node, depth = stack.pop()
+        visited_nodes += 1
+        if visited_nodes > _PRIVATE_JWK_MAX_NODES:
+            return _private_jwk_text_hint(value)
+        if isinstance(node, dict):
+            if commander_public_mapping_is_private_jwk(node):
+                return True
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for nested in node.values()
+                )
+            continue
+        if isinstance(node, list):
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for nested in node
+                )
+            continue
+        if (
+            isinstance(node, str)
+            and depth < _PRIVATE_JWK_MAX_NESTED_STRING_DEPTH
+            and enqueue_json_containers(node, depth + 1)
+        ):
+            return True
+    return False
+
+
 def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
     for match in _FORM_URLENCODED_ASSIGNMENT_RE.finditer(value):
         encoded_key = match.group("key")
@@ -4849,6 +4977,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _CURL_PASSPHRASE_OPTION_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _contains_private_jwk_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)

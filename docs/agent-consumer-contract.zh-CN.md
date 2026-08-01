@@ -69,9 +69,23 @@ Agent 应先看外层 `ok`。如果 `ok=false`，不要继续把返回内容当�
 1. `list_registered_projects`
 2. 私人 App 调 `get_apps_connector_smoke_packet`
 3. 私人 App 调 `render_commander_app` 或 `analyze_project_state`
-4. 带 `project_name` 调用七工具内的目标 workflow/validation/Git 操作
+4. 带 `project_name` 调用九工具内的目标审查、续读、workflow、validation 或 Git 操作
 
-私人 App Commander 恰好只有 7 个工具。`get_agent_consumer_contract`、
+私人 App Commander 恰好只有 9 个工具：
+
+```text
+list_registered_projects
+get_apps_connector_smoke_packet
+render_commander_app
+analyze_project_state
+review_manifest
+read_result_artifact
+run_mcp_workflow
+manage_validation_run
+manage_git
+```
+
+`get_agent_consumer_contract`、
 `get_service_entry_profile`、`get_web_gpt_service_entrypoint` 和其他底层契约属于 loopback
 advanced endpoint，不应通过隐藏工具调用绕过 Commander profile。
 
@@ -124,40 +138,26 @@ advanced endpoint，不应通过隐藏工具调用绕过 Commander profile。
 - `next_payload_rule`: 下一步 payload 如何产生或消费。
 - `write_boundary`: 哪些动作不能由这个画像自行推出。
 
-## 大结果 packaged 形态
+## 大结果 Result Artifact 形态
 
-当结果过大时，MCP 可能返回 compact manifest：
+九个 Commander 工具都返回 `data.schema_version=commander_response.v1`。当结果较大时，
+`data.evidence.kind=result_artifact` 会提供 opaque `artifact_id`、`resource_uri`、
+`page_uri_template`、`page_count`、`content_sha256` 与 `expires_at`。仅当
+`data.outcome=completed` 且 `data.next_action.tool=read_result_artifact` 时，按
+`data.next_action.arguments` 读取第 1 页；后续页继续使用返回的唯一 `data.next_action`。
 
-```json
-{
-  "ok": true,
-  "tool": "<tool_name>",
-  "packaged": true,
-  "package_mode": "manifest",
-  "summary": {},
-  "omitted_fields": ["data"],
-  "artifact_id": "<opaque short-lived id>",
-  "resource_uri": "colameta://result-artifact/<id>",
-  "page_uri_template": "colameta://result-artifact/<id>/pages/{page}",
-  "page_count": 1,
-  "content_sha256": "<sha256>",
-  "expires_at": "<ISO-8601>",
-  "recommended_next_reads": []
-}
-```
+每页正文位于 `data.facts.artifact_page.content`。拼回全部页面后必须核对
+`data.evidence.content_sha256`。`ARTIFACT_NOT_FOUND` 或 `ARTIFACT_EXPIRED` 时重新发起更小范围的
+只读请求。Artifact 是服务进程内的短期只读 continuation，不是 durable receipt、preview、
+确认、授权或业务状态。`confirmation_required` 的确认 action 不得用于读取 Artifact。
 
-当 manifest 带有 `resource_uri` 时，Agent 应优先通过 `resources/read` 读取第 1 页，再按
-`page_uri_template` 读取到 `page_count`。拼回 `content` 后必须核对 `content_sha256`；artifact
-过期、缺失或页码无效时返回 `result_artifact_not_found_or_expired`，此时重新发起更小范围的只读请求。
-artifact 是服务进程内的短期只读 continuation，不是 durable receipt、preview、授权或业务状态。
-
-没有 artifact 字段的旧 manifest，Agent 仍应按 `recommended_next_reads` 分步续读；不要把 packaged
-manifest 当作完整业务 payload。
+`resources/read` 只保留为 opaque URI 的协议兼容读取路径；正常 Commander 闭环优先使用公开
+typed tool `read_result_artifact`，不得调用任意文件路径或隐藏工具。
 
 ## Manifest 绑定的独立审查读取
 
-复杂独立审查不能通过任意源码读取来补洞。使用七工具中的
-`run_mcp_workflow(workflow="review_manifest", phase="inspect")`：
+复杂独立审查不能通过任意源码读取来补洞。使用九工具中的
+`review_manifest(phase="inspect")`：
 
 1. 不传 `review_manifest` 的 inspect 只返回当前 `context_binding` 与模板；不读取 subject。
 2. 外部合同必须精确绑定 `project_name`、`branch`、完整 `head`、`runner_plan`、
@@ -167,14 +167,12 @@ manifest 当作完整业务 payload。
    `review_manifest_id`、`manifest_resource_uri` 和每个 subject 的 `resource_uri`、`read_call`。
 4. `resources/templates/list` 会静态公开 manifest 摘要、subject 首页和后续页的 URI 形状；它不列出
    live session ID、文件路径或正文，也不绕过 scope、上下文或哈希校验。
-5. Agent 应优先通过 `resources/read` 读取这些 opaque URI；每次读取都会重新核对 checkout
-   上下文，读取 subject 时还会重新核对文件 SHA-256。若 ChatGPT 宿主拒绝动态 URI，则使用该 subject
-   返回的 `read_call`，即 `review_manifest` 的 `phase=read`、短期 manifest ID、已声明的
-   `review_manifest_subject_index` 和页码。它只返回这一页，并再次复核上下文和该 subject SHA-256。
+5. Agent 应使用 subject 返回的 `read_call` 调用公开 `review_manifest(phase=read)`；每次读取都会
+   重新核对 checkout 上下文和 subject SHA-256。`resources/read` 只作为 opaque URI 兼容路径。
    `phase=verify` 只复核所有 subject，不返回文件正文。
 
-若任一绑定不一致，返回 `CONTEXT_BINDING_MISMATCH`；若 subject 内容变化，返回
-`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。此时必须停止把旧证据与新 checkout 混用，重新请求
+若任一绑定或 subject 哈希不一致，公共响应返回 `data.error.code=STALE_CONTEXT`。此时必须停止把
+旧证据与新 checkout 混用，重新请求
 模板并建立 manifest。敏感、私有 runtime、符号链接和高风险配置路径即使被 manifest 声明也会被
 拒绝。manifest 会话不授权 validation run、executor、commit、push、ReviewDecision、GateEvent
 或 Delivery accepted。
@@ -204,8 +202,8 @@ packet 必须保持 blocked，不继承 example evidence，也不能执行。
 
 ## Work Item Gate review
 
-私人 App 通过七工具中的 `run_mcp_workflow` 调用
-`workflow=gate_review_request`，不会新增第 8 个工具。必须先 `phase=inspect`；inspect/status
+私人 App 通过九工具中的 `run_mcp_workflow` 调用
+`workflow=gate_review_request`，不会新增第 10 个工具。必须先 `phase=inspect`；inspect/status
 只读，preview 生成仅在服务端保存的有界签名 Gate preview，并返回 opaque handle；apply 需要
 服务端完整 preview、精确 bindings、显式确认、
 `mcp:commit` 和可信私人 Operator/Work Item authority。governance disabled 时
@@ -227,7 +225,7 @@ packet 必须保持 blocked，不继承 example evidence，也不能执行。
 
 ## 本地 Agent Consumer Smoke = Agent 消费者冒烟验收
 
-这是 advanced contract 的仓库内 smoke，不等于真实私人 App 七工具 smoke。
+这是 advanced contract 的仓库内 smoke，不等于真实私人 App 九工具 smoke。
 
 开发仓库提供一个只读 smoke：
 

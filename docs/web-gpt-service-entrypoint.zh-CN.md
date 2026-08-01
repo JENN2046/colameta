@@ -46,13 +46,15 @@ stable 已加载；先看 runtime provenance 和真实工具返回。
 }
 ```
 
-当前 Commander 恰好暴露 7 个工具：
+当前 Commander 恰好暴露 9 个工具：
 
 ```text
 list_registered_projects
 get_apps_connector_smoke_packet
 render_commander_app
 analyze_project_state
+review_manifest
+read_result_artifact
 run_mcp_workflow
 manage_validation_run
 manage_git
@@ -67,9 +69,11 @@ manage_git
 2. `get_apps_connector_smoke_packet`，传入已登记的 `project_name`
 3. `render_commander_app`，传入已登记的 `project_name`
 4. `analyze_project_state`，传入已登记的 `project_name`
-5. 需要业务流程时再用 `run_mcp_workflow`
-6. 有界验证用 `manage_validation_run`
-7. 审查后的 Git 操作用 `manage_git`
+5. 哈希绑定的独立审查用 `review_manifest`
+6. opaque 大结果续读用 `read_result_artifact`
+7. 需要业务流程时再用 `run_mcp_workflow`
+8. 有界验证用 `manage_validation_run`
+9. 审查后的 Git 操作用 `manage_git`
 
 网页端 GPT 使用的默认画像是 `web_gpt_commander`：可以读服务入口、整理 payload、向
 Commander 请求明确授权，但不能把 preview/evidence 当成执行授权。

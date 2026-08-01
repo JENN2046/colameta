@@ -4,7 +4,7 @@ Status: implementation specification
 
 ## Purpose
 
-ColaMeta has two remote operating tiers while retaining the public seven-tool
+ColaMeta has two remote operating tiers while retaining the public nine-tool
 Commander surface.
 
 1. `Commander` is the default. GPT may inspect and prepare previews with
