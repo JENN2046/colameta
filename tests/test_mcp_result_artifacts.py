@@ -28,6 +28,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
 
 
 def test_result_artifact_store_pages_exact_json_and_expires() -> None:
@@ -686,6 +693,19 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\Users\Jenn\secret.txt",
+        json.dumps({"reason": r"\Windows\System32\config\SAM"}),
+        (
+            '{"reason":"\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": r"\Users\Jenn\secret.txt"}
+                )
+            }
+        ),
         r"\\server/share\private.txt",
         "//server/share/private.txt",
         "///server/share/private.txt",
@@ -775,6 +795,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_SLACK_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
                 )
             }
         ),

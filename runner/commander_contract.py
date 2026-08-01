@@ -715,6 +715,19 @@ _PUBLIC_WINDOWS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])[^\s,;\]\[(){}<>\"']*",
     re.IGNORECASE,
 )
+# A single leading backslash is rooted on the current Windows drive.  Keep
+# JSON short/Unicode escape introducers out of the one-segment form; decoded
+# multi-segment paths are checked again by the fixed-point candidate scan.
+_PUBLIC_WINDOWS_ROOTED_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:\\])"
+    r"\\(?!\\)(?=[\w.-])(?:"
+    r"(?![uU][0-9A-Fa-f]{4})"
+    r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
+    r"\\[^\x00-\x1f\x7f\s,;\]\[(){}<>\"']*"
+    r"|(?!(?:[bfnrt]|[uU][0-9A-Fa-f]{4}))"
+    r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
+    r")"
+)
 _SUMMARY_SENTENCE_END_RE = re.compile(r"[。！？!?]+|\.+(?=\s|$)")
 _INTERNAL_TOOL_REFERENCE_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
@@ -820,9 +833,11 @@ _STANDALONE_JWT_RE = re.compile(
 )
 _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
-    r"gh[pousr]_[A-Za-z0-9]{36}"
-    r"|github_pat_[A-Za-z0-9_]{82}"
-    r")(?![A-Za-z0-9_])"
+    r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
+    r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
+    r"|xapp-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
+    r")"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -3415,6 +3430,10 @@ def _redact_public_path_segment_once(value: str) -> str:
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
     redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
     return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
 
 
@@ -3423,6 +3442,7 @@ def _segment_contains_private_path(value: str) -> bool:
         _PUBLIC_FILE_URI_RE.search(value)
         or _PUBLIC_UNC_PATH_RE.search(value)
         or _PUBLIC_POSIX_PATH_RE.search(value)
+        or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_PATH_RE.search(value)
     )
 
@@ -3582,10 +3602,14 @@ def _segment_or_json_boundary_contains_private_path(value: str) -> bool:
 
 
 def _contains_private_path_segment(value: str) -> bool:
-    if _segment_or_json_boundary_contains_private_path(value):
+    if (
+        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
+        or _segment_or_json_boundary_contains_private_path(value)
+    ):
         return True
     return any(
-        _segment_or_json_boundary_contains_private_path(candidate)
+        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(candidate)
+        or _segment_or_json_boundary_contains_private_path(candidate)
         for candidate in _json_escape_decoded_candidates(value)
     )
 
@@ -3608,9 +3632,14 @@ def _redact_public_path_segment_with_json_boundaries(value: str) -> str:
 
 
 def _redact_public_path_segment(value: str) -> str:
-    redacted = _redact_public_path_segment_with_json_boundaries(value)
+    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        value,
+    )
+    redacted = _redact_public_path_segment_with_json_boundaries(redacted)
     if any(
-        _segment_or_json_boundary_contains_private_path(candidate)
+        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(candidate)
+        or _segment_or_json_boundary_contains_private_path(candidate)
         for candidate in _json_escape_decoded_candidates(redacted)
     ):
         return "<local-path>"

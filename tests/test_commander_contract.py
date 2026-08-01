@@ -46,6 +46,14 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+SYNTHETIC_SLACK_APP_TOKEN = "xapp-1-" + ("Cd" * 24)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
 
 
 def _base_context_binding() -> dict:
@@ -779,6 +787,36 @@ def test_public_text_redacts_forward_slash_windows_drive_paths(
 @pytest.mark.parametrize(
     "value",
     [
+        r"\Users\Jenn\secret.txt",
+        r"\Windows\System32\config\SAM",
+        r"\temp\secret.txt",
+        json.dumps({"path": r"\Users\Jenn\secret.txt"}),
+        (
+            '{"path":"\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"path": r"\Windows\System32\config\SAM"}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_windows_current_drive_rooted_paths(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<local-path>" in public
+    for fragment in ("Users", "Windows", "secret.txt", "SAM"):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "C:relative.txt",
         "drive C:relative/path.txt",
     ],
@@ -836,6 +874,8 @@ def test_public_text_redacts_unc_paths_across_serialization(
         "https://example.com/public/readme.txt",
         "https:\\/\\/example.com",
         "safe\\u002fhome/reviewer/private.txt",
+        r"docs\README.md",
+        r"safe\relative.txt",
     ],
 )
 def test_public_text_preserves_context_for_escaped_relative_separators(
@@ -1786,6 +1826,16 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_SLACK_TOKEN,
+        SYNTHETIC_SLACK_APP_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
+                )
+            }
+        ),
     ],
 )
 def test_public_text_redacts_standalone_provider_access_tokens(
@@ -2176,6 +2226,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "ghp_" + ("A1" * 17) + "A",
         "ghp_" + ("A1" * 18) + "A",
         "github_pat_<redacted>",
+        "xoxb-short",
+        "xoxb-<redacted>",
+        "xoxb-" + ("A" * 251),
         "_author=Jenn",
         "_authorship=public",
     ],

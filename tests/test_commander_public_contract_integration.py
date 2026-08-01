@@ -35,6 +35,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -391,6 +398,7 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
             "/home/jenn/private/secret.txt": "posix-key-value",
             r"C:\Users\Jenn\secret.txt": "windows-key-value",
             r"\\server/share\secret.txt": "unc-key-value",
+            r"\Users\Jenn\secret.txt": "rooted-windows-key-value",
             "nested": {
                 "safe_nested": True,
                 "run_id": "run-private-123",
@@ -436,6 +444,8 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         r"C:\Users\Jenn",
         r"\\server/share",
         "unc-key-value",
+        r"\Users\Jenn",
+        "rooted-windows-key-value",
         "manage_git_remote",
         "get_git_status",
         "manage_plan_version",
@@ -501,6 +511,15 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_SLACK_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
+                )
+            }
+        ),
     ],
 )
 def test_projection_redacts_standalone_provider_access_tokens(
@@ -523,6 +542,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
 
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
+    assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(

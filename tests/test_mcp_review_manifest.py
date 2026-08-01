@@ -51,6 +51,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
 
 
 def _make_git_checkout(
@@ -1992,6 +1999,19 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         '{"reason":"\\u002fhome/reviewer/private.txt"}',
         '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\Users\Jenn\secret.txt",
+        json.dumps({"reason": r"\Windows\System32\config\SAM"}),
+        (
+            '{"reason":"\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": r"\Users\Jenn\secret.txt"}
+                )
+            }
+        ),
         r"\\server/share\private.txt",
         "//server/share/private.txt",
         "///server/share/private.txt",
@@ -2081,6 +2101,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_SLACK_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
                 )
             }
         ),
