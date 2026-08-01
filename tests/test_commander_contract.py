@@ -2832,9 +2832,24 @@ def test_public_text_redacts_pgpass_password_records(value: str) -> None:
                 )
             }
         ),
+        "MYSQL_PWD=synthetic-mysql-password",
+        "mysql_pwd=synthetic-lowercase-mysql-password",
+        '{"MYSQL_PWD":"synthetic-json-mysql-password"}',
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-password"}'
+        ),
+        "MYSQL%5FPWD%3Dsynthetic-percent-mysql-password",
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253Dsynthetic-nested-mysql-password"
+                )
+            }
+        ),
     ],
 )
-def test_public_text_redacts_postgres_password_assignments(
+def test_public_text_redacts_database_password_assignments(
     value: str,
 ) -> None:
     public = commander_public_text(value)
@@ -3311,6 +3326,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "PGPASSWORD_HINT=use-the-local-prompt",
         "PGPASSWORD_FILE=relative.pgpass",
         "Document PGPASSWORD handling without assigning it.",
+        "MYSQL_PWD_HINT=use-the-local-prompt",
+        "MYSQL_PWD_FILE=relative.mysql.cnf",
+        "Document MYSQL_PWD handling without assigning it.",
+        "pwd=public-relative-name",
         "_author=Jenn",
         "_authorship=public",
         "public key: synthetic-public-value",
@@ -4630,6 +4649,9 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "passPhrase",
         "pass-phrase",
         "pass phrase",
+        "MYSQL_PWD",
+        "mysqlPwd",
+        "mysql-pwd",
         "_auth",
         ".npm_authToken",
         "oauth_authorization_code",

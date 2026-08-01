@@ -2807,6 +2807,19 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"env":"PGPASSWORD\\u003d'
             'synthetic-encoded-postgres-manifest-password"}'
         ),
+        "MYSQL_PWD=synthetic-mysql-manifest-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-manifest-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-manifest-password"
+                )
+            }
+        ),
         "123456789:" + ("A" * 35),
         '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
         (

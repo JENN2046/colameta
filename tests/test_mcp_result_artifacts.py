@@ -1217,6 +1217,19 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"env":"PGPASSWORD\\u003d'
             'synthetic-encoded-postgres-artifact-password"}'
         ),
+        "MYSQL_PWD=synthetic-mysql-artifact-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-artifact-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-artifact-password"
+                )
+            }
+        ),
         "123456789:" + ("A" * 35),
         '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
         (

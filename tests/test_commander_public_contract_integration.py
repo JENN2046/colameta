@@ -550,6 +550,7 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
             "_auth": "npm-auth-value-must-not-leak",
             "AccountKey": "azure-account-value-must-not-leak",
             "SharedAccessSignature": "azure-sas-value-must-not-leak",
+            "MYSQL_PWD": "mysql-value-must-not-leak",
             "/home/jenn/private/secret.txt": "posix-key-value",
             r"C:\Users\Jenn\secret.txt": "windows-key-value",
             r"\\server/share\secret.txt": "unc-key-value",
@@ -587,6 +588,7 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "_auth",
         "AccountKey",
         "SharedAccessSignature",
+        "MYSQL_PWD",
         "oauth-value-must-not-leak",
         "id-value-must-not-leak",
         "client-value-must-not-leak",
@@ -595,6 +597,7 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "npm-auth-value-must-not-leak",
         "azure-account-value-must-not-leak",
         "azure-sas-value-must-not-leak",
+        "mysql-value-must-not-leak",
         "/home/jenn",
         r"C:\Users\Jenn",
         r"\\server/share",
@@ -888,6 +891,19 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
             '{"env":"PGPASSWORD\\u003d'
             'synthetic-encoded-postgres-summary-password"}'
         ),
+        "MYSQL_PWD=synthetic-mysql-summary-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-summary-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-summary-password"
+                )
+            }
+        ),
         SYNTHETIC_TELEGRAM_BOT_TOKEN,
         (
             '{"access":"'
@@ -896,7 +912,7 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
         ),
     ],
 )
-def test_projection_redacts_form_pgpass_oauth_postgres_and_telegram_credentials(
+def test_projection_redacts_form_pgpass_oauth_database_and_telegram_credentials(
     summary: str,
 ) -> None:
     contract = _assert_contract(

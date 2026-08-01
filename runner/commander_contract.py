@@ -335,6 +335,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "log",
         "log_path",
         "logs",
+        "mysql_pwd",
         "operator_confirmation_ref",
         "oauth_access_token",
         "oauth_authorization_code",
