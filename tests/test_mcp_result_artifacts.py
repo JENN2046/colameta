@@ -312,11 +312,25 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"{uri}\\u007bdetails\\u007d; "
             f"{uri}\\u003cdetails\\u003e"
         ),
+        "ascii_closing_boundaries": (
+            f"before){uri}; before]{uri}; before}}{uri}"
+        ),
+        "escaped_ascii_closing_boundaries": (
+            f"before\\u0029{uri}; before\\u005d{uri}; "
+            f"before\\u007d{uri}"
+        ),
         "public_key_assignment": "publicKey=synthetic-public-value",
         "public_key_marker": "-----BEGIN PUBLIC KEY-----",
         "pgp_public_key_marker": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
         "ordinary_url": "https://example.com/repo",
         "username_only_url": "https://alice@example.com/repo",
+        "non_sensitive_cli_options": (
+            "tool --username alice --region us-east-1"
+        ),
+        "sensitive_flag_without_value": "tool --password --verbose",
+        "escaped_sensitive_flag_without_value": (
+            "tool --password\\u0020\\u002d\\u002dverbose"
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
@@ -712,6 +726,24 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         (
             '{"url":"https:\\u002f\\u002falice\\u003a'
             'synthetic-encoded-authority\\u0040example.com/repo"}'
+        ),
+        "--password synthetic-cli-password",
+        "tool --api-key synthetic-cli-secret --verbose",
+        (
+            '{"command":"tool --api-key\\u0020'
+            'synthetic-encoded-space-cli-secret"}'
+        ),
+        (
+            '{"command":"tool --client\\u002dsecret '
+            'synthetic-encoded-cli-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"command":"tool --refresh\\u002dtoken '
+                    'synthetic-nested-cli-secret"}'
+                )
+            }
         ),
         "Cookie: session=abc; csrf=def",
         (

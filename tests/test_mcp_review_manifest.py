@@ -1090,6 +1090,13 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{uri}\\u007bdetails\\u007d; "
         f"{uri}\\u003cdetails\\u003e"
     )
+    ascii_closing_boundaries = (
+        f"before){uri}; before]{uri}; before}}{uri}"
+    )
+    escaped_ascii_closing_boundaries = (
+        f"before\\u0029{uri}; before\\u005d{uri}; "
+        f"before\\u007d{uri}"
+    )
     content = (
         f"\ufeff{uri}\n"
         f"\\ufeff{uri}\n"
@@ -1122,11 +1129,16 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{serialized_paired_punctuation_boundaries}\n"
         f"{ascii_opening_boundaries}\n"
         f"{escaped_ascii_opening_boundaries}\n"
+        f"{ascii_closing_boundaries}\n"
+        f"{escaped_ascii_closing_boundaries}\n"
         "publicKey=synthetic-public-value\n"
         "-----BEGIN PUBLIC KEY-----\n"
         "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
         "https://example.com/repo\n"
         "https://alice@example.com/repo\n"
+        "tool --username alice --region us-east-1\n"
+        "tool --password --verbose\n"
+        "tool --password\\u0020\\u002d\\u002dverbose\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2021,6 +2033,24 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         (
             '{"url":"redis:\\u002f\\u002fcache\\u003a'
             'synthetic-encoded-authority\\u0040cache.example/0"}'
+        ),
+        "--password synthetic-cli-password",
+        "tool --api-key synthetic-cli-secret --verbose",
+        (
+            '{"command":"tool --api-key\\u0020'
+            'synthetic-encoded-space-cli-secret"}'
+        ),
+        (
+            '{"command":"tool --client\\u002dsecret '
+            'synthetic-encoded-cli-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"command":"tool --refresh\\u002dtoken '
+                    'synthetic-nested-cli-secret"}'
+                )
+            }
         ),
         "Cookie: session=abc; csrf=def",
         (

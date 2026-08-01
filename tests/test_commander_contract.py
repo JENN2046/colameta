@@ -1397,6 +1397,31 @@ def test_public_text_preserves_opaque_uris_at_paired_punctuation_boundaries(
     ],
 )
 @pytest.mark.parametrize(
+    "closing",
+    [")", "]", "}", "\\u0029", "\\u005d", "\\u007d"],
+)
+def test_public_text_preserves_opaque_uris_after_ascii_closing_punctuation(
+    uri: str,
+    closing: str,
+) -> None:
+    value = f"before{closing}{uri}"
+    serialized = json.dumps({"nested": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(serialized) == serialized
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
     "suffix",
     [
         "(see page 2)",
@@ -1725,6 +1750,41 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
 @pytest.mark.parametrize(
     "value",
     [
+        "--password synthetic-cli-password",
+        "tool --api-key synthetic-cli-secret --verbose",
+        "tool --password\tsynthetic-tab-cli-secret",
+        "tool --client_secret 'synthetic quoted cli secret'",
+        "tool --AWS_SECRET_ACCESS_KEY synthetic-aws-cli-secret",
+        (
+            '{"command":"tool --api-key\\u0020'
+            'synthetic-encoded-space-cli-secret"}'
+        ),
+        (
+            '{"command":"tool --api\\u002dkey '
+            'synthetic-encoded-cli-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"command":"tool --refresh\\u002dtoken '
+                    'synthetic-nested-cli-secret"}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "-----BEGIN PRIVATE KEY-----\n"
         "synthetic-private-key-material\n"
         "-----END PRIVATE KEY-----",
@@ -1804,6 +1864,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "http://[::1]:8080/health",
         "https://example.com/archive/user:note@v1",
         "mailto:alice@example.com",
+        "tool --username alice --region us-east-1",
+        "tool --password --verbose",
+        "tool --password\\u0020\\u002d\\u002dverbose",
+        "Use password protection for local data.",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
@@ -2018,6 +2082,7 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "-----END PGP PRIVATE KEY BLOCK-----"
         ),
         "https://alice:synthetic-password@example.com/repo",
+        "tool --password synthetic-cli-password",
         (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
@@ -2120,6 +2185,10 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
         (
             '{"url":"postgresql:\\u002f\\u002fdbuser:'
             'synthetic-db-password@db.example/app"}'
+        ),
+        (
+            '{"command":"tool --api\\u002dkey '
+            'synthetic-encoded-cli-secret"}'
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"

@@ -520,6 +520,7 @@ _PUBLIC_COLAMETA_URI_SCHEME_RE = re.compile(
 )
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS = frozenset("([{<")
+_PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS = frozenset(")]}")
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
@@ -756,6 +757,11 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|'(?:\\.|[^'\\])*$"
     r"|[^\s,;]+"
     r")"
+)
+_SENSITIVE_CLI_OPTION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])--"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"[ \t]+(?!-)[^\s,;]+"
 )
 _ASSIGNMENT_KEY_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])"
@@ -3707,6 +3713,7 @@ def _is_resource_uri_left_boundary_character(value: str) -> bool:
     if (
         _is_resource_uri_whitespace(value)
         or value in "\"'`<>([{"
+        or value in _PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS
         or category == "Cc"
     ):
         return True
@@ -4141,6 +4148,7 @@ def _matches_sensitive_material(value: str) -> bool:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_sensitive_cli_option_credential(value)
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
@@ -4199,11 +4207,19 @@ def _contains_forbidden_key_assignment(value: str) -> bool:
     )
 
 
+def _contains_sensitive_cli_option_credential(value: str) -> bool:
+    return any(
+        commander_public_key_is_forbidden(match.group("key"))
+        for match in _SENSITIVE_CLI_OPTION_RE.finditer(value)
+    )
+
+
 def _redact_sensitive_material(value: str) -> str:
     if (
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
+        or _contains_sensitive_cli_option_credential(value)
     ):
         return "<sensitive>"
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
