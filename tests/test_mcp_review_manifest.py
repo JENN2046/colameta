@@ -61,6 +61,15 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_AGE_X25519_IDENTITY = (
+    "AGE-SECRET-KEY-1" + ("Q" * 58)
+)
+ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY = (
+    SYNTHETIC_AGE_X25519_IDENTITY.replace(
+        "AGE-SECRET-KEY-",
+        "\\u0041GE-SECRET-KEY-",
+    )
+)
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
 SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
 ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
@@ -1279,6 +1288,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "tool --passphrase --prompt\n"
         "Use a passphrase prompt.\n"
         "PuTTY-User-Key-File-3 ssh-ed25519\n"
+        f"AGE-SECRET-KEY-1{'Q' * 57}\n"
+        f"AGE-SECRET-KEY-1{'Q' * 59}\n"
+        "AGE-SECRET-KEY-1<redacted>\n"
+        f"age1{'q' * 58}\n"
         "header.payload.signature\n"
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl\n"
         "_author=Jenn\n"
@@ -2845,6 +2858,12 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "-----BEGIN OPENSSH PRIVATE KEY-----\n"
             "synthetic-private-key-material\n"
             "-----END OPENSSH PRIVATE KEY-----"
+        ),
+        SYNTHETIC_AGE_X25519_IDENTITY,
+        (
+            '{"identity":"'
+            f"{ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY}"
+            '"}'
         ),
         (
             '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'

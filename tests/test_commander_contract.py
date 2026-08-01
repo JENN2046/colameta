@@ -50,6 +50,15 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_AGE_X25519_IDENTITY = (
+    "AGE-SECRET-KEY-1" + ("Q" * 58)
+)
+ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY = (
+    SYNTHETIC_AGE_X25519_IDENTITY.replace(
+        "AGE-SECRET-KEY-",
+        "\\u0041GE-SECRET-KEY-",
+    )
+)
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
 SYNTHETIC_GITHUB_OAUTH_TOKEN = "gho_" + ("B2" * 18)
 SYNTHETIC_GITHUB_FINE_GRAINED_PAT = (
@@ -3648,6 +3657,39 @@ def test_public_text_redacts_private_key_file_markers(value: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        SYNTHETIC_AGE_X25519_IDENTITY,
+        f"age identity: {SYNTHETIC_AGE_X25519_IDENTITY}",
+        SYNTHETIC_AGE_X25519_IDENTITY.replace("-", "%2D"),
+        (
+            '{"identity":"'
+            f"{ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY}"
+            '"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "identity": (
+                            ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_standalone_age_x25519_identities(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "AGE-SECRET-KEY-1" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         json.dumps(
             {
                 "kty": "RSA",
@@ -3888,6 +3930,14 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "Use password protection for the default profile.",
         "Use a passphrase prompt.",
         "PuTTY-User-Key-File-3 ssh-ed25519",
+        "AGE-SECRET-KEY-1" + ("Q" * 57),
+        "AGE-SECRET-KEY-1" + ("Q" * 59),
+        "x" + SYNTHETIC_AGE_X25519_IDENTITY,
+        SYNTHETIC_AGE_X25519_IDENTITY + "Q",
+        "AGE-SECRET-KEY-1" + ("B" * 58),
+        "AGE-SECRET-KEY-1<redacted>",
+        "Document the AGE-SECRET-KEY-1 prefix.",
+        "age1" + ("q" * 58),
         "header.payload.signature",
         "release.v1.signature",
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl",

@@ -932,6 +932,14 @@ _PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])"
     r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
 )
+# A 32-byte X25519 identity encodes to 52 Bech32 data characters plus
+# the six-character checksum after the fixed uppercase HRP and separator.
+_AGE_X25519_IDENTITY_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"AGE-SECRET-KEY-1"
+    r"[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}"
+    r"(?![A-Za-z0-9_-])"
+)
 _PRIVATE_JWK_ASYMMETRIC_KEY_TYPES = frozenset({"RSA", "EC", "OKP"})
 _STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES = 64
 _STRUCTURED_CREDENTIAL_MAX_NODES = 4_096
@@ -4797,6 +4805,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _AGE_X25519_IDENTITY_RE.search(value)
         or _contains_private_jwk_material(value)
         or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)
@@ -5386,6 +5395,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _CURL_PASSPHRASE_OPTION_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _AGE_X25519_IDENTITY_RE.search(value)
         or _contains_private_jwk_material(value)
         or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)

@@ -39,6 +39,15 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_AGE_X25519_IDENTITY = (
+    "AGE-SECRET-KEY-1" + ("Q" * 58)
+)
+ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY = (
+    SYNTHETIC_AGE_X25519_IDENTITY.replace(
+        "AGE-SECRET-KEY-",
+        "\\u0041GE-SECRET-KEY-",
+    )
+)
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
 SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
 ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
@@ -497,6 +506,14 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "putty_header_without_colon": (
             "PuTTY-User-Key-File-3 ssh-ed25519"
         ),
+        "age_identity_underlength": (
+            "AGE-SECRET-KEY-1" + ("Q" * 57)
+        ),
+        "age_identity_overlength": (
+            "AGE-SECRET-KEY-1" + ("Q" * 59)
+        ),
+        "age_identity_placeholder": "AGE-SECRET-KEY-1<redacted>",
+        "age_public_recipient": "age1" + ("q" * 58),
         "compact_placeholder": "header.payload.signature",
         "compact_non_json_prose": (
             "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl"
@@ -1005,6 +1022,12 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "-----BEGIN PRIVATE KEY-----\n"
             "synthetic-private-key-material\n"
             "-----END PRIVATE KEY-----"
+        ),
+        SYNTHETIC_AGE_X25519_IDENTITY,
+        (
+            '{"identity":"'
+            f"{ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY}"
+            '"}'
         ),
         (
             '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
