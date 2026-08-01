@@ -2794,8 +2794,22 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     def _commander_public_review_manifest_page_envelope_safety(
         self,
         resource_result: dict[str, Any],
+        parsed_review_manifest: tuple[str, int | None, int | None],
     ) -> bool:
-        """Validate page metadata and sibling keys without reinterpreting a slice."""
+        """Bind page metadata to its request without reinterpreting a slice."""
+
+        (
+            requested_manifest_id,
+            requested_subject_index,
+            requested_page,
+        ) = parsed_review_manifest
+        if requested_subject_index is None:
+            return False
+        expected_resource_uri = self._mcp_review_manifest_uri(
+            requested_manifest_id,
+            subject_index=requested_subject_index,
+            page=requested_page,
+        )
 
         candidate = copy.deepcopy(resource_result)
         contents = candidate.get("contents")
@@ -2814,18 +2828,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if not isinstance(page, dict) or not isinstance(page.get("content"), str):
             return False
         resource_uri = content_item.get("uri")
-        if not isinstance(resource_uri, str):
+        if resource_uri != expected_resource_uri:
             return False
         parsed_resource = self._parse_mcp_review_manifest_uri(
             resource_uri
         )
-        if parsed_resource is None:
+        if parsed_resource != parsed_review_manifest:
             return False
         (
             resource_manifest_id,
             resource_subject_index,
             resource_page,
-        ) = parsed_resource
+        ) = parsed_review_manifest
         expected_page_fields = {
             "review_manifest_id",
             "review_unit",
@@ -2844,10 +2858,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if (
             page.get("review_manifest_id") != resource_manifest_id
             or page.get("subject_index") != resource_subject_index
-            or (
-                resource_page is not None
-                and page.get("page") != resource_page
-            )
+            or page.get("page") != (resource_page or 1)
         ):
             return False
         expires_at = page.get("expires_at")
@@ -3402,7 +3413,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             )
                             if parsed_review_manifest[1] is None
                             else self._commander_public_review_manifest_page_envelope_safety(
-                                resource_result
+                                resource_result,
+                                parsed_review_manifest,
                             )
                             if whole_subject_safety is True
                             else self._commander_public_resource_read_safety(

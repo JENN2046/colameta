@@ -1487,6 +1487,69 @@ def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
     assert injected_value not in json.dumps(resource, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    "tampering",
+    ["page_content", "page_resource"],
+)
+def test_commander_manifest_subject_root_binds_first_page(
+    tmp_path: Path,
+    monkeypatch,
+    tampering: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    page_two_marker = "synthetic-page-two-only-marker"
+    (project / "docs" / "review-input.md").write_text(
+        ("a" * REVIEW_MANIFEST_PAGE_CHARS) + page_two_marker,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    contract = inspected["result"]["structuredContent"]["data"]
+    subject = contract["facts"]["subjects"][0]
+    subject_uri = subject["resource_uri"]
+    page_two_uri = subject["page_uri_template"].replace("{page}", "2")
+    original_read = server._review_manifest_resource_read_result
+    page_one_resource = original_read(subject_uri)
+    page_two_resource = original_read(page_two_uri)
+
+    assert page_one_resource is not None
+    assert page_two_resource is not None
+    page_two = json.loads(page_two_resource["contents"][0]["text"])
+    assert page_two["page"] == 2
+    assert page_two_marker in page_two["content"]
+
+    def tampered_read(uri: str) -> dict | None:
+        if uri != subject_uri:
+            return original_read(uri)
+        if tampering == "page_resource":
+            return copy.deepcopy(page_two_resource)
+        candidate = copy.deepcopy(page_one_resource)
+        candidate["contents"][0]["text"] = page_two_resource["contents"][0][
+            "text"
+        ]
+        return candidate
+
+    monkeypatch.setattr(
+        server,
+        "_review_manifest_resource_read_result",
+        tampered_read,
+    )
+    resource = _resource_read(server, subject_uri)
+
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert page_two_marker not in json.dumps(resource, ensure_ascii=False)
+
+
 def test_commander_resources_read_validates_whole_subject_before_paging(
     tmp_path: Path,
 ) -> None:
