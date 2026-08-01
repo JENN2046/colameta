@@ -56,6 +56,14 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
@@ -1877,6 +1885,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        (
+            "https://aws.example.invalid/callback?access_key_id="
+            f"{SYNTHETIC_AWS_ACCESS_KEY_ID}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
+                )
+            }
+        ),
         SYNTHETIC_STRIPE_SECRET_KEY,
         SYNTHETIC_STRIPE_RESTRICTED_KEY,
         (
@@ -2361,6 +2383,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "AIza-short",
         "AIza<redacted>",
         "AIza" + ("A" * 36),
+        "AKIA-short",
+        "AKIA<redacted>",
+        "AKIA" + ("A" * 17),
+        "ASIA-short",
+        "AIDA" + ("A" * 16),
+        "AROA" + ("A" * 16),
         "sk_live_short",
         "sk_live_<redacted>",
         "sk_live_" + ("A" * 25),

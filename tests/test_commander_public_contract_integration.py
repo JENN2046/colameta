@@ -45,6 +45,14 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
@@ -554,6 +562,16 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
+                )
+            }
+        ),
         SYNTHETIC_STRIPE_SECRET_KEY,
         SYNTHETIC_STRIPE_RESTRICTED_KEY,
         f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
@@ -606,6 +624,8 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
     assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
     assert "AIza" not in json.dumps(contract, ensure_ascii=False)
+    assert "AKIA" not in json.dumps(contract, ensure_ascii=False)
+    assert "ASIA" not in json.dumps(contract, ensure_ascii=False)
     assert "sk_live_" not in json.dumps(contract, ensure_ascii=False)
     assert "rk_test_" not in json.dumps(contract, ensure_ascii=False)
     assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)

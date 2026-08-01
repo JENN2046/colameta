@@ -61,6 +61,14 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
@@ -2144,6 +2152,16 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
                 )
             }
         ),
