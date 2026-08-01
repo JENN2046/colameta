@@ -502,7 +502,44 @@ def test_summary_redacts_complete_basic_authorization_material() -> None:
 
     assert "Authorization" not in response["summary"]
     assert "dXNlcjpwYXNzd29yZA" not in response["summary"]
-    assert response["summary"] == "Connector responded with <sensitive>"
+    assert response["summary"] == "<sensitive>"
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "message, secret_fragments",
+    [
+        (
+            "Cookie: session=abc; csrf=def",
+            ("session=abc", "csrf=def"),
+        ),
+        (
+            (
+                'Authorization: Digest username="Mufasa", '
+                'response="deadbeef"'
+            ),
+            ("Mufasa", "deadbeef"),
+        ),
+    ],
+)
+def test_summary_redacts_complete_compound_credential_headers(
+    message: str,
+    secret_fragments: tuple[str, ...],
+) -> None:
+    response = build_commander_response(
+        tool_name="render_commander_app",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "message": message,
+            },
+        },
+    )
+
+    assert response["summary"] == "<sensitive>"
+    for fragment in secret_fragments:
+        assert fragment not in response["summary"]
     validate_commander_response(response)
 
 
@@ -1490,6 +1527,69 @@ def test_public_text_redacts_complete_basic_authorization_value() -> None:
 
 
 @pytest.mark.parametrize(
+    "value, expected",
+    [
+        (
+            "Cookie: session=abc; csrf=def",
+            "<sensitive>",
+        ),
+        (
+            (
+                'Authorization: Digest username="Mufasa", '
+                'response="deadbeef"'
+            ),
+            "<sensitive>",
+        ),
+        (
+            'Cookie: "session=abc"; csrf=def',
+            "<sensitive>",
+        ),
+        (
+            (
+                'Authorization: "Digest username=Mufasa", '
+                "response=deadbeef"
+            ),
+            "<sensitive>",
+        ),
+        (
+            (
+                'Authorization: Digest username="Mufasa",\r\n'
+                ' response="deadbeef"\nNext safe line.'
+            ),
+            "<sensitive>",
+        ),
+        (
+            '{"Cookie":"session=abc; csrf=def","status":"safe"}',
+            "<sensitive>",
+        ),
+        (
+            "Proxy-Authorization: Basic dXNlcjpwYXNzd29yZA==",
+            "<sensitive>",
+        ),
+        (
+            "Set-Cookie: session=abc; HttpOnly; Secure",
+            "<sensitive>",
+        ),
+    ],
+)
+def test_public_text_redacts_complete_compound_credential_headers(
+    value: str,
+    expected: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == expected
+    for fragment in (
+        "session=abc",
+        "csrf=def",
+        "Mufasa",
+        "deadbeef",
+        "dXNlcjpwYXNzd29yZA",
+    ):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
     "value",
     [
         'password="alpha beta gamma"',
@@ -1527,6 +1627,11 @@ def test_public_text_redacts_complete_quoted_sensitive_values(
         (
             '{"reason":"Authorization: '
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
+        r'{\"Cookie\":\"session=abc; csrf=def\"}',
+        (
+            '{"reason":"Authorization: \\u0044igest '
+            'username=\\"Mufasa\\", response=\\"deadbeef\\""}'
         ),
         json.dumps(
             {
@@ -1609,6 +1714,38 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
     assert response["outcome"] == "blocked"
     assert response["error"]["code"] == "WORKTREE_DIRTY"
     assert response["error"]["message"] == f"{prefix} <resource-uri>"
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Cookie: session=abc; csrf=def",
+        (
+            'Authorization: Digest username="Mufasa", '
+            'response="deadbeef"'
+        ),
+    ],
+)
+def test_blocked_error_redacts_complete_compound_credential_headers(
+    message: str,
+) -> None:
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": False,
+            "error": {
+                "code": "GIT_WORKTREE_DIRTY",
+                "message": message,
+                "recoverable": True,
+            },
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+
+    assert response["outcome"] == "blocked"
+    assert response["summary"] == "<sensitive>"
+    assert response["error"]["message"] == "<sensitive>"
     validate_commander_response(response)
 
 

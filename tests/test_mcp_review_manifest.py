@@ -1961,6 +1961,16 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"reason":"Authorization: '
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
         ),
+        "Cookie: session=abc; csrf=def",
+        (
+            'Authorization: Digest username="Mufasa", '
+            'response="deadbeef"'
+        ),
+        r'{\"Cookie\":\"session=abc; csrf=def\"}',
+        (
+            '{"reason":"Authorization: \\u0044igest '
+            'username=\\"Mufasa\\", response=\\"deadbeef\\""}'
+        ),
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
         json.dumps(

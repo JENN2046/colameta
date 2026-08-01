@@ -722,6 +722,12 @@ _TOOL_LIKE_IDENTIFIER_RE = re.compile(
     r"(?P<name>[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
     r"(?![A-Za-z0-9_])"
 )
+_SENSITIVE_HEADER_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[\"']?(?:"
+    r"(?:proxy[_-])?authorization"
+    r"|(?:set[_-])?cookie"
+    r")[\"']?\s*[:=]"
+)
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])[\"']?(?:"
     r"authorization"
@@ -4092,7 +4098,8 @@ def _decoded_candidate_contains_noncommander_tool_reference(
 
 def _matches_sensitive_material(value: str) -> bool:
     return bool(
-        _SENSITIVE_ASSIGNMENT_RE.search(value)
+        _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
+        or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _BEARER_TOKEN_RE.search(value)
     )
 
@@ -4108,6 +4115,8 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
 
 
 def _redact_sensitive_material(value: str) -> str:
+    if _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value):
+        return "<sensitive>"
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
     redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
     if _decoded_candidate_contains_sensitive_material(value):
