@@ -3389,6 +3389,9 @@ def test_public_text_redacts_normalized_passphrase_credentials(
         "-----BEGIN OPENSSH PRIVATE KEY-----\n"
         "synthetic-openssh-key-material\n"
         "-----END OPENSSH PRIVATE KEY-----",
+        "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n"
+        "synthetic-ssh2-key-material\n"
+        "---- END SSH2 ENCRYPTED PRIVATE KEY ----",
         "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
         "synthetic-pgp-key-material\n"
         "-----END PGP PRIVATE KEY BLOCK-----",
@@ -3399,6 +3402,10 @@ def test_public_text_redacts_normalized_passphrase_credentials(
         (
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
             '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        (
+            '{"ssh2":"---- BEGIN SSH2 \\u0045NCRYPTED PRIVATE '
+            'KEY ----\\nsynthetic-encoded-ssh2-key-material"}'
         ),
         (
             "PuTTY-User-Key-File-3: ssh-ed25519\n"
@@ -3609,6 +3616,7 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "-----BEGIN PUBLIC KEY-----",
         "-----BEGIN PGP PUBLIC KEY BLOCK-----",
         "-----BEGIN CERTIFICATE-----",
+        "---- BEGIN SSH2 PUBLIC KEY ----",
         "https://example.com/repo",
         "https://alice@example.com/repo",
         "http://[::1]:8080/health",

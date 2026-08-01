@@ -171,8 +171,9 @@ typed tool `read_result_artifact`，不得调用任意文件路径或隐藏工�
    重新核对 checkout 上下文和 subject SHA-256。`resources/read` 只作为 opaque URI 兼容路径。
    `phase=verify` 只复核所有 subject，不返回文件正文。
 
-若任一绑定或 subject 哈希不一致，公共响应返回 `data.error.code=STALE_CONTEXT`。此时必须停止把
-旧证据与新 checkout 混用，重新请求
+若 project identity、route、branch、HEAD、Runner plan 或当前版本的绑定值不一致，公共响应返回
+`data.error.code=PROJECT_CONTEXT_MISMATCH`；若绑定上下文已无法读取，或 subject SHA-256 已漂移，
+则返回 `data.error.code=STALE_CONTEXT`。两种情况都必须停止把旧证据与新 checkout 混用，重新请求
 模板并建立 manifest。敏感、私有 runtime、符号链接和高风险配置路径即使被 manifest 声明也会被
 拒绝。manifest 会话不授权 validation run、executor、commit、push、ReviewDecision、GateEvent
 或 Delivery accepted。

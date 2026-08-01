@@ -977,6 +977,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "-----END PGP PRIVATE KEY BLOCK-----"
         ),
         (
+            "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n"
+            "synthetic-ssh2-private-key-material\n"
+            "---- END SSH2 ENCRYPTED PRIVATE KEY ----"
+        ),
+        (
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
             '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
         ),

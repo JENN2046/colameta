@@ -888,9 +888,13 @@ _BASIC_AUTHORIZATION_RE = re.compile(
     r"(?![A-Za-z0-9+/=])"
 )
 _PRIVATE_KEY_BLOCK_RE = re.compile(
-    r"(?i)-----BEGIN[ \t]+"
+    r"(?i)(?:"
+    r"-----BEGIN[ \t]+"
     r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY"
     r"(?:[ \t]+BLOCK)?-----"
+    r"|----[ \t]+BEGIN[ \t]+SSH2[ \t]+ENCRYPTED[ \t]+"
+    r"PRIVATE[ \t]+KEY[ \t]+----"
+    r")"
 )
 _PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])"

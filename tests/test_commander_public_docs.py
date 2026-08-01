@@ -10,6 +10,9 @@ from runner.mcp_commander_public import COMMANDER_EXPOSED_TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_DOC = ROOT / "docs" / "commander-public-response-minimization.md"
+AGENT_CONSUMER_CONTRACT_ZH = (
+    ROOT / "docs" / "agent-consumer-contract.zh-CN.md"
+)
 USAGE_DOCS = (
     ROOT / "docs" / "USAGE.md",
     ROOT / "docs" / "USAGE.zh-CN.md",
@@ -182,3 +185,17 @@ def test_usage_docs_expose_only_the_public_manifest_hash_error() -> None:
 
         assert "STALE_CONTEXT" in section
         assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in section
+
+
+def test_agent_consumer_contract_distinguishes_manifest_context_errors() -> None:
+    text = AGENT_CONSUMER_CONTRACT_ZH.read_text(encoding="utf-8")
+    section = text.split(
+        "## Manifest 绑定的独立审查",
+        maxsplit=1,
+    )[1].split("## Thin Governed Loop 使用规则", maxsplit=1)[0]
+
+    assert "data.error.code=PROJECT_CONTEXT_MISMATCH" in section
+    assert "data.error.code=STALE_CONTEXT" in section
+    assert "绑定值不一致" in section
+    assert "subject SHA-256 已漂移" in section
+    assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in section

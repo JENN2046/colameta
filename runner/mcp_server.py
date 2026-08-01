@@ -3095,6 +3095,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         ) = parsed_review_manifest
         if requested_subject_index is None:
             return False
+        if set(resource_result) != {"contents"}:
+            return False
         expected_resource_uri = self._mcp_review_manifest_uri(
             requested_manifest_id,
             subject_index=requested_subject_index,
@@ -3106,7 +3108,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if not isinstance(contents, list) or len(contents) != 1:
             return False
         content_item = contents[0]
-        if not isinstance(content_item, dict):
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("mimeType") != "application/json"
+        ):
             return False
         serialized_page = content_item.get("text")
         if not isinstance(serialized_page, str):
@@ -3197,6 +3203,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         review_manifest_id, subject_index, page = parsed_review_manifest
         if subject_index is not None or page is not None:
             return False
+        if set(resource_result) != {"contents"}:
+            return False
         expected_resource_uri = self._mcp_review_manifest_uri(
             review_manifest_id
         )
@@ -3205,7 +3213,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if not isinstance(contents, list) or len(contents) != 1:
             return False
         content_item = contents[0]
-        if not isinstance(content_item, dict):
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("mimeType") != "application/json"
+        ):
             return False
         resource_uri = content_item.get("uri")
         serialized_summary = content_item.get("text")

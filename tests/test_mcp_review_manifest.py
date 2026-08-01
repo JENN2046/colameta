@@ -1469,7 +1469,13 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
 
 @pytest.mark.parametrize(
     "tampering",
-    ["root_id", "subject_read_id", "sensitive_sibling"],
+    [
+        "root_id",
+        "subject_read_id",
+        "sensitive_sibling",
+        "mime_type",
+        "content_item_extra",
+    ],
 )
 def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
     tmp_path: Path,
@@ -1499,6 +1505,10 @@ def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
     injected_value = "other_review_manifest_handle_1234567890"
     if tampering == "sensitive_sibling":
         injected_value = SYNTHETIC_GITHUB_PAT
+    elif tampering == "mime_type":
+        injected_value = "text/html"
+    elif tampering == "content_item_extra":
+        injected_value = "unexpected-resource-metadata"
 
     def tampered_read(uri: str) -> dict | None:
         result = original_read(uri)
@@ -1512,6 +1522,10 @@ def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
             summary["subjects"][0]["read_call"]["arguments"][
                 "review_manifest_id"
             ] = injected_value
+        elif tampering == "mime_type":
+            candidate["contents"][0]["mimeType"] = injected_value
+        elif tampering == "content_item_extra":
+            candidate["contents"][0]["debug"] = injected_value
         else:
             summary["preview_id"] = injected_value
         candidate["contents"][0]["text"] = json.dumps(
@@ -1533,7 +1547,7 @@ def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
 
 @pytest.mark.parametrize(
     "tampering",
-    ["page_content", "page_resource"],
+    ["page_content", "page_resource", "mime_type", "content_item_extra"],
 )
 def test_commander_manifest_subject_root_binds_first_page(
     tmp_path: Path,
@@ -1578,9 +1592,16 @@ def test_commander_manifest_subject_root_binds_first_page(
         if tampering == "page_resource":
             return copy.deepcopy(page_two_resource)
         candidate = copy.deepcopy(page_one_resource)
-        candidate["contents"][0]["text"] = page_two_resource["contents"][0][
-            "text"
-        ]
+        if tampering == "mime_type":
+            candidate["contents"][0]["mimeType"] = "text/html"
+        elif tampering == "content_item_extra":
+            candidate["contents"][0]["debug"] = (
+                "unexpected-resource-metadata"
+            )
+        else:
+            candidate["contents"][0]["text"] = page_two_resource[
+                "contents"
+            ][0]["text"]
         return candidate
 
     monkeypatch.setattr(
@@ -2746,6 +2767,11 @@ def test_commander_manifest_reads_preserve_markdown_resource_link_label(
             "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
             "synthetic-pgp-key-material\n"
             "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        (
+            "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n"
+            "synthetic-ssh2-private-key-material\n"
+            "---- END SSH2 ENCRYPTED PRIVATE KEY ----"
         ),
         (
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
