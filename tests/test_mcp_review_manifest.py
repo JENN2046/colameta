@@ -58,6 +58,13 @@ ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
 )
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
 
 
 def _make_git_checkout(
@@ -2113,6 +2120,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 )
             }
         ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
         "AccountKey=synthetic-azure-account-key",
         '{"Account\\u004bey":"synthetic-encoded-account-key"}',
         json.dumps(
@@ -2120,6 +2136,24 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 "wrapped": (
                     "SharedAccess\\u0053ignature="
                     "sv=synthetic-version&sig=synthetic-nested-sas"
+                )
+            }
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
                 )
             }
         ),

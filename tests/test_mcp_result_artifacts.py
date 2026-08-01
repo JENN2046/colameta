@@ -35,6 +35,13 @@ ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
 )
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
 
 
 def test_result_artifact_store_pages_exact_json_and_expires() -> None:
@@ -807,6 +814,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
         "AccountKey=synthetic-azure-account-key",
         '{"Account\\u004bey":"synthetic-encoded-account-key"}',
         json.dumps(
@@ -814,6 +830,24 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 "wrapped": (
                     "SharedAccess\\u0053ignature="
                     "sv=synthetic-version&sig=synthetic-nested-sas"
+                )
+            }
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
                 )
             }
         ),

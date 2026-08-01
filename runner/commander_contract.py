@@ -837,7 +837,13 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|xox[abprs]-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
     r"|xapp-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
+    r"|sk-(?:proj-|svcacct-)?"
+    r"[A-Za-z0-9_-]{20,256}(?![A-Za-z0-9_-])"
     r")"
+)
+_AZURE_SAS_URL_CANDIDATE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"[^\s\"'<>]{1,8192}"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -4223,6 +4229,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _contains_azure_sas_signature_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -4293,6 +4300,26 @@ def _contains_standalone_jwt(value: str) -> bool:
     )
 
 
+def _contains_azure_sas_signature_query(value: str) -> bool:
+    for match in _AZURE_SAS_URL_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        has_version = False
+        has_signature = False
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = key.lower()
+            has_version = has_version or normalized_key == "sv"
+            has_signature = has_signature or normalized_key == "sig"
+            if has_version and has_signature:
+                return True
+    return False
+
+
 def _redact_basic_authorization_credentials(value: str) -> str:
     return _BASIC_AUTHORIZATION_RE.sub(
         lambda match: (
@@ -4352,6 +4379,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _contains_azure_sas_signature_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):

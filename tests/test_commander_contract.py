@@ -54,6 +54,13 @@ ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
 )
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
 
 
 def _base_context_binding() -> dict:
@@ -1836,6 +1843,19 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        (
+            "https://provider.example.invalid/callback?key="
+            f"{SYNTHETIC_OPENAI_PROJECT_KEY}"
+        ),
+        f'{{"key":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"key": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
     ],
 )
 def test_public_text_redacts_standalone_provider_access_tokens(
@@ -1921,6 +1941,57 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
     ],
 )
 def test_public_text_redacts_azure_storage_credentials(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        (
+            "//account.blob.core.windows.net/container/blob"
+            "?sig=synthetic-relative-sas-signature&sv=2024-11-04"
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sig=synthetic-duplicate-sas-signature&sig=&sv=2024-11-04"
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob?"
+            + "&".join(
+                [
+                    "sv=2024-11-04",
+                    *(["sp=r"] * 130),
+                    "sig=synthetic-late-sas-signature",
+                ]
+            )
+        ),
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sp\\u003dr\\u0026sig\\u003d'
+            'synthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sv=2024-11-04"
+                    "\\u0026sig=synthetic-nested-sas-signature"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_azure_sas_signature_queries(
     value: str,
 ) -> None:
     public = commander_public_text(value)
@@ -2229,6 +2300,18 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "xoxb-short",
         "xoxb-<redacted>",
         "xoxb-" + ("A" * 251),
+        "sk-proj-short",
+        "sk-proj-<redacted>",
+        "sk-proj-" + ("A" * 257),
+        (
+            "https://example.com/callback"
+            "?sig=synthetic-ordinary-signature"
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r"
+        ),
+        "sig=synthetic-ordinary-signature",
         "_author=Jenn",
         "_authorship=public",
     ],

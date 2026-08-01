@@ -42,6 +42,13 @@ ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
 )
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -520,6 +527,15 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
     ],
 )
 def test_projection_redacts_standalone_provider_access_tokens(
@@ -543,6 +559,52 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
     assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)
+    assert "sk-proj-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_azure_sas_signature_queries(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(
