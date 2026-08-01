@@ -962,6 +962,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             'value="synthetic-xml-attribute-artifact-secret"/>'
         ),
         (
+            '<property name="password">'
+            "synthetic-xml-body-artifact-secret"
+            "</property>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-artifact-secret'
             '\\u003c/clientSecret\\u003e"}'
@@ -1808,7 +1813,9 @@ def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
             "<status>public-ready</status>\n"
             "&lt;status&gt;entity-ready&lt;/status&gt;\n"
             '<property name="public-key" value="public-material"/>\n'
-            '<property name="password" value=""/>'
+            '<property name="password" value=""/>\n'
+            '<property name="password"> \n\t </property>\n'
+            '<property name="public-key">public-material</property>'
         )
     }
     handle = server._mcp_result_artifact_store.put(

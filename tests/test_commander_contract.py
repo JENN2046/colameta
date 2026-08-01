@@ -2948,6 +2948,33 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
             "&lt;property name=&quot;password&quot; "
             "value=&quot;synthetic-entity-xml-attribute-secret&quot;/&gt;"
         ),
+        (
+            '<property name="password">'
+            "synthetic-xml-element-body-secret"
+            "</property>"
+        ),
+        (
+            "<field type='clientSecret'>"
+            "synthetic-xml-type-body-secret"
+            "</field>"
+        ),
+        (
+            '{"xml":"\\u003cproperty\\u0020'
+            'name=\\u0022password\\u0022\\u003e'
+            'synthetic-encoded-xml-body-secret'
+            '\\u003c/property\\u003e"}'
+        ),
+        (
+            "&lt;property name=&quot;password&quot;&gt;"
+            "synthetic-entity-xml-body-secret"
+            "&lt;/property&gt;"
+        ),
+        '<property name="password">synthetic-unclosed-xml-body-secret',
+        (
+            '<property name="password"/ >'
+            "synthetic-malformed-self-close-body-secret"
+            "</property>"
+        ),
         "<password " + ("x" * 4_097),
         (
             "&lt;password&gt;"
@@ -3010,6 +3037,13 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
         '<property name="public-key" value="synthetic-public-material"/>',
         '<property name="password" value=""/>',
         '<property name="password"/>',
+        '<property name="password"></property>',
+        '<property name="password"> \n\t </property>',
+        (
+            '<property name="public-key">'
+            "synthetic-public-material"
+            "</property>"
+        ),
         (
             "<property "
             "description='name=\"password\" value=\"synthetic-example\"'/>"

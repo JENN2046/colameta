@@ -906,6 +906,7 @@ _XML_NAMED_ENTITY_VALUES = {
 }
 _SENSITIVE_XML_MAX_OPEN_ELEMENTS = 256
 _SENSITIVE_XML_MAX_TAG_HEADER_CHARS = 4_096
+_SENSITIVE_XML_MAX_ELEMENT_BODY_CHARS = 4_096
 _SENSITIVE_XML_MAX_ENTITY_STATES = 16
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
@@ -5231,9 +5232,9 @@ def _xml_tag_header_end(value: str, start: int) -> int | None:
     return None
 
 
-def _xml_header_contains_sensitive_name_value_pair(
+def _xml_header_sensitive_name_value_state(
     header: str,
-) -> bool:
+) -> tuple[bool, bool]:
     has_sensitive_label = False
     has_nonempty_value = False
     for attribute in _XML_ATTRIBUTE_RE.finditer(header):
@@ -5247,15 +5248,21 @@ def _xml_header_contains_sensitive_name_value_pair(
             )
         elif normalized_name == "value" and attribute_value.strip():
             has_nonempty_value = True
-        if has_sensitive_label and has_nonempty_value:
-            return True
-    return False
+    return has_sensitive_label, has_nonempty_value
+
+
+def _xml_element_body_is_nonempty(body: str) -> bool:
+    return (
+        len(body) > _SENSITIVE_XML_MAX_ELEMENT_BODY_CHARS
+        or bool(body.strip())
+    )
 
 
 def _contains_sensitive_xml_element(value: str) -> bool:
     """Detect credential-bearing XML elements and bounded attributes."""
 
     open_elements: list[str] = []
+    labeled_elements: list[tuple[str, int]] = []
     for match in _XML_ELEMENT_TAG_RE.finditer(value):
         tag = match.group("tag")
         tag_is_forbidden = commander_public_key_is_forbidden(tag)
@@ -5263,6 +5270,16 @@ def _contains_sensitive_xml_element(value: str) -> bool:
         if match.group("closing"):
             if tag_is_forbidden and normalized_tag in open_elements:
                 return True
+            for index in range(len(labeled_elements) - 1, -1, -1):
+                labeled_tag, body_start = labeled_elements[index]
+                if labeled_tag != tag:
+                    continue
+                del labeled_elements[index]
+                if _xml_element_body_is_nonempty(
+                    value[body_start : match.start()]
+                ):
+                    return True
+                break
             continue
         header_end = _xml_tag_header_end(value, match.end())
         if header_end is None:
@@ -5274,8 +5291,19 @@ def _contains_sensitive_xml_element(value: str) -> bool:
                 return True
             continue
         header = value[match.end() : header_end]
-        if _xml_header_contains_sensitive_name_value_pair(header):
+        (
+            has_sensitive_label,
+            has_nonempty_value,
+        ) = _xml_header_sensitive_name_value_state(header)
+        if has_sensitive_label and has_nonempty_value:
             return True
+        if (
+            has_sensitive_label
+            and not header.endswith("/")
+        ):
+            if len(labeled_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+                return True
+            labeled_elements.append((tag, header_end + 1))
         if not tag_is_forbidden:
             continue
         # Attributes and self-closing syntax can carry the credential without
@@ -5285,7 +5313,10 @@ def _contains_sensitive_xml_element(value: str) -> bool:
         if len(open_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
             return True
         open_elements.append(normalized_tag)
-    return False
+    return any(
+        _xml_element_body_is_nonempty(value[body_start:])
+        for _, body_start in labeled_elements
+    )
 
 
 def _decode_xml_entities_once(value: str) -> str:
