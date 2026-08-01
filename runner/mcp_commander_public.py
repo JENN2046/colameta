@@ -12,7 +12,6 @@ from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
-    commander_public_opaque_id_is_allowed,
     commander_public_text,
     validate_commander_response,
 )
@@ -209,12 +208,6 @@ class CommanderPublicProjector:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
-                if commander_public_opaque_id_is_allowed(
-                    clean_key,
-                    nested,
-                ):
-                    sanitized[clean_key] = copy.deepcopy(nested)
-                    continue
                 if (
                     clean_key in COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS
                     and self._is_context_binding(nested)
@@ -343,17 +336,43 @@ class CommanderPublicProjector:
         # only this typed workflow's value after ordinary sanitization.
         review_manifest_contract_expiry: str | None = None
         review_manifest_page_expiry: str | None = None
+        review_manifest_page: dict[str, Any] | None = None
+        review_manifest_contract_fields: dict[str, Any] = {}
         unsafe_exact_evidence = False
         if is_review_manifest and isinstance(raw_data, dict):
             raw_expiry = raw_data.get("expires_at")
             if isinstance(raw_expiry, str) and raw_expiry:
                 review_manifest_contract_expiry = raw_expiry
+            manifest_id = raw_data.get("review_manifest_id")
+            manifest_uri = raw_data.get("manifest_resource_uri")
+            if (
+                isinstance(manifest_id, str)
+                and isinstance(manifest_uri, str)
+                and manifest_uri
+                == f"colameta://review-manifest/{manifest_id}"
+                and COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(
+                    manifest_uri
+                )
+                is not None
+            ):
+                for field in (
+                    "review_manifest_id",
+                    "manifest_resource_uri",
+                    "manifest_sha256",
+                    "expires_at",
+                ):
+                    if field in raw_data:
+                        review_manifest_contract_fields[field] = (
+                            copy.deepcopy(raw_data[field])
+                        )
         review_manifest_page_content: str | None = None
         if is_review_manifest_read:
             raw_page = raw_data.get("subject_page") if isinstance(raw_data, dict) else None
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
+                if exact_evidence_prevalidated:
+                    review_manifest_page = copy.deepcopy(raw_page)
                 unsafe_exact_evidence = (
                     not exact_evidence_prevalidated
                     and self._public_string(raw_content) != raw_content
@@ -506,6 +525,15 @@ class CommanderPublicProjector:
                         clean_data["project_name"] = project_name.strip()
                     projected["data"] = clean_data
         clean_result = self.sanitize(projected, compact=False)
+        if review_manifest_contract_fields and isinstance(
+            clean_result,
+            dict,
+        ):
+            clean_data = clean_result.get("data")
+            if isinstance(clean_data, dict):
+                clean_data.update(review_manifest_contract_fields)
+                if review_manifest_page is not None:
+                    clean_data["subject_page"] = review_manifest_page
         if review_manifest_page_content is not None and isinstance(clean_result, dict):
             clean_data = clean_result.get("data")
             if isinstance(clean_data, dict):
@@ -677,11 +705,7 @@ class CommanderPublicProjector:
     def _contract_sanitize(self, value: Any) -> Any:
         if isinstance(value, dict):
             return {
-                str(key): (
-                    copy.deepcopy(nested)
-                    if commander_public_opaque_id_is_allowed(key, nested)
-                    else self._contract_sanitize(nested)
-                )
+                str(key): self._contract_sanitize(nested)
                 for key, nested in value.items()
             }
         if isinstance(value, list):

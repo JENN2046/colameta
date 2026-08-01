@@ -1367,6 +1367,9 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
     assert subject_uri == (
         f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}/subjects/1"
     )
+    assert contract["next_action"]["arguments"]["review_manifest_id"] == (
+        TOKEN_LIKE_OPAQUE_ID
+    )
 
     typed = _tool_call(
         server,

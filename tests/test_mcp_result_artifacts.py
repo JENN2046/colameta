@@ -1383,6 +1383,52 @@ def test_commander_artifact_scan_rejects_unsafe_resource_reference_siblings(
     assert "synthetic diagnostic must not cross" not in rendered_resource
 
 
+def test_commander_artifact_scan_rejects_token_under_opaque_id_key(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "preview_id": SYNTHETIC_GITHUB_PAT,
+            "summary": "An untrusted payload cannot declare handle provenance.",
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert SYNTHETIC_GITHUB_PAT not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert SYNTHETIC_GITHUB_PAT not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
 def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continuation(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     payload = {"content": "typed result artifact\n" + ("x" * 30000)}

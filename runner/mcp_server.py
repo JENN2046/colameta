@@ -2813,6 +2813,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return False
         if not isinstance(page, dict) or not isinstance(page.get("content"), str):
             return False
+        resource_uri = content_item.get("uri")
+        if not isinstance(resource_uri, str):
+            return False
+        parsed_resource = self._parse_mcp_review_manifest_uri(
+            resource_uri
+        )
+        if parsed_resource is None:
+            return False
+        (
+            resource_manifest_id,
+            resource_subject_index,
+            resource_page,
+        ) = parsed_resource
         expected_page_fields = {
             "review_manifest_id",
             "review_unit",
@@ -2827,6 +2840,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "content",
         }
         if set(page) != expected_page_fields:
+            return False
+        if (
+            page.get("review_manifest_id") != resource_manifest_id
+            or page.get("subject_index") != resource_subject_index
+            or (
+                resource_page is not None
+                and page.get("page") != resource_page
+            )
+        ):
             return False
         expires_at = page.get("expires_at")
         if not isinstance(expires_at, str):
@@ -2849,6 +2871,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         if not isinstance(sanitized_page, dict):
             return False
+        # Restore the handle only after binding it to the parsed resource URI.
+        sanitized_page["review_manifest_id"] = resource_manifest_id
         # Generic artifact projection intentionally omits timestamps.  This
         # typed envelope requires its validated expiry for continuation.
         sanitized_page["expires_at"] = expires_at

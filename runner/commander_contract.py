@@ -984,13 +984,17 @@ def build_commander_response(
 
         outcome = derive_commander_outcome(tool_name, raw_result)
         journey_stage = journey_stage_for(tool_name, safe_params, raw_result)
+        evidence = _normalize_evidence(raw_result)
         selected_action = select_commander_next_action(
             tool_name=tool_name,
             params=safe_params,
             raw_result=raw_result,
             outcome=outcome,
         )
-        next_action = _normalize_action(selected_action)
+        next_action = _normalize_action(
+            selected_action,
+            evidence=evidence,
+        )
         context_binding = _extract_context_binding(raw_result)
         if _result_requires_context_binding(
             tool_name=tool_name,
@@ -1001,7 +1005,6 @@ def build_commander_response(
                 "INTERNAL_RESULT_INVALID",
                 "Project-bound Commander response is missing context_binding.",
             )
-        evidence = _normalize_evidence(raw_result)
         confirmation = (
             _normalize_confirmation(
                 tool_name=tool_name,
@@ -1147,7 +1150,10 @@ def validate_commander_response(
         evidence,
         exact_evidence_prevalidated=exact_evidence_prevalidated,
     )
-    _validate_action(response.get("next_action"))
+    _validate_action(
+        response.get("next_action"),
+        evidence=response.get("evidence"),
+    )
 
     confirmation = response.get("confirmation")
     error = response.get("error")
@@ -2798,7 +2804,11 @@ def _default_public_error_message(code: str) -> str:
     return messages.get(code, "当前调用被前置条件阻断。")
 
 
-def _normalize_action(value: Any) -> dict[str, Any] | None:
+def _normalize_action(
+    value: Any,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     tool = value.get("tool")
@@ -2819,6 +2829,13 @@ def _normalize_action(value: Any) -> dict[str, Any] | None:
     )
     if not isinstance(public_arguments, dict):
         return None
+    if not _rebind_action_to_evidence(
+        tool=tool,
+        source_arguments=arguments,
+        public_arguments=public_arguments,
+        evidence=evidence,
+    ):
+        return None
     reason = value.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         reason = "继续当前受控流程。"
@@ -2827,6 +2844,49 @@ def _normalize_action(value: Any) -> dict[str, Any] | None:
         "arguments": public_arguments,
         "reason": _public_text(reason, max_chars=COMMANDER_REASON_MAX_CHARS),
     }
+
+
+def _rebind_action_to_evidence(
+    *,
+    tool: str,
+    source_arguments: dict[str, Any],
+    public_arguments: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> bool:
+    """Restore only an action handle proven by the response evidence envelope."""
+
+    if not isinstance(evidence, dict):
+        return True
+    kind = evidence.get("kind")
+    workflow = _normalized_string(source_arguments.get("workflow"))
+    if kind == "result_artifact" and (
+        tool == "read_result_artifact"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "result_artifact"
+        )
+    ):
+        key = "artifact_id"
+    elif kind == "review_manifest" and (
+        tool == "review_manifest"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "review_manifest"
+        )
+    ):
+        key = "review_manifest_id"
+    else:
+        return True
+    evidence_id = evidence.get(key)
+    source_id = source_arguments.get(key)
+    if (
+        not isinstance(evidence_id, str)
+        or not _OPAQUE_ID_RE.fullmatch(evidence_id)
+        or source_id not in {evidence_id, "<sensitive>"}
+    ):
+        return False
+    public_arguments[key] = evidence_id
+    return True
 
 
 def _commander_tools() -> frozenset[str]:
@@ -2856,7 +2916,11 @@ def _contains_noncommander_tool_reference(value: Any) -> bool:
     return False
 
 
-def _validate_action(value: Any) -> None:
+def _validate_action(
+    value: Any,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> None:
     if value is None:
         return
     if not isinstance(value, dict) or set(value) != {
@@ -2879,7 +2943,22 @@ def _validate_action(value: Any) -> None:
             "INTERNAL_RESULT_INVALID",
             "next_action.arguments must be an object.",
         )
-    _validate_public_value(arguments, depth=0, facts=False)
+    validation_arguments = copy.deepcopy(arguments)
+    if not _mask_evidence_bound_action_handle(
+        tool=str(value.get("tool") or ""),
+        arguments=arguments,
+        validation_arguments=validation_arguments,
+        evidence=evidence,
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "next_action opaque handle does not match response evidence.",
+        )
+    _validate_public_value(
+        validation_arguments,
+        depth=0,
+        facts=False,
+    )
     reason = value.get("reason")
     if (
         not isinstance(reason, str)
@@ -2891,6 +2970,42 @@ def _validate_action(value: Any) -> None:
             "INTERNAL_RESULT_INVALID",
             "next_action.reason is missing, oversized, or unsafe.",
         )
+
+
+def _mask_evidence_bound_action_handle(
+    *,
+    tool: str,
+    arguments: dict[str, Any],
+    validation_arguments: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(evidence, dict):
+        return True
+    kind = evidence.get("kind")
+    workflow = _normalized_string(arguments.get("workflow"))
+    if kind == "result_artifact" and (
+        tool == "read_result_artifact"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "result_artifact"
+        )
+    ):
+        key = "artifact_id"
+    elif kind == "review_manifest" and (
+        tool == "review_manifest"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "review_manifest"
+        )
+    ):
+        key = "review_manifest_id"
+    else:
+        return True
+    evidence_id = evidence.get(key)
+    if arguments.get(key) != evidence_id:
+        return False
+    validation_arguments[key] = "opaque_handle_1234567890"
+    return True
 
 
 def _is_mutating_action(action: dict[str, Any]) -> bool:
@@ -3212,15 +3327,12 @@ def _public_value(
                 continue
             if strip_actions and normalized_key in _ACTION_CONTAINER_KEYS:
                 continue
-            if commander_public_opaque_id_is_allowed(clean_key, nested):
-                public = nested
-            else:
-                public = _public_value(
-                    nested,
-                    depth=depth + 1,
-                    strip_actions=strip_actions,
-                    facts=facts,
-                )
+            public = _public_value(
+                nested,
+                depth=depth + 1,
+                strip_actions=strip_actions,
+                facts=facts,
+            )
             if public is not _OMIT:
                 result_dict[clean_key] = public
         return result_dict
@@ -3301,8 +3413,6 @@ def _validate_public_value(
                     "INTERNAL_RESULT_INVALID",
                     "facts cannot contain nested next-action containers.",
                 )
-            if commander_public_opaque_id_is_allowed(clean_key, nested):
-                continue
             if facts and depth == 0 and normalized_key == "artifact_page":
                 if not isinstance(nested, dict):
                     raise CommanderContractError(
@@ -3396,25 +3506,6 @@ def commander_public_key_is_forbidden(
     ):
         return True
     return False
-
-
-def commander_public_opaque_id_is_allowed(
-    key: Any,
-    value: Any,
-) -> bool:
-    """Return whether a typed public handle may bypass free-text secret scans."""
-
-    if not isinstance(value, str):
-        return False
-    normalized_key = _normalize_public_key_for_match(key)
-    if normalized_key not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS:
-        return False
-    pattern = (
-        _OPAQUE_ID_RE
-        if normalized_key in {"artifact_id", "review_manifest_id"}
-        else _PREVIEW_ID_RE
-    )
-    return pattern.fullmatch(value) is not None
 
 
 def _redact_noncommander_tool_references(

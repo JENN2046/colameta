@@ -764,6 +764,28 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
     validate_commander_response(response)
 
 
+def test_public_facts_do_not_trust_opaque_id_keys_as_handle_provenance() -> None:
+    response = build_commander_response(
+        tool_name="analyze_project_state",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "metadata": {
+                    "preview_id": SYNTHETIC_GITHUB_PAT,
+                },
+            },
+        },
+    )
+
+    rendered = json.dumps(response, ensure_ascii=False)
+    assert response["outcome"] == "completed"
+    assert response["facts"]["metadata"]["preview_id"] == "<sensitive>"
+    assert SYNTHETIC_GITHUB_PAT not in rendered
+    validate_commander_response(response)
+
+
 @pytest.mark.parametrize(
     "private_path",
     [
