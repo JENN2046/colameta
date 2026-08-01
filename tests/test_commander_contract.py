@@ -618,6 +618,7 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
             "apiKey": "synthetic-secret-value",
             "private-key": "synthetic-private-key-value",
             "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-value",
+            "passPhrase": "synthetic-passphrase-value",
         },
     }
 
@@ -650,6 +651,8 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
         "apiKey",
         "private-key",
         "AWS_SECRET_ACCESS_KEY",
+        "passPhrase",
+        "synthetic-passphrase-value",
         "Bearer private",
     ):
         assert forbidden not in rendered
@@ -1783,6 +1786,52 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
 
 
 @pytest.mark.parametrize(
+    ("value", "secret_fragment"),
+    [
+        (
+            "passphrase=synthetic-passphrase-value",
+            "synthetic-passphrase-value",
+        ),
+        (
+            '{"passPhrase":"synthetic-camel-passphrase"}',
+            "synthetic-camel-passphrase",
+        ),
+        (
+            '"pass phrase" = "synthetic spaced passphrase"',
+            "synthetic spaced passphrase",
+        ),
+        (
+            "--passphrase synthetic-cli-passphrase",
+            "synthetic-cli-passphrase",
+        ),
+        (
+            '{"pass\\u0070hrase":"synthetic-encoded-passphrase"}',
+            "synthetic-encoded-passphrase",
+        ),
+        (
+            json.dumps(
+                {
+                    "wrapped": (
+                        '{"command":"tool --pass\\u0070hrase\\u0020'
+                        'synthetic-nested-passphrase"}'
+                    )
+                }
+            ),
+            "synthetic-nested-passphrase",
+        ),
+    ],
+)
+def test_public_text_redacts_normalized_passphrase_credentials(
+    value: str,
+    secret_fragment: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<sensitive>" in public
+    assert secret_fragment not in public
+
+
+@pytest.mark.parametrize(
     "value",
     [
         "-----BEGIN PRIVATE KEY-----\n"
@@ -1805,9 +1854,24 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
             '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
         ),
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Encryption: aes256-cbc\n"
+            "Comment: synthetic fixture\n"
+            "Public-Lines: 1\n"
+            "synthetic-public-material\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material\n"
+            "Private-MAC: synthetic-mac"
+        ),
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0033\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
+        ),
     ],
 )
-def test_public_text_redacts_private_key_blocks(value: str) -> None:
+def test_public_text_redacts_private_key_file_markers(value: str) -> None:
     assert commander_public_text(value) == "<sensitive>"
 
 
@@ -1867,7 +1931,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "tool --username alice --region us-east-1",
         "tool --password --verbose",
         "tool --password\\u0020\\u002d\\u002dverbose",
+        "tool --passphrase --prompt",
         "Use password protection for local data.",
+        "Use a passphrase prompt.",
+        "PuTTY-User-Key-File-3 ssh-ed25519",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
@@ -2083,6 +2150,12 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         ),
         "https://alice:synthetic-password@example.com/repo",
         "tool --password synthetic-cli-password",
+        "passphrase=synthetic-passphrase-value",
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
+        ),
         (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
@@ -2189,6 +2262,12 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
         (
             '{"command":"tool --api\\u002dkey '
             'synthetic-encoded-cli-secret"}'
+        ),
+        '{"passPhrase":"synthetic-camel-passphrase"}',
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0033\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
@@ -2486,6 +2565,12 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
             "synthetic-pgp-key-material\n"
             "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        "--passphrase synthetic-cli-passphrase",
+        (
+            "PuTTY-User-Key-File-2: ssh-rsa\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
         ),
         "redis://cache:synthetic-password@cache.example/0",
         (
@@ -3131,6 +3216,10 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "AWS_SECRET_ACCESS_KEY",
         "AWS_ACCESS_KEY_ID",
         "AWSSecretAccessKey",
+        "passphrase",
+        "passPhrase",
+        "pass-phrase",
+        "pass phrase",
         "oauth_authorization_code",
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",

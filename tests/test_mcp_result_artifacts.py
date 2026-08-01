@@ -324,6 +324,10 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "pgp_public_key_marker": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
         "ordinary_url": "https://example.com/repo",
         "username_only_url": "https://alice@example.com/repo",
+        "prompt_prose": "Use a passphrase prompt.",
+        "putty_header_without_colon": (
+            "PuTTY-User-Key-File-3 ssh-ed25519"
+        ),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
         ),
@@ -715,6 +719,20 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         (
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
             '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "passphrase=synthetic-passphrase-value",
+        '{"passPhrase":"synthetic-camel-passphrase"}',
+        "--passphrase synthetic-cli-passphrase",
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Encryption: aes256-cbc\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
+        ),
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
         ),
         "https://alice:synthetic-password@example.com/repo",
         "postgresql://dbuser:synthetic-db-password@db.example/app",

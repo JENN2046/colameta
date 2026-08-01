@@ -1139,6 +1139,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "tool --username alice --region us-east-1\n"
         "tool --password --verbose\n"
         "tool --password\\u0020\\u002d\\u002dverbose\n"
+        "tool --passphrase --prompt\n"
+        "Use a passphrase prompt.\n"
+        "PuTTY-User-Key-File-3 ssh-ed25519\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2023,6 +2026,20 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         (
             '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
             '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "passphrase=synthetic-passphrase-value",
+        '{"passPhrase":"synthetic-camel-passphrase"}',
+        "--passphrase synthetic-cli-passphrase",
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Encryption: aes256-cbc\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
+        ),
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
         ),
         "redis://cache:synthetic-password@cache.example/0",
         "//cache:synthetic-relative-password@cache.example/0",

@@ -337,6 +337,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "oauth_code",
         "oauth_token",
         "oauth_refresh_token",
+        "passphrase",
         "password",
         "passwd",
         "pid",
@@ -397,7 +398,7 @@ _SENSITIVE_PUBLIC_KEY_RE = re.compile(
     r"|credentials?"
     r"|id_?token"
     r"|oauth(?:_[a-z0-9]+)*(?:_code|_token)"
-    r"|pass(?:word|wd)"
+    r"|pass(?:_?phrase|word|wd)"
     r"|private_?key"
     r"|refresh_?token"
     r"|secret_?access_?key"
@@ -746,6 +747,7 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|oauth_authorization_code"
     r"|refresh_token"
     r"|oauth_token"
+    r"|passphrase"
     r"|password"
     r"|private_key"
     r"|secret"
@@ -786,6 +788,10 @@ _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"(?i)-----BEGIN[ \t]+"
     r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY"
     r"(?:[ \t]+BLOCK)?-----"
+)
+_PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])"
+    r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -4152,6 +4158,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -4218,6 +4225,7 @@ def _redact_sensitive_material(value: str) -> str:
     if (
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):
