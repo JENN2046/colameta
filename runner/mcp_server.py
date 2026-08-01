@@ -182,6 +182,7 @@ from runner.mcp_commander_public import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION as _COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
     CommanderPublicProjector,
+    commander_result_artifact_page_matches_binding,
 )
 from runner.stable_promotion_work_item import StablePromotionWorkItemReader
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -1053,6 +1054,47 @@ class MCPToolInputError(Exception):
     details: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _CommanderResultArtifactPageBinding:
+    artifact_id: str
+    page: int
+    page_count: int
+    page_char_start: int
+    page_char_end: int
+    content_sha256: str
+    expires_at: str
+    page_content_sha256: str
+
+    def as_projection_binding(self) -> dict[str, Any]:
+        return {
+            "artifact_id": self.artifact_id,
+            "page": self.page,
+            "page_count": self.page_count,
+            "page_char_start": self.page_char_start,
+            "page_char_end": self.page_char_end,
+            "content_sha256": self.content_sha256,
+            "expires_at": self.expires_at,
+            "page_content_sha256": self.page_content_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class _CommanderResultArtifactSafetyVerdict:
+    safe: bool
+    pages: tuple[_CommanderResultArtifactPageBinding, ...] = ()
+
+    def page_binding(
+        self,
+        page: int,
+    ) -> _CommanderResultArtifactPageBinding | None:
+        if not self.safe or page < 1 or page > len(self.pages):
+            return None
+        binding = self.pages[page - 1]
+        if binding.page != page:
+            return None
+        return binding
+
+
 class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     def __init__(
         self,
@@ -1080,10 +1122,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
         )
         self._commander_public_result_artifact_safety_cache: OrderedDict[
-            tuple[str, str], bool
+            tuple[str, str], _CommanderResultArtifactSafetyVerdict
         ] = OrderedDict()
         self._commander_public_result_artifact_safety_inflight: dict[
-            tuple[str, str], Future[bool]
+            tuple[str, str], Future[_CommanderResultArtifactSafetyVerdict]
         ] = {}
         self._commander_public_result_artifact_safety_cache_lock = (
             threading.Lock()
@@ -2449,11 +2491,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> dict[str, Any]:
         return self._mcp_resources_service().result_artifact_manifest_fields(handle)
 
-    def _commander_public_result_artifact_safety(
+    def _commander_public_result_artifact_preflight(
         self,
         artifact_id: str,
-    ) -> bool | None:
-        """Check and cache the complete stored JSON payload before page reads."""
+    ) -> _CommanderResultArtifactSafetyVerdict | None:
+        """Check and bind the complete stored JSON payload before page reads."""
 
         first = self._mcp_result_artifact_store.read_page(artifact_id, 1)
         if first is None:
@@ -2483,8 +2525,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if not owns_scan:
             return flight.result()
 
-        def scan_complete_payload() -> bool:
+        def scan_complete_payload() -> _CommanderResultArtifactSafetyVerdict:
             pages: list[str] = []
+            page_bindings: list[_CommanderResultArtifactPageBinding] = []
             total_chars = 0
             for page_number in range(1, first.page_count + 1):
                 page = self._mcp_result_artifact_store.read_page(
@@ -2493,32 +2536,55 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 )
                 if (
                     page is None
+                    or page.artifact_id != artifact_id
+                    or page.page != page_number
                     or page.content_sha256 != first.content_sha256
                     or page.page_count != first.page_count
+                    or page.expires_at != first.expires_at
+                    or page.page_char_start != total_chars
+                    or page.page_char_end
+                    != total_chars + len(page.content)
                 ):
-                    return False
+                    return _CommanderResultArtifactSafetyVerdict(False)
+                page_bindings.append(
+                    _CommanderResultArtifactPageBinding(
+                        artifact_id=artifact_id,
+                        page=page_number,
+                        page_count=page.page_count,
+                        page_char_start=page.page_char_start,
+                        page_char_end=page.page_char_end,
+                        content_sha256=page.content_sha256,
+                        expires_at=page.expires_at,
+                        page_content_sha256=hashlib.sha256(
+                            page.content.encode("utf-8")
+                        ).hexdigest(),
+                    )
+                )
                 total_chars += len(page.content)
                 if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
-                    return False
+                    return _CommanderResultArtifactSafetyVerdict(False)
                 pages.append(page.content)
             content = "".join(pages)
             if (
                 hashlib.sha256(content.encode("utf-8")).hexdigest()
                 != first.content_sha256
             ):
-                return False
+                return _CommanderResultArtifactSafetyVerdict(False)
             try:
                 payload = json.loads(content)
             except (TypeError, ValueError):
-                return False
+                return _CommanderResultArtifactSafetyVerdict(False)
             if not isinstance(payload, dict):
-                return False
-            return self._commander_public_result_artifact_payload_safety(
-                payload
+                return _CommanderResultArtifactSafetyVerdict(False)
+            return _CommanderResultArtifactSafetyVerdict(
+                self._commander_public_result_artifact_payload_safety(
+                    payload
+                ),
+                tuple(page_bindings),
             )
 
         try:
-            safe = scan_complete_payload()
+            verdict = scan_complete_payload()
         except BaseException as exc:
             with self._commander_public_result_artifact_safety_cache_lock:
                 current = (
@@ -2536,7 +2602,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         with self._commander_public_result_artifact_safety_cache_lock:
             self._commander_public_result_artifact_safety_cache[
                 cache_key
-            ] = safe
+            ] = verdict
             self._commander_public_result_artifact_safety_cache.move_to_end(
                 cache_key
             )
@@ -2558,8 +2624,34 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 del self._commander_public_result_artifact_safety_inflight[
                     cache_key
                 ]
-        flight.set_result(safe)
-        return safe
+        flight.set_result(verdict)
+        return verdict
+
+    def _commander_public_result_artifact_safety(
+        self,
+        artifact_id: str,
+    ) -> bool | None:
+        verdict = self._commander_public_result_artifact_preflight(
+            artifact_id
+        )
+        return None if verdict is None else verdict.safe
+
+    def _commander_public_result_artifact_page_binding(
+        self,
+        artifact_id: str,
+        page: int,
+    ) -> dict[str, Any] | None:
+        verdict = self._commander_public_result_artifact_preflight(
+            artifact_id
+        )
+        if verdict is None:
+            return None
+        binding = verdict.page_binding(page)
+        return (
+            None
+            if binding is None
+            else binding.as_projection_binding()
+        )
 
     def _commander_public_result_artifact_payload_safety(
         self,
@@ -2580,6 +2672,41 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             resource_result
         )
         return isinstance(sanitized, dict) and sanitized == resource_result
+
+    @staticmethod
+    def _commander_public_result_artifact_page_envelope_safety(
+        resource_result: dict[str, Any],
+        *,
+        requested_uri: str,
+        page_binding: dict[str, Any] | None,
+    ) -> bool:
+        if set(resource_result) != {"contents"}:
+            return False
+        contents = resource_result.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("uri") != requested_uri
+            or content_item.get("mimeType") != "application/json"
+        ):
+            return False
+        serialized_page = content_item.get("text")
+        if not isinstance(serialized_page, str):
+            return False
+        try:
+            page = json.loads(serialized_page)
+        except (TypeError, ValueError):
+            return False
+        return (
+            isinstance(page, dict)
+            and commander_result_artifact_page_matches_binding(
+                page,
+                page_binding,
+            )
+        )
 
     def _commander_public_review_manifest_content_safety(
         self,
@@ -2789,6 +2916,43 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return None
         return self._commander_public_review_manifest_subject_safety(
             parsed
+        )
+
+    def _commander_public_typed_result_artifact_page_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_artifact_read = tool_name == "read_result_artifact" or (
+            tool_name == "run_mcp_workflow"
+            and workflow == MCP_RESULT_ARTIFACT_WORKFLOW
+            and phase == "read"
+        )
+        if not is_artifact_read:
+            return None
+        artifact_id = params.get("artifact_id")
+        page = params.get("artifact_page", 1)
+        if (
+            not isinstance(artifact_id, str)
+            or MCP_RESULT_ARTIFACT_ID_RE.fullmatch(
+                artifact_id.strip()
+            )
+            is None
+            or isinstance(page, bool)
+            or not isinstance(page, int)
+            or page < 1
+        ):
+            return None
+        return self._commander_public_result_artifact_page_binding(
+            artifact_id.strip(),
+            page,
         )
 
     def _commander_public_review_manifest_page_envelope_safety(
@@ -3311,6 +3475,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "resource_not_found",
                         f"未知 resource uri：{normalized_uri}",
                     )
+                parsed_artifact: tuple[str, int] | None = None
+                result_artifact_page_binding: dict[str, Any] | None = None
                 if is_result_artifact:
                     access_error = self._mcp_result_artifact_resource_access_error(auth_context)
                     if access_error is not None:
@@ -3319,20 +3485,35 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     parsed_artifact = self._parse_mcp_result_artifact_uri(
                         normalized_uri
                     )
-                    if (
-                        self.mcp_exposure_profile
-                        == MCP_EXPOSURE_PROFILE_COMMANDER
-                        and parsed_artifact is not None
-                        and self._commander_public_result_artifact_safety(
+                    artifact_safety = (
+                        self._commander_public_result_artifact_safety(
                             parsed_artifact[0]
                         )
-                        is False
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            and parsed_artifact is not None
+                        )
+                        else None
+                    )
+                    if (
+                        artifact_safety is False
                     ):
                         return self._protocol_error(
                             req_id,
                             -32602,
                             "evidence_unavailable",
                             "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
+                        )
+                    if (
+                        artifact_safety is True
+                        and parsed_artifact is not None
+                    ):
+                        result_artifact_page_binding = (
+                            self._commander_public_result_artifact_page_binding(
+                                parsed_artifact[0],
+                                parsed_artifact[1],
+                            )
                         )
                 whole_subject_safety: bool | None = None
                 if is_review_manifest:
@@ -3400,6 +3581,22 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             if is_review_manifest
                             else f"未知 resource uri：{normalized_uri}"
                         ),
+                    )
+                if (
+                    self.mcp_exposure_profile
+                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    and parsed_artifact is not None
+                    and not self._commander_public_result_artifact_page_envelope_safety(
+                        resource_result,
+                        requested_uri=normalized_uri,
+                        page_binding=result_artifact_page_binding,
+                    )
+                ):
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        "evidence_unavailable",
+                        "结果证据页与已验证的存储页不一致，已拒绝读取。",
                     )
                 if (
                     self.mcp_exposure_profile
@@ -3963,6 +4160,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 params,
             )
         exact_evidence_prevalidated = exact_evidence_safety is True
+        exact_result_artifact_page_binding = (
+            self._commander_public_typed_result_artifact_page_binding(
+                tool_name,
+                params,
+            )
+            if exact_evidence_prevalidated
+            else None
+        )
         data = tool_result.get("data") if isinstance(tool_result, dict) else None
         if (
             isinstance(data, dict)
@@ -3973,6 +4178,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 params,
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
                 ),
             )
 
@@ -3988,6 +4196,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
                 ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
             )
 
         safe_artifact_payload = projector.sanitize_for_artifact(tool_result)
@@ -4002,6 +4213,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 params,
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
                 ),
             )
         artifact_fields = self._store_packaged_result_artifact(
@@ -4020,12 +4234,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
                 ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
             )
 
         projected = projector.project_tool_result(
             tool_result,
             params,
             exact_evidence_prevalidated=exact_evidence_prevalidated,
+            exact_result_artifact_page_binding=(
+                exact_result_artifact_page_binding
+            ),
         )
         contract = projected.get("data") if isinstance(projected, dict) else None
         if not isinstance(contract, dict):
@@ -4039,6 +4259,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 params,
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
                 ),
             )
         packaged_contract = copy.deepcopy(contract)
@@ -4089,6 +4312,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 params,
                 exact_evidence_prevalidated=(
                     exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
                 ),
             )
         packaged_result = copy.deepcopy(projected)

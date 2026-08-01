@@ -59,6 +59,13 @@ SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
 ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
     SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
 )
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -1457,6 +1464,10 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
             "/pages/{page}"
         ),
         (
+            f"colameta://result-artifact/{SYNTHETIC_DIGITALOCEAN_TOKEN}"
+            "/pages/{page}"
+        ),
+        (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
         ),
@@ -1466,6 +1477,10 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
         ),
         (
             f"colameta://review-manifest/{SYNTHETIC_DOCKER_PAT}"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            f"colameta://review-manifest/{SYNTHETIC_DIGITALOCEAN_TOKEN}"
             "/subjects/1/pages/{page}"
         ),
     ],
@@ -2179,6 +2194,23 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
                 )
             }
         ),
@@ -3174,6 +3206,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "hf_<redacted>",
         "hf_" + ("A" * 35),
         "xhf_" + ("A" * 34),
+        "dop_v1_" + ("a" * 63),
+        "dop_v1_<redacted>",
+        "dop_v1_" + ("a" * 65),
+        "xdop_v1_" + ("a" * 64),
+        "dop_v1_" + ("g" * 64),
         "npm_short",
         "npm_<redacted>",
         "npm_" + ("A" * 37),

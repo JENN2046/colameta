@@ -64,6 +64,13 @@ SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
 ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
     SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
 )
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -1276,6 +1283,11 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"dckr_pat_{'A' * 26}\n"
         "dckr_pat_<redacted>\n"
         f"dckr_pat_{'A' * 28}\n"
+        f"dop_v1_{'a' * 63}\n"
+        "dop_v1_<redacted>\n"
+        f"dop_v1_{'a' * 65}\n"
+        f"xdop_v1_{'a' * 64}\n"
+        f"dop_v1_{'g' * 64}\n"
         "pypi-short\n"
         "pypi-<redacted>\n"
         f"pypi-{'A' * 84}\n"
@@ -1350,7 +1362,11 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
 
 @pytest.mark.parametrize(
     "token_like_opaque_id",
-    [TOKEN_LIKE_OPAQUE_ID, SYNTHETIC_DOCKER_PAT],
+    [
+        TOKEN_LIKE_OPAQUE_ID,
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+    ],
 )
 def test_commander_manifest_preserves_token_like_opaque_handles(
     tmp_path: Path,
@@ -2439,6 +2455,23 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
                 )
             }
         ),

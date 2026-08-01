@@ -884,12 +884,14 @@ _STANDALONE_JWT_RE = re.compile(
 )
 # PyPI's Base64URL Macaroon suffix is at least 85 characters and may grow
 # without a fixed upper bound as caveats are added.  SendGrid API keys use
-# the fixed 69-character ``SG.<22>.<43>`` Base64URL shape.
+# the fixed 69-character ``SG.<22>.<43>`` Base64URL shape. DigitalOcean
+# personal access tokens use ``dop_v1_`` followed by exactly 64 hex digits.
 _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"
+    r"|dop_v1_[A-Fa-f0-9]{64}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])"
     r"dckr_pat_[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from typing import Any, Iterable
 
@@ -73,6 +74,52 @@ COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
         "analyze_project_state",
     }
 )
+
+
+def commander_result_artifact_page_matches_binding(
+    page: dict[str, Any],
+    binding: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(binding, dict):
+        return False
+    if set(page) != {
+        "artifact_id",
+        "tool",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "content_sha256",
+        "expires_at",
+        "content",
+    }:
+        return False
+    content = page.get("content")
+    page_content_sha256 = binding.get("page_content_sha256")
+    if (
+        not isinstance(content, str)
+        or not isinstance(page_content_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", page_content_sha256)
+        is None
+    ):
+        return False
+    for field in (
+        "artifact_id",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "content_sha256",
+        "expires_at",
+    ):
+        if page.get(field) != binding.get(field):
+            return False
+    return (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == page_content_sha256
+    )
+
+
 COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS = frozenset(
     {
         "context_binding",
@@ -269,6 +316,7 @@ class CommanderPublicProjector:
         params: dict[str, Any] | None = None,
         *,
         exact_evidence_prevalidated: bool = False,
+        exact_result_artifact_page_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(tool_result, dict):
             return tool_result
@@ -280,6 +328,36 @@ class CommanderPublicProjector:
             and isinstance(raw_data, dict)
             and raw_data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
+            contract_facts = raw_data.get("facts")
+            contract_artifact_page = (
+                contract_facts.get("artifact_page")
+                if isinstance(contract_facts, dict)
+                else None
+            )
+            if (
+                exact_evidence_prevalidated
+                and isinstance(contract_artifact_page, dict)
+                and not commander_result_artifact_page_matches_binding(
+                    contract_artifact_page,
+                    exact_result_artifact_page_binding,
+                )
+            ):
+                return self._wrap_commander_contract(
+                    tool_name=tool_name,
+                    projected_result={
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "INTERNAL_RESULT_INVALID",
+                        "message": (
+                            "预检后的结果证据页与已验证的存储页不一致，"
+                            "已安全拒绝返回。"
+                        ),
+                    },
+                    params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
             try:
                 validate_commander_response(
                     raw_data,
@@ -405,6 +483,29 @@ class CommanderPublicProjector:
         if is_result_artifact_read and isinstance(raw_data, dict):
             raw_page = raw_data.get("artifact_page")
             if isinstance(raw_page, dict) and isinstance(raw_page.get("content"), str):
+                if (
+                    exact_evidence_prevalidated
+                    and not commander_result_artifact_page_matches_binding(
+                        raw_page,
+                        exact_result_artifact_page_binding,
+                    )
+                ):
+                    return self._wrap_commander_contract(
+                        tool_name=tool_name,
+                        projected_result={
+                            "ok": False,
+                            "tool": tool_name,
+                            "error_code": "INTERNAL_RESULT_INVALID",
+                            "message": (
+                                "预检后的结果证据页与已验证的存储页不一致，"
+                                "已安全拒绝返回。"
+                            ),
+                        },
+                        params=params,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
                 result_artifact_page = copy.deepcopy(raw_page)
                 result_artifact_page["tool"] = tool_name
                 unsafe_exact_evidence = (

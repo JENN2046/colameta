@@ -48,6 +48,13 @@ SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
 ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
     SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
 )
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -610,6 +617,23 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
         json.dumps(
@@ -719,6 +743,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
     assert "hf_" not in json.dumps(contract, ensure_ascii=False)
+    assert "dop_v1_" not in json.dumps(contract, ensure_ascii=False)
     assert "npm_" not in json.dumps(contract, ensure_ascii=False)
     assert "pypi-" not in json.dumps(contract, ensure_ascii=False)
     assert "SG." not in json.dumps(contract, ensure_ascii=False)
