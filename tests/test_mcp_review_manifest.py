@@ -56,6 +56,11 @@ ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
     "\\u0067lpat-",
 )
+SYNTHETIC_GOOGLE_API_KEY = "AIza" + ("Ab1_-" * 7)
+ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
+    "AIza",
+    "\\u0041Iza",
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -2122,6 +2127,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_API_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GOOGLE_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
                 )
             }
         ),

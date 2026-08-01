@@ -51,6 +51,11 @@ ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
     "\\u0067lpat-",
 )
+SYNTHETIC_GOOGLE_API_KEY = "AIza" + ("Ab1_-" * 7)
+ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
+    "AIza",
+    "\\u0041Iza",
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -1851,6 +1856,19 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_GOOGLE_API_KEY,
+        (
+            "https://googleapis.example.invalid/callback?key="
+            f"{SYNTHETIC_GOOGLE_API_KEY}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_GOOGLE_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
         SYNTHETIC_SLACK_TOKEN,
         SYNTHETIC_SLACK_APP_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
@@ -2318,6 +2336,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "glpat-short",
         "glpat-<redacted>",
         "glpat-" + ("A" * 21),
+        "AIza-short",
+        "AIza<redacted>",
+        "AIza" + ("A" * 36),
         "xoxb-short",
         "xoxb-<redacted>",
         "xoxb-" + ("A" * 251),
