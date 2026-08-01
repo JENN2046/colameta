@@ -3448,6 +3448,8 @@ def test_public_text_redacts_json_escaped_sensitive_material(
     "value",
     [
         '{"reason":"manage\\u005ffiles"}',
+        '{"reason":"%6danage_files"}',
+        '{"reason":"%256danage%255ffiles"}',
         (
             '{"reason":"manage\\u005fexecutor'
             '\\u005fworkflow"}'
@@ -3461,7 +3463,7 @@ def test_public_text_redacts_json_escaped_sensitive_material(
         ),
     ],
 )
-def test_public_text_redacts_json_escaped_noncommander_tools(
+def test_public_text_redacts_encoded_noncommander_tools(
     value: str,
 ) -> None:
     assert commander_public_text(value) == "<internal-tool>"
@@ -3472,6 +3474,10 @@ def test_public_text_redacts_json_escaped_dynamic_hidden_tool() -> None:
 
     assert commander_public_text(
         value,
+        forbidden_tools={"private_runner_tool"},
+    ) == "<internal-tool>"
+    assert commander_public_text(
+        '{"reason":"private%5frunner%5ftool"}',
         forbidden_tools={"private_runner_tool"},
     ) == "<internal-tool>"
 

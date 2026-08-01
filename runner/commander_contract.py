@@ -4489,16 +4489,15 @@ def _decoded_candidate_contains_noncommander_tool_reference(
         if forbidden_tools is None
         else frozenset(forbidden_tools)
     )
-    return bool(
-        "\\" in value
-        and any(
+    return _decoded_candidate_matches(
+        value,
+        lambda candidate: (
             _redact_noncommander_tool_references(
                 candidate,
                 forbidden_tools=hidden_tools,
             )
             != candidate
-            for candidate in _json_escape_decoded_candidates(value)
-        )
+        ),
     )
 
 

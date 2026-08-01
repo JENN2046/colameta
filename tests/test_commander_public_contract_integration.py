@@ -472,6 +472,35 @@ def test_workflow_projection_drops_non_commander_next_action() -> None:
     assert "manage_executor_workflow" not in json.dumps(contract, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    "guidance",
+    [
+        "Call %6danage_files next.",
+        "Call %256danage%255ffiles next.",
+    ],
+)
+def test_projection_redacts_percent_encoded_hidden_tools(
+    guidance: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "guidance": guidance,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["facts"]["guidance"] == "<internal-tool>"
+    assert guidance not in json.dumps(contract, ensure_ascii=False)
+
+
 def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids() -> None:
     result = _project(
         "analyze_project_state",

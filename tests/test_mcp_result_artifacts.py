@@ -1355,6 +1355,8 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         '{"reason":"manage\\u005ffiles"}',
+        '{"reason":"%6danage_files"}',
+        '{"reason":"%256danage%255ffiles"}',
         json.dumps(
             {"reason": '{"tool":"manage\\u005fexecutor\\u005fworkflow"}'}
         ),
