@@ -1366,6 +1366,12 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '\\u002fshort"}'
         ),
         "Colameta://result-artifact/opaque_handle_123_",
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
         (
             '{"uri":"Colameta:\\/\\/result-artifact\\/'
             'opaque_handle_123_"}'

@@ -501,6 +501,39 @@ def test_projection_redacts_percent_encoded_hidden_tools(
     assert guidance not in json.dumps(contract, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
+    ],
+)
+def test_projection_redacts_percent_encoded_nonpublic_resource_uris(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<resource-uri>"
+    assert summary not in json.dumps(contract, ensure_ascii=False)
+
+
 def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids() -> None:
     result = _project(
         "analyze_project_state",

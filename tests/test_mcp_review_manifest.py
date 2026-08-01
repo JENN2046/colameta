@@ -2955,6 +2955,13 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '\\u002fshort"}'
         ),
         "Colameta://review-manifest/opaque_handle_123_",
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}%20"
+            "colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
         (
             '{"uri":"Colameta:\\/\\/review-manifest\\/'
             'opaque_handle_123_"}'

@@ -4910,6 +4910,8 @@ def _mask_literal_resource_uri_tokens_for_decoded_scan(value: str) -> str:
             and not _is_resource_uri_whitespace(value[token_cursor])
             and value[token_cursor] not in "\"'`<>"
         ):
+            if value[token_cursor] == "%":
+                break
             if value[token_cursor] == "\\":
                 _end, decoded = _scan_nested_json_escape(
                     value,
@@ -4930,16 +4932,13 @@ def _decoded_candidate_contains_disallowed_public_resource_uri(
     value: str,
 ) -> bool:
     # Literal tokens are checked against exact URI spans in the original text.
-    # Retain every token suffix beginning at its first JSON escape so a decoded
-    # delimiter followed by another encoded URI cannot hide inside the greedy
-    # literal-token match.
+    # Retain every token suffix beginning at its first percent or JSON escape so
+    # a decoded delimiter followed by another encoded URI cannot hide inside
+    # the greedy literal-token match.
     encoded_only = _mask_literal_resource_uri_tokens_for_decoded_scan(value)
-    return bool(
-        "\\" in encoded_only
-        and any(
-            _contains_disallowed_public_resource_uri(candidate)
-            for candidate in _json_escape_decoded_candidates(encoded_only)
-        )
+    return _decoded_candidate_matches(
+        encoded_only,
+        _contains_disallowed_public_resource_uri,
     )
 
 

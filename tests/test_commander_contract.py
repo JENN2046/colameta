@@ -3743,6 +3743,12 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
                 )
             }
         ),
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
         "Colameta://result-artifact/opaque_handle_123_",
         (
             '{"uri":"Colameta:\\/\\/result-artifact\\/'
@@ -3819,9 +3825,15 @@ def test_typed_result_artifact_page_rejects_unsafe_opaque_uri_text(
                 )
             }
         ),
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
     ],
 )
-def test_public_text_redacts_case_or_json_escaped_disallowed_resource_uri(
+def test_public_text_redacts_encoded_disallowed_resource_uri(
     value: str,
 ) -> None:
     assert commander_public_text(value) == "<resource-uri>"
