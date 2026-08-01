@@ -108,6 +108,15 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    "GOCSPX-" + ("Ab1_-" * 5) + "Z9Q"
+)
+ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace(
+        "GOCSPX-",
+        "\\u0047OCSPX-",
+    )
+)
 SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
 SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
 ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
@@ -1186,6 +1195,24 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET,
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace("-", "%2D"),
+        (
+            '{"access":"'
+            f"{ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET}"
+            '"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "access": (
+                            ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET
+                        )
+                    }
                 )
             }
         ),

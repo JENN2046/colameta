@@ -122,6 +122,15 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    "GOCSPX-" + ("Ab1_-" * 5) + "Z9Q"
+)
+ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace(
+        "GOCSPX-",
+        "\\u0047OCSPX-",
+    )
+)
 SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
 SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
 ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
@@ -2463,6 +2472,28 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET,
+        (
+            "https://oauth2.example.invalid/callback?client_secret="
+            f"{SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET}"
+        ),
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace("-", "%2D"),
+        (
+            '{"access":"'
+            f"{ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET}"
+            '"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "access": (
+                            ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET
+                        )
+                    }
+                )
+            }
+        ),
         SYNTHETIC_AWS_ACCESS_KEY_ID,
         SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
         (
@@ -2529,6 +2560,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "dckr_pat_" not in public
     assert "shpat_" not in public
     assert "SG." not in public
+    assert "GOCSPX-" not in public
 
 
 @pytest.mark.parametrize(
@@ -3982,6 +4014,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "AIza-short",
         "AIza<redacted>",
         "AIza" + ("A" * 36),
+        "GOCSPX-" + ("A" * 27),
+        "GOCSPX-<redacted>",
+        "GOCSPX-" + ("A" * 29),
+        "x" + SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET,
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET + "A",
         "AKIA-short",
         "AKIA<redacted>",
         "AKIA" + ("A" * 17),
