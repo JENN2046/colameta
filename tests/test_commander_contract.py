@@ -46,6 +46,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1859,6 +1866,19 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        (
+            "https://registry.npmjs.org/callback?token="
+            f"{SYNTHETIC_NPM_ACCESS_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         (
             "https://gitlab.example.invalid/callback?token="
@@ -1947,6 +1967,49 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in public
     assert "gho_" not in public
     assert "github_pat_" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-secret"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?%61pi%5fkey%3dsynthetic-fully-encoded-secret"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%255Fkey=synthetic-double-encoded-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-encoded-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-secret"
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_percent_encoded_sensitive_key_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
 
 
 @pytest.mark.parametrize(
@@ -2377,6 +2440,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "ghp_" + ("A1" * 17) + "A",
         "ghp_" + ("A1" * 18) + "A",
         "github_pat_<redacted>",
+        "npm_short",
+        "npm_<redacted>",
+        "npm_" + ("A" * 37),
         "glpat-short",
         "glpat-<redacted>",
         "glpat-" + ("A" * 21),
@@ -2410,6 +2476,18 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             "?sv=2024-11-04&sp=r"
         ),
         "sig=synthetic-ordinary-signature",
+        (
+            "https://provider.example.invalid/callback"
+            "?topic=api%5Fkey"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkeyboard=public"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey"
+        ),
         "_author=Jenn",
         "_authorship=public",
     ],

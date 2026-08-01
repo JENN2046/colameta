@@ -35,6 +35,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -544,6 +551,15 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -622,6 +638,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
 
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
+    assert "npm_" not in json.dumps(contract, ensure_ascii=False)
     assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
     assert "AIza" not in json.dumps(contract, ensure_ascii=False)
     assert "AKIA" not in json.dumps(contract, ensure_ascii=False)
@@ -630,6 +647,54 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert "rk_test_" not in json.dumps(contract, ensure_ascii=False)
     assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)
     assert "sk-proj-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-summary-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-summary-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-summary-secret"
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_percent_encoded_sensitive_key_assignments(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(

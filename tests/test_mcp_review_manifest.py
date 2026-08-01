@@ -51,6 +51,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1207,6 +1214,12 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl\n"
         "_author=Jenn\n"
         "_authorship=public\n"
+        "https://provider.example.invalid/callback"
+        "?topic=api%5Fkey&api%5Fkeyboard=public\n"
+        "https://provider.example.invalid/callback?api%5Fkey\n"
+        "npm_short\n"
+        "npm_<redacted>\n"
+        f"npm_{'A' * 37}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2137,6 +2150,19 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 )
             }
         ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        (
+            "https://registry.npmjs.org/callback?token="
+            f"{SYNTHETIC_NPM_ACCESS_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -2230,6 +2256,27 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 "wrapped": (
                     "//registry.npmjs.org/:"
                     "\\u005fauthToken=synthetic-nested-npm-token"
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-manifest-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-manifest-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-manifest-secret"
+                        )
+                    }
                 )
             }
         ),

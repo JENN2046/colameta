@@ -18,6 +18,7 @@ import math
 import re
 import unicodedata
 from typing import Any, Iterable
+from urllib.parse import unquote
 
 from runner.project_context_binding import (
     BASE_CONTEXT_BINDING_FIELDS,
@@ -67,6 +68,7 @@ COMMANDER_LIST_MAX_ITEMS = 100
 COMMANDER_OBJECT_MAX_FIELDS = 160
 COMMANDER_PUBLIC_MAX_DEPTH = 12
 COMMANDER_ARTIFACT_PAGE_MAX_CHARS = 100_000
+_COMMANDER_DECODED_CANDIDATE_MAX_STATES = 16
 
 COMMANDER_PUBLIC_ERROR_CODES = frozenset(
     {
@@ -835,6 +837,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
+    r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|glpat-[A-Za-z0-9_-]{20}(?![A-Za-z0-9_-])"
     r"|AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9_-])"
@@ -4239,13 +4242,51 @@ def _matches_sensitive_material(value: str) -> bool:
 
 
 def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
-    return bool(
-        "\\" in value
-        and any(
-            _matches_sensitive_material(candidate)
-            for candidate in _json_escape_decoded_candidates(value)
-        )
+    return any(
+        _matches_sensitive_material(candidate)
+        for candidate in _sensitive_material_decoded_candidates(value)
     )
+
+
+def _sensitive_material_decoded_candidates(
+    value: str,
+) -> Iterable[str]:
+    """Yield a bounded closure of JSON- and URL-decoded candidates."""
+
+    candidates = [value]
+    seen = {value}
+    cursor = 0
+    while (
+        cursor < len(candidates)
+        and len(seen) < _COMMANDER_DECODED_CANDIDATE_MAX_STATES
+    ):
+        candidate = candidates[cursor]
+        cursor += 1
+        if "%" in candidate:
+            percent_decoded = unquote(candidate)
+            if (
+                percent_decoded != candidate
+                and percent_decoded not in seen
+            ):
+                seen.add(percent_decoded)
+                candidates.append(percent_decoded)
+                yield percent_decoded
+                if (
+                    len(seen)
+                    >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES
+                ):
+                    return
+        decoded_candidates: Iterable[str] = ()
+        if "\\" in candidate:
+            decoded_candidates = _json_escape_decoded_candidates(candidate)
+        for decoded in decoded_candidates:
+            if decoded in seen:
+                continue
+            seen.add(decoded)
+            candidates.append(decoded)
+            yield decoded
+            if len(seen) >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES:
+                return
 
 
 def _is_basic_authorization_credential(match: re.Match[str]) -> bool:

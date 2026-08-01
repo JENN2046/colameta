@@ -28,6 +28,13 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -394,6 +401,16 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "separator_prefixed_safe_assignment": (
             "_author=Jenn; _authorship=public"
         ),
+        "percent_encoded_safe_query": (
+            "https://provider.example.invalid/callback"
+            "?topic=api%5Fkey&api%5Fkeyboard=public"
+        ),
+        "percent_encoded_missing_value": (
+            "https://provider.example.invalid/callback?api%5Fkey"
+        ),
+        "package_marker_short": "npm_short",
+        "package_marker_placeholder": "npm_<redacted>",
+        "package_marker_overlength": "npm_" + ("A" * 37),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
         ),
@@ -831,6 +848,19 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        (
+            "https://registry.npmjs.org/callback?token="
+            f"{SYNTHETIC_NPM_ACCESS_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -924,6 +954,27 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 "wrapped": (
                     "//registry.npmjs.org/:"
                     "\\u005fauthToken=synthetic-nested-npm-token"
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-artifact-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-artifact-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-artifact-secret"
+                        )
+                    }
                 )
             }
         ),
