@@ -1782,6 +1782,86 @@ def test_public_text_preserves_opaque_uris_inside_markdown_emphasis(
 
 
 @pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+def test_public_text_preserves_opaque_uri_markdown_link_labels(
+    uri: str,
+) -> None:
+    value = f"[{uri}](https://example.test/evidence)"
+    escaped = (
+        f"\\u005b{uri}\\u005d\\u0028"
+        "https://example.test/evidence\\u0029"
+    )
+    serialized = json.dumps({"note": value})
+    nested = json.dumps({"note": json.dumps({"link": value})})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(escaped) == escaped
+    assert commander_public_text(serialized) == serialized
+    assert commander_public_text(nested) == nested
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}]"
+            "(https://example.test/evidence)"
+        ),
+        (
+            "[colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}]"
+            "(ftp://example.test/evidence)"
+        ),
+        (
+            "[colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}]"
+            "(https://example.test/evidence"
+        ),
+        (
+            "prefix[colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}]"
+            "(https://example.test/evidence)"
+        ),
+        (
+            "[colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}]"
+            "(https://example.test/evidence)tail"
+        ),
+    ],
+)
+def test_public_text_rejects_unpaired_or_unsafe_markdown_link_labels(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "colameta://" not in public
+    assert "<resource-uri>" in public
+
+
+def test_public_text_rejects_credentials_in_markdown_link_destination(
+) -> None:
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    value = (
+        f"[{uri}]"
+        "(https://alice:synthetic-password@example.test/evidence)"
+    )
+
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-password" not in public
+
+
+@pytest.mark.parametrize(
     "value",
     [
         (
@@ -2585,6 +2665,129 @@ def test_public_text_redacts_oauth_authorization_code_callbacks(
 
     assert public == "<sensitive>"
     assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps(
+            {
+                "device_code": "synthetic-device-secret",
+                "user_code": "ABCD-EFGH",
+            }
+        ),
+        json.dumps(
+            {
+                "device_code": "synthetic-device-uri-secret",
+                "verification_uri": (
+                    "https://provider.example.invalid/device"
+                ),
+            }
+        ),
+        json.dumps(
+            {
+                "device_code": "synthetic-device-expiry-secret",
+                "expires_in": 600,
+                "interval": 5,
+            }
+        ),
+        (
+            'OAuth response: {"device_code":'
+            '"synthetic-embedded-device-secret",'
+            '"user_code":"IJKL-MNOP"}'
+        ),
+        (
+            '{"device\\u005fcode":"synthetic-escaped-device-secret",'
+            '"user\\u005fcode":"QRST-UVWX"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "device_code": (
+                            "synthetic-nested-device-secret"
+                        ),
+                        "verification_uri_complete": (
+                            "https://provider.example.invalid/device"
+                            "?user_code=YZ12-3456"
+                        ),
+                    }
+                )
+            }
+        ),
+        _percent_encode_layers(
+            json.dumps(
+                {
+                    "device_code": (
+                        "synthetic-percent-device-secret"
+                    ),
+                    "user_code": "7890-ABCD",
+                }
+            ),
+            1,
+        ),
+    ],
+)
+def test_public_text_redacts_oauth_device_authorization_codes(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps(
+            {
+                "device_code": "public-sensor-identifier",
+                "model": "weather-station",
+            }
+        ),
+        json.dumps(
+            {
+                "device_code_hint": "public-prefix",
+                "user_code": "display-only",
+            }
+        ),
+        json.dumps(
+            {
+                "device_code": "",
+                "user_code": "display-only",
+            }
+        ),
+        "The device_code field identifies a hardware device.",
+    ],
+)
+def test_public_text_preserves_unrelated_device_identifiers(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+def test_commander_response_omits_structured_oauth_device_response() -> None:
+    device_secret = "synthetic-structured-device-secret"
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "status": "clean",
+            "device_authorization": {
+                "device_code": device_secret,
+                "user_code": "EFGH-IJKL",
+                "expires_in": 600,
+            },
+        },
+        params={},
+    )
+
+    rendered = json.dumps(response, ensure_ascii=False)
+    assert device_secret not in rendered
+    assert response["facts"]["status"] == "clean"
+    assert "device_authorization" not in response["facts"]
+    validate_commander_response(response)
 
 
 def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(

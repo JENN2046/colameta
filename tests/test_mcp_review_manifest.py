@@ -2540,6 +2540,97 @@ def test_commander_manifest_reads_reject_private_jwk_material(
     )
 
 
+def test_commander_manifest_reads_reject_oauth_device_authorization(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    device_secret = "synthetic-manifest-device-secret"
+    content = json.dumps(
+        {
+            "device_code": device_secret,
+            "user_code": "ABCD-EFGH",
+            "expires_in": 600,
+        }
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert device_secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_manifest_reads_preserve_markdown_resource_link_label(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    opaque_uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    content = f"[{opaque_uri}](https://example.test/evidence)"
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is True
+    assert typed["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, subject["resource_uri"])
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert resource_page["content"] == content
+
+
 @pytest.mark.parametrize(
     "unsafe_uri",
     [

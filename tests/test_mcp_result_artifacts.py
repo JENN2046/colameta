@@ -1649,6 +1649,114 @@ def test_commander_artifact_read_preserves_public_jwk(tmp_path) -> None:
     assert json.loads(page_content)["jwk"] == public_jwk
 
 
+def test_commander_artifact_reads_reject_oauth_device_authorization(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    device_secret = "synthetic-artifact-device-secret"
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "device_authorization": {
+                "device_code": device_secret,
+                "user_code": "ABCD-EFGH",
+                "verification_uri": (
+                    "https://provider.example.invalid/device"
+                ),
+            }
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert device_secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_artifact_reads_preserve_markdown_resource_link_label(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    opaque_uri = (
+        "colameta://result-artifact/"
+        "opaque_handle_123_/pages/{page}"
+    )
+    link = f"[{opaque_uri}](https://example.test/evidence)"
+    payload = {"content": link}
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    typed_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(typed_content) == payload
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert json.loads(resource_page["content"]) == payload
+
+
 def test_commander_artifact_scan_rejects_unsafe_resource_reference_siblings(
     tmp_path,
 ) -> None:

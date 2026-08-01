@@ -14,6 +14,7 @@ from runner.commander_contract import (
     build_commander_response,
     commander_public_key_is_forbidden,
     commander_public_mapping_is_private_jwk,
+    commander_public_mapping_is_oauth_device_authorization,
     commander_public_text,
     validate_commander_response,
 )
@@ -321,7 +322,12 @@ class CommanderPublicProjector:
         artifact: bool = False,
     ) -> Any:
         if isinstance(value, dict):
-            if commander_public_mapping_is_private_jwk(value):
+            if (
+                commander_public_mapping_is_private_jwk(value)
+                or commander_public_mapping_is_oauth_device_authorization(
+                    value
+                )
+            ):
                 return None
             if self._is_resource_read_reference(value):
                 return self._project_resource_read_reference(value)

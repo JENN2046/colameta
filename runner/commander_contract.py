@@ -896,9 +896,22 @@ _PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
     r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
 )
 _PRIVATE_JWK_ASYMMETRIC_KEY_TYPES = frozenset({"RSA", "EC", "OKP"})
-_PRIVATE_JWK_MAX_JSON_CANDIDATES = 64
-_PRIVATE_JWK_MAX_NODES = 4_096
-_PRIVATE_JWK_MAX_NESTED_STRING_DEPTH = 4
+_STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES = 64
+_STRUCTURED_CREDENTIAL_MAX_NODES = 4_096
+_STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH = 4
+_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS = frozenset(
+    {
+        "user_code",
+        "verification_uri",
+        "verification_uri_complete",
+    }
+)
+_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS = frozenset(
+    {
+        "expires_in",
+        "interval",
+    }
+)
 _STANDALONE_JWT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])"
     r"(?P<header>[A-Za-z0-9_-]{8,1024})\."
@@ -3392,7 +3405,12 @@ def _public_value(
                 result.append(public)
         return result
     if isinstance(value, dict):
-        if commander_public_mapping_is_private_jwk(value):
+        if (
+            commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+        ):
             return _OMIT
         referenced_tool = value.get("tool")
         if (
@@ -3469,10 +3487,15 @@ def _validate_public_value(
             )
         return
     if isinstance(value, dict):
-        if commander_public_mapping_is_private_jwk(value):
+        if (
+            commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+        ):
             raise CommanderContractError(
                 "INTERNAL_RESULT_INVALID",
-                "Public value contains private JWK material.",
+                "Public value contains structured credential material.",
             )
         if len(value) > COMMANDER_OBJECT_MAX_FIELDS:
             raise CommanderContractError(
@@ -4507,6 +4530,70 @@ def _is_resource_uri_inside_markdown_emphasis(
     )
 
 
+def _markdown_public_link_destination_end(
+    value: str,
+    index: int,
+) -> int | None:
+    closing_label = _resource_character_with_end_at(value, index)
+    if closing_label is None or closing_label[1] != "]":
+        return None
+    opening_destination = _resource_character_with_end_at(
+        value,
+        closing_label[0],
+    )
+    if (
+        opening_destination is None
+        or opening_destination[1] != "("
+    ):
+        return None
+    destination_start = opening_destination[0]
+    if not value.startswith(
+        ("https://", "http://"),
+        destination_start,
+    ):
+        return None
+    cursor = destination_start
+    while cursor < len(value):
+        current = _resource_character_with_end_at(value, cursor)
+        if current is None:
+            return None
+        end, character = current
+        if character == ")":
+            return end
+        if (
+            _is_resource_uri_whitespace(character)
+            or character in "()<>\"'"
+        ):
+            return None
+        cursor = end
+    return None
+
+
+def _is_resource_uri_inside_markdown_link_label(
+    value: str,
+    start: int,
+    end: int,
+) -> bool:
+    opening_label = _resource_character_with_start_ending_at(
+        value,
+        start,
+    )
+    if opening_label is None or opening_label[1] != "[":
+        return False
+    destination_end = _markdown_public_link_destination_end(
+        value,
+        end,
+    )
+    return bool(
+        destination_end is not None
+        and _is_resource_uri_left_boundary(
+            value,
+            opening_label[0],
+        )
+        and _is_resource_uri_boundary(value, destination_end)
+    )
+
+
 def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
     for match in _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE.finditer(value):
         ordinary_boundaries = (
@@ -4514,6 +4601,10 @@ def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
             and _is_resource_uri_boundary(value, match.end())
         )
         if ordinary_boundaries or _is_resource_uri_inside_markdown_emphasis(
+            value,
+            match.start(),
+            match.end(),
+        ) or _is_resource_uri_inside_markdown_link_label(
             value,
             match.start(),
             match.end(),
@@ -4606,6 +4697,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_private_jwk_material(value)
+        or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
@@ -4765,6 +4857,26 @@ def commander_public_mapping_is_private_jwk(
     )
 
 
+def commander_public_mapping_is_oauth_device_authorization(
+    value: dict[Any, Any],
+) -> bool:
+    device_code = value.get("device_code")
+    if not isinstance(device_code, str) or not device_code.strip():
+        return False
+    if any(
+        isinstance(value.get(key), str)
+        and bool(value[key].strip())
+        for key in _OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS
+    ):
+        return True
+    return any(
+        not isinstance(value.get(key), bool)
+        and isinstance(value.get(key), int)
+        and value[key] > 0
+        for key in _OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS
+    )
+
+
 def _private_jwk_text_hint(value: str) -> bool:
     lowered = value.lower()
     return "kty" in lowered and (
@@ -4775,19 +4887,29 @@ def _private_jwk_text_hint(value: str) -> bool:
     )
 
 
-def _contains_private_jwk_material(value: str) -> bool:
-    """Detect bounded structured private JWKs without treating ``d`` as secret.
+def _oauth_device_authorization_text_hint(value: str) -> bool:
+    lowered = value.lower()
+    return "device_code" in lowered and any(
+        key in lowered
+        for key in (
+            *_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS,
+            *_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS,
+        )
+    )
 
-    Public evidence may contain a JSON object, a JWK Set, JSON embedded in
-    prose, or a serialized JSON string. Only a recognized JWK ``kty`` value
-    establishes the context in which asymmetric ``d`` (or symmetric ``oct``
-    member ``k``) is private material. Candidate and node budgets keep
-    malformed or adversarial evidence bounded; suspicious exhaustion fails
-    closed.
-    """
+
+def _contains_structured_json_mapping(
+    value: str,
+    *,
+    mapping_predicate: Callable[[dict[Any, Any]], bool],
+    exhaustion_hint: Callable[[str], bool],
+) -> bool:
+    """Scan bounded JSON containers for one structured credential mapping."""
 
     stack: list[tuple[Any, int]] = []
-    remaining_candidates = _PRIVATE_JWK_MAX_JSON_CANDIDATES
+    remaining_candidates = (
+        _STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES
+    )
 
     def enqueue_json_containers(text: str, depth: int) -> bool:
         nonlocal remaining_candidates
@@ -4816,7 +4938,7 @@ def _contains_private_jwk_material(value: str) -> bool:
                 return False
             start = min(starts)
             if remaining_candidates <= 0:
-                return _private_jwk_text_hint(text)
+                return exhaustion_hint(text)
             remaining_candidates -= 1
             try:
                 candidate, end = decoder.raw_decode(text, start)
@@ -4835,10 +4957,10 @@ def _contains_private_jwk_material(value: str) -> bool:
     while stack:
         node, depth = stack.pop()
         visited_nodes += 1
-        if visited_nodes > _PRIVATE_JWK_MAX_NODES:
-            return _private_jwk_text_hint(value)
+        if visited_nodes > _STRUCTURED_CREDENTIAL_MAX_NODES:
+            return exhaustion_hint(value)
         if isinstance(node, dict):
-            if commander_public_mapping_is_private_jwk(node):
+            if mapping_predicate(node):
                 return True
             if depth < COMMANDER_PUBLIC_MAX_DEPTH:
                 stack.extend(
@@ -4855,11 +4977,36 @@ def _contains_private_jwk_material(value: str) -> bool:
             continue
         if (
             isinstance(node, str)
-            and depth < _PRIVATE_JWK_MAX_NESTED_STRING_DEPTH
+            and depth
+            < _STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH
             and enqueue_json_containers(node, depth + 1)
         ):
             return True
     return False
+
+
+def _contains_private_jwk_material(value: str) -> bool:
+    """Detect private JWKs without treating an ordinary ``d`` as secret."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=commander_public_mapping_is_private_jwk,
+        exhaustion_hint=_private_jwk_text_hint,
+    )
+
+
+def _contains_oauth_device_authorization_material(
+    value: str,
+) -> bool:
+    """Detect a device code only inside an OAuth device response context."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_oauth_device_authorization
+        ),
+        exhaustion_hint=_oauth_device_authorization_text_hint,
+    )
 
 
 def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
@@ -4978,6 +5125,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_private_jwk_material(value)
+        or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
