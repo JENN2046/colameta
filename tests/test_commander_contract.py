@@ -872,6 +872,73 @@ def test_public_text_redacts_json_escaped_path_separators(
 @pytest.mark.parametrize(
     "value",
     [
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fsecret.txt"
+        ),
+        (
+            "https://example.test/download"
+            "?file=%252Fhome%252Fjenn%252Fsecret.txt"
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fsecret.txt"}'
+        ),
+        (
+            "https://example.test/download"
+            "?file=C%3A%5CUsers%5CJenn%5Csecret.txt"
+        ),
+        (
+            "https://example.test/download"
+            "?file=%5C%5Cserver%5Cshare%5Csecret.txt"
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2F%2Fserver%2Fshare%2Fsecret.txt"
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https://example.test/download"
+                    "?file=%25252Fhome%25252Fjenn"
+                    "%25252Fsecret.txt"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_percent_encoded_private_paths(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<local-path>"
+    for fragment in ("home", "Users", "server", "secret.txt"):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/download?file=docs%2FREADME.md",
+        "https://example.test/ratio?value=1%2F2",
+        (
+            "https://example.test/next"
+            "?url=https%3A%2F%2Fpublic.example%2Fdocs"
+        ),
+        "https://example.test/download?file=C%3Arelative.txt",
+    ],
+)
+def test_public_text_preserves_percent_encoded_public_locations(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "C:/Users/Jenn/secret.txt",
         r"C:/Users\Jenn/secret.txt",
         r"C:\Users/Jenn\secret.txt",
@@ -2793,6 +2860,62 @@ def test_public_text_redacts_curl_user_password_options(
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "curl -Eclient.pem:synthetic-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -E client.pem:synthetic-spaced-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --cert=client.pem:synthetic-long-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --cert 'client.pem:synthetic-quoted-cert-password' "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-cert=proxy.pem:"
+            "synthetic-proxy-cert-password https://example.invalid"
+        ),
+        (
+            "curl --pass synthetic-cert-passphrase "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-pass=synthetic-proxy-cert-passphrase "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--cert\\u003dclient.pem'
+            '\\u003asynthetic-encoded-cert-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%2520--proxy-pass%253D"
+                    "synthetic-nested-proxy-passphrase%2520"
+                    "https%253A%252F%252Fexample.invalid"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_curl_certificate_credentials(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
     ("value", "secret_fragment"),
     [
         (
@@ -2942,6 +3065,15 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "curl --user <user:password> https://example.invalid",
         "curl --proxy-user alice https://example.invalid",
         "curl --proxy-user <user:password> https://example.invalid",
+        "curl -E client.pem https://example.invalid",
+        "curl --cert client.pem https://example.invalid",
+        "curl --proxy-cert proxy.pem https://example.invalid",
+        "curl --cert <certificate[:password]> https://example.invalid",
+        "curl --proxy-cert <cert[:passwd]> https://example.invalid",
+        "curl --pass --verbose https://example.invalid",
+        "curl --proxy-pass --verbose https://example.invalid",
+        "curl --cert-status https://example.invalid",
+        "tool --cert client.pem:public-note",
         "tool --proxy-user alice:note",
         "curl --help all",
         "curl -u",

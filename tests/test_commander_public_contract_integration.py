@@ -921,6 +921,57 @@ def test_projection_redacts_curl_user_password_options(
     assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            "curl --cert=client.pem:synthetic-summary-cert-password "
+            "https://example.invalid",
+            "<sensitive>",
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-summary-passphrase '
+            'https:\\/\\/example.invalid"}',
+            "<sensitive>",
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fsecret.txt",
+            "<local-path>",
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fsecret.txt"}',
+            "<local-path>",
+        ),
+    ],
+)
+def test_projection_redacts_curl_certificate_and_encoded_path_evidence(
+    summary: str,
+    expected: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == expected
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+    assert "secret.txt" not in json.dumps(contract, ensure_ascii=False)
+
+
 def test_projection_preserves_token_like_opaque_resource_uri() -> None:
     uri = (
         f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"

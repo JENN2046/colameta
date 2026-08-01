@@ -1242,6 +1242,24 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        (
+            "curl --cert=client.pem:synthetic-artifact-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-artifact-passphrase '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fartifact-secret.txt"
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fartifact-secret.txt"}'
+        ),
         EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
         EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
         (

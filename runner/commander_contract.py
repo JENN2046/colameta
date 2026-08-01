@@ -17,7 +17,7 @@ import json
 import math
 import re
 import unicodedata
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import unquote, unquote_plus
 
 from runner.project_context_binding import (
@@ -800,6 +800,29 @@ _CURL_USER_PASSWORD_RE = re.compile(
     r'"[^:\s"<>]{0,512}:[^\s"<>]{1,2048}"'
     r"|'[^:\s'<>]{0,512}:[^\s'<>]{1,2048}'"
     r"|[^:\s\"'<>]{0,512}:[^\s\"'<>]{1,2048}"
+    r")"
+)
+_CURL_CERTIFICATE_PASSWORD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"-[eE](?:[ \t]+|=)?"
+    r"|--(?:proxy-)?cert(?:[ \t]+|=)"
+    r")"
+    r"(?:"
+    r'"[^:\s"<>]{1,2048}:[^\s"<>]{1,2048}"'
+    r"|'[^:\s'<>]{1,2048}:[^\s'<>]{1,2048}'"
+    r"|[^:\s\"'<>]{1,2048}:[^\s\"'<>]{1,2048}"
+    r")"
+)
+_CURL_PASSPHRASE_OPTION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])--(?:proxy-)?pass"
+    r"(?:[ \t]+|=)(?!-)(?:"
+    r'"(?:\\.|[^"\\]){1,2048}"'
+    r"|'(?:\\.|[^'\\]){1,2048}'"
+    r"|[^\s,;]{1,2048}"
     r")"
 )
 _NETRC_ENTRY_START_RE = re.compile(
@@ -3813,10 +3836,9 @@ def _redact_public_path_segment(value: str) -> str:
         value,
     )
     redacted = _redact_public_path_segment_with_json_boundaries(redacted)
-    if any(
-        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(candidate)
-        or _segment_or_json_boundary_contains_private_path(candidate)
-        for candidate in _json_escape_decoded_candidates(redacted)
+    if _decoded_candidate_matches(
+        redacted,
+        _contains_private_path_segment,
     ):
         return "<local-path>"
     return redacted
@@ -4457,6 +4479,8 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_forbidden_key_assignment(value)
         or _contains_sensitive_cli_option_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
+        or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
+        or _CURL_PASSPHRASE_OPTION_RE.search(value)
         or _contains_netrc_password_credential(value)
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
@@ -4473,14 +4497,17 @@ def _matches_sensitive_material(value: str) -> bool:
     )
 
 
-def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
+def _decoded_candidate_matches(
+    value: str,
+    predicate: Callable[[str], bool],
+) -> bool:
     """Scan a bounded decode closure and fail closed on real exhaustion.
 
     Each round applies canonical URL and JSON decoding.  Their state budgets
     are counted independently so unrelated legal escapes cannot consume a
     deep percent-decoding chain's allowance.  The preserved backslash
     candidate is checked as well so JSON string boundaries cannot hide a
-    credential.  Work remains linear in the public value and either decoder
+    forbidden value.  Work remains linear in the public value and either decoder
     fails closed before accepting a seventeenth state.
     """
 
@@ -4494,7 +4521,7 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
             percent_decoded = unquote(candidate)
             if (
                 percent_decoded != candidate
-                and _matches_sensitive_material(percent_decoded)
+                and predicate(percent_decoded)
             ):
                 return True
             if percent_decoded != candidate:
@@ -4513,7 +4540,7 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
             )
             if (
                 preserved_backslashes != decoded
-                and _matches_sensitive_material(preserved_backslashes)
+                and predicate(preserved_backslashes)
             ):
                 return True
             json_decoded = _decode_json_escapes_with_stack(
@@ -4522,7 +4549,7 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
             )
             if (
                 json_decoded != decoded
-                and _matches_sensitive_material(json_decoded)
+                and predicate(json_decoded)
             ):
                 return True
             if json_decoded != decoded:
@@ -4537,6 +4564,10 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
         if not changed or decoded == candidate:
             return False
         candidate = decoded
+
+
+def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
+    return _decoded_candidate_matches(value, _matches_sensitive_material)
 
 
 def _is_basic_authorization_credential(match: re.Match[str]) -> bool:
@@ -4706,6 +4737,8 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_forbidden_key_assignment(value)
         or _contains_netrc_password_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
+        or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
+        or _CURL_PASSPHRASE_OPTION_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
@@ -4814,6 +4847,10 @@ def _contains_sensitive_material_outside_resource_uris(
 def _contains_private_path(value: str) -> bool:
     return any(
         _contains_private_path_segment(segment)
+        or _decoded_candidate_matches(
+            segment,
+            _contains_private_path_segment,
+        )
         for segment in _public_text_non_resource_segments(value)
     )
 

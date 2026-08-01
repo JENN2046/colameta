@@ -2712,6 +2712,24 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 )
             }
         ),
+        (
+            "curl --cert=client.pem:synthetic-manifest-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-manifest-passphrase '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fmanifest-secret.txt"
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fmanifest-secret.txt"}'
+        ),
         EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
         EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
         (
