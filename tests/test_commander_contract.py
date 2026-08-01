@@ -507,6 +507,32 @@ def test_summary_redacts_complete_basic_authorization_material() -> None:
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "Basic dXNlcjpwYXNzd29yZA==",
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+    ],
+)
+def test_summary_redacts_standalone_basic_authorization_material(
+    message: str,
+) -> None:
+    response = build_commander_response(
+        tool_name="render_commander_app",
+        raw_result={
+            "ok": True,
+            "data": {
+                "ok": True,
+                "message": message,
+            },
+        },
+    )
+
+    assert response["summary"] == "<sensitive>"
+    assert "dXNlcjpwYXNzd29yZA" not in response["summary"]
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
     "message, secret_fragments",
     [
         (
@@ -1365,6 +1391,40 @@ def test_public_text_preserves_opaque_uris_at_paired_punctuation_boundaries(
     ],
 )
 @pytest.mark.parametrize(
+    "suffix",
+    [
+        "(see page 2)",
+        "[details]",
+        "{details}",
+        "<details>",
+        "\\u0028see page 2\\u0029",
+        "\\u005bdetails\\u005d",
+        "\\u007bdetails\\u007d",
+        "\\u003cdetails\\u003e",
+    ],
+)
+def test_public_text_preserves_opaque_uris_before_ascii_opening_punctuation(
+    uri: str,
+    suffix: str,
+) -> None:
+    value = f"Read {uri}{suffix}"
+    nested = json.dumps({"nested": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(nested) == nested
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
     "prefix",
     ["请读取", "版本１", "नमस्ते", "مُرَاجَعَةَ", "cafe\u0301"],
 )
@@ -1559,8 +1619,17 @@ def test_public_text_redacts_sensitive_values_that_are_valid_opaque_uris(
     assert commander_public_text(value) == "<sensitive>"
 
 
-def test_public_text_preserves_ordinary_bearer_prose() -> None:
-    value = "The bearer of this note may continue."
+@pytest.mark.parametrize(
+    "value",
+    [
+        "The bearer of this note may continue.",
+        "Basic evidence remains available.",
+        "Basic authentication is documented.",
+    ],
+)
+def test_public_text_preserves_ordinary_authorization_scheme_prose(
+    value: str,
+) -> None:
 
     assert commander_public_text(value) == value
 
@@ -1569,6 +1638,32 @@ def test_public_text_redacts_complete_basic_authorization_value() -> None:
     value = "Authorization: Basic dXNlcjpwYXNzd29yZA=="
 
     assert commander_public_text(value) == "<sensitive>"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Basic dXNlcjpwYXNzd29yZA==",
+        "basic YTpi",
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"reason":"\\\\u0042asic '
+                    'dXNlcjpwYXNzd29yZA=="}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_standalone_basic_authorization_values(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "dXNlcjpwYXNzd29yZA" not in public
+    assert "YTpi" not in public
 
 
 @pytest.mark.parametrize(
@@ -1766,6 +1861,8 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
     "message",
     [
         "Cookie: session=abc; csrf=def",
+        "Basic dXNlcjpwYXNzd29yZA==",
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
@@ -1807,6 +1904,8 @@ def test_blocked_error_redacts_complete_compound_credential_headers(
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        "Basic dXNlcjpwYXNzd29yZA==",
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
@@ -1814,6 +1913,10 @@ def test_blocked_error_redacts_complete_compound_credential_headers(
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??）query"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}(/home/reviewer/private.txt)"
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
@@ -2085,6 +2188,8 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         ),
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        "Basic dXNlcjpwYXNzd29yZA==",
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}::private"
@@ -2092,6 +2197,10 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}??）query"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}(/home/reviewer/private.txt)"
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"

@@ -302,6 +302,16 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "serialized_paired_punctuation_boundaries": json.dumps(
             {"note": f"before）{uri}（continue"}
         ),
+        "ascii_opening_boundaries": (
+            f"{uri}(see page 2); {uri}[details]; "
+            f"{uri}{{details}}; {uri}<details>"
+        ),
+        "escaped_ascii_opening_boundaries": (
+            f"{uri}\\u0028see page 2\\u0029; "
+            f"{uri}\\u005bdetails\\u005d; "
+            f"{uri}\\u007bdetails\\u007d; "
+            f"{uri}\\u003cdetails\\u003e"
+        ),
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
@@ -598,6 +608,10 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}(/home/reviewer/private.txt)"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}∕private"
         ),
         (
@@ -652,10 +666,12 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         'password="alpha beta gamma"',
         r'{\"client_secret\":\"alpha beta gamma\"}',
         "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Basic dXNlcjpwYXNzd29yZA==",
         (
             '{"reason":"Authorization: '
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
         ),
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         "Cookie: session=abc; csrf=def",
         (
             'Authorization: Digest username="Mufasa", '

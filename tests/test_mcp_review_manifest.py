@@ -1080,6 +1080,16 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     serialized_paired_punctuation_boundaries = json.dumps(
         {"note": f"before）{uri}（continue"}
     )
+    ascii_opening_boundaries = (
+        f"{uri}(see page 2); {uri}[details]; "
+        f"{uri}{{details}}; {uri}<details>"
+    )
+    escaped_ascii_opening_boundaries = (
+        f"{uri}\\u0028see page 2\\u0029; "
+        f"{uri}\\u005bdetails\\u005d; "
+        f"{uri}\\u007bdetails\\u007d; "
+        f"{uri}\\u003cdetails\\u003e"
+    )
     content = (
         f"\ufeff{uri}\n"
         f"\\ufeff{uri}\n"
@@ -1110,6 +1120,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{serialized_dash_boundaries}\n"
         f"{paired_punctuation_boundaries}\n"
         f"{serialized_paired_punctuation_boundaries}\n"
+        f"{ascii_opening_boundaries}\n"
+        f"{escaped_ascii_opening_boundaries}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1906,6 +1918,10 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}(/home/reviewer/private.txt)"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}∕private"
         ),
         (
@@ -1960,10 +1976,12 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         'password="alpha beta gamma"',
         r'{\"client_secret\":\"alpha beta gamma\"}',
         "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Basic dXNlcjpwYXNzd29yZA==",
         (
             '{"reason":"Authorization: '
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
         ),
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         "Cookie: session=abc; csrf=def",
         (
             'Authorization: Digest username="Mufasa", '

@@ -8,6 +8,8 @@ transport-specific packaging and its existing path-redaction boundary.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from bisect import bisect_right
 import copy
 from datetime import datetime
@@ -515,6 +517,7 @@ _PUBLIC_COLAMETA_URI_SCHEME_RE = re.compile(
     re.IGNORECASE,
 )
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
+_PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS = frozenset("([{<")
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
@@ -756,6 +759,11 @@ _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
     r"(?:colameta://[^\s,;]*|[A-Za-z0-9._~+/=-]{8,})"
+)
+_BASIC_AUTHORIZATION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])basic\s+"
+    r"(?P<token>[A-Za-z0-9+/]{2,}={0,2})"
+    r"(?![A-Za-z0-9+/=])"
 )
 
 _OMIT = object()
@@ -3850,6 +3858,7 @@ def _is_resource_uri_hard_delimiter(value: str) -> bool:
         _is_resource_uri_whitespace(value)
         or unicodedata.category(value) == "Cc"
         or value in "\"'`>"
+        or value in _PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS
     )
 
 
@@ -3995,7 +4004,7 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     if index >= len(value):
         return True
     following = value[index]
-    if _is_resource_uri_whitespace(following) or following in "\"'`>":
+    if _is_resource_uri_hard_delimiter(following):
         return True
     if _is_unicode_resource_uri_prose(following):
         return True
@@ -4101,6 +4110,7 @@ def _matches_sensitive_material(value: str) -> bool:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _BEARER_TOKEN_RE.search(value)
+        or _contains_basic_authorization_credential(value)
     )
 
 
@@ -4114,11 +4124,42 @@ def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
     )
 
 
+def _is_basic_authorization_credential(match: re.Match[str]) -> bool:
+    token = match.group("token").rstrip("=")
+    if not token:
+        return False
+    padded = token + ("=" * (-len(token) % 4))
+    try:
+        decoded = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return b":" in decoded
+
+
+def _contains_basic_authorization_credential(value: str) -> bool:
+    return any(
+        _is_basic_authorization_credential(match)
+        for match in _BASIC_AUTHORIZATION_RE.finditer(value)
+    )
+
+
+def _redact_basic_authorization_credentials(value: str) -> str:
+    return _BASIC_AUTHORIZATION_RE.sub(
+        lambda match: (
+            "<sensitive>"
+            if _is_basic_authorization_credential(match)
+            else match.group(0)
+        ),
+        value,
+    )
+
+
 def _redact_sensitive_material(value: str) -> str:
     if _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value):
         return "<sensitive>"
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
     redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+    redacted = _redact_basic_authorization_credentials(redacted)
     if _decoded_candidate_contains_sensitive_material(value):
         return "<sensitive>"
     return redacted
