@@ -1156,6 +1156,13 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '\\u003aalice\\u003a'
             'synthetic-encoded-pgpass-artifact-password"}'
         ),
+        "PGPASSWORD=synthetic-postgres-artifact-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-artifact-password"}'
+        ),
+        "123456789:" + ("A" * 35),
+        '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
         (
             "machine example.com login alice "
             "password synthetic-netrc-artifact-secret"

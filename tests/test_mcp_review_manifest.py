@@ -2627,6 +2627,13 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '\\u003aalice\\u003a'
             'synthetic-encoded-pgpass-manifest-password"}'
         ),
+        "PGPASSWORD=synthetic-postgres-manifest-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-manifest-password"}'
+        ),
+        "123456789:" + ("A" * 35),
+        '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
         (
             "machine example.com login alice "
             "password synthetic-netrc-manifest-secret"

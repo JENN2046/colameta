@@ -109,6 +109,7 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
         "\\u0073k-proj-",
     )
 )
+SYNTHETIC_TELEGRAM_BOT_TOKEN = "123456789:" + ("A" * 35)
 MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
     "public_key=visible",
     15,
@@ -777,9 +778,20 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
             "?code=synthetic-oauth-summary-code"
             "&state=synthetic-oauth-summary-state"
         ),
+        "PGPASSWORD=synthetic-postgres-summary-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-summary-password"}'
+        ),
+        SYNTHETIC_TELEGRAM_BOT_TOKEN,
+        (
+            '{"access":"'
+            + SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "\\u003a")
+            + '"}'
+        ),
     ],
 )
-def test_projection_redacts_form_pgpass_and_oauth_credentials(
+def test_projection_redacts_form_pgpass_oauth_postgres_and_telegram_credentials(
     summary: str,
 ) -> None:
     contract = _assert_contract(

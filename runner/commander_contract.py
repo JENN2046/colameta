@@ -344,6 +344,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "passphrase",
         "password",
         "passwd",
+        "pgpassword",
         "pid",
         "ppid",
         "private_key",
@@ -869,6 +870,11 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"|sk-(?:proj-|svcacct-)?"
     r"[A-Za-z0-9_-]{20,256}(?![A-Za-z0-9_-])"
     r")"
+)
+_STANDALONE_TELEGRAM_BOT_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"[0-9]{8,16}:[A-Za-z0-9_-]{35}"
+    r"(?![A-Za-z0-9_-])"
 )
 _PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
@@ -4458,6 +4464,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_query(value)
@@ -4703,6 +4710,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_query(value)

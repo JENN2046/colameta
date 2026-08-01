@@ -126,6 +126,10 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
         "\\u0073k-proj-",
     )
 )
+SYNTHETIC_TELEGRAM_BOT_TOKEN = "123456789:" + ("A" * 35)
+ESCAPED_SYNTHETIC_TELEGRAM_BOT_TOKEN = (
+    SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "\\u003a")
+)
 MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
     "public_key=visible",
     15,
@@ -2195,6 +2199,34 @@ def test_public_text_redacts_standalone_provider_access_tokens(
 @pytest.mark.parametrize(
     "value",
     [
+        SYNTHETIC_TELEGRAM_BOT_TOKEN,
+        (
+            "https://telegram.example.invalid/bot?token="
+            f"{SYNTHETIC_TELEGRAM_BOT_TOKEN}"
+        ),
+        SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "%3A"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_TELEGRAM_BOT_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": (
+                    SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "%253A")
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_standalone_telegram_bot_tokens(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "123456789" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         (
             "https://provider.example.invalid/callback"
             "?api%5Fkey=synthetic-percent-secret"
@@ -2618,6 +2650,35 @@ def test_public_text_redacts_pgpass_password_records(value: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        "PGPASSWORD=synthetic-postgres-password",
+        "pgpassword=synthetic-lowercase-postgres-password",
+        '{"PGPASSWORD":"synthetic-json-postgres-password"}',
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-password"}'
+        ),
+        "PGPASSWORD%3Dsynthetic-percent-postgres-password",
+        json.dumps(
+            {
+                "wrapped": (
+                    "PGPASSWORD%253Dsynthetic-nested-postgres-password"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_postgres_password_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
         "tool --password\tsynthetic-tab-cli-secret",
@@ -2918,6 +2979,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "pypi-short",
         "pypi-<redacted>",
         "pypi-" + ("A" * 84),
+        "1234567:" + ("A" * 35),
+        "123456789:" + ("A" * 34),
+        "123456789:" + ("A" * 36),
+        "123456789:<redacted>",
         f"SG.{'A' * 21}.{'B' * 43}",
         f"SG.{'A' * 22}.{'B' * 42}",
         f"SG.{'A' * 22}.{'B' * 44}",
@@ -2993,6 +3058,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             "?code=&state=public-state"
         ),
         "C++ form parsing documentation.",
+        "PGPASSWORD_HINT=use-the-local-prompt",
+        "PGPASSWORD_FILE=relative.pgpass",
+        "Document PGPASSWORD handling without assigning it.",
         "_author=Jenn",
         "_authorship=public",
         "public key: synthetic-public-value",
