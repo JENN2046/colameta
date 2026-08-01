@@ -436,6 +436,49 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
 
 
 @pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-summary-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-summary-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-summary-secret"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_whitespace_delimited_netrc_passwords(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
     ("data", "params", "expected_outcome", "expected_error"),
     [
         (

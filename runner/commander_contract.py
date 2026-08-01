@@ -766,6 +766,16 @@ _SENSITIVE_CLI_OPTION_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
     r"[ \t]+(?!-)[^\s,;]+"
 )
+_NETRC_ENTRY_START_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:"
+    r"machine[ \t\r\n]+[^\s#]+"
+    r"|default"
+    r")(?![A-Za-z0-9_])"
+)
+_NETRC_PASSWORD_FIELD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:password|passwd)"
+    r"[ \t\r\n]+[^\s#]+"
+)
 _ASSIGNMENT_KEY_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])"
     r"(?:"
@@ -4163,6 +4173,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
         or _contains_sensitive_cli_option_credential(value)
+        or _contains_netrc_password_credential(value)
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
@@ -4267,11 +4278,32 @@ def _contains_sensitive_cli_option_credential(value: str) -> bool:
     )
 
 
+def _contains_netrc_password_credential(value: str) -> bool:
+    entry_start: re.Match[str] | None = None
+    for next_entry_start in _NETRC_ENTRY_START_RE.finditer(value):
+        if entry_start is not None and _NETRC_PASSWORD_FIELD_RE.search(
+            value,
+            entry_start.end(),
+            next_entry_start.start(),
+        ):
+            return True
+        entry_start = next_entry_start
+    if entry_start is not None:
+        if _NETRC_PASSWORD_FIELD_RE.search(
+            value,
+            entry_start.end(),
+            len(value),
+        ):
+            return True
+    return False
+
+
 def _redact_sensitive_material(value: str) -> str:
     if (
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_netrc_password_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)

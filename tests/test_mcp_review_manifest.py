@@ -2073,6 +2073,27 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 )
             }
         ),
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-manifest-secret"
+        ),
+        (
+            "machine example.com\n"
+            "  login alice\n"
+            "  password synthetic-multiline-netrc-manifest-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-manifest-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-manifest-secret"
+                )
+            }
+        ),
         "redis://cache:synthetic-password@cache.example/0",
         "//cache:synthetic-relative-password@cache.example/0",
         (

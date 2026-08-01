@@ -1852,6 +1852,42 @@ def test_public_text_redacts_separator_prefixed_sensitive_assignments(
 @pytest.mark.parametrize(
     "value",
     [
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-secret"
+        ),
+        (
+            "machine example.com\n"
+            "  login alice\n"
+            "  password synthetic-multiline-netrc-secret"
+        ),
+        "default login alice passwd synthetic-default-netrc-secret",
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-secret"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_whitespace_delimited_netrc_passwords(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
         "tool --password\tsynthetic-tab-cli-secret",
@@ -2032,6 +2068,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "tool --password\\u0020\\u002d\\u002dverbose",
         "tool --passphrase --prompt",
         "Use password protection for local data.",
+        "Document a netrc password prompt.",
+        "machine-readable password policy.",
+        "Use password protection for the default profile.",
         "Use a passphrase prompt.",
         "PuTTY-User-Key-File-3 ssh-ed25519",
         "header.payload.signature",

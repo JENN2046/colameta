@@ -769,6 +769,27 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-artifact-secret"
+        ),
+        (
+            "machine example.com\n"
+            "  login alice\n"
+            "  password synthetic-multiline-netrc-artifact-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-artifact-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-artifact-secret"
+                )
+            }
+        ),
         "https://alice:synthetic-password@example.com/repo",
         "postgresql://dbuser:synthetic-db-password@db.example/app",
         "//alice:synthetic-relative-password@example.com/repo",
