@@ -788,6 +788,19 @@ _SENSITIVE_CLI_OPTION_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
     r"[ \t]+(?!-)[^\s,;]+"
 )
+_CURL_USER_PASSWORD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"-u(?:[ \t]+|=)?"
+    r"|--user(?:[ \t]+|=)"
+    r")"
+    r"(?:"
+    r'"[^:\s"<>]{0,512}:[^\s"<>]{1,2048}"'
+    r"|'[^:\s'<>]{0,512}:[^\s'<>]{1,2048}'"
+    r"|[^:\s\"'<>]{0,512}:[^\s\"'<>]{1,2048}"
+    r")"
+)
 _NETRC_ENTRY_START_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])(?:"
     r"machine[ \t\r\n]+[^\s#]+"
@@ -4232,6 +4245,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
         or _contains_sensitive_cli_option_credential(value)
+        or _CURL_USER_PASSWORD_RE.search(value)
         or _contains_netrc_password_credential(value)
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
@@ -4245,51 +4259,69 @@ def _matches_sensitive_material(value: str) -> bool:
 
 
 def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
-    return any(
-        _matches_sensitive_material(candidate)
-        for candidate in _sensitive_material_decoded_candidates(value)
-    )
+    """Scan a bounded decode closure and fail closed on real exhaustion.
 
+    Each round applies canonical URL and JSON decoding.  Their state budgets
+    are counted independently so unrelated legal escapes cannot consume a
+    deep percent-decoding chain's allowance.  The preserved backslash
+    candidate is checked as well so JSON string boundaries cannot hide a
+    credential.  Work remains linear in the public value and either decoder
+    fails closed before accepting a seventeenth state.
+    """
 
-def _sensitive_material_decoded_candidates(
-    value: str,
-) -> Iterable[str]:
-    """Yield a bounded closure of JSON- and URL-decoded candidates."""
-
-    candidates = [value]
-    seen = {value}
-    cursor = 0
-    while (
-        cursor < len(candidates)
-        and len(seen) < _COMMANDER_DECODED_CANDIDATE_MAX_STATES
-    ):
-        candidate = candidates[cursor]
-        cursor += 1
+    candidate = value
+    percent_state_count = 1
+    json_state_count = 1
+    while True:
+        decoded = candidate
+        changed = False
         if "%" in candidate:
             percent_decoded = unquote(candidate)
             if (
                 percent_decoded != candidate
-                and percent_decoded not in seen
+                and _matches_sensitive_material(percent_decoded)
             ):
-                seen.add(percent_decoded)
-                candidates.append(percent_decoded)
-                yield percent_decoded
+                return True
+            if percent_decoded != candidate:
                 if (
-                    len(seen)
+                    percent_state_count
                     >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES
                 ):
-                    return
-        decoded_candidates: Iterable[str] = ()
-        if "\\" in candidate:
-            decoded_candidates = _json_escape_decoded_candidates(candidate)
-        for decoded in decoded_candidates:
-            if decoded in seen:
-                continue
-            seen.add(decoded)
-            candidates.append(decoded)
-            yield decoded
-            if len(seen) >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES:
-                return
+                    return True
+                decoded = percent_decoded
+                percent_state_count += 1
+                changed = True
+        if "\\" in decoded:
+            preserved_backslashes = _decode_json_escapes_with_stack(
+                decoded,
+                collapse_escaped_backslashes=False,
+            )
+            if (
+                preserved_backslashes != decoded
+                and _matches_sensitive_material(preserved_backslashes)
+            ):
+                return True
+            json_decoded = _decode_json_escapes_with_stack(
+                decoded,
+                collapse_escaped_backslashes=True,
+            )
+            if (
+                json_decoded != decoded
+                and _matches_sensitive_material(json_decoded)
+            ):
+                return True
+            if json_decoded != decoded:
+                if (
+                    json_state_count
+                    >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES
+                ):
+                    return True
+                decoded = json_decoded
+                json_state_count += 1
+                changed = True
+        if not changed or decoded == candidate:
+            return False
+        candidate = decoded
 
 
 def _is_basic_authorization_credential(match: re.Match[str]) -> bool:
@@ -4423,6 +4455,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
         or _contains_netrc_password_credential(value)
+        or _CURL_USER_PASSWORD_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)

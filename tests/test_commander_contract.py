@@ -23,6 +23,18 @@ from runner.commander_contract import (
 from runner.mcp_commander_public import COMMANDER_EXPOSED_TOOLS
 
 
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
 ARTIFACT_ID = "artifact_handle_1234567890"
 MANIFEST_ID = "manifest_handle_1234567890"
 PREVIEW_ID = "preview_handle_1234567890"
@@ -100,6 +112,20 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
     SYNTHETIC_OPENAI_PROJECT_KEY.replace(
         "sk-proj-",
         "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-secret",
+        16,
     )
 )
 
@@ -2035,6 +2061,24 @@ def test_public_text_redacts_percent_encoded_sensitive_key_assignments(
     assert "synthetic-" not in public
 
 
+def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(
+) -> None:
+    assert (
+        commander_public_text(MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE)
+        == MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE
+    )
+    assert (
+        commander_public_text(EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE)
+        == "<sensitive>"
+    )
+    assert (
+        commander_public_text(
+            EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT
+        )
+        == "<sensitive>"
+    )
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -2305,6 +2349,62 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "curl -u alice:synthetic-curl-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user alice:synthetic-long-curl-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -ualice:synthetic-attached-curl-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -u 'alice:synthetic-quoted-curl-password' "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020-u\\u0020alice\\u003a'
+            'synthetic-encoded-curl-password https:\\/\\/example.invalid"}'
+        ),
+        (
+            "curl%20--user%20alice%3A"
+            "synthetic-percent-curl-password%20"
+            "https%3A%2F%2Fexample.invalid"
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "command": (
+                            "curl\\u0020--user\\u003dalice\\u003a"
+                            "synthetic-nested-curl-password "
+                            "https:\\/\\/example.invalid"
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_curl_user_password_options(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
     ("value", "secret_fragment"),
     [
         (
@@ -2448,6 +2548,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "https://example.com/archive/user:note@v1",
         "mailto:alice@example.com",
         "tool --username alice --region us-east-1",
+        "tool --user alice:note",
+        "curl --user alice https://example.invalid",
+        "curl --user alice@example.invalid https://example.invalid",
+        "curl --user <user:password> https://example.invalid",
+        "curl --help all",
+        "curl -u",
         "tool --password --verbose",
         "tool --password\\u0020\\u002d\\u002dverbose",
         "tool --passphrase --prompt",

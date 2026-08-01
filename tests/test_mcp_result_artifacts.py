@@ -17,6 +17,19 @@ from runner.mcp_server import (
     MCPPlanningBridgeServer,
 )
 
+
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
 SYNTHETIC_JWT = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
     "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
@@ -81,6 +94,20 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
     SYNTHETIC_OPENAI_PROJECT_KEY.replace(
         "sk-proj-",
         "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-artifact-secret",
+        16,
     )
 )
 
@@ -422,8 +449,18 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "index_marker_short": "pypi-short",
         "index_marker_placeholder": "pypi-<redacted>",
         "index_marker_underlength": "pypi-" + ("A" * 84),
+        "max_budget_percent_encoded_safe_prose": (
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE
+        ),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
+        ),
+        "non_curl_user_option": "tool --user alice:note",
+        "curl_user_only": (
+            "curl --user alice https://example.invalid"
+        ),
+        "curl_user_placeholder": (
+            "curl --user <user:password> https://example.invalid"
         ),
         "sensitive_flag_without_value": "tool --password --verbose",
         "escaped_sensitive_flag_without_value": (
@@ -1038,6 +1075,30 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
+        (
+            "curl -u alice:synthetic-curl-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-artifact-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-ualice%3A"
+                    "synthetic-nested-curl-artifact-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
+        EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
         (
             '{"command":"tool --api-key\\u0020'
             'synthetic-encoded-space-cli-secret"}'

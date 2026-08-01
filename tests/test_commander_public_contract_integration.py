@@ -20,6 +20,18 @@ from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
 
 
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
 PROJECT_NAME = "colameta-self-dev"
 GIT_HEAD = "a" * 40
 PLAN_SHA256 = "b" * 64
@@ -88,6 +100,20 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
     SYNTHETIC_OPENAI_PROJECT_KEY.replace(
         "sk-proj-",
         "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-summary-secret",
+        16,
     )
 )
 
@@ -696,6 +722,91 @@ def test_projection_redacts_standalone_provider_access_tokens(
     ],
 )
 def test_projection_redacts_percent_encoded_sensitive_key_assignments(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE,
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE,
+        ),
+        (EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE, "<sensitive>"),
+        (
+            EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
+            "<sensitive>",
+        ),
+    ],
+)
+def test_projection_fails_closed_only_when_decode_budget_is_exhausted(
+    summary: str,
+    expected: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == expected
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "curl -u alice:synthetic-curl-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-summary-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-u%20alice%3A"
+                    "synthetic-nested-curl-summary-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_curl_user_password_options(
     summary: str,
 ) -> None:
     contract = _assert_contract(

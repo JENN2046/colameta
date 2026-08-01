@@ -40,6 +40,19 @@ from runner.review_manifest_validation import (
     manifest_validation_contract_from_artifact,
 )
 
+
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
 SYNTHETIC_JWT = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
     "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
@@ -104,6 +117,20 @@ ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
     SYNTHETIC_OPENAI_PROJECT_KEY.replace(
         "sk-proj-",
         "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-manifest-secret",
+        16,
     )
 )
 
@@ -1231,6 +1258,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "pypi-short\n"
         "pypi-<redacted>\n"
         f"pypi-{'A' * 84}\n"
+        f"{MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE}\n"
+        "tool --user alice:note\n"
+        "curl --user alice https://example.invalid\n"
+        "curl --user <user:password> https://example.invalid\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2339,6 +2370,30 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         ),
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
+        (
+            "curl -u alice:synthetic-curl-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-manifest-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-ualice%3A"
+                    "synthetic-nested-curl-manifest-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
+        EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
         (
             '{"command":"tool --api-key\\u0020'
             'synthetic-encoded-space-cli-secret"}'
