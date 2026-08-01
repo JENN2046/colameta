@@ -38,6 +38,14 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
+SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
+    SYNTHETIC_STRIPE_SECRET_KEY.replace(
+        "sk_live_",
+        "\\u0073k_live_",
+    )
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -830,6 +838,16 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_STRIPE_SECRET_KEY,
+        SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}
                 )
             }
         ),

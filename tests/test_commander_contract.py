@@ -56,6 +56,14 @@ ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
     "AIza",
     "\\u0041Iza",
 )
+SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
+SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
+    SYNTHETIC_STRIPE_SECRET_KEY.replace(
+        "sk_live_",
+        "\\u0073k_live_",
+    )
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -1869,6 +1877,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_STRIPE_SECRET_KEY,
+        SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        (
+            "https://stripe.example.invalid/callback?key="
+            f"{SYNTHETIC_STRIPE_SECRET_KEY}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}
+                )
+            }
+        ),
         SYNTHETIC_SLACK_TOKEN,
         SYNTHETIC_SLACK_APP_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
@@ -2339,6 +2361,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "AIza-short",
         "AIza<redacted>",
         "AIza" + ("A" * 36),
+        "sk_live_short",
+        "sk_live_<redacted>",
+        "sk_live_" + ("A" * 25),
+        "rk_test_short",
+        "pk_live_" + ("A" * 24),
+        "pk_test_" + ("A" * 24),
         "xoxb-short",
         "xoxb-<redacted>",
         "xoxb-" + ("A" * 251),
