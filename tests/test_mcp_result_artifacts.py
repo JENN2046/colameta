@@ -339,6 +339,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "compact_non_json_prose": (
             "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl"
         ),
+        "separator_prefixed_safe_assignment": (
+            "_author=Jenn; _authorship=public"
+        ),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
         ),
@@ -751,6 +754,18 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        "client_secret: alpha beta gamma",
+        "password: correct horse battery staple",
+        "_auth=dXNlcjpwYXNz",
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "//registry.npmjs.org/:"
+                    "\\u005fauthToken=synthetic-nested-npm-token"
                 )
             }
         ),

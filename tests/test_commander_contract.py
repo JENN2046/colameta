@@ -589,9 +589,7 @@ def test_summary_redacts_complete_quoted_credential_values() -> None:
         },
     )
 
-    assert response["summary"] == (
-        "Connector rejected <sensitive>. Retry."
-    )
+    assert response["summary"] == "<sensitive>"
     validate_commander_response(response)
 
 
@@ -625,6 +623,7 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
             "private-key": "synthetic-private-key-value",
             "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-value",
             "passPhrase": "synthetic-passphrase-value",
+            "_auth": "synthetic-npm-auth-value",
         },
     }
 
@@ -659,6 +658,8 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
         "AWS_SECRET_ACCESS_KEY",
         "passPhrase",
         "synthetic-passphrase-value",
+        "_auth",
+        "synthetic-npm-auth-value",
         "Bearer private",
     ):
         assert forbidden not in rendered
@@ -1784,6 +1785,73 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
 @pytest.mark.parametrize(
     "value",
     [
+        "client_secret: alpha beta gamma",
+        "password: correct horse battery staple",
+        "token: alpha beta gamma # synthetic YAML comment",
+        "client_secret: >-\n  alpha beta gamma",
+        (
+            '{"yaml":"client\\u005fsecret\\u003a '
+            'alpha beta gamma"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "password\\u003a correct horse "
+                    "battery staple"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_fails_closed_for_multiword_sensitive_scalars(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    for fragment in (
+        "alpha",
+        "beta",
+        "gamma",
+        "correct",
+        "horse",
+        "battery",
+        "staple",
+    ):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "_auth=dXNlcjpwYXNz",
+        "_authToken=synthetic-npm-token",
+        "//registry.npmjs.org/:_authToken=synthetic-registry-token",
+        '{"_auth":"dXNlcjpwYXNz"}',
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "//registry.npmjs.org/:"
+                    "\\u005fauthToken=synthetic-nested-npm-token"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_separator_prefixed_sensitive_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "dXNlcjpwYXNz" not in public
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
         "tool --password\tsynthetic-tab-cli-secret",
@@ -1969,6 +2037,8 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "header.payload.signature",
         "release.v1.signature",
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl",
+        "_author=Jenn",
+        "_authorship=public",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
@@ -2185,6 +2255,8 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         "https://alice:synthetic-password@example.com/repo",
         "tool --password synthetic-cli-password",
         "passphrase=synthetic-passphrase-value",
+        "client_secret: alpha beta gamma",
+        "_auth=dXNlcjpwYXNz",
         (
             "PuTTY-User-Key-File-3: ssh-ed25519\n"
             "Private-Lines: 1\n"
@@ -2305,6 +2377,8 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
             '\\nsynthetic-encoded-putty-private-material"}'
         ),
         f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        "client_secret: alpha beta gamma",
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
@@ -2609,6 +2683,11 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "synthetic-putty-private-material"
         ),
         f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        "password: correct horse battery staple",
+        (
+            "//registry.npmjs.org/:"
+            "\\u005fauthToken=synthetic-registry-token"
+        ),
         "redis://cache:synthetic-password@cache.example/0",
         (
             '{"url":"https:\\/\\/alice:'
@@ -3257,6 +3336,8 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "passPhrase",
         "pass-phrase",
         "pass phrase",
+        "_auth",
+        ".npm_authToken",
         "oauth_authorization_code",
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",

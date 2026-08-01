@@ -120,9 +120,7 @@ def test_commander_preserves_only_valid_opaque_resource_read_continuations(tmp_p
                 "kind": "mcp_resource",
                 "tool": "resources/read",
                 "arguments": {"uri": valid_uri},
-                "reason": (
-                    f"Read {valid_uri}; compare <local-path>; <sensitive>"
-                ),
+                "reason": "<sensitive>",
             }
         ]
     }

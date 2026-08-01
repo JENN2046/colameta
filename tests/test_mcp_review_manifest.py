@@ -1151,6 +1151,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "PuTTY-User-Key-File-3 ssh-ed25519\n"
         "header.payload.signature\n"
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl\n"
+        "_author=Jenn\n"
+        "_authorship=public\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2056,6 +2058,18 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        "client_secret: alpha beta gamma",
+        "password: correct horse battery staple",
+        "_auth=dXNlcjpwYXNz",
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "//registry.npmjs.org/:"
+                    "\\u005fauthToken=synthetic-nested-npm-token"
                 )
             }
         ),

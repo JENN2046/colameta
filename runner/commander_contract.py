@@ -770,9 +770,9 @@ _ASSIGNMENT_KEY_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])"
     r"(?:"
     r"(?P<key_quote>[\"'])"
-    r"(?P<quoted_key>[A-Za-z][A-Za-z0-9_. /-]{0,127})"
+    r"(?P<quoted_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. /-]{0,127})"
     r"(?P=key_quote)"
-    r"|(?P<bare_key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127})"
     r")\s*[:=]"
 )
 _BEARER_TOKEN_RE = re.compile(
@@ -4270,6 +4270,8 @@ def _contains_sensitive_cli_option_credential(value: str) -> bool:
 def _redact_sensitive_material(value: str) -> str:
     if (
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
+        or _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _contains_forbidden_key_assignment(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
@@ -4277,9 +4279,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_sensitive_cli_option_credential(value)
     ):
         return "<sensitive>"
-    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
-    if _contains_forbidden_key_assignment(redacted):
-        return "<sensitive>"
+    redacted = value
     redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
     redacted = _redact_basic_authorization_credentials(redacted)
     if _decoded_candidate_contains_sensitive_material(value):
