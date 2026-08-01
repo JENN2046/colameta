@@ -2990,10 +2990,25 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
 def test_public_text_does_not_redact_safe_xml_prose(value: str) -> None:
     public = commander_public_text(value)
 
-    assert public != "<sensitive>"
-    assert "public-ready" in public or "synthetic-public-material" in public or (
-        "without including a body" in public
-    ) or "public-entity-status" in public
+    assert public == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<status>/home/reviewer/private.txt</status>",
+        "<status></home/reviewer/private.txt></status>",
+        "<status></status extra>",
+        "&lt;status&gt;/home/reviewer/private.txt&lt;/status&gt;",
+    ],
+)
+def test_public_text_keeps_xml_closing_tags_without_hiding_paths(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<local-path>" in public
+    assert "/home/reviewer" not in public
 
 
 @pytest.mark.parametrize(

@@ -1792,6 +1792,56 @@ def test_commander_artifact_reads_preserve_markdown_resource_link_label(
     assert json.loads(resource_page["content"]) == payload
 
 
+def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "content": (
+            "<status>public-ready</status>\n"
+            "&lt;status&gt;entity-ready&lt;/status&gt;"
+        )
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    typed_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(typed_content) == payload
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert json.loads(resource_page["content"]) == payload
+
+
 def test_commander_artifact_scan_rejects_unsafe_resource_reference_siblings(
     tmp_path,
 ) -> None:

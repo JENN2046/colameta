@@ -881,6 +881,9 @@ _XML_ELEMENT_TAG_RE = re.compile(
     r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
     r"(?=[\t\n\r />])"
 )
+_XML_CLOSING_TAG_PATH_RE = re.compile(
+    r"/[A-Za-z_][A-Za-z0-9_.:-]{0,127}"
+)
 _XML_ENTITY_RE = re.compile(
     r"&(?:"
     r"(?P<named>lt|gt|amp|quot|apos)"
@@ -3735,8 +3738,69 @@ def _posix_path_match_is_ipv6_url_path(
     )
 
 
+def _xml_entity_ending_at(
+    value: str,
+    end: int,
+    *,
+    decoded: str,
+) -> bool:
+    for match in _XML_ENTITY_RE.finditer(
+        value,
+        max(0, end - 12),
+        end,
+    ):
+        if (
+            match.end() == end
+            and _decode_xml_entities_once(match.group(0)) == decoded
+        ):
+            return True
+    return False
+
+
+def _posix_path_match_is_xml_closing_tag(
+    value: str,
+    match: re.Match[str],
+) -> bool:
+    """Distinguish a bounded XML closing tag from an absolute POSIX path."""
+
+    if not (
+        (
+            match.start() > 0
+            and value[match.start() - 1] == "<"
+        )
+        or _xml_entity_ending_at(
+            value,
+            match.start(),
+            decoded="<",
+        )
+    ):
+        return False
+    tag = _XML_CLOSING_TAG_PATH_RE.match(value, match.start())
+    if tag is None:
+        return False
+    cursor = tag.end()
+    while cursor < len(value) and value[cursor] in "\t\n\r ":
+        cursor += 1
+    if cursor < len(value) and value[cursor] == ">":
+        return match.end() == tag.end()
+    entity = _XML_ENTITY_RE.match(value, cursor)
+    if (
+        entity is None
+        or _decode_xml_entities_once(entity.group(0)) != ">"
+    ):
+        return False
+    expected_match_end = (
+        tag.end()
+        if cursor > tag.end()
+        else entity.end() - 1
+    )
+    return match.end() == expected_match_end
+
+
 def _redact_public_posix_paths(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
+        if _posix_path_match_is_xml_closing_tag(value, match):
+            return match.group(0)
         if not _posix_path_match_is_ipv6_url_path(value, match):
             return "<local-path>"
         matched = match.group(0)
@@ -3764,6 +3828,8 @@ def _redact_public_posix_paths(value: str) -> str:
 
 def _contains_public_posix_path(value: str) -> bool:
     for match in _PUBLIC_POSIX_PATH_RE.finditer(value):
+        if _posix_path_match_is_xml_closing_tag(value, match):
+            continue
         if not _posix_path_match_is_ipv6_url_path(value, match):
             return True
         matched = match.group(0)

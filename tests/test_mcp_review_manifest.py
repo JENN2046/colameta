@@ -2652,6 +2652,47 @@ def test_commander_manifest_reads_preserve_markdown_resource_link_label(
     assert resource_page["content"] == content
 
 
+def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        "<status>public-ready</status>\n"
+        "<ns:status>namespace-ready</ns:status>\n"
+        "&lt;status&gt;entity-ready&lt;/status&gt;\n"
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is True
+    assert typed["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, subject["resource_uri"])
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert resource_page["content"] == content
+
+
 @pytest.mark.parametrize(
     "unsafe_uri",
     [
