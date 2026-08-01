@@ -35,6 +35,14 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -411,6 +419,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "package_marker_short": "npm_short",
         "package_marker_placeholder": "npm_<redacted>",
         "package_marker_overlength": "npm_" + ("A" * 37),
+        "index_marker_short": "pypi-short",
+        "index_marker_placeholder": "pypi-<redacted>",
+        "index_marker_underlength": "pypi-" + ("A" * 84),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
         ),
@@ -858,6 +869,21 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        (
+            "https://upload.pypi.org/legacy/?token="
+            f"{SYNTHETIC_PYPI_API_TOKEN}"
+        ),
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
                 )
             }
         ),

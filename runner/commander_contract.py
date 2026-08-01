@@ -833,11 +833,14 @@ _STANDALONE_JWT_RE = re.compile(
     r"(?P<signature>[A-Za-z0-9_-]{8,8192})"
     r"(?![A-Za-z0-9_-])"
 )
+# PyPI's Base64URL Macaroon suffix is at least 85 characters and may grow
+# without a fixed upper bound as caveats are added.
 _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
+    r"|pypi-[A-Za-z0-9_-]{85,}(?![A-Za-z0-9_-])"
     r"|glpat-[A-Za-z0-9_-]{20}(?![A-Za-z0-9_-])"
     r"|AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9_-])"

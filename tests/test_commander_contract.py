@@ -53,6 +53,14 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1879,6 +1887,21 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        (
+            "https://upload.pypi.org/legacy/?token="
+            f"{SYNTHETIC_PYPI_API_TOKEN}"
+        ),
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         (
             "https://gitlab.example.invalid/callback?token="
@@ -2443,6 +2466,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "npm_short",
         "npm_<redacted>",
         "npm_" + ("A" * 37),
+        "pypi-short",
+        "pypi-<redacted>",
+        "pypi-" + ("A" * 84),
         "glpat-short",
         "glpat-<redacted>",
         "glpat-" + ("A" * 21),

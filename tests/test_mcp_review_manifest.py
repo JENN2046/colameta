@@ -58,6 +58,14 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -1220,6 +1228,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "npm_short\n"
         "npm_<redacted>\n"
         f"npm_{'A' * 37}\n"
+        "pypi-short\n"
+        "pypi-<redacted>\n"
+        f"pypi-{'A' * 84}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2160,6 +2171,21 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        (
+            "https://upload.pypi.org/legacy/?token="
+            f"{SYNTHETIC_PYPI_API_TOKEN}"
+        ),
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
                 )
             }
         ),

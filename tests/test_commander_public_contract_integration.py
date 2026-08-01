@@ -42,6 +42,14 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
 SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
 ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
     "glpat-",
@@ -560,6 +568,17 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_GITLAB_PAT,
         f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
         json.dumps(
@@ -639,6 +658,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
     assert "npm_" not in json.dumps(contract, ensure_ascii=False)
+    assert "pypi-" not in json.dumps(contract, ensure_ascii=False)
     assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
     assert "AIza" not in json.dumps(contract, ensure_ascii=False)
     assert "AKIA" not in json.dumps(contract, ensure_ascii=False)
