@@ -82,6 +82,11 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_DATABRICKS_PAT = "dapi" + ("a1" * 16)
+ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
+    "dapi",
+    "\\u0064api",
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -2947,6 +2952,16 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DATABRICKS_PAT,
+        SYNTHETIC_DATABRICKS_PAT.replace("dapi", "d%61pi"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DATABRICKS_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DATABRICKS_PAT}
                 )
             }
         ),

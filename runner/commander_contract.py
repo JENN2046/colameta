@@ -974,6 +974,8 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"
     r"|dop_v1_[A-Fa-f0-9]{64}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_-])dapi[A-Fa-f0-9]{32}"
+    r"(?![A-Za-z0-9_-])"
     r"|shpat_[A-Fa-f0-9]{32}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])"

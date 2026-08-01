@@ -75,6 +75,11 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_DATABRICKS_PAT = "dapi" + ("a1" * 16)
+ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
+    "dapi",
+    "\\u0064api",
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -2376,6 +2381,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_DATABRICKS_PAT,
+        (
+            "https://workspace.example.invalid/login?token="
+            f"{SYNTHETIC_DATABRICKS_PAT}"
+        ),
+        SYNTHETIC_DATABRICKS_PAT.replace("dapi", "d%61pi"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DATABRICKS_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DATABRICKS_PAT}
+                )
+            }
+        ),
         SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
         (
             "https://shop.example.invalid/admin?token="
@@ -2557,6 +2576,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "gho_" not in public
     assert "github_pat_" not in public
     assert "hf_" not in public
+    assert "dapi" not in public
     assert "dckr_pat_" not in public
     assert "shpat_" not in public
     assert "SG." not in public
@@ -3985,6 +4005,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "dop_v1_" + ("a" * 65),
         "xdop_v1_" + ("a" * 64),
         "dop_v1_" + ("g" * 64),
+        "dapi" + ("a" * 31),
+        "dapi<redacted>",
+        "dapi" + ("a" * 33),
+        "x" + SYNTHETIC_DATABRICKS_PAT,
+        SYNTHETIC_DATABRICKS_PAT + "a",
+        "dapi" + ("g" * 32),
         "shpat_" + ("a" * 31),
         "shpat_<redacted>",
         "shpat_" + ("a" * 33),
