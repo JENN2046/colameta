@@ -82,6 +82,7 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
 SYNTHETIC_SENDGRID_API_KEY = (
     f"SG.{'A' * 22}.{'B' * 43}"
 )
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
     SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
 )
@@ -1272,6 +1273,11 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "tool --user alice:note\n"
         "curl --user alice https://example.invalid\n"
         "curl --user <user:password> https://example.invalid\n"
+        "curl --proxy-user alice https://example.invalid\n"
+        "curl --proxy-user <user:password> https://example.invalid\n"
+        "curl -U\n"
+        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
+        "/subjects/1/pages/{page}\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1326,6 +1332,59 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     resource = _resource_read(server, facts["subjects"][0]["resource_uri"])
     resource_page = json.loads(resource["result"]["contents"][0]["text"])
     assert resource_page["content"] == content
+
+
+def test_commander_manifest_preserves_token_like_opaque_handles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+    )
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection = inspected["result"]["structuredContent"]
+    assert inspection["ok"] is True
+    contract = inspection["data"]
+    assert contract["evidence"]["review_manifest_id"] == TOKEN_LIKE_OPAQUE_ID
+    assert contract["evidence"]["resource_uri"] == (
+        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
+    )
+    subject_uri = contract["facts"]["subjects"][0]["resource_uri"]
+    assert subject_uri == (
+        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}/subjects/1"
+    )
+
+    typed = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": TOKEN_LIKE_OPAQUE_ID,
+            "review_manifest_subject_index": 1,
+        },
+    )
+    assert typed["result"]["structuredContent"]["ok"] is True
+    assert typed["result"]["structuredContent"]["data"]["facts"][
+        "subject_page"
+    ]["content"] == "# Review input\n\nA bounded subject.\n"
+
+    resource = _resource_read(server, subject_uri)
+    resource_page = json.loads(resource["result"]["contents"][0]["text"])
+    assert resource_page["content"] == "# Review input\n\nA bounded subject.\n"
 
 
 def test_commander_resources_read_validates_whole_subject_before_paging(
@@ -2403,8 +2462,22 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             "https://example.invalid"
         ),
         (
+            "curl -U alice:synthetic-curl-proxy-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-manifest-password "
+            "https://example.invalid"
+        ),
+        (
             '{"command":"curl\\u0020--user\\u0020alice\\u003a'
             'synthetic-encoded-curl-manifest-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-manifest-password '
             'https:\\/\\/example.invalid"}'
         ),
         json.dumps(
@@ -2412,6 +2485,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                 "wrapped": (
                     "curl%20-ualice%3A"
                     "synthetic-nested-curl-manifest-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-manifest-password%20"
                     "https%3A%2F%2Fexample.invalid"
                 )
             }

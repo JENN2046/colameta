@@ -12,6 +12,7 @@ from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
+    commander_public_opaque_id_is_allowed,
     commander_public_text,
     validate_commander_response,
 )
@@ -208,6 +209,12 @@ class CommanderPublicProjector:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
+                if commander_public_opaque_id_is_allowed(
+                    clean_key,
+                    nested,
+                ):
+                    sanitized[clean_key] = copy.deepcopy(nested)
+                    continue
                 if (
                     clean_key in COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS
                     and self._is_context_binding(nested)
@@ -669,7 +676,14 @@ class CommanderPublicProjector:
 
     def _contract_sanitize(self, value: Any) -> Any:
         if isinstance(value, dict):
-            return {str(key): self._contract_sanitize(nested) for key, nested in value.items()}
+            return {
+                str(key): (
+                    copy.deepcopy(nested)
+                    if commander_public_opaque_id_is_allowed(key, nested)
+                    else self._contract_sanitize(nested)
+                )
+                for key, nested in value.items()
+            }
         if isinstance(value, list):
             return [self._contract_sanitize(item) for item in value]
         if isinstance(value, str):

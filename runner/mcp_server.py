@@ -2813,8 +2813,48 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return False
         if not isinstance(page, dict) or not isinstance(page.get("content"), str):
             return False
+        expected_page_fields = {
+            "review_manifest_id",
+            "review_unit",
+            "subject_index",
+            "path",
+            "sha256",
+            "page",
+            "page_count",
+            "page_char_start",
+            "page_char_end",
+            "expires_at",
+            "content",
+        }
+        if set(page) != expected_page_fields:
+            return False
+        expires_at = page.get("expires_at")
+        if not isinstance(expires_at, str):
+            return False
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                expires_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if parsed_expiry.tzinfo is None:
+            return False
         page["content"] = ""
-        content_item["text"] = json.dumps(page, ensure_ascii=False)
+        # The resource page is a typed JSON envelope.  Validate its fields
+        # structurally so allowlisted opaque ID fields are not reinterpreted
+        # as free-text provider tokens merely because the envelope is
+        # serialized into MCP ``text``.
+        sanitized_page = (
+            self._commander_public_projector().sanitize_for_artifact(page)
+        )
+        if not isinstance(sanitized_page, dict):
+            return False
+        # Generic artifact projection intentionally omits timestamps.  This
+        # typed envelope requires its validated expiry for continuation.
+        sanitized_page["expires_at"] = expires_at
+        if sanitized_page != page:
+            return False
+        content_item["text"] = ""
         return self._commander_public_resource_read_safety(candidate)
 
     @staticmethod

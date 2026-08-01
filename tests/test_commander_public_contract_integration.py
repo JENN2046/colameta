@@ -41,6 +41,7 @@ ARTIFACT_ID = "artifact_contract_1234567890"
 MANIFEST_ID = "manifest_contract_1234567890"
 PREVIEW_ID = "preview_contract_1234567890"
 RUN_ID = "validation_contract_1234567890"
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 EXPIRES_AT = "2026-08-01T18:00:00+08:00"
 SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
@@ -808,8 +809,22 @@ def test_projection_fails_closed_only_when_decode_budget_is_exhausted(
             "https://example.invalid"
         ),
         (
+            "curl -U alice:synthetic-curl-proxy-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-summary-password "
+            "https://example.invalid"
+        ),
+        (
             '{"command":"curl\\u0020--user\\u0020alice\\u003a'
             'synthetic-encoded-curl-summary-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-summary-password '
             'https:\\/\\/example.invalid"}'
         ),
         json.dumps(
@@ -817,6 +832,15 @@ def test_projection_fails_closed_only_when_decode_budget_is_exhausted(
                 "wrapped": (
                     "curl%20-u%20alice%3A"
                     "synthetic-nested-curl-summary-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-summary-password%20"
                     "https%3A%2F%2Fexample.invalid"
                 )
             }
@@ -843,6 +867,31 @@ def test_projection_redacts_curl_user_password_options(
 
     assert contract["summary"] == "<sensitive>"
     assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+def test_projection_preserves_token_like_opaque_resource_uri() -> None:
+    uri = (
+        f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"
+        "/pages/{page}"
+    )
+    summary = f"Read {uri} to continue."
+
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == summary
 
 
 @pytest.mark.parametrize(

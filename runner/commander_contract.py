@@ -792,8 +792,8 @@ _CURL_USER_PASSWORD_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
     r"[^\r\n;&|]{0,4096}?"
     r"(?<![A-Za-z0-9_-])(?:"
-    r"-u(?:[ \t]+|=)?"
-    r"|--user(?:[ \t]+|=)"
+    r"-[uU](?:[ \t]+|=)?"
+    r"|--(?:proxy-)?user(?:[ \t]+|=)"
     r")"
     r"(?:"
     r'"[^:\s"<>]{0,512}:[^\s"<>]{1,2048}"'
@@ -3212,12 +3212,15 @@ def _public_value(
                 continue
             if strip_actions and normalized_key in _ACTION_CONTAINER_KEYS:
                 continue
-            public = _public_value(
-                nested,
-                depth=depth + 1,
-                strip_actions=strip_actions,
-                facts=facts,
-            )
+            if commander_public_opaque_id_is_allowed(clean_key, nested):
+                public = nested
+            else:
+                public = _public_value(
+                    nested,
+                    depth=depth + 1,
+                    strip_actions=strip_actions,
+                    facts=facts,
+                )
             if public is not _OMIT:
                 result_dict[clean_key] = public
         return result_dict
@@ -3298,6 +3301,8 @@ def _validate_public_value(
                     "INTERNAL_RESULT_INVALID",
                     "facts cannot contain nested next-action containers.",
                 )
+            if commander_public_opaque_id_is_allowed(clean_key, nested):
+                continue
             if facts and depth == 0 and normalized_key == "artifact_page":
                 if not isinstance(nested, dict):
                     raise CommanderContractError(
@@ -3391,6 +3396,25 @@ def commander_public_key_is_forbidden(
     ):
         return True
     return False
+
+
+def commander_public_opaque_id_is_allowed(
+    key: Any,
+    value: Any,
+) -> bool:
+    """Return whether a typed public handle may bypass free-text secret scans."""
+
+    if not isinstance(value, str):
+        return False
+    normalized_key = _normalize_public_key_for_match(key)
+    if normalized_key not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS:
+        return False
+    pattern = (
+        _OPAQUE_ID_RE
+        if normalized_key in {"artifact_id", "review_manifest_id"}
+        else _PREVIEW_ID_RE
+    )
+    return pattern.fullmatch(value) is not None
 
 
 def _redact_noncommander_tool_references(
@@ -4488,7 +4512,21 @@ def _redact_public_text_preserving_resource_uris(
     *,
     forbidden_tools: Iterable[str] | None,
 ) -> str:
-    value = _redact_sensitive_material(value)
+    resource_spans = list(_public_resource_uri_spans(value))
+    if not resource_spans:
+        # Preserve the historical precedence in which credentials are
+        # recognized before path or tool-name cleanup.
+        value = _redact_sensitive_material(value)
+    else:
+        masked = _mask_public_resource_uri_spans(
+            value,
+            resource_spans=resource_spans,
+        )
+        if _redact_sensitive_material(masked) != masked:
+            # The credential syntax spans a valid resource reference (for
+            # example ``Bearer <opaque-uri>``).  The reference must not make
+            # the surrounding credential context public.
+            return "<sensitive>"
     if _decoded_candidate_contains_disallowed_public_resource_uri(value):
         return _PUBLIC_RESOURCE_URI_PLACEHOLDER
     parts: list[str] = []
@@ -4511,12 +4549,46 @@ def _redact_public_text_preserving_resource_uris(
     return "".join(parts)
 
 
+def _mask_public_resource_uri_spans(
+    value: str,
+    *,
+    resource_spans: Iterable[re.Match[str]] | None = None,
+) -> str:
+    spans = (
+        list(resource_spans)
+        if resource_spans is not None
+        else list(_public_resource_uri_spans(value))
+    )
+    if not spans:
+        return value
+    parts: list[str] = []
+    cursor = 0
+    for match in spans:
+        parts.append(value[cursor : match.start()])
+        # Keep a token-shaped neutral value so authorization grammars such as
+        # ``Bearer VALUE`` still match without scanning the opaque handle.
+        parts.append("opaque_resource_reference_1234567890")
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return "".join(parts)
+
+
 def _public_text_non_resource_segments(value: str) -> Iterable[str]:
     cursor = 0
     for match in _public_resource_uri_spans(value):
         yield value[cursor : match.start()]
         cursor = match.end()
     yield value[cursor:]
+
+
+def _contains_sensitive_material_outside_resource_uris(
+    value: str,
+) -> bool:
+    masked = _mask_public_resource_uri_spans(value)
+    return bool(
+        _matches_sensitive_material(masked)
+        or _decoded_candidate_contains_sensitive_material(masked)
+    )
 
 
 def _contains_private_path(value: str) -> bool:
@@ -4587,8 +4659,7 @@ def _decoded_candidate_contains_disallowed_public_resource_uri(
 
 def _contains_unsafe_public_text(value: str) -> bool:
     return bool(
-        _matches_sensitive_material(value)
-        or _decoded_candidate_contains_sensitive_material(value)
+        _contains_sensitive_material_outside_resource_uris(value)
         or _contains_private_path(value)
         or _contains_disallowed_public_resource_uri(value)
         or _decoded_candidate_contains_disallowed_public_resource_uri(value)

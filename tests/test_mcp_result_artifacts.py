@@ -59,6 +59,7 @@ ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
 SYNTHETIC_SENDGRID_API_KEY = (
     f"SG.{'A' * 22}.{'B' * 43}"
 )
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
     SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
 )
@@ -349,9 +350,20 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
     ]
 
 
-def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(tmp_path) -> None:
+def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "runner.mcp_result_artifacts.secrets.token_urlsafe",
+        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+    )
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    token_like_uri = (
+        f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"
+        "/pages/{page}"
+    )
     payload = {
         "content": (
             f"请读取{uri}。\n"
@@ -366,6 +378,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"नमस्ते{uri}\n"
             f"مُرَاجَعَةَ{uri}\n"
             f"cafe\u0301{uri}\n"
+            f"Read {token_like_uri} to continue.\n"
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
@@ -476,6 +489,14 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "curl_user_placeholder": (
             "curl --user <user:password> https://example.invalid"
         ),
+        "curl_proxy_user_only": (
+            "curl --proxy-user alice https://example.invalid"
+        ),
+        "curl_proxy_user_placeholder": (
+            "curl --proxy-user <user:password> https://example.invalid"
+        ),
+        "curl_proxy_short_option_without_value": "curl -U",
+        "opaque_resource_uri": token_like_uri,
         "sensitive_flag_without_value": "tool --password --verbose",
         "escaped_sensitive_flag_without_value": (
             "tool --password\\u0020\\u002d\\u002dverbose"
@@ -507,6 +528,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
 
     assert handle is not None
+    assert handle.artifact_id == TOKEN_LIKE_OPAQUE_ID
     assert handle.page_count > 1
     expected_content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     pages: list[str] = []
@@ -1112,8 +1134,22 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "https://example.invalid"
         ),
         (
+            "curl -U alice:synthetic-curl-proxy-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-artifact-password "
+            "https://example.invalid"
+        ),
+        (
             '{"command":"curl\\u0020--user\\u0020alice\\u003a'
             'synthetic-encoded-curl-artifact-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-artifact-password '
             'https:\\/\\/example.invalid"}'
         ),
         json.dumps(
@@ -1121,6 +1157,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 "wrapped": (
                     "curl%20-ualice%3A"
                     "synthetic-nested-curl-artifact-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-artifact-password%20"
                     "https%3A%2F%2Fexample.invalid"
                 )
             }

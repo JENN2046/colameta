@@ -39,6 +39,7 @@ ARTIFACT_ID = "artifact_handle_1234567890"
 MANIFEST_ID = "manifest_handle_1234567890"
 PREVIEW_ID = "preview_handle_1234567890"
 RUN_ID = "validation_run_1234567890"
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 CONTENT_SHA256 = "a" * 64
 PLAN_SHA256 = "b" * 64
 GIT_HEAD = "c" * 40
@@ -1296,7 +1297,15 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
         "colameta://result-artifact/opaque_handle_123_/pages/{page}",
         "colameta://result-artifact/manage_files-opaque_123/pages/{page}",
         (
+            f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"
+            "/pages/{page}"
+        ),
+        (
             "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
             "/subjects/1/pages/{page}"
         ),
     ],
@@ -2420,6 +2429,18 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
             "https://example.invalid"
         ),
         (
+            "curl -U alice:synthetic-curl-proxy-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:synthetic-equals-proxy-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -Ualice:synthetic-attached-proxy-password "
+            "https://example.invalid"
+        ),
+        (
             "curl -ualice:synthetic-attached-curl-password "
             "https://example.invalid"
         ),
@@ -2430,6 +2451,10 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
         (
             '{"command":"curl\\u0020-u\\u0020alice\\u003a'
             'synthetic-encoded-curl-password https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-password https:\\/\\/example.invalid"}'
         ),
         (
             "curl%20--user%20alice%3A"
@@ -2446,6 +2471,15 @@ def test_public_text_redacts_whitespace_separated_sensitive_cli_options(
                             "https:\\/\\/example.invalid"
                         )
                     }
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-password%20"
+                    "https%3A%2F%2Fexample.invalid"
                 )
             }
         ),
@@ -2608,8 +2642,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "curl --user alice https://example.invalid",
         "curl --user alice@example.invalid https://example.invalid",
         "curl --user <user:password> https://example.invalid",
+        "curl --proxy-user alice https://example.invalid",
+        "curl --proxy-user <user:password> https://example.invalid",
+        "tool --proxy-user alice:note",
         "curl --help all",
         "curl -u",
+        "curl -U",
         "tool --password --verbose",
         "tool --password\\u0020\\u002d\\u002dverbose",
         "tool --passphrase --prompt",
