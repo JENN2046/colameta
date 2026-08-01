@@ -51,6 +51,13 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -375,6 +382,7 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
         TOKEN_LIKE_OPAQUE_ID,
         SYNTHETIC_DOCKER_PAT,
         SYNTHETIC_DIGITALOCEAN_TOKEN,
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
     ],
 )
 def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(
@@ -413,6 +421,13 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "relative_value": "safe\\/relative.txt",
         "fraction": "1\\/2",
         "url": "https:\\/\\/example.com",
+        "scheme_relative_url": "//example.test/docs/page",
+        "escaped_scheme_relative_url": (
+            "\\/\\/example.test\\/docs\\/page"
+        ),
+        "nested_scheme_relative_url": json.dumps(
+            {"url": "//example.test/docs/page"}
+        ),
         "escaped_space_suffix": f"{uri}\\u0020Next",
         "serialized_escaped_space_suffix": json.dumps(
             {"note": f"{uri}\\u0020Next"}
@@ -507,6 +522,11 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "digitalocean_marker_overlength": "dop_v1_" + ("a" * 65),
         "digitalocean_marker_prefixed": "xdop_v1_" + ("a" * 64),
         "digitalocean_marker_nonhex": "dop_v1_" + ("g" * 64),
+        "shopify_marker_underlength": "shpat_" + ("a" * 31),
+        "shopify_marker_placeholder": "shpat_<redacted>",
+        "shopify_marker_overlength": "shpat_" + ("a" * 33),
+        "shopify_marker_prefixed": "xshpat_" + ("a" * 32),
+        "shopify_marker_nonhex": "shpat_" + ("g" * 32),
         "index_marker_short": "pypi-short",
         "index_marker_placeholder": "pypi-<redacted>",
         "index_marker_underlength": "pypi-" + ("A" * 84),
@@ -1011,6 +1031,20 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
                 )
             }
         ),
@@ -1798,6 +1832,153 @@ def test_commander_result_artifact_reads_bind_returned_bytes_to_preflight(
         == "evidence_unavailable"
     )
     assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "replacement_tool",
+    [
+        "oauth_token=synthetic-artifact-tool-secret",
+        "/home/reviewer/private-artifact-tool",
+        "manage_files",
+    ],
+)
+def test_commander_result_artifact_reads_bind_returned_tool_to_preflight(
+    tmp_path,
+    monkeypatch,
+    replacement_tool: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": "safe stored artifact"},
+    )
+
+    assert handle is not None
+    original_read_page = server._mcp_result_artifact_store.read_page
+    stored_page = original_read_page(handle.artifact_id, 1)
+    assert stored_page is not None
+    assert (
+        server._commander_public_result_artifact_safety(
+            handle.artifact_id
+        )
+        is True
+    )
+    replacement_page = replace(
+        stored_page,
+        tool=replacement_tool,
+    )
+
+    def read_replaced_page(
+        artifact_id: str,
+        page: int = 1,
+    ):
+        if artifact_id == handle.artifact_id and page == 1:
+            return replacement_page
+        return original_read_page(artifact_id, page)
+
+    monkeypatch.setattr(
+        server._mcp_result_artifact_store,
+        "read_page",
+        read_replaced_page,
+    )
+
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert replacement_tool not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert replacement_tool not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_tool",
+    [
+        "oauth_token=synthetic-stored-tool-secret",
+        "/home/reviewer/private-stored-tool",
+        "manage_files",
+    ],
+)
+def test_commander_result_artifact_reads_reject_unsafe_stored_tools(
+    tmp_path,
+    unsafe_tool: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool=unsafe_tool,
+        payload={"content": "safe stored artifact"},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert unsafe_tool not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert unsafe_tool not in json.dumps(
         resource,
         ensure_ascii=False,
     )

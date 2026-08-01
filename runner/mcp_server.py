@@ -1059,6 +1059,7 @@ class MCPToolInputError(Exception):
 @dataclass(frozen=True)
 class _CommanderResultArtifactPageBinding:
     artifact_id: str
+    tool: str
     page: int
     page_count: int
     page_char_start: int
@@ -1070,6 +1071,7 @@ class _CommanderResultArtifactPageBinding:
     def as_projection_binding(self) -> dict[str, Any]:
         return {
             "artifact_id": self.artifact_id,
+            "tool": self.tool,
             "page": self.page,
             "page_count": self.page_count,
             "page_char_start": self.page_char_start,
@@ -2539,6 +2541,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 if (
                     page is None
                     or page.artifact_id != artifact_id
+                    or page.tool != first.tool
                     or page.page != page_number
                     or page.content_sha256 != first.content_sha256
                     or page.page_count != first.page_count
@@ -2551,6 +2554,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 page_bindings.append(
                     _CommanderResultArtifactPageBinding(
                         artifact_id=artifact_id,
+                        tool=page.tool,
                         page=page_number,
                         page_count=page.page_count,
                         page_char_start=page.page_char_start,

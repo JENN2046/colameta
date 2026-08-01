@@ -66,6 +66,13 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -1000,6 +1007,51 @@ def test_public_text_preserves_url_schemes_and_labeled_relative_paths(
 @pytest.mark.parametrize(
     "value",
     [
+        "//example.test/docs/page",
+        "//cdn.example.test:8443/assets/app.js",
+        "//localhost:8080/docs/page",
+        "//[2001:db8::1]/docs/page",
+        '{"url":"\\/\\/example.test\\/docs\\/page"}',
+        (
+            '{"url":"\\u002f\\u002fexample.test'
+            '\\u002fdocs\\u002fpage"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"url": "//example.test/docs/page"}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_preserves_scheme_relative_public_urls(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "//example.test/download?file=/home/jenn/private.txt",
+        "//[2001:db8::1]/download?file=/home/jenn/private.txt",
+        "//example.test/download?file=%2Fhome%2Fjenn%2Fprivate.txt",
+    ],
+)
+def test_public_text_redacts_private_paths_in_scheme_relative_url_queries(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<local-path>" in public
+    assert "home" not in public
+    assert "private.txt" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "C:/Users/Jenn/secret.txt",
         r"C:/Users\Jenn/secret.txt",
         r"C:\Users/Jenn\secret.txt",
@@ -1073,6 +1125,7 @@ def test_public_text_preserves_windows_drive_relative_paths(
         r"\\server/share\private.txt",
         "//server/share/private.txt",
         "///server/share/private.txt",
+        "///example.test/share/private.txt",
         json.dumps({"reason": r"\\server/share\private.txt"}),
         json.dumps({"reason": r"\\server\share\private.txt"}),
         json.dumps({"reason": "//server/share/private.txt"}),
@@ -1468,6 +1521,10 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
             "/pages/{page}"
         ),
         (
+            f"colameta://result-artifact/{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+            "/pages/{page}"
+        ),
+        (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
         ),
@@ -1481,6 +1538,10 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
         ),
         (
             f"colameta://review-manifest/{SYNTHETIC_DIGITALOCEAN_TOKEN}"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            f"colameta://review-manifest/{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
             "/subjects/1/pages/{page}"
         ),
     ],
@@ -2214,6 +2275,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         (
             "https://registry.npmjs.org/callback?token="
@@ -2360,6 +2435,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "github_pat_" not in public
     assert "hf_" not in public
     assert "dckr_pat_" not in public
+    assert "shpat_" not in public
     assert "SG." not in public
 
 
@@ -3235,6 +3311,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "dop_v1_" + ("a" * 65),
         "xdop_v1_" + ("a" * 64),
         "dop_v1_" + ("g" * 64),
+        "shpat_" + ("a" * 31),
+        "shpat_<redacted>",
+        "shpat_" + ("a" * 33),
+        "xshpat_" + ("a" * 32),
+        "shpat_" + ("g" * 32),
         "npm_short",
         "npm_<redacted>",
         "npm_" + ("A" * 37),

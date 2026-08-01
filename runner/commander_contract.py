@@ -707,6 +707,11 @@ _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
 _PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/\\])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
+_PUBLIC_IPV6_URL_AUTHORITY_SUFFIX_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"\[(?=[^\]\r\n]*:)[0-9A-Fa-f:.]+\]"
+    r"(?::[0-9]{1,5})?$"
+)
 _PUBLIC_LABELED_POSIX_PATH_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])"
     r"[A-Za-z_][A-Za-z0-9_.-]{0,127}:[ \t]*"
@@ -716,8 +721,22 @@ _PUBLIC_FILE_URI_RE = re.compile(
     r"(?<![A-Za-z0-9])file:(?://(?:localhost)?/|/)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
 )
+_PUBLIC_SCHEME_RELATIVE_AUTHORITY_BODY = (
+    r"(?:"
+    r"localhost"
+    r"|(?:"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\."
+    r")+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"|\[[0-9A-Fa-f:.]+\]"
+    r")"
+    r"(?::[0-9]{1,5})?"
+)
 _PUBLIC_UNC_PATH_RE = re.compile(
-    r"(?:(?<![A-Za-z0-9\\])\\\\|(?<![A-Za-z0-9:/\\])/{2,})"
+    r"(?:(?<![A-Za-z0-9\\])\\\\|"
+    r"(?<![A-Za-z0-9:/\\])(?:/{3,}|//(?!"
+    + _PUBLIC_SCHEME_RELATIVE_AUTHORITY_BODY
+    + r"(?:[/#?]|$))))"
     r"[^\\/\s,;\]\[(){}<>\"']+[\\/][^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_WINDOWS_PATH_RE = re.compile(
@@ -893,6 +912,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"
     r"|dop_v1_[A-Fa-f0-9]{64}(?![A-Za-z0-9_])"
+    r"|shpat_[A-Fa-f0-9]{32}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])"
     r"dckr_pat_[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
@@ -3641,6 +3661,64 @@ def _summary_sentence_count(value: str) -> int:
     return max(1, count)
 
 
+def _posix_path_match_is_ipv6_url_path(
+    value: str,
+    match: re.Match[str],
+) -> bool:
+    return (
+        _PUBLIC_IPV6_URL_AUTHORITY_SUFFIX_RE.search(
+            value,
+            0,
+            match.start(),
+        )
+        is not None
+    )
+
+
+def _redact_public_posix_paths(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        if not _posix_path_match_is_ipv6_url_path(value, match):
+            return "<local-path>"
+        matched = match.group(0)
+        query_boundaries = [
+            index
+            for marker in "?#"
+            if (index := matched.find(marker)) >= 0
+        ]
+        if not query_boundaries:
+            return matched
+        boundary = min(query_boundaries)
+        return (
+            matched[:boundary]
+            + _PUBLIC_POSIX_PATH_RE.sub(
+                "<local-path>",
+                matched[boundary:],
+            )
+        )
+
+    return _PUBLIC_POSIX_PATH_RE.sub(
+        replace,
+        value,
+    )
+
+
+def _contains_public_posix_path(value: str) -> bool:
+    for match in _PUBLIC_POSIX_PATH_RE.finditer(value):
+        if not _posix_path_match_is_ipv6_url_path(value, match):
+            return True
+        matched = match.group(0)
+        query_boundaries = [
+            index
+            for marker in "?#"
+            if (index := matched.find(marker)) >= 0
+        ]
+        if query_boundaries and _PUBLIC_POSIX_PATH_RE.search(
+            matched[min(query_boundaries) :]
+        ):
+            return True
+    return False
+
+
 def _redact_public_path_segment_once(value: str) -> str:
     redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
     redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
@@ -3648,7 +3726,7 @@ def _redact_public_path_segment_once(value: str) -> str:
         "<local-path>",
         redacted,
     )
-    redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
+    redacted = _redact_public_posix_paths(redacted)
     redacted = _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.sub(
         "<local-path>",
         redacted,
@@ -3665,7 +3743,7 @@ def _segment_contains_private_path(value: str) -> bool:
         _PUBLIC_FILE_URI_RE.search(value)
         or _PUBLIC_UNC_PATH_RE.search(value)
         or _PUBLIC_LABELED_POSIX_PATH_RE.search(value)
-        or _PUBLIC_POSIX_PATH_RE.search(value)
+        or _contains_public_posix_path(value)
         or _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_PATH_RE.search(value)

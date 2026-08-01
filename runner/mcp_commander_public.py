@@ -76,9 +76,26 @@ COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
 )
 
 
+def _commander_result_artifact_tool_is_public(value: Any) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return False
+    return (
+        commander_public_text(
+            value,
+            max_chars=128,
+            forbidden_tools=(
+                COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
+            ),
+        )
+        == value
+    )
+
+
 def commander_result_artifact_page_matches_binding(
     page: dict[str, Any],
     binding: dict[str, Any] | None,
+    *,
+    projected_tool: str | None = None,
 ) -> bool:
     if not isinstance(binding, dict):
         return False
@@ -101,6 +118,18 @@ def commander_result_artifact_page_matches_binding(
         or not isinstance(page_content_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", page_content_sha256)
         is None
+    ):
+        return False
+    page_tool = page.get("tool")
+    bound_tool = binding.get("tool")
+    if not (
+        _commander_result_artifact_tool_is_public(page_tool)
+        and _commander_result_artifact_tool_is_public(bound_tool)
+    ):
+        return False
+    if page_tool != bound_tool and not (
+        projected_tool in COMMANDER_EXPOSED_TOOLS
+        and page_tool == projected_tool
     ):
         return False
     for field in (
@@ -395,6 +424,7 @@ class CommanderPublicProjector:
                 and not commander_result_artifact_page_matches_binding(
                     contract_artifact_page,
                     exact_result_artifact_page_binding,
+                    projected_tool=tool_name,
                 )
             ):
                 return self._wrap_commander_contract(
@@ -587,6 +617,7 @@ class CommanderPublicProjector:
                     and not commander_result_artifact_page_matches_binding(
                         raw_page,
                         exact_result_artifact_page_binding,
+                        projected_tool=tool_name,
                     )
                 ):
                     return self._wrap_commander_contract(

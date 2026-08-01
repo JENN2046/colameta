@@ -55,6 +55,13 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -699,6 +706,20 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_NPM_ACCESS_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
         json.dumps(
@@ -1099,9 +1120,21 @@ def test_projection_redacts_curl_user_password_options(
             '\\u005csummary-secret.txt"}',
             "<local-path>",
         ),
+        (
+            "//example.test/docs/page",
+            "//example.test/docs/page",
+        ),
+        (
+            '{"url":"\\u002f\\u002fexample.test'
+            '\\u002fdocs\\u002fpage"}',
+            (
+                '{"url":"\\u002f\\u002fexample.test'
+                '\\u002fdocs\\u002fpage"}'
+            ),
+        ),
     ],
 )
-def test_projection_redacts_curl_certificate_and_encoded_path_evidence(
+def test_projection_handles_curl_certificate_path_and_scheme_relative_evidence(
     summary: str,
     expected: str,
 ) -> None:

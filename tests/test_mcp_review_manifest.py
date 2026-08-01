@@ -73,6 +73,13 @@ ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
         "\\u0064op_v1_",
     )
 )
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
 ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
@@ -1372,6 +1379,7 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         TOKEN_LIKE_OPAQUE_ID,
         SYNTHETIC_DOCKER_PAT,
         SYNTHETIC_DIGITALOCEAN_TOKEN,
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
     ],
 )
 def test_commander_manifest_preserves_token_like_opaque_handles(
@@ -1384,6 +1392,16 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
         lambda _length: token_like_opaque_id,
     )
     project = _make_git_checkout(tmp_path)
+    content = (
+        "# Review input\n\n"
+        "A bounded subject.\n\n"
+        "//example.test/docs/page\n"
+        '{"url":"\\/\\/example.test\\/docs\\/page"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
     server = MCPPlanningBridgeServer(
         str(project),
         exposure_profile="commander",
@@ -1442,11 +1460,11 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
     assert typed["result"]["structuredContent"]["ok"] is True
     assert typed["result"]["structuredContent"]["data"]["facts"][
         "subject_page"
-    ]["content"] == "# Review input\n\nA bounded subject.\n"
+    ]["content"] == content
 
     resource = _resource_read(server, subject_uri)
     resource_page = json.loads(resource["result"]["contents"][0]["text"])
-    assert resource_page["content"] == "# Review input\n\nA bounded subject.\n"
+    assert resource_page["content"] == content
 
 
 @pytest.mark.parametrize(
@@ -2601,6 +2619,20 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
                 )
             }
         ),
