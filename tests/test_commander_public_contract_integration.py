@@ -762,6 +762,46 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
 
 
 @pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-summary-secret"
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-summary-password"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-summary-code"
+            "&state=synthetic-oauth-summary-state"
+        ),
+    ],
+)
+def test_projection_redacts_form_pgpass_and_oauth_credentials(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
     ("summary", "expected"),
     [
         (

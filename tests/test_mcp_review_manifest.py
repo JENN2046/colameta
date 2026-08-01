@@ -2599,6 +2599,35 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             }
         ),
         (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-manifest-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00252Bkey='
+            'synthetic-encoded-form-manifest-secret"}'
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-manifest-code"
+            "&state=synthetic-oauth-manifest-state"
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-encoded-oauth-manifest-code'
+            '\\u0026state\\u003d'
+            'synthetic-encoded-oauth-manifest-state"}'
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-manifest-password"
+        ),
+        (
+            '{"pgpass":"localhost\\u003a5432\\u003amydb'
+            '\\u003aalice\\u003a'
+            'synthetic-encoded-pgpass-manifest-password"}'
+        ),
+        (
             "machine example.com login alice "
             "password synthetic-netrc-manifest-secret"
         ),

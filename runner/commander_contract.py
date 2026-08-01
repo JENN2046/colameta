@@ -18,7 +18,7 @@ import math
 import re
 import unicodedata
 from typing import Any, Iterable
-from urllib.parse import unquote
+from urllib.parse import unquote, unquote_plus
 
 from runner.project_context_binding import (
     BASE_CONTEXT_BINDING_FIELDS,
@@ -870,9 +870,23 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"[A-Za-z0-9_-]{20,256}(?![A-Za-z0-9_-])"
     r")"
 )
-_AZURE_SAS_URL_CANDIDATE_RE = re.compile(
+_PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
     r"[^\s\"'<>]{1,8192}"
+)
+_FORM_URLENCODED_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.%+-])"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.%+-]{0,255})"
+    r"=(?P<value>[^&\s\"'<>]{1,8192})"
+)
+_PGPASS_RECORD_RE = re.compile(
+    r"(?m)(?:^|(?<=[\r\n\"']))[ \t]*(?!#)"
+    r"(?P<host>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<port>\*|[0-9]{1,5}):"
+    r"(?P<database>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<username>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<password>(?:\\[\\:]|[^\\\r\n\"']){1,2048})"
+    r"(?=$|[\r\n\"'])"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -4444,6 +4458,9 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _contains_sensitive_form_urlencoded_assignment(value)
+        or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
@@ -4571,8 +4588,43 @@ def _contains_standalone_jwt(value: str) -> bool:
     )
 
 
+def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
+    for match in _FORM_URLENCODED_ASSIGNMENT_RE.finditer(value):
+        encoded_key = match.group("key")
+        if "+" not in encoded_key and "%" not in encoded_key:
+            continue
+        decoded_key = unquote_plus(encoded_key)
+        if commander_public_key_is_forbidden(decoded_key):
+            return True
+    return False
+
+
+def _contains_pgpass_password_record(value: str) -> bool:
+    return _PGPASS_RECORD_RE.search(value) is not None
+
+
+def _contains_oauth_authorization_code_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        has_code = False
+        has_state = False
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            has_code = has_code or normalized_key == "code"
+            has_state = has_state or normalized_key == "state"
+            if has_code and has_state:
+                return True
+    return False
+
+
 def _contains_azure_sas_signature_query(value: str) -> bool:
-    for match in _AZURE_SAS_URL_CANDIDATE_RE.finditer(value):
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
         _, separator, query_and_fragment = match.group(0).partition("?")
         if not separator:
             continue
@@ -4583,7 +4635,7 @@ def _contains_azure_sas_signature_query(value: str) -> bool:
             key, assignment, field_value = field.partition("=")
             if not assignment or not field_value:
                 continue
-            normalized_key = key.lower()
+            normalized_key = unquote_plus(key).lower()
             has_version = has_version or normalized_key == "sv"
             has_signature = has_signature or normalized_key == "sig"
             if has_version and has_signature:
@@ -4651,6 +4703,9 @@ def _redact_sensitive_material(value: str) -> str:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _contains_sensitive_form_urlencoded_assignment(value)
+        or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)

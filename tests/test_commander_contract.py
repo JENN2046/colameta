@@ -2235,6 +2235,83 @@ def test_public_text_redacts_percent_encoded_sensitive_key_assignments(
     assert "synthetic-" not in public
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "api+key=synthetic-standalone-form-secret",
+        (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-secret"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%2Bkey=synthetic-percent-plus-form-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u002bkey=synthetic-json-plus-form-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https://provider.example.invalid/callback"
+                    "?api%252Bkey=synthetic-nested-plus-form-secret"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_form_encoded_sensitive_key_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-code&state=synthetic-oauth-state"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?state=synthetic-reordered-state"
+            "&code=synthetic-reordered-code"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?%63ode=synthetic-percent-code"
+            "&st%61te=synthetic-percent-state"
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-json-code'
+            '\\u0026state\\u003dsynthetic-json-state"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002fclient.example.invalid/callback"
+                    "?code%253Dsynthetic-nested-code"
+                    "%2526state%253Dsynthetic-nested-state"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_oauth_authorization_code_callbacks(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
 def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(
 ) -> None:
     assert (
@@ -2497,6 +2574,41 @@ def test_public_text_redacts_separator_prefixed_sensitive_assignments(
 def test_public_text_redacts_whitespace_delimited_netrc_passwords(
     value: str,
 ) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "localhost:5432:mydb:alice:synthetic-pgpass-password",
+        "*:5432:*:alice:synthetic-wildcard-pgpass-password",
+        (
+            r"db\:primary:5432:mydb:alice:"
+            "synthetic-escaped-host-pgpass-password"
+        ),
+        (
+            '{"pgpass":"localhost:5432:mydb:alice:'
+            'synthetic-json-pgpass-password"}'
+        ),
+        (
+            '{"pgpass":"localhost\\u003a5432\\u003amydb'
+            '\\u003aalice\\u003asynthetic-encoded-pgpass-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "localhost\\u003a5432\\u003amydb"
+                    "\\u003aalice"
+                    "\\u003asynthetic-nested-pgpass-password"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_pgpass_password_records(value: str) -> None:
     public = commander_public_text(value)
 
     assert public == "<sensitive>"
@@ -2778,6 +2890,15 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "tool --passphrase --prompt",
         "Use password protection for local data.",
         "Document a netrc password prompt.",
+        (
+            "# localhost:5432:mydb:alice:"
+            "synthetic-commented-pgpass-placeholder"
+        ),
+        "localhost:5432:mydb:alice",
+        (
+            "localhost:postgres:mydb:alice:"
+            "synthetic-nonrecord-password-prose"
+        ),
         "machine-readable password policy.",
         "Use password protection for the default profile.",
         "Use a passphrase prompt.",
@@ -2847,6 +2968,31 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             "https://provider.example.invalid/callback"
             "?api%5Fkey"
         ),
+        (
+            "https://provider.example.invalid/callback"
+            "?topic=api+key"
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api+keyboard=public"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=public-code-without-state"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?state=public-state-without-code"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?error=access_denied&state=public-error-state"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=&state=public-state"
+        ),
+        "C++ form parsing documentation.",
         "_author=Jenn",
         "_authorship=public",
         "public key: synthetic-public-value",

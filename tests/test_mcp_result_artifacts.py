@@ -1128,6 +1128,35 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             }
         ),
         (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-artifact-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00252Bkey='
+            'synthetic-encoded-form-artifact-secret"}'
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-artifact-code"
+            "&state=synthetic-oauth-artifact-state"
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-encoded-oauth-artifact-code'
+            '\\u0026state\\u003d'
+            'synthetic-encoded-oauth-artifact-state"}'
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-artifact-password"
+        ),
+        (
+            '{"pgpass":"localhost\\u003a5432\\u003amydb'
+            '\\u003aalice\\u003a'
+            'synthetic-encoded-pgpass-artifact-password"}'
+        ),
+        (
             "machine example.com login alice "
             "password synthetic-netrc-artifact-secret"
         ),
