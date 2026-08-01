@@ -3348,6 +3348,19 @@ def test_public_text_redacts_database_password_assignments(
         "tool --client_secret 'synthetic quoted cli secret'",
         "tool --AWS_SECRET_ACCESS_KEY synthetic-aws-cli-secret",
         (
+            'curl --oauth2-bearer "syntheticBearerToken123" '
+            "https://example.test"
+        ),
+        (
+            "curl --oauth2-bearer 'synthetic-single-quoted-bearer' "
+            "https://example.test"
+        ),
+        (
+            '{"command":"curl --oauth2-bearer\\u0020'
+            '\\"synthetic-encoded-oauth2-bearer\\" '
+            'https:\\/\\/example.test"}'
+        ),
+        (
             '{"command":"tool --api-key\\u0020'
             'synthetic-encoded-space-cli-secret"}'
         ),
@@ -3831,6 +3844,8 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "curl --help all",
         "curl -u",
         "curl -U",
+        "curl --oauth2-bearer",
+        "Document the OAuth2 bearer option.",
         "tool --password --verbose",
         "tool --password\\u0020\\u002d\\u002dverbose",
         "tool --passphrase --prompt",
@@ -5272,6 +5287,8 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
     "unsafe_key",
     [
         "oauth_token",
+        "oauth2_bearer",
+        "oauth2-bearer",
         "id_token",
         "client_secret",
         "client-secret",

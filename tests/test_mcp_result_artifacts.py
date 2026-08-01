@@ -1345,6 +1345,10 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
         (
+            'curl --oauth2-bearer "synthetic-artifact-bearer-token" '
+            "https://example.test"
+        ),
+        (
             "curl -u alice:synthetic-curl-artifact-password "
             "https://example.invalid"
         ),

@@ -3181,6 +3181,10 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         "--password synthetic-cli-password",
         "tool --api-key synthetic-cli-secret --verbose",
         (
+            'curl --oauth2-bearer "synthetic-manifest-bearer-token" '
+            "https://example.test"
+        ),
+        (
             "curl -u alice:synthetic-curl-manifest-password "
             "https://example.invalid"
         ),

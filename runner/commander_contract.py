@@ -340,6 +340,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "operator_confirmation_ref",
         "oauth_access_token",
         "oauth_authorization_code",
+        "oauth2_bearer",
         "oauth_code",
         "oauth_token",
         "oauth_refresh_token",
