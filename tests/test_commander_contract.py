@@ -745,6 +745,7 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
             "access_token": "private-access-token",
             "cookie": "private-cookie",
             "apiKey": "synthetic-secret-value",
+            "client-key-data": "synthetic-kube-client-key-data",
             "private-key": "synthetic-private-key-value",
             "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-value",
             "passPhrase": "synthetic-passphrase-value",
@@ -779,6 +780,8 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
         "access_token",
         "cookie",
         "apiKey",
+        "client-key-data",
+        "synthetic-kube-client-key-data",
         "private-key",
         "AWS_SECRET_ACCESS_KEY",
         "passPhrase",
@@ -2817,6 +2820,22 @@ def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(
         "apikey=synthetic-joined-secret",
         "stripe.api-key=synthetic-dotted-secret",
         "private-key=synthetic-private-key-value",
+        (
+            "client-key-data: "
+            "c3ludGhldGljLWt1YmUtY2xpZW50LXByaXZhdGUta2V5"
+        ),
+        (
+            '{"client\\u002dkey\\u002ddata":'
+            '"synthetic-encoded-kube-client-key-data"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "client\\u002dkey\\u002ddata: "
+                    "synthetic-nested-kube-client-key-data"
+                )
+            }
+        ),
         "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
         "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
         "AWSSecretAccessKey=synthetic-camel-aws-secret",
@@ -2857,6 +2876,9 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         "synthetic-joined-secret",
         "synthetic-dotted-secret",
         "synthetic-private-key-value",
+        "c3ludGhldGljLWt1YmUtY2xpZW50LXByaXZhdGUta2V5",
+        "synthetic-encoded-kube-client-key-data",
+        "synthetic-nested-kube-client-key-data",
         "synthetic-aws-secret-value",
         "synthetic-aws-access-id",
         "synthetic-camel-aws-secret",
@@ -3756,6 +3778,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "pwd=public-relative-name",
         "_author=Jenn",
         "_authorship=public",
+        "client-certificate-data: synthetic-public-certificate",
+        "client-key-data-file: relative-client-key.pem",
+        "client-key-data-hint: use-local-agent",
+        "Document client-key-data handling without assigning it.",
         "public key: synthetic-public-value",
         "Discuss the api key rotation policy.",
     ],
@@ -5061,6 +5087,8 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "id_token",
         "client_secret",
         "client-secret",
+        "client-key-data",
+        "clientKeyData",
         "API Key",
         "apiKey",
         "apikey",

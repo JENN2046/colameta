@@ -2727,6 +2727,10 @@ def test_commander_manifest_reads_preserve_markdown_resource_link_label(
         "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
         "apiKey=delta epsilon zeta",
         "private-key=synthetic-private-key-value",
+        (
+            "client-key-data: "
+            "c3ludGhldGljLW1hbmlmZXN0LWt1YmUta2V5"
+        ),
         "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
         r'{\"apiKey\":\"synthetic-escaped-secret\"}',
         (

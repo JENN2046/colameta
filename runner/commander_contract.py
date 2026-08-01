@@ -322,6 +322,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "authorization_code",
         "authorization_header",
         "audit_id",
+        "client_key_data",
         "client_secret",
         "cookie",
         "cookies",
