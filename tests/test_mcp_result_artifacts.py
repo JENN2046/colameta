@@ -28,6 +28,11 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -802,6 +807,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_GITLAB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
                 )
             }
         ),

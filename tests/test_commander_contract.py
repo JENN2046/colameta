@@ -46,6 +46,11 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -1833,6 +1838,19 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_GITLAB_PAT,
+        (
+            "https://gitlab.example.invalid/callback?token="
+            f"{SYNTHETIC_GITLAB_PAT}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
         SYNTHETIC_SLACK_TOKEN,
         SYNTHETIC_SLACK_APP_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
@@ -2297,6 +2315,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "ghp_" + ("A1" * 17) + "A",
         "ghp_" + ("A1" * 18) + "A",
         "github_pat_<redacted>",
+        "glpat-short",
+        "glpat-<redacted>",
+        "glpat-" + ("A" * 21),
         "xoxb-short",
         "xoxb-<redacted>",
         "xoxb-" + ("A" * 251),

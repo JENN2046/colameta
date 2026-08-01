@@ -835,6 +835,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
+    r"|glpat-[A-Za-z0-9_-]{20}(?![A-Za-z0-9_-])"
     r"|xox[abprs]-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
     r"|xapp-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
     r"|sk-(?:proj-|svcacct-)?"

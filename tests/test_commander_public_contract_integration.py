@@ -35,6 +35,11 @@ ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
     "ghp_",
     "\\u0067hp_",
 )
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
@@ -518,6 +523,15 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
                 )
             }
         ),
+        SYNTHETIC_GITLAB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
         SYNTHETIC_SLACK_TOKEN,
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
         json.dumps(
@@ -558,6 +572,7 @@ def test_projection_redacts_standalone_provider_access_tokens(
 
     assert contract["summary"] == "<sensitive>"
     assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
+    assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
     assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)
     assert "sk-proj-" not in json.dumps(contract, ensure_ascii=False)
 
