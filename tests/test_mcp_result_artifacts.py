@@ -314,6 +314,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         ),
         "public_key_assignment": "publicKey=synthetic-public-value",
         "public_key_marker": "-----BEGIN PUBLIC KEY-----",
+        "pgp_public_key_marker": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+        "ordinary_url": "https://example.com/repo",
+        "username_only_url": "https://alice@example.com/repo",
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
@@ -689,6 +692,26 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         (
             '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
             '\\nsynthetic-encoded-key-material"}'
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        (
+            '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
+            '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "https://alice:synthetic-password@example.com/repo",
+        "postgresql://dbuser:synthetic-db-password@db.example/app",
+        "//alice:synthetic-relative-password@example.com/repo",
+        (
+            '{"url":"https:\\/\\/alice:'
+            'synthetic-escaped-password@example.com/repo"}'
+        ),
+        (
+            '{"url":"https:\\u002f\\u002falice\\u003a'
+            'synthetic-encoded-authority\\u0040example.com/repo"}'
         ),
         "Cookie: session=abc; csrf=def",
         (

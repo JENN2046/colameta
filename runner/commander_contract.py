@@ -778,7 +778,14 @@ _BASIC_AUTHORIZATION_RE = re.compile(
 )
 _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"(?i)-----BEGIN[ \t]+"
-    r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----"
+    r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY"
+    r"(?:[ \t]+BLOCK)?-----"
+)
+_CREDENTIAL_URI_USERINFO_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])"
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//"
+    r"[^/?#@\s:]*:[^/?#@\s]+@"
+    r"(?=[^/?#\s]+)"
 )
 
 _OMIT = object()
@@ -4137,6 +4144,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
 
@@ -4195,6 +4203,7 @@ def _redact_sensitive_material(value: str) -> str:
     if (
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _CREDENTIAL_URI_USERINFO_RE.search(value)
     ):
         return "<sensitive>"
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)

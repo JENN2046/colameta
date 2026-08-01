@@ -1124,6 +1124,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{escaped_ascii_opening_boundaries}\n"
         "publicKey=synthetic-public-value\n"
         "-----BEGIN PUBLIC KEY-----\n"
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+        "https://example.com/repo\n"
+        "https://alice@example.com/repo\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1999,6 +2002,25 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         (
             '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
             '\\nsynthetic-encoded-key-material"}'
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        (
+            '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
+            '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "redis://cache:synthetic-password@cache.example/0",
+        "//cache:synthetic-relative-password@cache.example/0",
+        (
+            '{"url":"postgresql:\\u002f\\u002fdbuser:'
+            'synthetic-db-password@db.example/app"}'
+        ),
+        (
+            '{"url":"redis:\\u002f\\u002fcache\\u003a'
+            'synthetic-encoded-authority\\u0040cache.example/0"}'
         ),
         "Cookie: session=abc; csrf=def",
         (

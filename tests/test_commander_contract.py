@@ -1734,9 +1734,16 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         "-----BEGIN OPENSSH PRIVATE KEY-----\n"
         "synthetic-openssh-key-material\n"
         "-----END OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+        "synthetic-pgp-key-material\n"
+        "-----END PGP PRIVATE KEY BLOCK-----",
         (
             '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
             '\\nsynthetic-encoded-key-material"}'
+        ),
+        (
+            '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
+            '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
         ),
     ],
 )
@@ -1747,12 +1754,56 @@ def test_public_text_redacts_private_key_blocks(value: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        "https://alice:synthetic-password@example.com/repo",
+        "postgresql://dbuser:synthetic-db-password@db.example/app",
+        (
+            "postgresql+psycopg://dbuser:"
+            "synthetic:p%40ssword@db.example/app"
+        ),
+        "https:\\/\\/alice:synthetic-escaped-password@example.com/repo",
+        "//alice:synthetic-relative-password@example.com/repo",
+        (
+            '{"url":"https:\\u002f\\u002falice:'
+            'synthetic-unicode-password@example.com/repo"}'
+        ),
+        (
+            '{"url":"https:\\u002f\\u002falice\\u003a'
+            'synthetic-encoded-authority\\u0040example.com/repo"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "redis:\\/\\/cache:"
+                    "synthetic-nested-password@cache.example/0"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_credentials_in_uri_userinfo(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "publicKey=synthetic-public-value",
         "monkey=banana",
         '{"apiVersion":"v1"}',
         "AWS_REGION=us-east-1",
         "-----BEGIN PUBLIC KEY-----",
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----",
         "-----BEGIN CERTIFICATE-----",
+        "https://example.com/repo",
+        "https://alice@example.com/repo",
+        "http://[::1]:8080/health",
+        "https://example.com/archive/user:note@v1",
+        "mailto:alice@example.com",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
@@ -1962,6 +2013,12 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "-----END PRIVATE KEY-----"
         ),
         (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        "https://alice:synthetic-password@example.com/repo",
+        (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
         ),
@@ -2053,6 +2110,16 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
             "-----BEGIN PRIVATE KEY-----\n"
             "synthetic-private-key-material\n"
             "-----END PRIVATE KEY-----"
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        "https://alice:synthetic-password@example.com/repo",
+        (
+            '{"url":"postgresql:\\u002f\\u002fdbuser:'
+            'synthetic-db-password@db.example/app"}'
         ),
         (
             "colameta://result-artifact/opaque_handle_123_"
@@ -2345,6 +2412,16 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "-----BEGIN OPENSSH PRIVATE KEY-----\n"
             "synthetic-private-key-material\n"
             "-----END OPENSSH PRIVATE KEY-----"
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        "redis://cache:synthetic-password@cache.example/0",
+        (
+            '{"url":"https:\\/\\/alice:'
+            'synthetic-escaped-password@example.com/repo"}'
         ),
         (
             "colameta://review-manifest/opaque_handle_123_"
