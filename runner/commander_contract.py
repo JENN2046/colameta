@@ -13,6 +13,7 @@ import binascii
 from bisect import bisect_right
 import copy
 from datetime import datetime
+import json
 import math
 import re
 import unicodedata
@@ -792,6 +793,13 @@ _PRIVATE_KEY_BLOCK_RE = re.compile(
 _PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])"
     r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
+)
+_STANDALONE_JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?P<header>[A-Za-z0-9_-]{8,1024})\."
+    r"(?P<payload>[A-Za-z0-9_-]{8,16384})\."
+    r"(?P<signature>[A-Za-z0-9_-]{8,8192})"
+    r"(?![A-Za-z0-9_-])"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -4159,6 +4167,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_basic_authorization_credential(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _contains_standalone_jwt(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -4189,6 +4198,43 @@ def _contains_basic_authorization_credential(value: str) -> bool:
     return any(
         _is_basic_authorization_credential(match)
         for match in _BASIC_AUTHORIZATION_RE.finditer(value)
+    )
+
+
+def _base64url_json_object(value: str) -> dict[str, Any] | None:
+    padded = value + ("=" * (-len(value) % 4))
+    try:
+        decoded = base64.b64decode(
+            padded,
+            altchars=b"-_",
+            validate=True,
+        )
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (
+        binascii.Error,
+        RecursionError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_standalone_jwt(match: re.Match[str]) -> bool:
+    header = _base64url_json_object(match.group("header"))
+    payload = _base64url_json_object(match.group("payload"))
+    return bool(
+        header is not None
+        and payload is not None
+        and isinstance(header.get("alg"), str)
+        and header["alg"].strip()
+    )
+
+
+def _contains_standalone_jwt(value: str) -> bool:
+    return any(
+        _is_standalone_jwt(match)
+        for match in _STANDALONE_JWT_RE.finditer(value)
     )
 
 
@@ -4226,6 +4272,7 @@ def _redact_sensitive_material(value: str) -> str:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _contains_standalone_jwt(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):

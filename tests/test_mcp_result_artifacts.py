@@ -17,6 +17,13 @@ from runner.mcp_server import (
     MCPPlanningBridgeServer,
 )
 
+SYNTHETIC_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
+    "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
+)
+ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+
 
 def test_result_artifact_store_pages_exact_json_and_expires() -> None:
     now = datetime(2026, 7, 22, tzinfo=timezone.utc)
@@ -327,6 +334,10 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "prompt_prose": "Use a passphrase prompt.",
         "putty_header_without_colon": (
             "PuTTY-User-Key-File-3 ssh-ed25519"
+        ),
+        "compact_placeholder": "header.payload.signature",
+        "compact_non_json_prose": (
+            "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl"
         ),
         "non_sensitive_cli_options": (
             "tool --username alice --region us-east-1"
@@ -733,6 +744,15 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
             '\\nPrivate-Lines: 1'
             '\\nsynthetic-encoded-putty-private-material"}'
+        ),
+        SYNTHETIC_JWT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
         ),
         "https://alice:synthetic-password@example.com/repo",
         "postgresql://dbuser:synthetic-db-password@db.example/app",

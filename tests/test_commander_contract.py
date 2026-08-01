@@ -31,6 +31,12 @@ CONTENT_SHA256 = "a" * 64
 PLAN_SHA256 = "b" * 64
 GIT_HEAD = "c" * 40
 EXPIRES_AT = "2026-07-30T18:00:00+08:00"
+SYNTHETIC_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
+    "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
+)
+ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
 
 
 def _base_context_binding() -> dict:
@@ -1703,6 +1709,31 @@ def test_public_text_redacts_standalone_basic_authorization_values(
 @pytest.mark.parametrize(
     "value",
     [
+        SYNTHETIC_JWT,
+        f"Provider returned {SYNTHETIC_JWT}",
+        json.dumps({"access": SYNTHETIC_JWT}),
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_structurally_valid_standalone_jwts(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert SYNTHETIC_JWT.split(".", maxsplit=1)[0] not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         '{"apiKey":"synthetic-secret-value"}',
         '{"API Key":"synthetic-spaced-secret"}',
         "apikey=synthetic-joined-secret",
@@ -1935,6 +1966,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "Use password protection for local data.",
         "Use a passphrase prompt.",
         "PuTTY-User-Key-File-3 ssh-ed25519",
+        "header.payload.signature",
+        "release.v1.signature",
+        "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
@@ -2156,6 +2190,7 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
             "Private-Lines: 1\n"
             "synthetic-putty-private-material"
         ),
+        SYNTHETIC_JWT,
         (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
@@ -2269,6 +2304,7 @@ def test_blocked_error_redacts_normalized_sensitive_key_assignments(
             '\\nPrivate-Lines: 1'
             '\\nsynthetic-encoded-putty-private-material"}'
         ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
@@ -2572,6 +2608,7 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
             "Private-Lines: 1\n"
             "synthetic-putty-private-material"
         ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
         "redis://cache:synthetic-password@cache.example/0",
         (
             '{"url":"https:\\/\\/alice:'

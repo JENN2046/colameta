@@ -40,6 +40,13 @@ from runner.review_manifest_validation import (
     manifest_validation_contract_from_artifact,
 )
 
+SYNTHETIC_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
+    "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
+)
+ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+
 
 def _make_git_checkout(
     tmp_path: Path,
@@ -1142,6 +1149,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "tool --passphrase --prompt\n"
         "Use a passphrase prompt.\n"
         "PuTTY-User-Key-File-3 ssh-ed25519\n"
+        "header.payload.signature\n"
+        "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -2040,6 +2049,15 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
             '\\nPrivate-Lines: 1'
             '\\nsynthetic-encoded-putty-private-material"}'
+        ),
+        SYNTHETIC_JWT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
         ),
         "redis://cache:synthetic-password@cache.example/0",
         "//cache:synthetic-relative-password@cache.example/0",
