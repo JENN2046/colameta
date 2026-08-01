@@ -573,6 +573,7 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
                 "/home/jenn/private.txt",
                 "/tmp/private.log",
                 r"C:\Users\Jenn\private.txt",
+                "C:/Users/Jenn/private.txt",
                 r"\\server\share\private.txt",
                 "file:///home/jenn/private.txt",
             ],
@@ -598,11 +599,12 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
     rendered = repr(response)
 
     assert response["outcome"] == "completed"
-    assert response["facts"]["paths"] == ["<local-path>"] * 5
+    assert response["facts"]["paths"] == ["<local-path>"] * 6
     for forbidden in (
         "/home/",
         "/tmp/",
         "C:\\",
+        "C:/",
         "\\\\server\\share",
         "file:///",
         "project_root",
@@ -628,6 +630,7 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
         "/home/reviewer/private.txt",
         "file:///home/reviewer/private.txt",
         r"C:\Users\Reviewer\private.txt",
+        "C:/Users/Reviewer/private.txt",
         r"\\server\share\private.txt",
     ],
 )
@@ -672,6 +675,8 @@ def test_public_text_redacts_private_paths_after_json_escaped_boundaries(
         "\\\\u002fhome/reviewer/private.txt",
         "C:\\u005cUsers\\u005cReviewer\\u005cprivate.txt",
         "C:\\u005CUsers\\u005CReviewer\\u005Cprivate.txt",
+        "C:\\u002fUsers\\u002fReviewer\\u002fprivate.txt",
+        "C:\\/Users\\/Reviewer\\/private.txt",
         "\\u005c\\u005cserver\\u005cshare\\u005cprivate.txt",
         "C:\\\\Users\\\\Reviewer\\\\private.txt",
         "\\u005cu002fhome/reviewer/private.txt",
@@ -691,6 +696,46 @@ def test_public_text_redacts_json_escaped_path_separators(
 
     assert encoded_path not in public
     assert "<local-path>" in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C:/Users/Jenn/secret.txt",
+        r"C:/Users\Jenn/secret.txt",
+        r"C:\Users/Jenn\secret.txt",
+        "c:/users/jenn/secret.txt",
+        "C:/",
+        '{"path":"C:/Users/Jenn/secret.txt"}',
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"path": "C:/Users/Jenn/secret.txt"}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_forward_slash_windows_drive_paths(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "C:/" not in public.upper()
+    assert "<local-path>" in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C:relative.txt",
+        "drive C:relative/path.txt",
+    ],
+)
+def test_public_text_preserves_windows_drive_relative_paths(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
 
 
 @pytest.mark.parametrize(
@@ -2671,6 +2716,7 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "oauth_authorization_code",
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",
+        "C:/Users/Jenn/secret.txt",
         r"\\server/share\secret.txt",
         "//server/share/secret.txt",
         "///server/share/secret.txt",

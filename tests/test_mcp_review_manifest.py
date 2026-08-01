@@ -1953,6 +1953,9 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
             '\\u005cprivate.txt"}'
         ),
+        "C:/Users/Reviewer/private.txt",
+        r"C:/Users\Reviewer/private.txt",
+        '{"reason":"C:\\u002fUsers\\u002fReviewer\\u002fprivate.txt"}',
         '{"oauth\\u005ftoken":"synthetic-secret-value"}',
         'password="alpha beta gamma"',
         r'{\"client_secret\":\"alpha beta gamma\"}',

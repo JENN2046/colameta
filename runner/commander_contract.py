@@ -697,7 +697,7 @@ _PUBLIC_UNC_PATH_RE = re.compile(
     r"[^\\/\s,;\]\[(){}<>\"']+[\\/][^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_WINDOWS_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])[^\s,;\]\[(){}<>\"']*",
     re.IGNORECASE,
 )
 _SUMMARY_SENTENCE_END_RE = re.compile(r"[。！？!?]+|\.+(?=\s|$)")
