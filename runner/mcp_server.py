@@ -2881,6 +2881,132 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         content_item["text"] = ""
         return self._commander_public_resource_read_safety(candidate)
 
+    def _commander_public_review_manifest_root_envelope_safety(
+        self,
+        resource_result: dict[str, Any],
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> bool:
+        """Bind a root summary's opaque handles to its requested resource."""
+
+        review_manifest_id, subject_index, page = parsed_review_manifest
+        if subject_index is not None or page is not None:
+            return False
+        expected_resource_uri = self._mcp_review_manifest_uri(
+            review_manifest_id
+        )
+        candidate = copy.deepcopy(resource_result)
+        contents = candidate.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if not isinstance(content_item, dict):
+            return False
+        resource_uri = content_item.get("uri")
+        serialized_summary = content_item.get("text")
+        if (
+            resource_uri != expected_resource_uri
+            or not isinstance(serialized_summary, str)
+        ):
+            return False
+        try:
+            summary = json.loads(serialized_summary)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(summary, dict):
+            return False
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return False
+        expected_summary = self._review_manifest_resource_summary(stored)
+        if summary != expected_summary:
+            return False
+        if (
+            summary.get("review_manifest_id") != review_manifest_id
+            or summary.get("manifest_resource_uri")
+            != expected_resource_uri
+        ):
+            return False
+        expires_at = summary.get("expires_at")
+        if not isinstance(expires_at, str):
+            return False
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                expires_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if parsed_expiry.tzinfo is None:
+            return False
+
+        # Mask only relation-bound standalone handle fields before applying
+        # the generic credential scan.  URI fields remain exact and continue
+        # through the ordinary opaque-resource allowlist.
+        scan_summary = copy.deepcopy(summary)
+        neutral_manifest_id = "opaque_review_manifest_handle_1234567890"
+        scan_summary["review_manifest_id"] = neutral_manifest_id
+        subjects = scan_summary.get("subjects")
+        if not isinstance(subjects, list):
+            return False
+        for expected_subject_index, subject in enumerate(
+            subjects,
+            start=1,
+        ):
+            if not isinstance(subject, dict):
+                return False
+            subject_resource_uri = subject.get("resource_uri")
+            parsed_subject_resource = (
+                self._parse_mcp_review_manifest_uri(
+                    subject_resource_uri
+                )
+                if isinstance(subject_resource_uri, str)
+                else None
+            )
+            if parsed_subject_resource != (
+                review_manifest_id,
+                expected_subject_index,
+                None,
+            ):
+                return False
+            if subject.get("page_uri_template") != (
+                f"{subject_resource_uri}/pages/{{page}}"
+            ):
+                return False
+            read_call = subject.get("read_call")
+            if (
+                not isinstance(read_call, dict)
+                or read_call.get("tool") != "run_mcp_workflow"
+            ):
+                return False
+            arguments = read_call.get("arguments")
+            if (
+                not isinstance(arguments, dict)
+                or arguments.get("workflow")
+                != REVIEW_MANIFEST_WORKFLOW
+                or arguments.get("phase") != "read"
+                or arguments.get("review_manifest_id")
+                != review_manifest_id
+                or arguments.get("review_manifest_subject_index")
+                != expected_subject_index
+                or arguments.get("review_manifest_page") != 1
+            ):
+                return False
+            arguments["review_manifest_id"] = neutral_manifest_id
+
+        sanitized_summary = (
+            self._commander_public_projector().sanitize_for_artifact(
+                scan_summary
+            )
+        )
+        if not isinstance(sanitized_summary, dict):
+            return False
+        # Generic artifact projection omits timestamps.  The root manifest
+        # envelope requires its already validated continuation expiry.
+        sanitized_summary["expires_at"] = expires_at
+        if sanitized_summary != scan_summary:
+            return False
+        content_item["text"] = ""
+        return self._commander_public_resource_read_safety(candidate)
+
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
         return MCPResourcesService.result_artifact_next_read(artifact_fields)
@@ -3269,13 +3395,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     == MCP_EXPOSURE_PROFILE_COMMANDER
                     and parsed_review_manifest is not None
                     and not (
-                        self._commander_public_review_manifest_page_envelope_safety(
-                            resource_result
-                        )
-                        if parsed_review_manifest[1] is not None
-                        and whole_subject_safety is True
-                        else self._commander_public_resource_read_safety(
-                            resource_result
+                        (
+                            self._commander_public_review_manifest_root_envelope_safety(
+                                resource_result,
+                                parsed_review_manifest,
+                            )
+                            if parsed_review_manifest[1] is None
+                            else self._commander_public_review_manifest_page_envelope_safety(
+                                resource_result
+                            )
+                            if whole_subject_safety is True
+                            else self._commander_public_resource_read_safety(
+                                resource_result
+                            )
                         )
                     )
                 ):

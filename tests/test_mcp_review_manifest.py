@@ -1386,6 +1386,24 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
         token_like_opaque_id
     )
 
+    root_resource = _resource_read(
+        server,
+        contract["evidence"]["resource_uri"],
+    )
+    assert "error" not in root_resource
+    root_summary = json.loads(
+        root_resource["result"]["contents"][0]["text"]
+    )
+    assert root_summary["review_manifest_id"] == token_like_opaque_id
+    assert root_summary["manifest_resource_uri"] == (
+        f"colameta://review-manifest/{token_like_opaque_id}"
+    )
+    assert all(
+        subject["read_call"]["arguments"]["review_manifest_id"]
+        == token_like_opaque_id
+        for subject in root_summary["subjects"]
+    )
+
     typed = _tool_call(
         server,
         {
@@ -1403,6 +1421,70 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
     resource = _resource_read(server, subject_uri)
     resource_page = json.loads(resource["result"]["contents"][0]["text"])
     assert resource_page["content"] == "# Review input\n\nA bounded subject.\n"
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    ["root_id", "subject_read_id", "sensitive_sibling"],
+)
+def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
+    tmp_path: Path,
+    monkeypatch,
+    tampering: str,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+    )
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    contract = inspected["result"]["structuredContent"]["data"]
+    root_uri = contract["evidence"]["resource_uri"]
+    original_read = server._review_manifest_resource_read_result
+    injected_value = "other_review_manifest_handle_1234567890"
+    if tampering == "sensitive_sibling":
+        injected_value = SYNTHETIC_GITHUB_PAT
+
+    def tampered_read(uri: str) -> dict | None:
+        result = original_read(uri)
+        if result is None or uri != root_uri:
+            return result
+        candidate = copy.deepcopy(result)
+        summary = json.loads(candidate["contents"][0]["text"])
+        if tampering == "root_id":
+            summary["review_manifest_id"] = injected_value
+        elif tampering == "subject_read_id":
+            summary["subjects"][0]["read_call"]["arguments"][
+                "review_manifest_id"
+            ] = injected_value
+        else:
+            summary["preview_id"] = injected_value
+        candidate["contents"][0]["text"] = json.dumps(
+            summary,
+            ensure_ascii=False,
+        )
+        return candidate
+
+    monkeypatch.setattr(
+        server,
+        "_review_manifest_resource_read_result",
+        tampered_read,
+    )
+    resource = _resource_read(server, root_uri)
+
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert injected_value not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_commander_resources_read_validates_whole_subject_before_paging(
