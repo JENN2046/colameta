@@ -6,6 +6,8 @@ import hashlib
 import json
 import threading
 
+import pytest
+
 import runner.mcp_server as mcp_server_module
 from runner.commander_contract import validate_commander_response
 from runner.mcp_result_artifacts import MCPResultArtifactStore
@@ -47,6 +49,11 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "npm_",
         "\\u006epm_",
     )
+)
+SYNTHETIC_DOCKER_PAT = "dckr_pat_" + (("Ab1_-" * 5) + "Z9")
+ESCAPED_SYNTHETIC_DOCKER_PAT = SYNTHETIC_DOCKER_PAT.replace(
+    "dckr_pat_",
+    "\\u0064ckr_pat_",
 )
 SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
 SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
@@ -350,18 +357,23 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
     ]
 
 
+@pytest.mark.parametrize(
+    "token_like_opaque_id",
+    [TOKEN_LIKE_OPAQUE_ID, SYNTHETIC_DOCKER_PAT],
+)
 def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(
     tmp_path,
     monkeypatch,
+    token_like_opaque_id: str,
 ) -> None:
     monkeypatch.setattr(
         "runner.mcp_result_artifacts.secrets.token_urlsafe",
-        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+        lambda _length: token_like_opaque_id,
     )
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
     token_like_uri = (
-        f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"
+        f"colameta://result-artifact/{token_like_opaque_id}"
         "/pages/{page}"
     )
     payload = {
@@ -439,6 +451,12 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"{separator}{uri}"
             for separator in ("\\u002c", "\\u003b", "\\u0021", "\\u003f")
         ),
+        "markdown_emphasis_boundaries": (
+            f"*{uri}* **{uri}** _{uri}_ __{uri}__"
+        ),
+        "escaped_markdown_emphasis_boundaries": (
+            f"\\u002a\\u002a{uri}\\u002a\\u002a"
+        ),
         "public_key_assignment": "publicKey=synthetic-public-value",
         "public_key_marker": "-----BEGIN PUBLIC KEY-----",
         "pgp_public_key_marker": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
@@ -465,6 +483,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "package_marker_short": "npm_short",
         "package_marker_placeholder": "npm_<redacted>",
         "package_marker_overlength": "npm_" + ("A" * 37),
+        "docker_marker_underlength": "dckr_pat_" + ("A" * 26),
+        "docker_marker_placeholder": "dckr_pat_<redacted>",
+        "docker_marker_overlength": "dckr_pat_" + ("A" * 28),
         "index_marker_short": "pypi-short",
         "index_marker_placeholder": "pypi-<redacted>",
         "index_marker_underlength": "pypi-" + ("A" * 84),
@@ -528,7 +549,7 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
 
     assert handle is not None
-    assert handle.artifact_id == TOKEN_LIKE_OPAQUE_ID
+    assert handle.artifact_id == token_like_opaque_id
     assert handle.page_count > 1
     expected_content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     pages: list[str] = []
@@ -942,6 +963,16 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DOCKER_PAT.replace("dckr_pat_", "dckr%5Fpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DOCKER_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DOCKER_PAT}
                 )
             }
         ),

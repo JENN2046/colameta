@@ -71,6 +71,11 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_DOCKER_PAT = "dckr_pat_" + (("Ab1_-" * 5) + "Z9")
+ESCAPED_SYNTHETIC_DOCKER_PAT = SYNTHETIC_DOCKER_PAT.replace(
+    "dckr_pat_",
+    "\\u0064ckr_pat_",
+)
 SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
 SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
 ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
@@ -1241,6 +1246,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{escaped_ascii_closing_boundaries}\n"
         f"{ascii_left_separator_boundaries}\n"
         f"{escaped_ascii_left_separator_boundaries}\n"
+        f"*{uri}* **{uri}** _{uri}_ __{uri}__\n"
+        f"\\u002a\\u002a{uri}\\u002a\\u002a\n"
         "publicKey=synthetic-public-value\n"
         "-----BEGIN PUBLIC KEY-----\n"
         "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
@@ -1262,6 +1269,9 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         "npm_short\n"
         "npm_<redacted>\n"
         f"npm_{'A' * 37}\n"
+        f"dckr_pat_{'A' * 26}\n"
+        "dckr_pat_<redacted>\n"
+        f"dckr_pat_{'A' * 28}\n"
         "pypi-short\n"
         "pypi-<redacted>\n"
         f"pypi-{'A' * 84}\n"
@@ -1334,13 +1344,18 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
     assert resource_page["content"] == content
 
 
+@pytest.mark.parametrize(
+    "token_like_opaque_id",
+    [TOKEN_LIKE_OPAQUE_ID, SYNTHETIC_DOCKER_PAT],
+)
 def test_commander_manifest_preserves_token_like_opaque_handles(
     tmp_path: Path,
     monkeypatch,
+    token_like_opaque_id: str,
 ) -> None:
     monkeypatch.setattr(
         "runner.review_manifest.secrets.token_urlsafe",
-        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+        lambda _length: token_like_opaque_id,
     )
     project = _make_git_checkout(tmp_path)
     server = MCPPlanningBridgeServer(
@@ -1359,16 +1374,16 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
     inspection = inspected["result"]["structuredContent"]
     assert inspection["ok"] is True
     contract = inspection["data"]
-    assert contract["evidence"]["review_manifest_id"] == TOKEN_LIKE_OPAQUE_ID
+    assert contract["evidence"]["review_manifest_id"] == token_like_opaque_id
     assert contract["evidence"]["resource_uri"] == (
-        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
+        f"colameta://review-manifest/{token_like_opaque_id}"
     )
     subject_uri = contract["facts"]["subjects"][0]["resource_uri"]
     assert subject_uri == (
-        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}/subjects/1"
+        f"colameta://review-manifest/{token_like_opaque_id}/subjects/1"
     )
     assert contract["next_action"]["arguments"]["review_manifest_id"] == (
-        TOKEN_LIKE_OPAQUE_ID
+        token_like_opaque_id
     )
 
     typed = _tool_call(
@@ -1376,7 +1391,7 @@ def test_commander_manifest_preserves_token_like_opaque_handles(
         {
             "workflow": "review_manifest",
             "phase": "read",
-            "review_manifest_id": TOKEN_LIKE_OPAQUE_ID,
+            "review_manifest_id": token_like_opaque_id,
             "review_manifest_subject_index": 1,
         },
     )
@@ -2274,6 +2289,16 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DOCKER_PAT.replace("dckr_pat_", "dckr%5Fpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DOCKER_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DOCKER_PAT}
                 )
             }
         ),

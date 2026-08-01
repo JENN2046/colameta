@@ -854,6 +854,8 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_-])"
+    r"dckr_pat_[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
     r"|pypi-[A-Za-z0-9_-]{85,}(?![A-Za-z0-9_-])"
     r"|(?<![A-Za-z0-9_-])"
     r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}"
@@ -4284,12 +4286,76 @@ def _is_resource_uri_boundary(value: str, index: int) -> bool:
     return False
 
 
+def _markdown_emphasis_run_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str, int] | None:
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None or current[1] not in "*_":
+        return None
+    cursor, marker = current
+    width = 1
+    while cursor > 0 and width < 4:
+        previous = _resource_character_with_start_ending_at(value, cursor)
+        if previous is None or previous[1] != marker:
+            break
+        cursor = previous[0]
+        width += 1
+    if width not in {1, 2, 3}:
+        return None
+    return cursor, marker, width
+
+
+def _markdown_emphasis_run_starting_at(
+    value: str,
+    index: int,
+) -> tuple[int, str, int] | None:
+    current = _resource_character_with_end_at(value, index)
+    if current is None or current[1] not in "*_":
+        return None
+    cursor, marker = current
+    width = 1
+    while cursor < len(value) and width < 4:
+        following = _resource_character_with_end_at(value, cursor)
+        if following is None or following[1] != marker:
+            break
+        cursor = following[0]
+        width += 1
+    if width not in {1, 2, 3}:
+        return None
+    return cursor, marker, width
+
+
+def _is_resource_uri_inside_markdown_emphasis(
+    value: str,
+    start: int,
+    end: int,
+) -> bool:
+    opening = _markdown_emphasis_run_ending_at(value, start)
+    closing = _markdown_emphasis_run_starting_at(value, end)
+    if opening is None or closing is None:
+        return False
+    opening_start, opening_marker, opening_width = opening
+    closing_end, closing_marker, closing_width = closing
+    return bool(
+        opening_marker == closing_marker
+        and opening_width == closing_width
+        and _is_resource_uri_left_boundary(value, opening_start)
+        and _is_resource_uri_boundary(value, closing_end)
+    )
+
+
 def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
     for match in _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE.finditer(value):
-        if _is_resource_uri_left_boundary(
+        ordinary_boundaries = (
+            _is_resource_uri_left_boundary(value, match.start())
+            and _is_resource_uri_boundary(value, match.end())
+        )
+        if ordinary_boundaries or _is_resource_uri_inside_markdown_emphasis(
             value,
             match.start(),
-        ) and _is_resource_uri_boundary(value, match.end()):
+            match.end(),
+        ):
             yield match
 
 

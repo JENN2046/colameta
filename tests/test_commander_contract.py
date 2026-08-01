@@ -66,6 +66,11 @@ ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
         "\\u006epm_",
     )
 )
+SYNTHETIC_DOCKER_PAT = "dckr_pat_" + (("Ab1_-" * 5) + "Z9")
+ESCAPED_SYNTHETIC_DOCKER_PAT = SYNTHETIC_DOCKER_PAT.replace(
+    "dckr_pat_",
+    "\\u0064ckr_pat_",
+)
 SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
 SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
 ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
@@ -1323,11 +1328,19 @@ def test_review_manifest_evidence_uses_opaque_manifest_uri() -> None:
             "/pages/{page}"
         ),
         (
+            f"colameta://result-artifact/{SYNTHETIC_DOCKER_PAT}"
+            "/pages/{page}"
+        ),
+        (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}"
         ),
         (
             f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
+            "/subjects/1/pages/{page}"
+        ),
+        (
+            f"colameta://review-manifest/{SYNTHETIC_DOCKER_PAT}"
             "/subjects/1/pages/{page}"
         ),
     ],
@@ -1540,6 +1553,65 @@ def test_public_text_preserves_opaque_uris_after_genuine_left_delimiters(
     uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
 
     assert commander_public_text(f"{opening}{uri}") == f"{opening}{uri}"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "marker",
+    ["*", "**", "***", "_", "__", "___", "\\u002a\\u002a"],
+)
+def test_public_text_preserves_opaque_uris_inside_markdown_emphasis(
+    uri: str,
+    marker: str,
+) -> None:
+    value = f"{marker}{uri}{marker}"
+    serialized = json.dumps({"note": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(serialized) == serialized
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "*colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}_"
+        ),
+        (
+            "**colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}"
+        ),
+        (
+            "colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}**"
+        ),
+        (
+            "prefix**colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}**suffix"
+        ),
+        (
+            "****colameta://result-artifact/"
+            "opaque_handle_123_/pages/{page}****"
+        ),
+    ],
+)
+def test_public_text_does_not_treat_unpaired_markdown_as_uri_boundaries(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "colameta://" not in public
+    assert "<resource-uri>" in public
 
 
 @pytest.mark.parametrize(
@@ -1985,6 +2057,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_DOCKER_PAT,
+        (
+            "https://hub.docker.com/settings/security?token="
+            f"{SYNTHETIC_DOCKER_PAT}"
+        ),
+        SYNTHETIC_DOCKER_PAT.replace("dckr_pat_", "dckr%5Fpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DOCKER_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DOCKER_PAT}
+                )
+            }
+        ),
         SYNTHETIC_PYPI_API_TOKEN,
         SYNTHETIC_LONG_PYPI_API_TOKEN,
         (
@@ -2102,6 +2188,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "ghp_" not in public
     assert "gho_" not in public
     assert "github_pat_" not in public
+    assert "dckr_pat_" not in public
     assert "SG." not in public
 
 
@@ -2688,6 +2775,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "npm_short",
         "npm_<redacted>",
         "npm_" + ("A" * 37),
+        "dckr_pat_" + ("A" * 26),
+        "dckr_pat_<redacted>",
+        "dckr_pat_" + ("A" * 28),
         "pypi-short",
         "pypi-<redacted>",
         "pypi-" + ("A" * 84),
