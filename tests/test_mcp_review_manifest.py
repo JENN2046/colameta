@@ -2660,6 +2660,8 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         "<status>public-ready</status>\n"
         "<ns:status>namespace-ready</ns:status>\n"
         "&lt;status&gt;entity-ready&lt;/status&gt;\n"
+        '<property name="public-key" value="public-material"/>\n'
+        '<property name="password" value=""/>\n'
     )
     (project / "docs" / "review-input.md").write_text(
         content,
@@ -2790,6 +2792,10 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         "apiKey=delta epsilon zeta",
         "private-key=synthetic-private-key-value",
         "<password>synthetic-xml-manifest-secret</password>",
+        (
+            '<property name="password" '
+            'value="synthetic-xml-attribute-manifest-secret"/>'
+        ),
         (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-manifest-secret'

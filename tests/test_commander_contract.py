@@ -2926,6 +2926,28 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
             "</password>"
         ),
         '<password value="synthetic-xml-attribute-secret"/>',
+        (
+            '<property name="password" '
+            'value="synthetic-xml-name-value-secret"/>'
+        ),
+        (
+            "<field value='synthetic-xml-type-value-secret' "
+            "type='clientSecret'/>"
+        ),
+        (
+            '<property name="password" '
+            'value="synthetic-xml-greater-than>secret"/>'
+        ),
+        (
+            '{"xml":"\\u003cproperty\\u0020'
+            'name=\\u0022password\\u0022\\u0020'
+            'value=\\u0022synthetic-encoded-xml-attribute-secret'
+            '\\u0022/\\u003e"}'
+        ),
+        (
+            "&lt;property name=&quot;password&quot; "
+            "value=&quot;synthetic-entity-xml-attribute-secret&quot;/&gt;"
+        ),
         "<password " + ("x" * 4_097),
         (
             "&lt;password&gt;"
@@ -2985,6 +3007,15 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
         "Discuss the <password> element without including a body.",
         "&lt;status&gt;public-entity-status&lt;/status&gt;",
         "Discuss the &lt;password&gt; element without including a body.",
+        '<property name="public-key" value="synthetic-public-material"/>',
+        '<property name="password" value=""/>',
+        '<property name="password"/>',
+        (
+            "<property "
+            "description='name=\"password\" value=\"synthetic-example\"'/>"
+        ),
+        "if count <threshold:\n    continue",
+        "<property " + ("x" * 4_097),
     ],
 )
 def test_public_text_does_not_redact_safe_xml_prose(value: str) -> None:

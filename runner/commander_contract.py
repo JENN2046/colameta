@@ -884,6 +884,12 @@ _XML_ELEMENT_TAG_RE = re.compile(
 _XML_CLOSING_TAG_PATH_RE = re.compile(
     r"/[A-Za-z_][A-Za-z0-9_.:-]{0,127}"
 )
+_XML_ATTRIBUTE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.:-])"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
+    r"\s*=\s*"
+    r"(?P<quote>[\"'])(?P<value>[\s\S]*?)(?P=quote)"
+)
 _XML_ENTITY_RE = re.compile(
     r"&(?:"
     r"(?P<named>lt|gt|amp|quot|apos)"
@@ -5203,36 +5209,78 @@ def _contains_forbidden_key_assignment(value: str) -> bool:
     )
 
 
+def _xml_tag_header_end(value: str, start: int) -> int | None:
+    quote: str | None = None
+    limit = min(
+        len(value),
+        start + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS + 1,
+    )
+    for cursor in range(start, limit):
+        character = value[cursor]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character == ">":
+            return cursor
+        if character == "<":
+            return None
+    return None
+
+
+def _xml_header_contains_sensitive_name_value_pair(
+    header: str,
+) -> bool:
+    has_sensitive_label = False
+    has_nonempty_value = False
+    for attribute in _XML_ATTRIBUTE_RE.finditer(header):
+        attribute_name = attribute.group("name").rsplit(":", 1)[-1]
+        normalized_name = attribute_name.casefold()
+        attribute_value = attribute.group("value")
+        if normalized_name in {"name", "type"}:
+            has_sensitive_label = (
+                has_sensitive_label
+                or commander_public_key_is_forbidden(attribute_value)
+            )
+        elif normalized_name == "value" and attribute_value.strip():
+            has_nonempty_value = True
+        if has_sensitive_label and has_nonempty_value:
+            return True
+    return False
+
+
 def _contains_sensitive_xml_element(value: str) -> bool:
-    """Detect credential-bearing XML elements by their bounded tag name."""
+    """Detect credential-bearing XML elements and bounded attributes."""
 
     open_elements: list[str] = []
     for match in _XML_ELEMENT_TAG_RE.finditer(value):
         tag = match.group("tag")
-        if not commander_public_key_is_forbidden(tag):
-            continue
+        tag_is_forbidden = commander_public_key_is_forbidden(tag)
         normalized_tag = _normalize_public_key_for_match(tag)
         if match.group("closing"):
-            if normalized_tag in open_elements:
+            if tag_is_forbidden and normalized_tag in open_elements:
                 return True
             continue
-        header_end = value.find(
-            ">",
-            match.end(),
-            min(
-                len(value),
-                match.end() + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS + 1,
-            ),
-        )
-        if header_end < 0:
-            # A forbidden tag whose header exceeds the bounded parser cannot
-            # be interpreted safely.
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            # Keep the existing fail-closed rule for a credential-named tag.
+            # A generic unterminated ``<name`` token may instead be ordinary
+            # source code, so attribute-pair detection requires a complete
+            # bounded tag header.
+            if tag_is_forbidden:
+                return True
+            continue
+        header = value[match.end() : header_end]
+        if _xml_header_contains_sensitive_name_value_pair(header):
             return True
-        if value.find("<", match.end(), header_end) >= 0:
-            return True
+        if not tag_is_forbidden:
+            continue
         # Attributes and self-closing syntax can carry the credential without
         # a later body, so their sensitive tag is sufficient evidence.
-        if value[match.end() : header_end].strip():
+        if header.strip():
             return True
         if len(open_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
             return True
