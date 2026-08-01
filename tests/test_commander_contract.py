@@ -2258,6 +2258,7 @@ def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(
     [
         '{"apiKey":"synthetic-secret-value"}',
         '{"API Key":"synthetic-spaced-secret"}',
+        "api key: synthetic-unquoted-spaced-secret",
         "apikey=synthetic-joined-secret",
         "stripe.api-key=synthetic-dotted-secret",
         "private-key=synthetic-private-key-value",
@@ -2267,10 +2268,22 @@ def test_public_text_fails_closed_only_when_decode_budget_is_exhausted(
         'vendorApiKey="alpha beta gamma"',
         "apiKey=delta epsilon zeta",
         r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        (
+            r"api\u0020key\u003a "
+            "synthetic-encoded-unquoted-spaced-secret"
+        ),
         json.dumps(
             {
                 "wrapped": (
                     r'{\"private-key\":\"synthetic-nested-secret\"}'
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    r"api\u0020key\u003a "
+                    "synthetic-nested-unquoted-spaced-secret"
                 )
             }
         ),
@@ -2285,6 +2298,7 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
     for fragment in (
         "synthetic-secret-value",
         "synthetic-spaced-secret",
+        "synthetic-unquoted-spaced-secret",
         "synthetic-joined-secret",
         "synthetic-dotted-secret",
         "synthetic-private-key-value",
@@ -2298,7 +2312,9 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         "epsilon",
         "zeta",
         "synthetic-escaped-secret",
+        "synthetic-encoded-unquoted-spaced-secret",
         "synthetic-nested-secret",
+        "synthetic-nested-unquoted-spaced-secret",
     ):
         assert fragment not in public
 
@@ -2833,6 +2849,8 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         ),
         "_author=Jenn",
         "_authorship=public",
+        "public key: synthetic-public-value",
+        "Discuss the api key rotation policy.",
     ],
 )
 def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:

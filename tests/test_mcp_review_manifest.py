@@ -2306,6 +2306,11 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         '{"apiKey":"synthetic-secret-value"}',
         '{"API Key":"synthetic-spaced-secret"}',
+        "api key: synthetic-unquoted-manifest-secret",
+        (
+            r"api\u0020key\u003a "
+            "synthetic-encoded-unquoted-manifest-secret"
+        ),
         "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
         "apiKey=delta epsilon zeta",
         "private-key=synthetic-private-key-value",

@@ -898,6 +898,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         '{"apiKey":"synthetic-secret-value"}',
         '{"API Key":"synthetic-spaced-secret"}',
+        "api key: synthetic-unquoted-artifact-secret",
+        (
+            r"api\u0020key\u003a "
+            "synthetic-encoded-unquoted-artifact-secret"
+        ),
         "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
         "apiKey=delta epsilon zeta",
         "private-key=synthetic-private-key-value",

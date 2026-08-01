@@ -817,7 +817,7 @@ _ASSIGNMENT_KEY_RE = re.compile(
     r"(?P<key_quote>[\"'])"
     r"(?P<quoted_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. /-]{0,127})"
     r"(?P=key_quote)"
-    r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. \t-]{0,127})"
     r")\s*[:=]"
 )
 _BEARER_TOKEN_RE = re.compile(
