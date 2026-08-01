@@ -30,6 +30,11 @@ MANIFEST_ID = "manifest_contract_1234567890"
 PREVIEW_ID = "preview_contract_1234567890"
 RUN_ID = "validation_contract_1234567890"
 EXPIRES_AT = "2026-08-01T18:00:00+08:00"
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -381,6 +386,8 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
             "oauth_authorization_code": "code-value-must-not-leak",
             "passPhrase": "passphrase-value-must-not-leak",
             "_auth": "npm-auth-value-must-not-leak",
+            "AccountKey": "azure-account-value-must-not-leak",
+            "SharedAccessSignature": "azure-sas-value-must-not-leak",
             "/home/jenn/private/secret.txt": "posix-key-value",
             r"C:\Users\Jenn\secret.txt": "windows-key-value",
             r"\\server/share\secret.txt": "unc-key-value",
@@ -415,12 +422,16 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "oauth_authorization_code",
         "passPhrase",
         "_auth",
+        "AccountKey",
+        "SharedAccessSignature",
         "oauth-value-must-not-leak",
         "id-value-must-not-leak",
         "client-value-must-not-leak",
         "code-value-must-not-leak",
         "passphrase-value-must-not-leak",
         "npm-auth-value-must-not-leak",
+        "azure-account-value-must-not-leak",
+        "azure-sas-value-must-not-leak",
         "/home/jenn",
         r"C:\Users\Jenn",
         r"\\server/share",
@@ -476,6 +487,42 @@ def test_projection_redacts_whitespace_delimited_netrc_passwords(
 
     assert contract["summary"] == "<sensitive>"
     assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_standalone_provider_access_tokens(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(

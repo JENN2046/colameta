@@ -23,6 +23,11 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
 
 
 def test_result_artifact_store_pages_exact_json_and_expires() -> None:
@@ -325,6 +330,13 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "escaped_ascii_closing_boundaries": (
             f"before\\u0029{uri}; before\\u005d{uri}; "
             f"before\\u007d{uri}"
+        ),
+        "ascii_left_separator_boundaries": " ".join(
+            f"{separator}{uri}" for separator in ",;!?"
+        ),
+        "escaped_ascii_left_separator_boundaries": " ".join(
+            f"{separator}{uri}"
+            for separator in ("\\u002c", "\\u003b", "\\u0021", "\\u003f")
         ),
         "public_key_assignment": "publicKey=synthetic-public-value",
         "public_key_marker": "-----BEGIN PUBLIC KEY-----",
@@ -754,6 +766,25 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        "AccountKey=synthetic-azure-account-key",
+        '{"Account\\u004bey":"synthetic-encoded-account-key"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "SharedAccess\\u0053ignature="
+                    "sv=synthetic-version&sig=synthetic-nested-sas"
                 )
             }
         ),

@@ -37,6 +37,15 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_GITHUB_OAUTH_TOKEN = "gho_" + ("B2" * 18)
+SYNTHETIC_GITHUB_FINE_GRAINED_PAT = (
+    "github_pat_" + ("Ab_" * 27) + "Z"
+)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
 
 
 def _base_context_binding() -> dict:
@@ -1309,7 +1318,6 @@ def test_public_text_does_not_preserve_an_extended_opaque_uri_lookalike(
         ":",
         "=",
         "&",
-        "?",
         "#",
         "+",
         "_",
@@ -1419,6 +1427,38 @@ def test_public_text_preserves_opaque_uris_after_ascii_closing_punctuation(
 
     assert commander_public_text(value) == value
     assert commander_public_text(serialized) == serialized
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "colameta://result-artifact/opaque_handle_123_/pages/{page}",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "separator",
+    [",", ";", "!", "?", "\\u002c", "\\u003b", "\\u0021", "\\u003f"],
+)
+def test_public_text_preserves_opaque_uris_after_ascii_separators(
+    uri: str,
+    separator: str,
+) -> None:
+    value = f"before{separator}{uri}"
+    serialized = json.dumps({"nested": value})
+
+    assert commander_public_text(value) == value
+    assert commander_public_text(serialized) == serialized
+    disallowed = (
+        f"before{separator}"
+        "Colameta://result-artifact/opaque_handle_123_"
+    )
+    public_disallowed = commander_public_text(disallowed)
+    assert "Colameta://" not in public_disallowed
+    assert "<resource-uri>" in public_disallowed
 
 
 @pytest.mark.parametrize(
@@ -1735,6 +1775,33 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
 @pytest.mark.parametrize(
     "value",
     [
+        SYNTHETIC_GITHUB_PAT,
+        f"Provider returned {SYNTHETIC_GITHUB_OAUTH_TOKEN}",
+        json.dumps({"access": SYNTHETIC_GITHUB_FINE_GRAINED_PAT}),
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_standalone_provider_access_tokens(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "ghp_" not in public
+    assert "gho_" not in public
+    assert "github_pat_" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         '{"apiKey":"synthetic-secret-value"}',
         '{"API Key":"synthetic-spaced-secret"}',
         "apikey=synthetic-joined-secret",
@@ -1780,6 +1847,36 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         "synthetic-nested-secret",
     ):
         assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "AccountKey=synthetic-azure-account-key",
+        "StorageAccountKey=synthetic-storage-account-key",
+        "SharedAccessKey=synthetic-shared-access-key",
+        (
+            "SharedAccessSignature="
+            "sv=synthetic-version&sig=synthetic-sas-signature"
+        ),
+        '{"Account\\u004bey":"synthetic-encoded-account-key"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "SharedAccess\\u0053ignature="
+                    "sv=synthetic-version&sig=synthetic-nested-sas"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_azure_storage_credentials(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
 
 
 @pytest.mark.parametrize(
@@ -2076,6 +2173,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "header.payload.signature",
         "release.v1.signature",
         "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl",
+        "ghp_" + ("A1" * 17) + "A",
+        "ghp_" + ("A1" * 18) + "A",
+        "github_pat_<redacted>",
         "_author=Jenn",
         "_authorship=public",
     ],

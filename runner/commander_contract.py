@@ -314,6 +314,7 @@ _FACT_EXCLUDED_KEYS = frozenset(
 _FORBIDDEN_PUBLIC_KEYS = frozenset(
     {
         "access_token",
+        "account_key",
         "api_key",
         "authorization",
         "authorization_code",
@@ -356,14 +357,19 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "refresh_token",
         "runtime_dir",
         "runtime_project_root",
+        "sas_signature",
+        "sas_token",
+        "secret",
         "session_id",
         "session_ref",
         "settings_path",
+        "shared_access_key",
+        "shared_access_signature",
         "source_root",
         "stable_runtime_dir",
         "stderr",
         "stdout",
-        "secret",
+        "storage_account_key",
         "trace_id",
         "token",
         "workflow_id",
@@ -523,6 +529,7 @@ _PUBLIC_COLAMETA_URI_SCHEME_RE = re.compile(
 _PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
 _PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS = frozenset("([{<")
 _PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS = frozenset(")]}")
+_PUBLIC_RESOURCE_URI_ASCII_LEFT_SEPARATORS = frozenset(",;!?")
 _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
     "。，、；：！？…．｡"
 )
@@ -810,6 +817,12 @@ _STANDALONE_JWT_RE = re.compile(
     r"(?P<payload>[A-Za-z0-9_-]{8,16384})\."
     r"(?P<signature>[A-Za-z0-9_-]{8,8192})"
     r"(?![A-Za-z0-9_-])"
+)
+_STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"gh[pousr]_[A-Za-z0-9]{36}"
+    r"|github_pat_[A-Za-z0-9_]{82}"
+    r")(?![A-Za-z0-9_])"
 )
 _CREDENTIAL_URI_USERINFO_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])"
@@ -3738,6 +3751,7 @@ def _is_resource_uri_left_boundary_character(value: str) -> bool:
         _is_resource_uri_whitespace(value)
         or value in "\"'`<>([{"
         or value in _PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS
+        or value in _PUBLIC_RESOURCE_URI_ASCII_LEFT_SEPARATORS
         or category == "Cc"
     ):
         return True
@@ -4179,6 +4193,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
+        or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -4307,6 +4322,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _PRIVATE_KEY_BLOCK_RE.search(value)
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _contains_standalone_jwt(value)
+        or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):

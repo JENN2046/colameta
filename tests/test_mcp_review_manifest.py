@@ -46,6 +46,11 @@ SYNTHETIC_JWT = (
     "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
 )
 ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
 
 
 def _make_git_checkout(
@@ -1104,6 +1109,13 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"before\\u0029{uri}; before\\u005d{uri}; "
         f"before\\u007d{uri}"
     )
+    ascii_left_separator_boundaries = " ".join(
+        f"{separator}{uri}" for separator in ",;!?"
+    )
+    escaped_ascii_left_separator_boundaries = " ".join(
+        f"{separator}{uri}"
+        for separator in ("\\u002c", "\\u003b", "\\u0021", "\\u003f")
+    )
     content = (
         f"\ufeff{uri}\n"
         f"\\ufeff{uri}\n"
@@ -1138,6 +1150,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{escaped_ascii_opening_boundaries}\n"
         f"{ascii_closing_boundaries}\n"
         f"{escaped_ascii_closing_boundaries}\n"
+        f"{ascii_left_separator_boundaries}\n"
+        f"{escaped_ascii_left_separator_boundaries}\n"
         "publicKey=synthetic-public-value\n"
         "-----BEGIN PUBLIC KEY-----\n"
         "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
@@ -2058,6 +2072,25 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        "AccountKey=synthetic-azure-account-key",
+        '{"Account\\u004bey":"synthetic-encoded-account-key"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "SharedAccess\\u0053ignature="
+                    "sv=synthetic-version&sig=synthetic-nested-sas"
                 )
             }
         ),
