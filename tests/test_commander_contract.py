@@ -3165,6 +3165,15 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "curl --user <user:password> https://example.invalid",
         "curl --proxy-user alice https://example.invalid",
         "curl --proxy-user <user:password> https://example.invalid",
+        (
+            "curl -e https://example.test/page "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020-e\\u0020'
+            'https:\\/\\/example.test/page\\u0020'
+            'https:\\/\\/example.invalid"}'
+        ),
         "curl -E client.pem https://example.invalid",
         "curl --cert client.pem https://example.invalid",
         "curl --proxy-cert proxy.pem https://example.invalid",

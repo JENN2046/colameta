@@ -818,7 +818,7 @@ _CURL_CERTIFICATE_PASSWORD_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
     r"[^\r\n;&|]{0,4096}?"
     r"(?<![A-Za-z0-9_-])(?:"
-    r"-[eE](?:[ \t]+|=)?"
+    r"(?-i:-E)(?:[ \t]+|=)?"
     r"|--(?:proxy-)?cert(?:[ \t]+|=)"
     r")"
     r"(?:"

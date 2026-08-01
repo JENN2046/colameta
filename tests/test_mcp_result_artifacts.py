@@ -528,6 +528,15 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "curl_user_only": (
             "curl --user alice https://example.invalid"
         ),
+        "curl_referer": (
+            "curl -e https://example.test/page "
+            "https://example.invalid"
+        ),
+        "encoded_curl_referer": (
+            '{"command":"curl\\u0020-e\\u0020'
+            'https:\\/\\/example.test/page\\u0020'
+            'https:\\/\\/example.invalid"}'
+        ),
         "curl_user_placeholder": (
             "curl --user <user:password> https://example.invalid"
         ),
@@ -1288,6 +1297,10 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                     "https%3A%2F%2Fexample.invalid"
                 )
             }
+        ),
+        (
+            "curl -E client.pem:synthetic-artifact-cert-password "
+            "https://example.invalid"
         ),
         (
             "curl --cert=client.pem:synthetic-artifact-cert-password "

@@ -120,6 +120,55 @@ def commander_result_artifact_page_matches_binding(
     )
 
 
+def commander_review_manifest_page_matches_binding(
+    page: dict[str, Any],
+    binding: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(binding, dict):
+        return False
+    if set(page) != {
+        "review_manifest_id",
+        "review_unit",
+        "subject_index",
+        "path",
+        "sha256",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "expires_at",
+        "content",
+    }:
+        return False
+    content = page.get("content")
+    page_content_sha256 = binding.get("page_content_sha256")
+    if (
+        not isinstance(content, str)
+        or not isinstance(page_content_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", page_content_sha256)
+        is None
+    ):
+        return False
+    for field in (
+        "review_manifest_id",
+        "review_unit",
+        "subject_index",
+        "path",
+        "sha256",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "expires_at",
+    ):
+        if page.get(field) != binding.get(field):
+            return False
+    return (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == page_content_sha256
+    )
+
+
 COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS = frozenset(
     {
         "context_binding",
@@ -317,6 +366,7 @@ class CommanderPublicProjector:
         *,
         exact_evidence_prevalidated: bool = False,
         exact_result_artifact_page_binding: dict[str, Any] | None = None,
+        exact_review_manifest_page_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(tool_result, dict):
             return tool_result
@@ -331,6 +381,11 @@ class CommanderPublicProjector:
             contract_facts = raw_data.get("facts")
             contract_artifact_page = (
                 contract_facts.get("artifact_page")
+                if isinstance(contract_facts, dict)
+                else None
+            )
+            contract_manifest_page = (
+                contract_facts.get("subject_page")
                 if isinstance(contract_facts, dict)
                 else None
             )
@@ -350,6 +405,30 @@ class CommanderPublicProjector:
                         "error_code": "INTERNAL_RESULT_INVALID",
                         "message": (
                             "预检后的结果证据页与已验证的存储页不一致，"
+                            "已安全拒绝返回。"
+                        ),
+                    },
+                    params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
+            if (
+                exact_evidence_prevalidated
+                and isinstance(contract_manifest_page, dict)
+                and not commander_review_manifest_page_matches_binding(
+                    contract_manifest_page,
+                    exact_review_manifest_page_binding,
+                )
+            ):
+                return self._wrap_commander_contract(
+                    tool_name=tool_name,
+                    projected_result={
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "INTERNAL_RESULT_INVALID",
+                        "message": (
+                            "预检后的审查证据页与已验证的 subject 页不一致，"
                             "已安全拒绝返回。"
                         ),
                     },
@@ -450,6 +529,26 @@ class CommanderPublicProjector:
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
                 if exact_evidence_prevalidated:
+                    if not commander_review_manifest_page_matches_binding(
+                        raw_page,
+                        exact_review_manifest_page_binding,
+                    ):
+                        return self._wrap_commander_contract(
+                            tool_name=tool_name,
+                            projected_result={
+                                "ok": False,
+                                "tool": tool_name,
+                                "error_code": "INTERNAL_RESULT_INVALID",
+                                "message": (
+                                    "预检后的审查证据页与已验证的 "
+                                    "subject 页不一致，已安全拒绝返回。"
+                                ),
+                            },
+                            params=params,
+                            exact_evidence_prevalidated=(
+                                exact_evidence_prevalidated
+                            ),
+                        )
                     review_manifest_page = copy.deepcopy(raw_page)
                 unsafe_exact_evidence = (
                     not exact_evidence_prevalidated

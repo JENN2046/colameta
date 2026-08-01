@@ -109,6 +109,7 @@ from runner.mcp_result_artifacts import MCPResultArtifactStore, ResultArtifactHa
 from runner.current_facts_artifact import process_current_facts_preview_store
 from runner.review_manifest import (
     REVIEW_MANIFEST_MAX_SUBJECTS,
+    REVIEW_MANIFEST_PAGE_CHARS,
     REVIEW_MANIFEST_WORKFLOW,
     ReviewManifestError,
     ReviewManifestHandle,
@@ -182,6 +183,7 @@ from runner.mcp_commander_public import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION as _COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
     CommanderPublicProjector,
+    commander_review_manifest_page_matches_binding,
     commander_result_artifact_page_matches_binding,
 )
 from runner.stable_promotion_work_item import StablePromotionWorkItemReader
@@ -2841,6 +2843,75 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             content=text,
         )
 
+    def _commander_public_review_manifest_page_binding(
+        self,
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> dict[str, Any] | None:
+        review_manifest_id, subject_index, requested_page = (
+            parsed_review_manifest
+        )
+        if subject_index is None:
+            return None
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return None
+        current_context = collect_review_context_binding(
+            stored.project_root,
+            project_name=str(
+                stored.context_binding.get("project_name") or ""
+            ),
+        )
+        verify_stored_review_context(
+            stored,
+            current_context_binding=current_context,
+        )
+        if subject_index < 1 or subject_index > len(stored.subjects):
+            return None
+        subject = stored.subjects[subject_index - 1]
+        page = requested_page or 1
+        if page < 1 or page > subject.page_count:
+            return None
+        raw, text = read_manifest_subject_file(
+            stored.project_root,
+            subject.path,
+        )
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if not secrets.compare_digest(
+            actual_sha256,
+            subject.sha256,
+        ):
+            raise ReviewManifestError(
+                "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH",
+                (
+                    "manifest subject 的 SHA-256 与当前文件不一致："
+                    f"{subject.path}"
+                ),
+                {
+                    "path": subject.path,
+                    "expected_sha256": subject.sha256,
+                    "actual_sha256": actual_sha256,
+                },
+            )
+        start = (page - 1) * REVIEW_MANIFEST_PAGE_CHARS
+        end = min(start + REVIEW_MANIFEST_PAGE_CHARS, len(text))
+        return {
+            "review_manifest_id": review_manifest_id,
+            "review_unit": str(
+                stored.context_binding["review_unit"]
+            ),
+            "subject_index": subject_index,
+            "path": subject.path,
+            "sha256": subject.sha256,
+            "page": page,
+            "page_count": subject.page_count,
+            "page_char_start": start,
+            "page_char_end": end,
+            "expires_at": stored.handle.expires_at,
+            "page_content_sha256": hashlib.sha256(
+                text[start:end].encode("utf-8")
+            ).hexdigest(),
+        }
+
     def _commander_public_typed_evidence_safety(
         self,
         tool_name: str,
@@ -2955,10 +3026,61 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             page,
         )
 
+    def _commander_public_typed_review_manifest_page_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_manifest_read = (
+            tool_name == "review_manifest"
+            or (
+                tool_name == "run_mcp_workflow"
+                and workflow == REVIEW_MANIFEST_WORKFLOW
+            )
+        ) and phase == "read"
+        if not is_manifest_read:
+            return None
+        review_manifest_id = params.get("review_manifest_id")
+        subject_index = params.get(
+            "review_manifest_subject_index"
+        )
+        page = params.get("review_manifest_page", 1)
+        if (
+            not isinstance(review_manifest_id, str)
+            or not review_manifest_id.strip()
+            or isinstance(subject_index, bool)
+            or not isinstance(subject_index, int)
+            or subject_index < 1
+            or isinstance(page, bool)
+            or not isinstance(page, int)
+            or page < 1
+        ):
+            return None
+        parsed = self._parse_mcp_review_manifest_uri(
+            self._mcp_review_manifest_uri(
+                review_manifest_id.strip(),
+                subject_index=subject_index,
+                page=page,
+            )
+        )
+        if parsed is None:
+            return None
+        return self._commander_public_review_manifest_page_binding(
+            parsed
+        )
+
     def _commander_public_review_manifest_page_envelope_safety(
         self,
         resource_result: dict[str, Any],
         parsed_review_manifest: tuple[str, int | None, int | None],
+        page_binding: dict[str, Any] | None,
     ) -> bool:
         """Bind page metadata to its request without reinterpreting a slice."""
 
@@ -3023,6 +3145,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             page.get("review_manifest_id") != resource_manifest_id
             or page.get("subject_index") != resource_subject_index
             or page.get("page") != (resource_page or 1)
+        ):
+            return False
+        if not commander_review_manifest_page_matches_binding(
+            page,
+            page_binding,
         ):
             return False
         expires_at = page.get("expires_at")
@@ -3516,6 +3643,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             )
                         )
                 whole_subject_safety: bool | None = None
+                review_manifest_page_binding: dict[str, Any] | None = (
+                    None
+                )
                 if is_review_manifest:
                     access_error = self._mcp_read_scoped_resource_access_error(
                         auth_context,
@@ -3542,6 +3672,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                                     -32602,
                                     "evidence_unavailable",
                                     "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
+                                )
+                            if whole_subject_safety is True:
+                                review_manifest_page_binding = (
+                                    self._commander_public_review_manifest_page_binding(
+                                        parsed_review_manifest
+                                    )
                                 )
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
@@ -3612,6 +3748,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             else self._commander_public_review_manifest_page_envelope_safety(
                                 resource_result,
                                 parsed_review_manifest,
+                                review_manifest_page_binding,
                             )
                             if whole_subject_safety is True
                             else self._commander_public_resource_read_safety(
@@ -4125,6 +4262,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self,
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
+        *,
+        prevalidated_review_manifest_page_binding: (
+            dict[str, Any] | None
+        ) = None,
     ) -> dict[str, Any]:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
             return tool_result
@@ -4168,6 +4309,33 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             if exact_evidence_prevalidated
             else None
         )
+        try:
+            if not exact_evidence_prevalidated:
+                exact_review_manifest_page_binding = None
+            elif prevalidated_review_manifest_page_binding is not None:
+                exact_review_manifest_page_binding = copy.deepcopy(
+                    prevalidated_review_manifest_page_binding
+                )
+            else:
+                exact_review_manifest_page_binding = (
+                    self._commander_public_typed_review_manifest_page_binding(
+                        tool_name,
+                        params,
+                    )
+                )
+        except ReviewManifestError as exc:
+            public_error_code = (
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR"
+            )
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    public_error_code,
+                    exc.message,
+                ),
+                params,
+            )
         data = tool_result.get("data") if isinstance(tool_result, dict) else None
         if (
             isinstance(data, dict)
@@ -4181,6 +4349,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 ),
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
                 ),
             )
 
@@ -4199,6 +4370,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
                 ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
 
         safe_artifact_payload = projector.sanitize_for_artifact(tool_result)
@@ -4216,6 +4390,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 ),
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
                 ),
             )
         artifact_fields = self._store_packaged_result_artifact(
@@ -4237,6 +4414,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
                 ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
 
         projected = projector.project_tool_result(
@@ -4245,6 +4425,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             exact_evidence_prevalidated=exact_evidence_prevalidated,
             exact_result_artifact_page_binding=(
                 exact_result_artifact_page_binding
+            ),
+            exact_review_manifest_page_binding=(
+                exact_review_manifest_page_binding
             ),
         )
         contract = projected.get("data") if isinstance(projected, dict) else None
@@ -4262,6 +4445,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 ),
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
                 ),
             )
         packaged_contract = copy.deepcopy(contract)
@@ -4315,6 +4501,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 ),
                 exact_result_artifact_page_binding=(
                     exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
                 ),
             )
         packaged_result = copy.deepcopy(projected)
@@ -5194,6 +5383,24 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "EVIDENCE_UNAVAILABLE",
                 "完整证据未通过 Commander 公共安全校验，已拒绝读取。",
             )
+        prevalidated_review_manifest_page_binding: (
+            dict[str, Any] | None
+        ) = None
+        if exact_evidence_safety is True:
+            try:
+                prevalidated_review_manifest_page_binding = (
+                    self._commander_public_typed_review_manifest_page_binding(
+                        name,
+                        params,
+                    )
+                )
+            except ReviewManifestError as exc:
+                return self._tool_error(
+                    name,
+                    commander_public_error_code(exc.error_code)
+                    or "INTERNAL_ERROR",
+                    exc.message,
+                )
         operator_request = (
             name == "run_mcp_workflow"
             and _policy_string_param(params, "workflow") == "operator_batch"
@@ -5212,7 +5419,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 clean_data = dict(data)
                 result["_meta"] = copy.deepcopy(clean_data.pop("_meta"))
                 result["data"] = clean_data
-            return self._commander_public_project_tool_result(result, params)
+            return self._commander_public_project_tool_result(
+                result,
+                params,
+                prevalidated_review_manifest_page_binding=(
+                    prevalidated_review_manifest_page_binding
+                ),
+            )
         except MCPToolInputError as e:
             self._stop_authoritative_canary_if_inactive()
             if operator_request:

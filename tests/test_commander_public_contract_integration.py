@@ -968,6 +968,11 @@ def test_projection_redacts_curl_user_password_options(
     ("summary", "expected"),
     [
         (
+            "curl -E client.pem:synthetic-summary-cert-password "
+            "https://example.invalid",
+            "<sensitive>",
+        ),
+        (
             "curl --cert=client.pem:synthetic-summary-cert-password "
             "https://example.invalid",
             "<sensitive>",
@@ -977,6 +982,24 @@ def test_projection_redacts_curl_user_password_options(
             'synthetic-encoded-summary-passphrase '
             'https:\\/\\/example.invalid"}',
             "<sensitive>",
+        ),
+        (
+            "curl -e https://example.test/page "
+            "https://example.invalid",
+            (
+                "curl -e https://example.test/page "
+                "https://example.invalid"
+            ),
+        ),
+        (
+            '{"command":"curl\\u0020-e\\u0020'
+            'https:\\/\\/example.test/page\\u0020'
+            'https:\\/\\/example.invalid"}',
+            (
+                '{"command":"curl\\u0020-e\\u0020'
+                'https:\\/\\/example.test/page\\u0020'
+                'https:\\/\\/example.invalid"}'
+            ),
         ),
         (
             "https://example.test/download"

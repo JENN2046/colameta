@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -14,6 +15,7 @@ import time
 
 import pytest
 
+import runner.mcp_review_manifest as mcp_review_manifest_module
 import runner.mcp_server as mcp_server_module
 from runner.commander_contract import validate_commander_response
 from runner.mcp_server import (
@@ -1298,6 +1300,10 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE}\n"
         "tool --user alice:note\n"
         "curl --user alice https://example.invalid\n"
+        "curl -e https://example.test/page https://example.invalid\n"
+        '{"command":"curl\\u0020-e\\u0020'
+        'https:\\/\\/example.test/page\\u0020'
+        'https:\\/\\/example.invalid"}\n'
         "curl --user <user:password> https://example.invalid\n"
         "curl --proxy-user alice https://example.invalid\n"
         "curl --proxy-user <user:password> https://example.invalid\n"
@@ -1688,6 +1694,129 @@ def test_commander_resources_read_rejects_unsafe_whole_subject_across_pages(
         )
         assert response["error"]["data"]["error_code"] == "evidence_unavailable"
         assert unsafe_uri not in json.dumps(response, ensure_ascii=False)
+
+
+def test_commander_manifest_reads_bind_returned_bytes_to_preflight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = "safe manifest subject " + ("x" * 256)
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection = inspected["result"]["structuredContent"]["data"]
+    review_manifest_id = inspection["evidence"][
+        "review_manifest_id"
+    ]
+    subject_uri = inspection["facts"]["subjects"][0][
+        "resource_uri"
+    ]
+    stored = server._review_manifest_store.get(review_manifest_id)
+
+    assert stored is not None
+    original_read_page = (
+        mcp_review_manifest_module.read_stored_review_manifest_page
+    )
+    stored_page = original_read_page(
+        stored,
+        subject_index=1,
+        page=1,
+    )
+    parsed_subject = server._parse_mcp_review_manifest_uri(
+        subject_uri
+    )
+    assert parsed_subject is not None
+    assert (
+        server._commander_public_review_manifest_subject_safety(
+            parsed_subject
+        )
+        is True
+    )
+    assert len(stored_page.content) > len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+    replacement_content = (
+        SYNTHETIC_DIGITALOCEAN_TOKEN
+        + (
+            "!"
+            * (
+                len(stored_page.content)
+                - len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+            )
+        )
+    )
+    replacement_page = replace(
+        stored_page,
+        content=replacement_content,
+    )
+    assert len(replacement_page.content) == len(stored_page.content)
+    assert replacement_page.page == stored_page.page
+    assert replacement_page.sha256 == stored_page.sha256
+
+    def read_replaced_page(
+        candidate_stored,
+        *,
+        subject_index: int,
+        page: int,
+    ):
+        if (
+            candidate_stored.handle.review_manifest_id
+            == review_manifest_id
+            and subject_index == 1
+            and page == 1
+        ):
+            return replacement_page
+        return original_read_page(
+            candidate_stored,
+            subject_index=subject_index,
+            page=page,
+        )
+
+    monkeypatch.setattr(
+        mcp_review_manifest_module,
+        "read_stored_review_manifest_page",
+        read_replaced_page,
+    )
+
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "read",
+            "review_manifest_id": review_manifest_id,
+            "review_manifest_subject_index": 1,
+            "review_manifest_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject_uri)
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
 
 
 def test_commander_resources_read_caches_whole_subject_safety_by_hash(
@@ -2757,6 +2886,10 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
                     "https%3A%2F%2Fexample.invalid"
                 )
             }
+        ),
+        (
+            "curl -E client.pem:synthetic-manifest-cert-password "
+            "https://example.invalid"
         ),
         (
             "curl --cert=client.pem:synthetic-manifest-cert-password "
