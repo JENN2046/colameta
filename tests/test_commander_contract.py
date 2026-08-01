@@ -2935,6 +2935,25 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
             "type='clientSecret'/>"
         ),
         (
+            '<entry key="password" '
+            'value="synthetic-xml-key-value-secret"/>'
+        ),
+        (
+            '<add key="ClientSecret" '
+            'value="synthetic-xml-client-key-value-secret"/>'
+        ),
+        (
+            "<setting config:key='api-key'>"
+            "synthetic-xml-namespaced-key-body-secret"
+            "</setting>"
+        ),
+        (
+            '{"xml":"\\u003centry\\u0020'
+            'key=\\u0022password\\u0022\\u0020'
+            'value=\\u0022synthetic-encoded-xml-key-secret'
+            '\\u0022/\\u003e"}'
+        ),
+        (
             '<property name="password" '
             'value="synthetic-xml-greater-than>secret"/>'
         ),
@@ -3039,6 +3058,11 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
         '<property name="password"/>',
         '<property name="password"></property>',
         '<property name="password"> \n\t </property>',
+        '<entry key="public-key" value="synthetic-public-material"/>',
+        '<entry key="password" value=""/>',
+        '<entry key="password"/>',
+        '<entry key="password"></entry>',
+        '<entry key="password"> \n\t </entry>',
         (
             '<property name="public-key">'
             "synthetic-public-material"

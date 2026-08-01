@@ -2663,6 +2663,9 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         '<property name="public-key" value="public-material"/>\n'
         '<property name="password" value=""/>\n'
         '<property name="password"> \n\t </property>\n'
+        '<entry key="public-key" value="public-material"/>\n'
+        '<entry key="password" value=""/>\n'
+        '<entry key="password"> \n\t </entry>\n'
         '<property name="public-key">public-material</property>\n'
     )
     (project / "docs" / "review-input.md").write_text(
@@ -2797,6 +2800,10 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         (
             '<property name="password" '
             'value="synthetic-xml-attribute-manifest-secret"/>'
+        ),
+        (
+            '<add key="ClientSecret" '
+            'value="synthetic-xml-key-manifest-secret"/>'
         ),
         (
             '<property name="password">'

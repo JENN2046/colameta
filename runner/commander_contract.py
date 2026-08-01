@@ -5242,7 +5242,7 @@ def _xml_header_sensitive_name_value_state(
         attribute_name = attribute.group("name").rsplit(":", 1)[-1]
         normalized_name = attribute_name.casefold()
         attribute_value = attribute.group("value")
-        if normalized_name in {"name", "type"}:
+        if normalized_name in {"key", "name", "type"}:
             has_sensitive_label = (
                 has_sensitive_label
                 or commander_public_key_is_forbidden(attribute_value)
