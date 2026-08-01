@@ -1122,6 +1122,8 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
         f"{serialized_paired_punctuation_boundaries}\n"
         f"{ascii_opening_boundaries}\n"
         f"{escaped_ascii_opening_boundaries}\n"
+        "publicKey=synthetic-public-value\n"
+        "-----BEGIN PUBLIC KEY-----\n"
         f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
         f"{json.dumps({'note': f'取{uri}继续'})}\n"
         f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
@@ -1982,6 +1984,22 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
         ),
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        '{"API Key":"synthetic-spaced-secret"}',
+        "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
+        "apiKey=delta epsilon zeta",
+        "private-key=synthetic-private-key-value",
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END OPENSSH PRIVATE KEY-----"
+        ),
+        (
+            '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
+            '\\nsynthetic-encoded-key-material"}'
+        ),
         "Cookie: session=abc; csrf=def",
         (
             'Authorization: Digest username="Mufasa", '

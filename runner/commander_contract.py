@@ -387,18 +387,20 @@ _ALLOWED_PUBLIC_OPAQUE_ID_KEYS = frozenset(
 )
 _SENSITIVE_PUBLIC_KEY_RE = re.compile(
     r"(?i)(?:^|_)(?:"
-    r"access_token"
-    r"|api_key"
+    r"access_?key(?:_?id)?"
+    r"|access_?token"
+    r"|api_?key"
     r"|auth(?:orization)?"
     r"|authorization_code"
-    r"|client_secret"
+    r"|client_?secret"
     r"|cookie"
     r"|credentials?"
-    r"|id_token"
+    r"|id_?token"
     r"|oauth(?:_[a-z0-9]+)*(?:_code|_token)"
     r"|pass(?:word|wd)"
-    r"|private_key"
-    r"|refresh_token"
+    r"|private_?key"
+    r"|refresh_?token"
+    r"|secret_?access_?key"
     r"|secret"
     r"|token"
     r")(?:$|_)"
@@ -755,6 +757,15 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|[^\s,;]+"
     r")"
 )
+_ASSIGNMENT_KEY_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(?:"
+    r"(?P<key_quote>[\"'])"
+    r"(?P<quoted_key>[A-Za-z][A-Za-z0-9_. /-]{0,127})"
+    r"(?P=key_quote)"
+    r"|(?P<bare_key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r")\s*[:=]"
+)
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
@@ -764,6 +775,10 @@ _BASIC_AUTHORIZATION_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])basic\s+"
     r"(?P<token>[A-Za-z0-9+/]{2,}={0,2})"
     r"(?![A-Za-z0-9+/=])"
+)
+_PRIVATE_KEY_BLOCK_RE = re.compile(
+    r"(?i)-----BEGIN[ \t]+"
+    r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----"
 )
 
 _OMIT = object()
@@ -3232,6 +3247,17 @@ def _validate_public_value(
     )
 
 
+def _normalize_public_key_for_match(value: Any) -> str:
+    key = str(value).strip()
+    key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    key = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", key)
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        key.lower(),
+    ).strip("_")
+
+
 def commander_public_key_is_forbidden(
     value: Any,
     *,
@@ -3241,24 +3267,22 @@ def commander_public_key_is_forbidden(
 
     key = str(value)
     normalized = key.strip().lower()
-    normalized_for_match = re.sub(
-        r"[^a-z0-9]+",
-        "_",
-        normalized,
-    ).strip("_")
+    normalized_for_match = _normalize_public_key_for_match(key)
     if (
         not normalized
-        or normalized in _FORBIDDEN_PUBLIC_KEYS
+        or normalized_for_match in _FORBIDDEN_PUBLIC_KEYS
         or _SENSITIVE_PUBLIC_KEY_RE.search(normalized_for_match)
         or _contains_private_path(key)
     ):
         return True
     if (
         include_internal_ids
-        and normalized not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS
+        and normalized_for_match not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS
         and (
-            normalized in _FACT_INTERNAL_ID_KEYS
-            or _INTERNAL_ID_PUBLIC_KEY_RE.fullmatch(normalized)
+            normalized_for_match in _FACT_INTERNAL_ID_KEYS
+            or _INTERNAL_ID_PUBLIC_KEY_RE.fullmatch(
+                normalized_for_match
+            )
         )
     ):
         return True
@@ -4109,8 +4133,10 @@ def _matches_sensitive_material(value: str) -> bool:
     return bool(
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _contains_forbidden_key_assignment(value)
         or _BEARER_TOKEN_RE.search(value)
         or _contains_basic_authorization_credential(value)
+        or _PRIVATE_KEY_BLOCK_RE.search(value)
     )
 
 
@@ -4154,10 +4180,26 @@ def _redact_basic_authorization_credentials(value: str) -> str:
     )
 
 
+def _assignment_key(match: re.Match[str]) -> str:
+    return str(match.group("quoted_key") or match.group("bare_key") or "")
+
+
+def _contains_forbidden_key_assignment(value: str) -> bool:
+    return any(
+        commander_public_key_is_forbidden(_assignment_key(match))
+        for match in _ASSIGNMENT_KEY_RE.finditer(value)
+    )
+
+
 def _redact_sensitive_material(value: str) -> str:
-    if _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value):
+    if (
+        _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
+        or _PRIVATE_KEY_BLOCK_RE.search(value)
+    ):
         return "<sensitive>"
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", value)
+    if _contains_forbidden_key_assignment(redacted):
+        return "<sensitive>"
     redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
     redacted = _redact_basic_authorization_credentials(redacted)
     if _decoded_candidate_contains_sensitive_material(value):

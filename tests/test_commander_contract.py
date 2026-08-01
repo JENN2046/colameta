@@ -615,6 +615,9 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
             "Authorization": "Bearer private",
             "access_token": "private-access-token",
             "cookie": "private-cookie",
+            "apiKey": "synthetic-secret-value",
+            "private-key": "synthetic-private-key-value",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-value",
         },
     }
 
@@ -644,6 +647,9 @@ def test_public_facts_remove_private_paths_ids_logs_and_secret_fields() -> None:
         "Authorization",
         "access_token",
         "cookie",
+        "apiKey",
+        "private-key",
+        "AWS_SECRET_ACCESS_KEY",
         "Bearer private",
     ):
         assert forbidden not in rendered
@@ -1667,6 +1673,93 @@ def test_public_text_redacts_standalone_basic_authorization_values(
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        '{"apiKey":"synthetic-secret-value"}',
+        '{"API Key":"synthetic-spaced-secret"}',
+        "apikey=synthetic-joined-secret",
+        "stripe.api-key=synthetic-dotted-secret",
+        "private-key=synthetic-private-key-value",
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
+        "AWSSecretAccessKey=synthetic-camel-aws-secret",
+        'vendorApiKey="alpha beta gamma"',
+        "apiKey=delta epsilon zeta",
+        r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    r'{\"private-key\":\"synthetic-nested-secret\"}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_normalized_sensitive_key_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert "<sensitive>" in public
+    for fragment in (
+        "synthetic-secret-value",
+        "synthetic-spaced-secret",
+        "synthetic-joined-secret",
+        "synthetic-dotted-secret",
+        "synthetic-private-key-value",
+        "synthetic-aws-secret-value",
+        "synthetic-aws-access-id",
+        "synthetic-camel-aws-secret",
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "synthetic-escaped-secret",
+        "synthetic-nested-secret",
+    ):
+        assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "-----BEGIN PRIVATE KEY-----\n"
+        "synthetic-private-key-material\n"
+        "-----END PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "synthetic-rsa-key-material\n"
+        "-----END RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "synthetic-openssh-key-material\n"
+        "-----END OPENSSH PRIVATE KEY-----",
+        (
+            '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
+            '\\nsynthetic-encoded-key-material"}'
+        ),
+    ],
+)
+def test_public_text_redacts_private_key_blocks(value: str) -> None:
+    assert commander_public_text(value) == "<sensitive>"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "publicKey=synthetic-public-value",
+        "monkey=banana",
+        '{"apiVersion":"v1"}',
+        "AWS_REGION=us-east-1",
+        "-----BEGIN PUBLIC KEY-----",
+        "-----BEGIN CERTIFICATE-----",
+    ],
+)
+def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
     "value, expected",
     [
         (
@@ -1864,6 +1957,11 @@ def test_blocked_message_with_uri_at_cutoff_remains_a_blocked_response() -> None
         "Basic dXNlcjpwYXNzd29yZA==",
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
         (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END PRIVATE KEY-----"
+        ),
+        (
             'Authorization: Digest username="Mufasa", '
             'response="deadbeef"'
         ),
@@ -1892,6 +1990,48 @@ def test_blocked_error_redacts_complete_compound_credential_headers(
 
 
 @pytest.mark.parametrize(
+    "message, secret_fragment",
+    [
+        (
+            '{"apiKey":"synthetic-secret-value"}',
+            "synthetic-secret-value",
+        ),
+        (
+            "private-key=synthetic-private-key-value",
+            "synthetic-private-key-value",
+        ),
+        (
+            "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+            "synthetic-aws-secret-value",
+        ),
+    ],
+)
+def test_blocked_error_redacts_normalized_sensitive_key_assignments(
+    message: str,
+    secret_fragment: str,
+) -> None:
+    response = build_commander_response(
+        tool_name="manage_git",
+        raw_result={
+            "ok": False,
+            "error": {
+                "code": "GIT_WORKTREE_DIRTY",
+                "message": message,
+                "recoverable": True,
+            },
+        },
+        params={"action": "commit_preview", "project_name": "colameta"},
+    )
+
+    assert response["outcome"] == "blocked"
+    assert secret_fragment not in response["summary"]
+    assert secret_fragment not in response["error"]["message"]
+    assert "<sensitive>" in response["summary"]
+    assert "<sensitive>" in response["error"]["message"]
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
     "content",
     [
         (
@@ -1906,6 +2046,14 @@ def test_blocked_error_redacts_complete_compound_credential_headers(
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         "Basic dXNlcjpwYXNzd29yZA==",
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        "private-key=synthetic-private-key-value",
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END PRIVATE KEY-----"
+        ),
         (
             "colameta://result-artifact/opaque_handle_123_"
             "/pages/{page}??query"
@@ -2190,6 +2338,14 @@ def test_review_manifest_subject_page_preserves_exact_hash_bound_text() -> None:
         '{"reason":"\\u0042earer abcdefghijklmnop"}',
         "Basic dXNlcjpwYXNzd29yZA==",
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        "private-key=synthetic-private-key-value",
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END OPENSSH PRIVATE KEY-----"
+        ),
         (
             "colameta://review-manifest/opaque_handle_123_"
             "/subjects/1/pages/{page}::private"
@@ -2822,6 +2978,13 @@ def test_validator_rejects_unknown_states_unsafe_fields_and_hidden_tools(
         "client_secret",
         "client-secret",
         "API Key",
+        "apiKey",
+        "apikey",
+        "private-key",
+        "vendorApiKey",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWSSecretAccessKey",
         "oauth_authorization_code",
         "/home/jenn/private/secret.txt",
         r"C:\Users\Jenn\secret.txt",

@@ -312,6 +312,8 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             f"{uri}\\u007bdetails\\u007d; "
             f"{uri}\\u003cdetails\\u003e"
         ),
+        "public_key_assignment": "publicKey=synthetic-public-value",
+        "public_key_marker": "-----BEGIN PUBLIC KEY-----",
         "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
         "ascii_json": json.dumps({"note": f"取{uri}继续"}),
         "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
@@ -672,6 +674,22 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
         ),
         '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        '{"API Key":"synthetic-spaced-secret"}',
+        "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
+        "apiKey=delta epsilon zeta",
+        "private-key=synthetic-private-key-value",
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END PRIVATE KEY-----"
+        ),
+        (
+            '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
+            '\\nsynthetic-encoded-key-material"}'
+        ),
         "Cookie: session=abc; csrf=def",
         (
             'Authorization: Digest username="Mufasa", '
