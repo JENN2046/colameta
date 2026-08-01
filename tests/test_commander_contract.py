@@ -2927,6 +2927,46 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         ),
         '<password value="synthetic-xml-attribute-secret"/>',
         "<password " + ("x" * 4_097),
+        (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#60;clientSecret&#62;"
+            "synthetic-decimal-entity-xml-secret"
+            "&#60;&#47;clientSecret&#62;"
+        ),
+        (
+            "&#x3c;config:api-key&#x3E;"
+            "synthetic-hex-entity-xml-secret"
+            "&#x3c;&#x2f;config:api-key&#x3e;"
+        ),
+        (
+            "&amp;lt;password&amp;gt;"
+            "synthetic-nested-entity-xml-secret"
+            "&amp;lt;/password&amp;gt;"
+        ),
+        (
+            '{"xml":"\\u0026lt;password\\u0026gt;'
+            'synthetic-json-entity-xml-secret'
+            '\\u0026lt;/password\\u0026gt;"}'
+        ),
+        (
+            "&#92;u003cpassword&#92;u003e"
+            "synthetic-entity-json-xml-secret"
+            "&#92;u003c/password&#92;u003e"
+        ),
+        (
+            "&#37;26lt&#37;3Bpassword&#37;26gt&#37;3B"
+            "synthetic-entity-percent-xml-secret"
+            "&#37;26lt&#37;3B/password&#37;26gt&#37;3B"
+        ),
+        (
+            "&lt;password&gt;"
+            "colameta://result-artifact/opaque_handle_123_"
+            "&lt;/password&gt;"
+        ),
     ],
 )
 def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
@@ -2943,6 +2983,8 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
         "<status>public-ready</status>",
         "<public-key>synthetic-public-material</public-key>",
         "Discuss the <password> element without including a body.",
+        "&lt;status&gt;public-entity-status&lt;/status&gt;",
+        "Discuss the &lt;password&gt; element without including a body.",
     ],
 )
 def test_public_text_does_not_redact_safe_xml_prose(value: str) -> None:
@@ -2951,7 +2993,7 @@ def test_public_text_does_not_redact_safe_xml_prose(value: str) -> None:
     assert public != "<sensitive>"
     assert "public-ready" in public or "synthetic-public-material" in public or (
         "without including a body" in public
-    )
+    ) or "public-entity-status" in public
 
 
 @pytest.mark.parametrize(

@@ -905,6 +905,21 @@ def test_projection_redacts_percent_encoded_sensitive_key_assignments(
             'synthetic-encoded-xml-summary-secret'
             '\\u003c/api-key\\u003e"}'
         ),
+        (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-summary-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#60;clientSecret&#62;"
+            "synthetic-decimal-entity-xml-summary-secret"
+            "&#60;&#47;clientSecret&#62;"
+        ),
+        (
+            '{"xml":"\\u0026#x3c;api-key\\u0026#x3e;'
+            'synthetic-json-entity-xml-summary-secret'
+            '\\u0026#x3c;/api-key\\u0026#x3e;"}'
+        ),
     ],
 )
 def test_projection_redacts_sensitive_xml_elements(summary: str) -> None:

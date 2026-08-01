@@ -881,8 +881,23 @@ _XML_ELEMENT_TAG_RE = re.compile(
     r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
     r"(?=[\t\n\r />])"
 )
+_XML_ENTITY_RE = re.compile(
+    r"&(?:"
+    r"(?P<named>lt|gt|amp|quot|apos)"
+    r"|#(?P<decimal>[0-9]{1,7})"
+    r"|#[xX](?P<hexadecimal>[0-9A-Fa-f]{1,6})"
+    r");"
+)
+_XML_NAMED_ENTITY_VALUES = {
+    "lt": "<",
+    "gt": ">",
+    "amp": "&",
+    "quot": '"',
+    "apos": "'",
+}
 _SENSITIVE_XML_MAX_OPEN_ELEMENTS = 256
 _SENSITIVE_XML_MAX_TAG_HEADER_CHARS = 4_096
+_SENSITIVE_XML_MAX_ENTITY_STATES = 16
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
@@ -4724,20 +4739,24 @@ def _matches_sensitive_material(value: str) -> bool:
 def _decoded_candidate_matches(
     value: str,
     predicate: Callable[[str], bool],
+    *,
+    decode_xml_entities: bool = False,
 ) -> bool:
     """Scan a bounded decode closure and fail closed on real exhaustion.
 
-    Each round applies canonical URL and JSON decoding.  Their state budgets
-    are counted independently so unrelated legal escapes cannot consume a
-    deep percent-decoding chain's allowance.  The preserved backslash
-    candidate is checked as well so JSON string boundaries cannot hide a
-    forbidden value.  Work remains linear in the public value and either decoder
-    fails closed before accepting a seventeenth state.
+    Each round applies canonical URL and JSON decoding, plus XML entity
+    decoding when requested by the sensitive-material boundary.  Their state
+    budgets are counted independently so unrelated legal escapes cannot
+    consume a deep chain's allowance.  The preserved backslash candidate is
+    checked as well so JSON string boundaries cannot hide a forbidden value.
+    Work remains linear in the public value and each decoder fails closed
+    before accepting a seventeenth state.
     """
 
     candidate = value
     percent_state_count = 1
     json_state_count = 1
+    xml_entity_state_count = 1
     while True:
         decoded = candidate
         changed = False
@@ -4785,13 +4804,33 @@ def _decoded_candidate_matches(
                 decoded = json_decoded
                 json_state_count += 1
                 changed = True
+        if decode_xml_entities and "&" in decoded:
+            xml_decoded = _decode_xml_entities_once(decoded)
+            if (
+                xml_decoded != decoded
+                and predicate(xml_decoded)
+            ):
+                return True
+            if xml_decoded != decoded:
+                if (
+                    xml_entity_state_count
+                    >= _SENSITIVE_XML_MAX_ENTITY_STATES
+                ):
+                    return True
+                decoded = xml_decoded
+                xml_entity_state_count += 1
+                changed = True
         if not changed or decoded == candidate:
             return False
         candidate = decoded
 
 
 def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
-    return _decoded_candidate_matches(value, _matches_sensitive_material)
+    return _decoded_candidate_matches(
+        value,
+        _matches_sensitive_material,
+        decode_xml_entities=True,
+    )
 
 
 def _is_basic_authorization_credential(match: re.Match[str]) -> bool:
@@ -5133,6 +5172,33 @@ def _contains_sensitive_xml_element(value: str) -> bool:
             return True
         open_elements.append(normalized_tag)
     return False
+
+
+def _decode_xml_entities_once(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        named = match.group("named")
+        if named is not None:
+            return _XML_NAMED_ENTITY_VALUES[named]
+        encoded_codepoint = (
+            match.group("decimal")
+            or match.group("hexadecimal")
+            or ""
+        )
+        base = 10 if match.group("decimal") is not None else 16
+        try:
+            codepoint = int(encoded_codepoint, base)
+        except ValueError:
+            return match.group(0)
+        if (
+            codepoint in {0x9, 0xA, 0xD}
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        ):
+            return chr(codepoint)
+        return match.group(0)
+
+    return _XML_ENTITY_RE.sub(replace, value)
 
 
 def _contains_sensitive_cli_option_credential(value: str) -> bool:

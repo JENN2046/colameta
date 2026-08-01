@@ -963,6 +963,26 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '\\u003c/clientSecret\\u003e"}'
         ),
         (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-artifact-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#x3c;clientSecret&#x3e;"
+            "synthetic-hex-entity-xml-artifact-secret"
+            "&#x3c;&#x2f;clientSecret&#x3e;"
+        ),
+        (
+            '{"xml":"\\u0026amp;lt;password\\u0026amp;gt;'
+            'synthetic-nested-entity-xml-artifact-secret'
+            '\\u0026amp;lt;/password\\u0026amp;gt;"}'
+        ),
+        (
+            "&#92;u003cpassword&#92;u003e"
+            "synthetic-entity-json-xml-artifact-secret"
+            "&#92;u003c/password&#92;u003e"
+        ),
+        (
             "client-key-data: "
             "c3ludGhldGljLWFydGlmYWN0LWt1YmUta2V5"
         ),

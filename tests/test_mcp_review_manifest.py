@@ -2755,6 +2755,26 @@ def test_commander_manifest_reads_preserve_markdown_resource_link_label(
             '\\u003c/clientSecret\\u003e"}'
         ),
         (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-manifest-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#60;clientSecret&#62;"
+            "synthetic-decimal-entity-xml-manifest-secret"
+            "&#60;&#47;clientSecret&#62;"
+        ),
+        (
+            '{"xml":"\\u0026amp;lt;password\\u0026amp;gt;'
+            'synthetic-nested-entity-xml-manifest-secret'
+            '\\u0026amp;lt;/password\\u0026amp;gt;"}'
+        ),
+        (
+            "&#37;26lt&#37;3Bpassword&#37;26gt&#37;3B"
+            "synthetic-entity-percent-xml-manifest-secret"
+            "&#37;26lt&#37;3B/password&#37;26gt&#37;3B"
+        ),
+        (
             "client-key-data: "
             "c3ludGhldGljLW1hbmlmZXN0LWt1YmUta2V5"
         ),
