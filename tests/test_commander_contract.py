@@ -4747,6 +4747,61 @@ def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        "token_count: 42",
+        "prompt_token_count=42",
+        "token_budget=1000",
+        "cached_token_usage: 0",
+        '{"token_count":42,"output_token_count":21}',
+        '{"metrics[token_count]":42}',
+        "token%5Fcount=42",
+        '{"token\\u005fcount":42}',
+        json.dumps({"wrapped": '{"prompt_token_count":42}'}),
+    ],
+)
+def test_public_text_preserves_numeric_token_metadata(value: str) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "token_count=synthetic-token-value",
+        'token_budget="1000"',
+        "token_count=-1",
+        "token_count=42.5",
+        "token=42",
+        "access_token=42",
+    ],
+)
+def test_public_text_keeps_token_credentials_fail_closed(value: str) -> None:
+    assert commander_public_text(value) == "<sensitive>"
+
+
+def test_commander_response_preserves_structured_numeric_token_metadata(
+) -> None:
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "message": "Usage measured.",
+            "token_count": 42,
+            "prompt_token_count": 21,
+            "token_budget": 1000,
+            "token_count_label": "synthetic-token-value",
+        },
+        params={},
+    )
+
+    assert response["facts"]["token_count"] == 42
+    assert response["facts"]["prompt_token_count"] == 21
+    assert response["facts"]["token_budget"] == 1000
+    assert "token_count_label" not in response["facts"]
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize(
     "value, expected",
     [
         (

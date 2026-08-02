@@ -17,6 +17,7 @@ from runner.commander_contract import (
     commander_public_mapping_is_private_jwk,
     commander_public_mapping_is_oauth_device_authorization,
     commander_public_text,
+    commander_public_value_is_numeric_token_metadata,
     validate_commander_response,
 )
 from runner.commander_projections import CommanderProjectionService
@@ -897,6 +898,9 @@ class CommanderPublicProjector:
         if commander_public_key_is_forbidden(
             key,
             include_internal_ids=artifact,
+        ) and not commander_public_value_is_numeric_token_metadata(
+            key,
+            value,
         ):
             return True
         if normalized in COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS:

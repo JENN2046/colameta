@@ -455,6 +455,9 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
             + ("x" * 30000)
         ),
         "label": "paged compatibility fixture",
+        "token_count": 42,
+        "prompt_token_count": 21,
+        "token_budget": 1000,
         "relative_value": "safe\\/relative.txt",
         "fraction": "1\\/2",
         "url": "https:\\/\\/example.com",
@@ -1449,6 +1452,7 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&Expires=2147483647"
             "&Signature=synthetic-gcs-artifact-signature"
         ),
+        "token_count=synthetic-token-metric-artifact-secret",
         (
             '<property name="password" filler="'
             + ("x" * 4_097)

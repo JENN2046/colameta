@@ -2842,7 +2842,7 @@ def test_commander_manifest_reads_preserve_markdown_resource_link_label(
     assert resource_page["content"] == content
 
 
-def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
+def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
     tmp_path: Path,
 ) -> None:
     project = _make_git_checkout(tmp_path)
@@ -2861,6 +2861,10 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         "<password> \n\t </password>\n"
         "<password/>\n"
         "<config:password></config:password>\n"
+        "token_count: 42\n"
+        "prompt_token_count=21\n"
+        "token_budget=1000\n"
+        '{"output_token_count":12}\n'
     )
     (project / "docs" / "review-input.md").write_text(
         content,
@@ -3439,6 +3443,7 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "&Expires=2147483647"
             "&Signature=synthetic-gcs-manifest-signature"
         ),
+        "token_count=synthetic-token-metric-manifest-secret",
         (
             '<property name="password" filler="'
             + ("x" * 4_097)

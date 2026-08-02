@@ -426,6 +426,11 @@ _SENSITIVE_PUBLIC_KEY_RE = re.compile(
     r"|token"
     r")(?:$|_)"
 )
+_NUMERIC_TOKEN_METADATA_KEY_RE = re.compile(
+    r"(?:^|_)tokens?_(?:"
+    r"budget|count|limit|remaining|usage|used"
+    r")(?:$|_)"
+)
 _INTERNAL_ID_PUBLIC_KEY_RE = re.compile(
     r"(?i)^(?:"
     r"audit"
@@ -904,6 +909,10 @@ _BRACKET_ASSIGNMENT_KEY_RE = re.compile(
     r"(?:\[[A-Za-z0-9_. /-]{0,127}\])+"
     r")"
     r")\s*[:=]"
+)
+_NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE = re.compile(
+    r"[ \t]*(?P<value>[0-9]+)[ \t]*"
+    r"(?=$|[,;}\]\r\n])"
 )
 _XML_ELEMENT_TAG_RE = re.compile(
     r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
@@ -3535,6 +3544,9 @@ def _public_value(
             if commander_public_key_is_forbidden(
                 clean_key,
                 include_internal_ids=facts,
+            ) and not commander_public_value_is_numeric_token_metadata(
+                clean_key,
+                nested,
             ):
                 continue
             if strip_actions and normalized_key in _ACTION_CONTAINER_KEYS:
@@ -3628,6 +3640,9 @@ def _validate_public_value(
             if commander_public_key_is_forbidden(
                 clean_key,
                 include_internal_ids=facts,
+            ) and not commander_public_value_is_numeric_token_metadata(
+                clean_key,
+                nested,
             ):
                 raise CommanderContractError(
                     "INTERNAL_RESULT_INVALID",
@@ -3731,6 +3746,21 @@ def commander_public_key_is_forbidden(
     ):
         return True
     return False
+
+
+def commander_public_value_is_numeric_token_metadata(
+    key: Any,
+    value: Any,
+) -> bool:
+    """Allow only non-negative integer metrics under token-like keys."""
+
+    normalized_key = _normalize_public_key_for_match(key)
+    return bool(
+        _NUMERIC_TOKEN_METADATA_KEY_RE.search(normalized_key)
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
 
 
 def _redact_noncommander_tool_references(
@@ -5334,6 +5364,14 @@ def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
         if "+" not in encoded_key and "%" not in encoded_key:
             continue
         decoded_key = unquote_plus(encoded_key)
+        decoded_value = unquote_plus(match.group("value"))
+        if decoded_value.isdecimal() and (
+            commander_public_value_is_numeric_token_metadata(
+                decoded_key,
+                int(decoded_value),
+            )
+        ):
+            continue
         if commander_public_key_is_forbidden(decoded_key):
             return True
     return False
@@ -5549,17 +5587,29 @@ def _bracket_assignment_key(match: re.Match[str]) -> str:
 
 
 def _contains_forbidden_key_assignment(value: str) -> bool:
-    if any(
-        commander_public_key_is_forbidden(_assignment_key(match))
-        for match in _ASSIGNMENT_KEY_RE.finditer(value)
+    for pattern, key_getter in (
+        (_ASSIGNMENT_KEY_RE, _assignment_key),
+        (_BRACKET_ASSIGNMENT_KEY_RE, _bracket_assignment_key),
     ):
-        return True
-    return any(
-        commander_public_key_is_forbidden(
-            _bracket_assignment_key(match)
-        )
-        for match in _BRACKET_ASSIGNMENT_KEY_RE.finditer(value)
-    )
+        for match in pattern.finditer(value):
+            key = key_getter(match)
+            if not commander_public_key_is_forbidden(key):
+                continue
+            numeric_value = (
+                _NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE.match(
+                    value,
+                    match.end(),
+                )
+            )
+            if numeric_value is not None and (
+                commander_public_value_is_numeric_token_metadata(
+                    key,
+                    int(numeric_value.group("value")),
+                )
+            ):
+                continue
+            return True
+    return False
 
 
 def _xml_tag_header_end(value: str, start: int) -> int | None:
