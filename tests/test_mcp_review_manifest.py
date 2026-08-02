@@ -3335,6 +3335,22 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             'synthetic-encoded-oauth-manifest-state"}'
         ),
         (
+            "grant_type=authorization_code"
+            "&code=synthetic-oauth-token-form-manifest-code"
+        ),
+        (
+            '{"body":"grant_type\\u003dauthorization_code'
+            '\\u0026code\\u003d'
+            'synthetic-encoded-token-form-manifest-code"}'
+        ),
+        (
+            "https://distribution.example.invalid/"
+            + ("b" * 8193)
+            + "?Expires=2147483647"
+            "&Signature=synthetic-overflow-manifest-signature"
+            "&Key-Pair-Id=synthetic-overflow-manifest-key-pair"
+        ),
+        (
             "https://distribution.example.invalid/private/report.pdf"
             "?Expires=2147483647"
             "&Signature=synthetic-cloudfront-manifest-signature"

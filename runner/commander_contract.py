@@ -1035,6 +1035,15 @@ _PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
     r"[^\s\"'<>]{1,8192}"
 )
+_PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"[^\s\"'<>]{8192}(?=[^\s\"'<>])"
+)
+_FORM_URLENCODED_SEQUENCE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.%+-])"
+    r"(?P<form>[A-Za-z][A-Za-z0-9_.%+-]{0,255}"
+    r"=[^\s\"'<>]{0,8192})"
+)
 _FORM_URLENCODED_ASSIGNMENT_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_.%+-])"
     r"(?P<key>[A-Za-z][A-Za-z0-9_.%+-]{0,255})"
@@ -4848,9 +4857,11 @@ def _matches_sensitive_material(value: str) -> bool:
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_form(value)
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -5255,6 +5266,31 @@ def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
 
 def _contains_pgpass_password_record(value: str) -> bool:
     return _PGPASS_RECORD_RE.search(value) is not None
+
+
+def _contains_oauth_authorization_code_form(value: str) -> bool:
+    for match in _FORM_URLENCODED_SEQUENCE_RE.finditer(value):
+        has_authorization_code_grant = False
+        has_code = False
+        for field in match.group("form").split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            decoded_value = unquote_plus(field_value)
+            has_authorization_code_grant = (
+                has_authorization_code_grant
+                or (
+                    normalized_key == "grant_type"
+                    and decoded_value.lower() == "authorization_code"
+                )
+            )
+            has_code = has_code or (
+                normalized_key == "code" and bool(decoded_value)
+            )
+            if has_authorization_code_grant and has_code:
+                return True
+    return False
 
 
 def _contains_oauth_authorization_code_query(value: str) -> bool:
@@ -5711,9 +5747,11 @@ def _redact_sensitive_material(value: str) -> str:
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_form(value)
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):

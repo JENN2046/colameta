@@ -2752,6 +2752,46 @@ def test_public_text_redacts_oauth_authorization_code_callbacks(
     "value",
     [
         (
+            "grant_type=authorization_code"
+            "&code=synthetic-oauth-token-form-code"
+            "&redirect_uri=https%3A%2F%2Fclient.example.invalid"
+            "%2Fcallback"
+        ),
+        (
+            "code=synthetic-reordered-token-code"
+            "&grant_type=authorization_code"
+        ),
+        (
+            "grant%5Ftype=authorization%5Fcode"
+            "&%63ode=synthetic-percent-token-code"
+        ),
+        (
+            '{"body":"grant_type\\u003dauthorization_code'
+            '\\u0026code\\u003dsynthetic-encoded-token-code"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "grant%255Ftype%253Dauthorization%255Fcode"
+                    "%2526code%253Dsynthetic-nested-token-code"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_oauth_authorization_code_token_forms(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
             "https://distribution.example.invalid/private/report.pdf"
             "?Expires=2147483647"
             "&Signature=synthetic-cloudfront-signature"
@@ -2782,6 +2822,33 @@ def test_public_text_redacts_oauth_authorization_code_callbacks(
     ],
 )
 def test_public_text_redacts_cloudfront_signed_queries(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://account.blob.core.windows.net/"
+            + ("a" * 8193)
+            + "?sv=2024-11-04"
+            "&sig=synthetic-overflow-sas-signature"
+        ),
+        (
+            "https://distribution.example.invalid/"
+            + ("b" * 8193)
+            + "?Expires=2147483647"
+            "&Signature=synthetic-overflow-cloudfront-signature"
+            "&Key-Pair-Id=synthetic-overflow-key-pair"
+        ),
+    ],
+)
+def test_public_text_fails_closed_for_oversized_url_candidates(
     value: str,
 ) -> None:
     public = commander_public_text(value)
@@ -4469,6 +4536,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "SQLCMDPASSWORD_HINT=use-the-local-prompt",
         "SQLCMDPASSWORD_FILE=relative.sqlcmd.conf",
         "Document SQLCMDPASSWORD handling without assigning it.",
+        "grant_type=client_credentials&code=public-code",
+        "grant_type=authorization_code&code=",
+        "grant_type=authorization_code",
+        "code=public-code-without-grant",
+        "grant_type=authorization_codes&code=public-code",
         "pwd=public-relative-name",
         "_author=Jenn",
         "_authorship=public",

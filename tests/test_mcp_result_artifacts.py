@@ -1388,6 +1388,21 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             'synthetic-encoded-oauth-artifact-state"}'
         ),
         (
+            "grant_type=authorization_code"
+            "&code=synthetic-oauth-token-form-artifact-code"
+        ),
+        (
+            '{"body":"grant_type\\u003dauthorization_code'
+            '\\u0026code\\u003d'
+            'synthetic-encoded-token-form-artifact-code"}'
+        ),
+        (
+            "https://account.blob.core.windows.net/"
+            + ("a" * 8193)
+            + "?sv=2024-11-04"
+            "&sig=synthetic-overflow-sas-artifact-signature"
+        ),
+        (
             "https://distribution.example.invalid/private/report.pdf"
             "?Expires=2147483647"
             "&Signature=synthetic-cloudfront-artifact-signature"
