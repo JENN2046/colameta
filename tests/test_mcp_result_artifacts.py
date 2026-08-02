@@ -10,7 +10,10 @@ import threading
 import pytest
 
 import runner.mcp_server as mcp_server_module
-from runner.commander_contract import validate_commander_response
+from runner.commander_contract import (
+    COMMANDER_PUBLIC_MAX_DEPTH,
+    validate_commander_response,
+)
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_server import (
     COMMANDER_APP_WIDGET_URI,
@@ -31,6 +34,13 @@ def _percent_encode_layers(value: str, layers: int) -> str:
             for character in encoded
         )
     return encoded
+
+
+def _nest_json_containers(value: object) -> object:
+    nested = value
+    for _ in range(COMMANDER_PUBLIC_MAX_DEPTH + 1):
+        nested = {"layer": nested}
+    return nested
 
 
 SYNTHETIC_JWT = (
@@ -1819,6 +1829,130 @@ def test_commander_artifact_reads_reject_oauth_device_authorization(
         == "evidence_unavailable"
     )
     assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "credential_kind",
+    ("private-jwk", "oauth-device"),
+)
+def test_commander_artifact_reads_fail_closed_at_structured_depth_limit(
+    tmp_path,
+    credential_kind: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    secret = f"synthetic-depth-{credential_kind}-secret"
+    credential = (
+        {"kty": "RSA", "d": secret}
+        if credential_kind == "private-jwk"
+        else {"device_code": secret, "user_code": "ABCD-EFGH"}
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "content": json.dumps(
+                _nest_json_containers(credential),
+            )
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert secret not in json.dumps(resource, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "password[]=synthetic-artifact-bracket-secret",
+        (
+            "database[password]="
+            "synthetic-artifact-nested-bracket-secret"
+        ),
+    ),
+)
+def test_commander_artifact_reads_reject_bracket_assignments(
+    tmp_path,
+    assignment: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": assignment},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-artifact" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-artifact" not in json.dumps(
         resource,
         ensure_ascii=False,
     )

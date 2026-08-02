@@ -17,7 +17,10 @@ import pytest
 
 import runner.mcp_review_manifest as mcp_review_manifest_module
 import runner.mcp_server as mcp_server_module
-from runner.commander_contract import validate_commander_response
+from runner.commander_contract import (
+    COMMANDER_PUBLIC_MAX_DEPTH,
+    validate_commander_response,
+)
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
@@ -53,6 +56,13 @@ def _percent_encode_layers(value: str, layers: int) -> str:
             for character in encoded
         )
     return encoded
+
+
+def _nest_json_containers(value: object) -> object:
+    nested = value
+    for _ in range(COMMANDER_PUBLIC_MAX_DEPTH + 1):
+        nested = {"layer": nested}
+    return nested
 
 
 SYNTHETIC_JWT = (
@@ -2633,6 +2643,113 @@ def test_commander_manifest_reads_reject_oauth_device_authorization(
         == "evidence_unavailable"
     )
     assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "credential_kind",
+    ("private-jwk", "oauth-device"),
+)
+def test_commander_manifest_reads_fail_closed_at_structured_depth_limit(
+    tmp_path: Path,
+    credential_kind: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    secret = f"synthetic-depth-{credential_kind}-secret"
+    credential = (
+        {"kty": "EC", "d": secret}
+        if credential_kind == "private-jwk"
+        else {"device_code": secret, "expires_in": 600}
+    )
+    content = json.dumps(_nest_json_containers(credential))
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert secret not in json.dumps(resource, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "password[]=synthetic-manifest-bracket-secret",
+        (
+            "database[password]="
+            "synthetic-manifest-nested-bracket-secret"
+        ),
+    ),
+)
+def test_commander_manifest_reads_reject_bracket_assignments(
+    tmp_path: Path,
+    assignment: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    (project / "docs" / "review-input.md").write_text(
+        assignment,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-manifest" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-manifest" not in json.dumps(
         resource,
         ensure_ascii=False,
     )

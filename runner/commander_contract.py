@@ -878,6 +878,26 @@ _ASSIGNMENT_KEY_RE = re.compile(
     r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. \t-]{0,127})"
     r")\s*[:=]"
 )
+_BRACKET_ASSIGNMENT_KEY_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(?:"
+    r"(?P<bracket_key_quote>[\"'])"
+    r"(?P<quoted_bracket_base>"
+    r"[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127}"
+    r")"
+    r"(?P<quoted_bracket_segments>"
+    r"(?:\[[A-Za-z0-9_. /-]{0,127}\])+"
+    r")"
+    r"(?P=bracket_key_quote)"
+    r"|"
+    r"(?P<bare_bracket_base>"
+    r"[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127}"
+    r")"
+    r"(?P<bare_bracket_segments>"
+    r"(?:\[[A-Za-z0-9_. /-]{0,127}\])+"
+    r")"
+    r")\s*[:=]"
+)
 _XML_ELEMENT_TAG_RE = re.compile(
     r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
     r"(?=[\t\n\r />])"
@@ -5105,6 +5125,8 @@ def _contains_structured_json_mapping(
                     (nested, depth + 1)
                     for nested in node.values()
                 )
+            elif node and exhaustion_hint(value):
+                return True
             continue
         if isinstance(node, list):
             if depth < COMMANDER_PUBLIC_MAX_DEPTH:
@@ -5112,14 +5134,18 @@ def _contains_structured_json_mapping(
                     (nested, depth + 1)
                     for nested in node
                 )
+            elif node and exhaustion_hint(value):
+                return True
             continue
-        if (
-            isinstance(node, str)
-            and depth
-            < _STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH
-            and enqueue_json_containers(node, depth + 1)
-        ):
-            return True
+        if isinstance(node, str):
+            if (
+                depth
+                < _STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH
+            ):
+                if enqueue_json_containers(node, depth + 1):
+                    return True
+            elif node and exhaustion_hint(node):
+                return True
     return False
 
 
@@ -5217,10 +5243,29 @@ def _assignment_key(match: re.Match[str]) -> str:
     return str(match.group("quoted_key") or match.group("bare_key") or "")
 
 
+def _bracket_assignment_key(match: re.Match[str]) -> str:
+    return "".join(
+        str(match.group(name) or "")
+        for name in (
+            "quoted_bracket_base",
+            "quoted_bracket_segments",
+            "bare_bracket_base",
+            "bare_bracket_segments",
+        )
+    )
+
+
 def _contains_forbidden_key_assignment(value: str) -> bool:
-    return any(
+    if any(
         commander_public_key_is_forbidden(_assignment_key(match))
         for match in _ASSIGNMENT_KEY_RE.finditer(value)
+    ):
+        return True
+    return any(
+        commander_public_key_is_forbidden(
+            _bracket_assignment_key(match)
+        )
+        for match in _BRACKET_ASSIGNMENT_KEY_RE.finditer(value)
     )
 
 

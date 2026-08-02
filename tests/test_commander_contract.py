@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from runner.commander_contract import (
     COMMANDER_OUTCOMES,
     COMMANDER_PUBLIC_ERROR_CODES,
+    COMMANDER_PUBLIC_MAX_DEPTH,
     COMMANDER_RESPONSE_FIELDS,
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     COMMANDER_TEXT_MAX_CHARS,
@@ -33,6 +34,13 @@ def _percent_encode_layers(value: str, layers: int) -> str:
             for character in encoded
         )
     return encoded
+
+
+def _nest_json_containers(value: object) -> object:
+    nested = value
+    for _ in range(COMMANDER_PUBLIC_MAX_DEPTH + 1):
+        nested = {"layer": nested}
+    return nested
 
 
 ARTIFACT_ID = "artifact_handle_1234567890"
@@ -2831,6 +2839,54 @@ def test_public_text_preserves_unrelated_device_identifiers(
     assert commander_public_text(value) == value
 
 
+@pytest.mark.parametrize(
+    "credential",
+    [
+        {
+            "kty": "RSA",
+            "d": "synthetic-depth-private-coordinate",
+        },
+        {
+            "device_code": "synthetic-depth-device-secret",
+            "user_code": "ABCD-EFGH",
+        },
+    ],
+    ids=("private-jwk", "oauth-device"),
+)
+def test_public_text_fails_closed_for_depth_exhausted_credentials(
+    credential: dict[str, str],
+) -> None:
+    value = json.dumps(_nest_json_containers(credential))
+
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-depth" not in public
+
+
+@pytest.mark.parametrize(
+    "public_mapping",
+    [
+        {
+            "kty": "RSA",
+            "n": "synthetic-public-modulus",
+            "e": "AQAB",
+        },
+        {
+            "device_code": "public-sensor-identifier",
+            "model": "weather-station",
+        },
+    ],
+    ids=("public-jwk", "device-identifier"),
+)
+def test_public_text_preserves_depth_exhausted_public_mappings(
+    public_mapping: dict[str, str],
+) -> None:
+    value = json.dumps(_nest_json_containers(public_mapping))
+
+    assert commander_public_text(value) == value
+
+
 def test_commander_response_omits_structured_oauth_device_response() -> None:
     device_secret = "synthetic-structured-device-secret"
     response = build_commander_response(
@@ -2955,6 +3011,66 @@ def test_public_text_redacts_normalized_sensitive_key_assignments(
         "synthetic-nested-unquoted-spaced-secret",
     ):
         assert fragment not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "password[]=synthetic-bracket-secret",
+        "database[password]=synthetic-nested-bracket-secret",
+        (
+            "credentials[0][client_secret]="
+            "synthetic-indexed-bracket-secret"
+        ),
+        (
+            "root"
+            + ("[item]" * 12)
+            + "[password]=synthetic-deep-bracket-secret"
+        ),
+        '{"password[]":"synthetic-json-bracket-secret"}',
+        (
+            '{"database\\u005bpassword\\u005d":'
+            '"synthetic-escaped-bracket-secret"}'
+        ),
+        (
+            "database%5Bpassword%5D="
+            "synthetic-percent-bracket-secret"
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "credentials\\u005b0\\u005d"
+                    "\\u005bclient_secret\\u005d="
+                    "synthetic-nested-encoded-bracket-secret"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_bracket_notation_assignments(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "filters[region]=public",
+        "database[public_key]=public",
+        "items[0][label]=public",
+        "filters" + ("[region]" * 12) + "=public",
+        "password[=malformed-public-example",
+        "Document database[password] fields without assigning one.",
+    ],
+)
+def test_public_text_preserves_safe_bracket_notation(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
 
 
 @pytest.mark.parametrize(
