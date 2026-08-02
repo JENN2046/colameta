@@ -170,6 +170,7 @@ ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
 )
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+SYNTHETIC_STRIPE_WEBHOOK_SECRET = "whsec_" + ("C3_" * 16)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
     SYNTHETIC_STRIPE_SECRET_KEY.replace(
         "sk_live_",
@@ -2875,6 +2876,11 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         "prompt_token_count=21\n"
         "token_budget=1000\n"
         '{"output_token_count":12}\n'
+        "password:\n"
+        "password=\n"
+        "password: # supplied locally\n"
+        '"client_secret": ""\n'
+        "config[password]=\n"
         "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
         "'e': 'AQAB'}\n"
     )
@@ -3298,6 +3304,8 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         ),
         SYNTHETIC_STRIPE_SECRET_KEY,
         SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("_", "%5F"),
         f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
         json.dumps(
             {

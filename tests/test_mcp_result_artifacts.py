@@ -148,6 +148,7 @@ ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
 )
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+SYNTHETIC_STRIPE_WEBHOOK_SECRET = "whsec_" + ("C3_" * 16)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
     SYNTHETIC_STRIPE_SECRET_KEY.replace(
         "sk_live_",
@@ -1310,6 +1311,8 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         SYNTHETIC_STRIPE_SECRET_KEY,
         SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("_", "%5F"),
         f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
         json.dumps(
             {
@@ -2178,6 +2181,11 @@ def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
             '<entry key="password" value=""/>\n'
             '<entry key="password"> \n\t </entry>\n'
             '<property name="public-key">public-material</property>\n'
+            "password:\n"
+            "password=\n"
+            "password: # supplied locally\n"
+            '"client_secret": ""\n'
+            "config[password]=\n"
             "<password></password>\n"
             "<password> \n\t </password>\n"
             "<password/>\n"

@@ -855,12 +855,13 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|private_key"
     r"|secret"
     r"|token"
-    r")[\"']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?(?:"
-    r"\"(?:\\.|[^\"\\])*\""
-    r"|'(?:\\.|[^'\\])*'"
-    r"|\"(?:\\.|[^\"\\])*$"
-    r"|'(?:\\.|[^'\\])*$"
-    r"|[^\s,;]+"
+    r")[\"']?[ \t]*[:=][ \t]*(?:(?:bearer|basic)[ \t]+)?"
+    r"(?![#;,}\]\r\n])(?:"
+    r"\"(?:\\.|[^\"\\])+\""
+    r"|'(?:\\.|[^'\\])+'"
+    r"|\"(?:\\.|[^\"\\])+$"
+    r"|'(?:\\.|[^'\\])+$"
+    r"|[^\s,;\"']+"
     r")"
 )
 _SENSITIVE_CLI_OPTION_RE = re.compile(
@@ -1065,6 +1066,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"GOCSPX-[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9_-])"
     r"|[sr]k_(?:live|test)_[A-Za-z0-9]{24}(?![A-Za-z0-9_-])"
+    r"|whsec_[A-Za-z0-9_-]{24,128}(?![A-Za-z0-9_-])"
     r"|xox[abprs]-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
     r"|xapp-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
     r"|sk-(?:proj-|svcacct-)?"
@@ -5814,6 +5816,24 @@ def _bracket_assignment_key(match: re.Match[str]) -> str:
     )
 
 
+def _assignment_has_value_token(value: str, start: int) -> bool:
+    cursor = start
+    while cursor < len(value) and value[cursor] in " \t":
+        cursor += 1
+    if (
+        cursor >= len(value)
+        or value[cursor] in "\r\n,;}]#"
+    ):
+        return False
+    if (
+        value[cursor] in {'"', "'"}
+        and cursor + 1 < len(value)
+        and value[cursor + 1] == value[cursor]
+    ):
+        return False
+    return True
+
+
 def _contains_forbidden_key_assignment(value: str) -> bool:
     for pattern, key_getter in (
         (_ASSIGNMENT_KEY_RE, _assignment_key),
@@ -5822,6 +5842,8 @@ def _contains_forbidden_key_assignment(value: str) -> bool:
         for match in pattern.finditer(value):
             key = key_getter(match)
             if not commander_public_key_is_forbidden(key):
+                continue
+            if not _assignment_has_value_token(value, match.end()):
                 continue
             numeric_value = (
                 _NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE.match(

@@ -160,6 +160,10 @@ ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
 )
 SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
 SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+SYNTHETIC_STRIPE_WEBHOOK_SECRET = "whsec_" + ("C3_" * 16)
+ESCAPED_SYNTHETIC_STRIPE_WEBHOOK_SECRET = (
+    SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("whsec_", "whsec\\u005f")
+)
 ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
     SYNTHETIC_STRIPE_SECRET_KEY.replace(
         "sk_live_",
@@ -2569,6 +2573,9 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
         ),
         SYNTHETIC_STRIPE_SECRET_KEY,
         SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("_", "%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_WEBHOOK_SECRET}"}}',
         (
             "https://stripe.example.invalid/callback?key="
             f"{SYNTHETIC_STRIPE_SECRET_KEY}"
@@ -2642,6 +2649,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "shpat_" not in public
     assert "SG." not in public
     assert "GOCSPX-" not in public
+    assert "whsec_" not in public
     assert "hooks.slack" not in public
     assert "discord.com/api/webhooks" not in public
 
@@ -4846,6 +4854,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "sk_live_<redacted>",
         "sk_live_" + ("A" * 25),
         "rk_test_short",
+        "whsec_short",
+        "whsec_<redacted>",
+        "whsec_" + ("A" * 23),
+        "whsec_" + ("A" * 129),
+        "xwhsec_" + ("A" * 32),
         "pk_live_" + ("A" * 24),
         "pk_test_" + ("A" * 24),
         "xoxb-short",
@@ -4966,6 +4979,12 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "client-key-data-file: relative-client-key.pem",
         "client-key-data-hint: use-local-agent",
         "Document client-key-data handling without assigning it.",
+        "password:",
+        "password=",
+        "password:   ",
+        "password: # supplied locally",
+        '"client_secret": ""',
+        "config[password]=",
         "public key: synthetic-public-value",
         "Discuss the api key rotation policy.",
     ],
