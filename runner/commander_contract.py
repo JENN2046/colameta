@@ -3573,6 +3573,9 @@ def _public_value(
             or commander_public_mapping_is_oauth_device_authorization(
                 value
             )
+            or commander_public_mapping_is_oauth_authorization_callback(
+                value
+            )
             or commander_public_mapping_is_cloudfront_signed_cookie(
                 value
             )
@@ -3659,6 +3662,9 @@ def _validate_public_value(
         if (
             commander_public_mapping_is_private_jwk(value)
             or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+            or commander_public_mapping_is_oauth_authorization_callback(
                 value
             )
             or commander_public_mapping_is_cloudfront_signed_cookie(
@@ -4987,6 +4993,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
         or _contains_oauth_authorization_code_query(value)
+        or _contains_oauth_authorization_callback_material(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
         or _contains_cloudfront_signed_cookie_fields(value)
@@ -5188,6 +5195,26 @@ def commander_public_mapping_is_oauth_device_authorization(
     )
 
 
+def commander_public_mapping_is_oauth_authorization_callback(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect one parsed OAuth callback mapping without joining siblings."""
+
+    has_code = False
+    has_state = False
+    for key, nested in value.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.casefold()
+        has_code = has_code or (
+            normalized_key == "code"
+            and isinstance(nested, str)
+            and bool(nested)
+        )
+        has_state = has_state or normalized_key == "state"
+    return has_code and has_state
+
+
 def commander_public_mapping_is_cloudfront_signed_cookie(
     value: dict[Any, Any],
 ) -> bool:
@@ -5245,6 +5272,14 @@ def _oauth_device_authorization_text_hint(value: str) -> bool:
             *_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS,
             *_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS,
         )
+    )
+
+
+def _oauth_authorization_callback_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        ('"code"' in lowered or "'code'" in lowered)
+        and ('"state"' in lowered or "'state'" in lowered)
     )
 
 
@@ -5530,6 +5565,20 @@ def _contains_oauth_device_authorization_material(
             commander_public_mapping_is_oauth_device_authorization
         ),
         exhaustion_hint=_oauth_device_authorization_text_hint,
+    )
+
+
+def _contains_oauth_authorization_callback_material(
+    value: str,
+) -> bool:
+    """Detect a code only in the same parsed callback object as state."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_oauth_authorization_callback
+        ),
+        exhaustion_hint=_oauth_authorization_callback_text_hint,
     )
 
 
@@ -6141,6 +6190,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
         or _contains_oauth_authorization_code_query(value)
+        or _contains_oauth_authorization_callback_material(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
         or _contains_cloudfront_signed_cookie_fields(value)

@@ -3417,6 +3417,14 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             'synthetic-encoded-oauth-manifest-state"}'
         ),
         (
+            '{"code":"synthetic-structured-oauth-manifest-code",'
+            '"state":"synthetic-structured-oauth-manifest-state"}'
+        ),
+        (
+            "{'code': 'synthetic-python-oauth-manifest-code', "
+            "'state': 'synthetic-python-oauth-manifest-state'}"
+        ),
+        (
             "grant_type=authorization_code"
             "&code=synthetic-oauth-token-form-manifest-code"
         ),

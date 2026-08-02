@@ -2810,6 +2810,32 @@ def test_public_text_redacts_form_encoded_sensitive_key_assignments(
                 )
             }
         ),
+        json.dumps(
+            {
+                "code": "synthetic-structured-oauth-code",
+                "state": "synthetic-structured-oauth-state",
+            }
+        ),
+        json.dumps(
+            {
+                "STATE": "",
+                "Code": "synthetic-casefold-oauth-code",
+            }
+        ),
+        (
+            "{'code': 'synthetic-python-oauth-code', "
+            "'state': 'synthetic-python-oauth-state'}"
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "code": "synthetic-nested-oauth-code",
+                        "state": "synthetic-nested-oauth-state",
+                    }
+                )
+            }
+        ),
     ],
 )
 def test_public_text_redacts_oauth_authorization_code_callbacks(
@@ -3263,6 +3289,28 @@ def test_commander_response_omits_structured_oauth_device_response() -> None:
     assert device_secret not in rendered
     assert response["facts"]["status"] == "clean"
     assert "device_authorization" not in response["facts"]
+    validate_commander_response(response)
+
+
+def test_commander_response_omits_structured_oauth_callback() -> None:
+    authorization_code = "synthetic-structured-oauth-callback-code"
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "status": "clean",
+            "oauth_callback": {
+                "code": authorization_code,
+                "state": "synthetic-structured-oauth-callback-state",
+            },
+        },
+        params={},
+    )
+
+    rendered = json.dumps(response, ensure_ascii=False)
+    assert authorization_code not in rendered
+    assert response["facts"]["status"] == "clean"
+    assert "oauth_callback" not in response["facts"]
     validate_commander_response(response)
 
 
@@ -4873,6 +4921,14 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             "https://client.example.invalid/callback"
             "?code=&state=public-state"
         ),
+        '{"code":"public-code-without-structured-state"}',
+        '{"state":"public-state-without-structured-code"}',
+        '{"code":"","state":"public-structured-state"}',
+        (
+            '{"first":{"code":"public-separated-code"},'
+            '"second":{"state":"public-separated-state"}}'
+        ),
+        '{"code":42,"state":"public-non-string-code"}',
         (
             "https://distribution.example.invalid/private/report.pdf"
             "?Expires=2147483647"

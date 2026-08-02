@@ -1429,6 +1429,14 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             'synthetic-encoded-oauth-artifact-state"}'
         ),
         (
+            '{"code":"synthetic-structured-oauth-artifact-code",'
+            '"state":"synthetic-structured-oauth-artifact-state"}'
+        ),
+        (
+            "{'code': 'synthetic-python-oauth-artifact-code', "
+            "'state': 'synthetic-python-oauth-artifact-state'}"
+        ),
+        (
             "grant_type=authorization_code"
             "&code=synthetic-oauth-token-form-artifact-code"
         ),
