@@ -8,6 +8,7 @@ transport-specific packaging and its existing path-redaction boundary.
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 from bisect import bisect_right
@@ -1015,6 +1016,7 @@ _PRIVATE_JWK_ASYMMETRIC_KEY_TYPES = frozenset({"RSA", "EC", "OKP"})
 _STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES = 64
 _STRUCTURED_CREDENTIAL_MAX_NODES = 4_096
 _STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH = 4
+_STRUCTURED_CREDENTIAL_MAX_PYTHON_LITERAL_CHARS = 8_192
 _OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS = frozenset(
     {
         "user_code",
@@ -5239,13 +5241,96 @@ def _cloudfront_signed_cookie_text_hint(value: str) -> bool:
     )
 
 
+def _bounded_python_literal_container_end(
+    value: str,
+    start: int,
+) -> tuple[int | None, bool]:
+    expected_closers: list[str] = []
+    quote: str | None = None
+    escaped = False
+    limit = min(
+        len(value),
+        start + _STRUCTURED_CREDENTIAL_MAX_PYTHON_LITERAL_CHARS,
+    )
+    closer_by_opener = {"{": "}", "[": "]", "(": ")"}
+    for cursor in range(start, limit):
+        character = value[cursor]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character in closer_by_opener:
+            expected_closers.append(closer_by_opener[character])
+            if len(expected_closers) > COMMANDER_PUBLIC_MAX_DEPTH + 1:
+                return None, True
+            continue
+        if character in "}])":
+            if not expected_closers or character != expected_closers[-1]:
+                return None, False
+            expected_closers.pop()
+            if not expected_closers:
+                return cursor + 1, False
+    return None, bool(expected_closers and limit < len(value))
+
+
+def _bounded_python_literal_value(value: str) -> Any | None:
+    if "'" not in value:
+        return None
+    try:
+        expression = ast.parse(value, mode="eval")
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return None
+    remaining_nodes = _STRUCTURED_CREDENTIAL_MAX_NODES
+
+    def convert(node: ast.AST, depth: int) -> Any:
+        nonlocal remaining_nodes
+        remaining_nodes -= 1
+        if remaining_nodes < 0 or depth > COMMANDER_PUBLIC_MAX_DEPTH:
+            raise ValueError("Python literal exceeds structured scan limits")
+        if isinstance(node, ast.Dict):
+            pairs = _StructuredJsonObjectPairs()
+            for key_node, value_node in zip(node.keys, node.values):
+                if (
+                    not isinstance(key_node, ast.Constant)
+                    or not isinstance(key_node.value, str)
+                ):
+                    raise ValueError("Python mapping key is not a string")
+                pairs.append(
+                    (
+                        key_node.value,
+                        convert(value_node, depth + 1),
+                    )
+                )
+            return pairs
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [convert(item, depth + 1) for item in node.elts]
+        if isinstance(node, ast.Constant) and (
+            node.value is None
+            or isinstance(node.value, (bool, int, float, str))
+        ):
+            return node.value
+        raise ValueError("Unsupported Python literal node")
+
+    try:
+        return convert(expression.body, 0)
+    except (MemoryError, RecursionError, ValueError):
+        return None
+
+
 def _contains_structured_json_mapping(
     value: str,
     *,
     mapping_predicate: Callable[[dict[Any, Any]], bool],
     exhaustion_hint: Callable[[str], bool],
 ) -> bool:
-    """Scan bounded JSON containers for one structured credential mapping."""
+    """Scan bounded JSON/Python-literal structured credential mappings."""
 
     stack: list[tuple[Any, int]] = []
     remaining_candidates = (
@@ -5330,7 +5415,23 @@ def _contains_structured_json_mapping(
             try:
                 candidate, end = decoder.raw_decode(text, start)
             except (RecursionError, ValueError):
-                cursor = start + 1
+                end, exhausted = _bounded_python_literal_container_end(
+                    text,
+                    start,
+                )
+                if exhausted:
+                    return exhaustion_hint(text)
+                candidate = (
+                    None
+                    if end is None
+                    else _bounded_python_literal_value(text[start:end])
+                )
+                if candidate is None:
+                    cursor = start + 1
+                    continue
+                if isinstance(candidate, (dict, list)):
+                    stack.append((candidate, depth))
+                cursor = max(start + 1, end)
                 continue
             if isinstance(candidate, (dict, list)):
                 stack.append((candidate, depth))

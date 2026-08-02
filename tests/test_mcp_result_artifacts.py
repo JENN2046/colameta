@@ -458,6 +458,10 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
         "token_count": 42,
         "prompt_token_count": 21,
         "token_budget": 1000,
+        "python_repr_public_jwk": (
+            "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
+            "'e': 'AQAB'}"
+        ),
         "relative_value": "safe\\/relative.txt",
         "fraction": "1\\/2",
         "url": "https:\\/\\/example.com",
@@ -1456,6 +1460,14 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         "token_count_secret=123456",
         "token_budget_password: 987654",
         "token_count=" + ("9" * 5_000),
+        (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-python-artifact-private-coordinate'}"
+        ),
+        (
+            "{'device_code': 'synthetic-python-artifact-device-code', "
+            "'user_code': 'ARTF-REPR'}"
+        ),
         (
             '<property name="password" filler="'
             + ("x" * 4_097)

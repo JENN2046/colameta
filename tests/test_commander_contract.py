@@ -3038,6 +3038,25 @@ def test_public_text_fails_closed_for_oversized_url_candidates(
             '"user_code":"IJKL-MNOP"}'
         ),
         (
+            "{'device_code': 'synthetic-python-device-secret', "
+            "'user_code': 'ABCD-EFGH', "
+            "'verification_uri': 'https://example.test/device'}"
+        ),
+        (
+            "Python response: {'device_code': "
+            "'synthetic-embedded-python-device-secret', "
+            "'expires_in': 600}"
+        ),
+        (
+            "{'device_code': 'synthetic-duplicate-python-device-secret', "
+            "'device_code': '', 'user_code': 'DUPL-REPR'}"
+        ),
+        _percent_encode_layers(
+            "{'device_code': 'synthetic-percent-python-device-secret', "
+            "'user_code': 'PERC-REPR'}",
+            1,
+        ),
+        (
             '{"device\\u005fcode":"synthetic-escaped-device-secret",'
             '"user\\u005fcode":"QRST-UVWX"}'
         ),
@@ -4330,6 +4349,23 @@ def test_public_text_redacts_standalone_age_x25519_identities(
             '"d":"synthetic-embedded-private-coordinate"}'
         ),
         (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-python-private-coordinate'}"
+        ),
+        (
+            "Python JWK: [{'kty': 'EC', "
+            "'d': 'synthetic-nested-python-private-coordinate'}]"
+        ),
+        (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-duplicate-python-coordinate', 'd': ''}"
+        ),
+        _percent_encode_layers(
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-percent-python-coordinate'}",
+            1,
+        ),
+        (
             '{"\\u006bty":"RSA","\\u0064":'
             '"synthetic-escaped-private-coordinate"}'
         ),
@@ -4375,6 +4411,20 @@ def test_public_text_redacts_structured_private_jwk_material(
     assert "synthetic-" not in public
 
 
+def test_public_text_fails_closed_for_oversized_python_repr_credentials(
+) -> None:
+    value = (
+        "{'kty': 'RSA', 'd': 'synthetic-oversized-private-coordinate', "
+        "'padding': '"
+        + ("x" * 8_193)
+    )
+
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -4410,6 +4460,11 @@ def test_public_text_redacts_structured_private_jwk_material(
             }
         ),
         json.dumps({"kty": "RSA", "d": ""}),
+        "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
+        "'e': 'AQAB'}",
+        "{'d': 'ordinary-python-derivative', 'note': 'No JWK type'}",
+        "{'device_code': 'public-sensor-id', 'model': 'weather-station'}",
+        "{'kty': 'RSA', 'd': build_public_coordinate()}",
     ],
 )
 def test_public_text_preserves_public_jwk_and_unrelated_d_fields(

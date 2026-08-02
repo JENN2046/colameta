@@ -2865,6 +2865,8 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         "prompt_token_count=21\n"
         "token_budget=1000\n"
         '{"output_token_count":12}\n'
+        "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
+        "'e': 'AQAB'}\n"
     )
     (project / "docs" / "review-input.md").write_text(
         content,
@@ -3447,6 +3449,14 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         "token_count_secret=123456",
         "token_budget_password: 987654",
         "token_count=" + ("9" * 5_000),
+        (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-python-manifest-private-coordinate'}"
+        ),
+        (
+            "{'device_code': 'synthetic-python-manifest-device-code', "
+            "'user_code': 'MNFT-REPR'}"
+        ),
         (
             '<property name="password" filler="'
             + ("x" * 4_097)
