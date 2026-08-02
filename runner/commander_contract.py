@@ -354,6 +354,7 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "password",
         "passwd",
         "pgpassword",
+        "sqlcmdpassword",
         "pid",
         "ppid",
         "private_key",
@@ -5563,15 +5564,23 @@ def _contains_sensitive_xml_element(value: str) -> bool:
     if _contains_sensitive_xml_sibling_elements(value):
         return True
 
-    open_elements: list[str] = []
+    open_elements: list[tuple[str, int]] = []
     labeled_elements: list[tuple[str, int]] = []
     for match in _XML_ELEMENT_TAG_RE.finditer(value):
         tag = match.group("tag")
         tag_is_forbidden = commander_public_key_is_forbidden(tag)
         normalized_tag = _normalize_public_key_for_match(tag)
         if match.group("closing"):
-            if tag_is_forbidden and normalized_tag in open_elements:
-                return True
+            for index in range(len(open_elements) - 1, -1, -1):
+                open_tag, body_start = open_elements[index]
+                if open_tag != normalized_tag:
+                    continue
+                del open_elements[index]
+                if _xml_element_body_is_nonempty(
+                    value[body_start : match.start()]
+                ):
+                    return True
+                break
             for index in range(len(labeled_elements) - 1, -1, -1):
                 labeled_tag, body_start = labeled_elements[index]
                 if labeled_tag != tag:
@@ -5608,16 +5617,25 @@ def _contains_sensitive_xml_element(value: str) -> bool:
             labeled_elements.append((tag, header_end + 1))
         if not tag_is_forbidden:
             continue
-        # Attributes and self-closing syntax can carry the credential without
-        # a later body, so their sensitive tag is sufficient evidence.
-        if header.strip():
+        is_self_closing = header.endswith("/")
+        header_without_self_close = (
+            header[:-1] if is_self_closing else header
+        )
+        # Attributes or malformed tag syntax can carry a credential without
+        # a later body.  A bare self-closing credential field is empty.
+        if header_without_self_close.strip():
             return True
+        if is_self_closing:
+            continue
         if len(open_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
             return True
-        open_elements.append(normalized_tag)
+        open_elements.append((normalized_tag, header_end + 1))
     return any(
         _xml_element_body_is_nonempty(value[body_start:])
         for _, body_start in labeled_elements
+    ) or any(
+        _xml_element_body_is_nonempty(value[body_start:])
+        for _, body_start in open_elements
     )
 
 

@@ -2811,6 +2811,10 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         '<entry key="password" value=""/>\n'
         '<entry key="password"> \n\t </entry>\n'
         '<property name="public-key">public-material</property>\n'
+        "<password></password>\n"
+        "<password> \n\t </password>\n"
+        "<password/>\n"
+        "<config:password></config:password>\n"
     )
     (project / "docs" / "review-input.md").write_text(
         content,
@@ -3354,6 +3358,11 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
         (
             '{"env":"MYSQL\\u005fPWD\\u003d'
             'synthetic-encoded-mysql-manifest-password"}'
+        ),
+        "SQLCMDPASSWORD=synthetic-sqlcmd-manifest-password",
+        (
+            '{"env":"SQLCMDPASSWORD\\u003d'
+            'synthetic-encoded-sqlcmd-manifest-password"}'
         ),
         json.dumps(
             {

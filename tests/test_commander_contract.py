@@ -3417,6 +3417,16 @@ def test_public_text_redacts_xml_serialized_rsa_private_keys(
         "<property><name>password</name></property>",
         "<property><type>password</type></property>",
         "<property><value>synthetic-public-material</value></property>",
+        "<password></password>",
+        "<password> \n\t </password>",
+        "<password/>",
+        "<password />",
+        "<config:password></config:password>",
+        (
+            '{"xml":"\\u003cpassword\\u003e'
+            '\\u003c/password\\u003e"}'
+        ),
+        "&lt;password&gt; \n\t &lt;/password&gt;",
         (
             "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
             "<Exponent>AQAB</Exponent></RSAKeyValue>"
@@ -3708,6 +3718,22 @@ def test_public_text_redacts_pgpass_password_records(value: str) -> None:
             {
                 "wrapped": (
                     "MYSQL%255FPWD%253Dsynthetic-nested-mysql-password"
+                )
+            }
+        ),
+        "SQLCMDPASSWORD=synthetic-sqlcmd-password",
+        "sqlcmdpassword=synthetic-lowercase-sqlcmd-password",
+        '{"SQLCMDPASSWORD":"synthetic-json-sqlcmd-password"}',
+        (
+            '{"env":"SQLCMDPASSWORD\\u003d'
+            'synthetic-encoded-sqlcmd-password"}'
+        ),
+        "SQLCMDPASSWORD%3Dsynthetic-percent-sqlcmd-password",
+        json.dumps(
+            {
+                "wrapped": (
+                    "SQLCMDPASSWORD%253D"
+                    "synthetic-nested-sqlcmd-password"
                 )
             }
         ),
@@ -4444,6 +4470,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "MYSQL_PWD_HINT=use-the-local-prompt",
         "MYSQL_PWD_FILE=relative.mysql.cnf",
         "Document MYSQL_PWD handling without assigning it.",
+        "SQLCMDPASSWORD_HINT=use-the-local-prompt",
+        "SQLCMDPASSWORD_FILE=relative.sqlcmd.conf",
+        "Document SQLCMDPASSWORD handling without assigning it.",
         "pwd=public-relative-name",
         "_author=Jenn",
         "_authorship=public",

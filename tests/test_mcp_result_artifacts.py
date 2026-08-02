@@ -1412,6 +1412,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             '{"env":"MYSQL\\u005fPWD\\u003d'
             'synthetic-encoded-mysql-artifact-password"}'
         ),
+        "SQLCMDPASSWORD=synthetic-sqlcmd-artifact-password",
+        (
+            '{"env":"SQLCMDPASSWORD\\u003d'
+            'synthetic-encoded-sqlcmd-artifact-password"}'
+        ),
         json.dumps(
             {
                 "wrapped": (
@@ -2058,7 +2063,11 @@ def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
             '<entry key="public-key" value="public-material"/>\n'
             '<entry key="password" value=""/>\n'
             '<entry key="password"> \n\t </entry>\n'
-            '<property name="public-key">public-material</property>'
+            '<property name="public-key">public-material</property>\n'
+            "<password></password>\n"
+            "<password> \n\t </password>\n"
+            "<password/>\n"
+            "<config:password></config:password>"
         )
     }
     handle = server._mcp_result_artifact_store.put(
