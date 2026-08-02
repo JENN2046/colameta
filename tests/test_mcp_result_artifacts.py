@@ -75,6 +75,10 @@ ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
     "dapi",
     "\\u0064api",
 )
+SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
+    SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -1159,6 +1163,16 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             {
                 "wrapped": json.dumps(
                     {"access": ESCAPED_SYNTHETIC_DATABRICKS_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_VAULT_SERVICE_TOKEN,
+        SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}
                 )
             }
         ),

@@ -88,6 +88,10 @@ ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
     "dapi",
     "\\u0064api",
 )
+SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
+    SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -2403,6 +2407,20 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_VAULT_SERVICE_TOKEN,
+        (
+            "https://vault.example.invalid/ui?token="
+            f"{SYNTHETIC_VAULT_SERVICE_TOKEN}"
+        ),
+        SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}
+                )
+            }
+        ),
         SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
         (
             "https://shop.example.invalid/admin?token="
@@ -2585,6 +2603,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "github_pat_" not in public
     assert "hf_" not in public
     assert "dapi" not in public
+    assert "hvs." not in public
     assert "dckr_pat_" not in public
     assert "shpat_" not in public
     assert "SG." not in public
@@ -4492,6 +4511,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "x" + SYNTHETIC_DATABRICKS_PAT,
         SYNTHETIC_DATABRICKS_PAT + "a",
         "dapi" + ("g" * 32),
+        "hvs." + ("A" * 23),
+        "hvs.<redacted>",
+        "x" + SYNTHETIC_VAULT_SERVICE_TOKEN,
+        "HVS." + ("A" * 24),
         "shpat_" + ("a" * 31),
         "shpat_<redacted>",
         "shpat_" + ("a" * 33),
