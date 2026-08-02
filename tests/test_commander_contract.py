@@ -4753,6 +4753,8 @@ def test_public_text_preserves_non_sensitive_key_prose(value: str) -> None:
         "prompt_token_count=42",
         "token_budget=1000",
         "cached_token_usage: 0",
+        "total_prompt_token_count=42",
+        "token_budget_max: 1000",
         '{"token_count":42,"output_token_count":21}',
         '{"metrics[token_count]":42}',
         "token%5Fcount=42",
@@ -4773,6 +4775,11 @@ def test_public_text_preserves_numeric_token_metadata(value: str) -> None:
         "token_count=42.5",
         "token=42",
         "access_token=42",
+        "token_count_secret=123456",
+        "token_budget_password: 987654",
+        "password_token_count=123456",
+        "token_count=" + ("9" * 5_000),
+        "token%5Fcount=" + ("%39" * 5_000),
     ],
 )
 def test_public_text_keeps_token_credentials_fail_closed(value: str) -> None:
@@ -4790,6 +4797,10 @@ def test_commander_response_preserves_structured_numeric_token_metadata(
             "prompt_token_count": 21,
             "token_budget": 1000,
             "token_count_label": "synthetic-token-value",
+            "token_count_secret": 123456,
+            "token_budget_password": 987654,
+            "token_count_maximum": (10**19) - 1,
+            "token_count_max": 10**19,
         },
         params={},
     )
@@ -4798,6 +4809,10 @@ def test_commander_response_preserves_structured_numeric_token_metadata(
     assert response["facts"]["prompt_token_count"] == 21
     assert response["facts"]["token_budget"] == 1000
     assert "token_count_label" not in response["facts"]
+    assert "token_count_secret" not in response["facts"]
+    assert "token_budget_password" not in response["facts"]
+    assert response["facts"]["token_count_maximum"] == (10**19) - 1
+    assert "token_count_max" not in response["facts"]
     validate_commander_response(response)
 
 

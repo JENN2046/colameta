@@ -1453,6 +1453,9 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&Signature=synthetic-gcs-artifact-signature"
         ),
         "token_count=synthetic-token-metric-artifact-secret",
+        "token_count_secret=123456",
+        "token_budget_password: 987654",
+        "token_count=" + ("9" * 5_000),
         (
             '<property name="password" filler="'
             + ("x" * 4_097)

@@ -3444,6 +3444,9 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             "&Signature=synthetic-gcs-manifest-signature"
         ),
         "token_count=synthetic-token-metric-manifest-secret",
+        "token_count_secret=123456",
+        "token_budget_password: 987654",
+        "token_count=" + ("9" * 5_000),
         (
             '<property name="password" filler="'
             + ("x" * 4_097)

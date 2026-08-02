@@ -426,10 +426,42 @@ _SENSITIVE_PUBLIC_KEY_RE = re.compile(
     r"|token"
     r")(?:$|_)"
 )
-_NUMERIC_TOKEN_METADATA_KEY_RE = re.compile(
-    r"(?:^|_)tokens?_(?:"
-    r"budget|count|limit|remaining|usage|used"
-    r")(?:$|_)"
+_NUMERIC_TOKEN_METADATA_METRICS = frozenset(
+    {"budget", "count", "limit", "remaining", "usage", "used"}
+)
+_NUMERIC_TOKEN_METADATA_QUALIFIERS = frozenset(
+    {
+        "accepted",
+        "audio",
+        "billable",
+        "cached",
+        "completion",
+        "configured",
+        "default",
+        "effective",
+        "estimated",
+        "hard",
+        "input",
+        "llm",
+        "max",
+        "maximum",
+        "metric",
+        "metrics",
+        "min",
+        "minimum",
+        "output",
+        "prediction",
+        "prompt",
+        "reasoning",
+        "rejected",
+        "soft",
+        "text",
+        "total",
+    }
+)
+_NUMERIC_TOKEN_METADATA_MAX_DIGITS = 19
+_NUMERIC_TOKEN_METADATA_MAX_VALUE = (
+    (10**_NUMERIC_TOKEN_METADATA_MAX_DIGITS) - 1
 )
 _INTERNAL_ID_PUBLIC_KEY_RE = re.compile(
     r"(?i)^(?:"
@@ -911,7 +943,7 @@ _BRACKET_ASSIGNMENT_KEY_RE = re.compile(
     r")\s*[:=]"
 )
 _NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE = re.compile(
-    r"[ \t]*(?P<value>[0-9]+)[ \t]*"
+    rf"[ \t]*(?P<value>[0-9]{{1,{_NUMERIC_TOKEN_METADATA_MAX_DIGITS}}})[ \t]*"
     r"(?=$|[,;}\]\r\n])"
 )
 _XML_ELEMENT_TAG_RE = re.compile(
@@ -3754,12 +3786,35 @@ def commander_public_value_is_numeric_token_metadata(
 ) -> bool:
     """Allow only non-negative integer metrics under token-like keys."""
 
-    normalized_key = _normalize_public_key_for_match(key)
     return bool(
-        _NUMERIC_TOKEN_METADATA_KEY_RE.search(normalized_key)
+        _public_key_is_numeric_token_metadata(key)
         and isinstance(value, int)
         and not isinstance(value, bool)
-        and value >= 0
+        and 0 <= value <= _NUMERIC_TOKEN_METADATA_MAX_VALUE
+    )
+
+
+def _public_key_is_numeric_token_metadata(key: Any) -> bool:
+    components = _normalize_public_key_for_match(key).split("_")
+    token_indexes = [
+        index
+        for index, component in enumerate(components)
+        if component in {"token", "tokens"}
+    ]
+    if len(token_indexes) != 1:
+        return False
+    token_index = token_indexes[0]
+    metric_index = token_index + 1
+    if (
+        metric_index >= len(components)
+        or components[metric_index]
+        not in _NUMERIC_TOKEN_METADATA_METRICS
+    ):
+        return False
+    return all(
+        component in _NUMERIC_TOKEN_METADATA_QUALIFIERS
+        for index, component in enumerate(components)
+        if index not in {token_index, metric_index}
     )
 
 
@@ -5365,11 +5420,13 @@ def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
             continue
         decoded_key = unquote_plus(encoded_key)
         decoded_value = unquote_plus(match.group("value"))
-        if decoded_value.isdecimal() and (
-            commander_public_value_is_numeric_token_metadata(
-                decoded_key,
-                int(decoded_value),
-            )
+        if (
+            1
+            <= len(decoded_value)
+            <= _NUMERIC_TOKEN_METADATA_MAX_DIGITS
+            and decoded_value.isascii()
+            and decoded_value.isdecimal()
+            and _public_key_is_numeric_token_metadata(decoded_key)
         ):
             continue
         if commander_public_key_is_forbidden(decoded_key):
@@ -5602,10 +5659,7 @@ def _contains_forbidden_key_assignment(value: str) -> bool:
                 )
             )
             if numeric_value is not None and (
-                commander_public_value_is_numeric_token_metadata(
-                    key,
-                    int(numeric_value.group("value")),
-                )
+                _public_key_is_numeric_token_metadata(key)
             ):
                 continue
             return True
