@@ -2857,6 +2857,70 @@ def test_public_text_redacts_cloudfront_signed_queries(
 @pytest.mark.parametrize(
     "value",
     [
+        json.dumps(
+            {
+                "CloudFront-Policy": "synthetic-cookie-policy",
+                "CloudFront-Signature": "synthetic-cookie-signature",
+                "CloudFront-Key-Pair-Id": "synthetic-cookie-key-pair",
+            }
+        ),
+        (
+            "CloudFront-Key-Pair-Id=synthetic-reordered-cookie-key; "
+            "CloudFront-Expires=2147483647; "
+            "CloudFront-Signature=synthetic-reordered-cookie-signature"
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"CloudFront-Expires":2147483647,'
+                    '"CloudFront-Signature":"synthetic-nested-cookie-signature",'
+                    '"CloudFront-Key-Pair-Id":"synthetic-nested-cookie-key"}'
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_cloudfront_signed_cookie_fields(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            '{"CloudFront-Policy":"public-policy",'
+            '"CloudFront-Signature":"public-signature"}'
+        ),
+        (
+            '{"first":{"CloudFront-Policy":"public-policy",'
+            '"CloudFront-Signature":"public-signature"},'
+            '"second":{"CloudFront-Key-Pair-Id":"public-key"}}'
+        ),
+        (
+            "CloudFront-Expires=; CloudFront-Signature=public-signature; "
+            "CloudFront-Key-Pair-Id=public-key"
+        ),
+        (
+            "CloudFront-Policy=public-policy\n\n"
+            "CloudFront-Signature=public-signature; "
+            "CloudFront-Key-Pair-Id=public-key"
+        ),
+    ],
+)
+def test_public_text_preserves_incomplete_cloudfront_signed_cookie_fields(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         (
             "https://storage.googleapis.com/example/object"
             "?GoogleAccessId=synthetic-gcs-access-id"
@@ -4376,6 +4440,31 @@ def test_commander_response_omits_structured_private_jwk_facts() -> None:
     assert private_coordinate not in rendered
     assert response["facts"]["status"] == "clean"
     assert "crypto" not in response["facts"]
+    validate_commander_response(response)
+
+
+def test_commander_response_omits_structured_cloudfront_signed_cookie_facts(
+) -> None:
+    signature = "synthetic-structured-cloudfront-cookie-signature"
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "message": "Project state read.",
+            "status": "clean",
+            "cookies": {
+                "CloudFront-Expires": 2147483647,
+                "CloudFront-Signature": signature,
+                "CloudFront-Key-Pair-Id": "synthetic-cookie-key-pair",
+            },
+        },
+        params={},
+    )
+
+    rendered = json.dumps(response, ensure_ascii=False)
+    assert signature not in rendered
+    assert response["facts"]["status"] == "clean"
+    assert "cookies" not in response["facts"]
     validate_commander_response(response)
 
 

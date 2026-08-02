@@ -13,6 +13,7 @@ from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
+    commander_public_mapping_is_cloudfront_signed_cookie,
     commander_public_mapping_is_private_jwk,
     commander_public_mapping_is_oauth_device_authorization,
     commander_public_text,
@@ -325,6 +326,9 @@ class CommanderPublicProjector:
             if (
                 commander_public_mapping_is_private_jwk(value)
                 or commander_public_mapping_is_oauth_device_authorization(
+                    value
+                )
+                or commander_public_mapping_is_cloudfront_signed_cookie(
                     value
                 )
             ):

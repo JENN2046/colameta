@@ -1427,6 +1427,22 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&Signature=synthetic-cloudfront-artifact-signature"
             "&Key-Pair-Id=synthetic-cloudfront-artifact-key-pair"
         ),
+        json.dumps(
+            {
+                "CloudFront-Policy": "synthetic-cloudfront-artifact-policy",
+                "CloudFront-Signature": (
+                    "synthetic-cloudfront-cookie-artifact-signature"
+                ),
+                "CloudFront-Key-Pair-Id": (
+                    "synthetic-cloudfront-cookie-artifact-key-pair"
+                ),
+            }
+        ),
+        (
+            "CloudFront-Expires=2147483647; "
+            "CloudFront-Signature=synthetic-bare-cookie-artifact-signature; "
+            "CloudFront-Key-Pair-Id=synthetic-bare-cookie-artifact-key"
+        ),
         (
             "https://storage.googleapis.com/example/object"
             "?GoogleAccessId=synthetic-gcs-artifact-access-id"

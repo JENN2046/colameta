@@ -3417,6 +3417,22 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "&Signature=synthetic-cloudfront-manifest-signature"
             "&Key-Pair-Id=synthetic-cloudfront-manifest-key-pair"
         ),
+        json.dumps(
+            {
+                "CloudFront-Policy": "synthetic-cloudfront-manifest-policy",
+                "CloudFront-Signature": (
+                    "synthetic-cloudfront-cookie-manifest-signature"
+                ),
+                "CloudFront-Key-Pair-Id": (
+                    "synthetic-cloudfront-cookie-manifest-key-pair"
+                ),
+            }
+        ),
+        (
+            "CloudFront-Expires=2147483647; "
+            "CloudFront-Signature=synthetic-bare-cookie-manifest-signature; "
+            "CloudFront-Key-Pair-Id=synthetic-bare-cookie-manifest-key"
+        ),
         (
             "https://storage.googleapis.com/example/object"
             "?GoogleAccessId=synthetic-gcs-manifest-access-id"

@@ -1051,6 +1051,20 @@ _FORM_URLENCODED_ASSIGNMENT_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9_.%+-]{0,255})"
     r"=(?P<value>[^&\s\"'<>]{1,8192})"
 )
+_CLOUDFRONT_SIGNED_COOKIE_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])"
+    r"(?P<key>CloudFront-(?:Policy|Expires|Signature|Key-Pair-Id))"
+    r"(?![A-Za-z0-9_-])[ \t]*=[ \t]*"
+    r"(?P<value>"
+    r'"(?:\\.|[^"\\])+"'
+    r"|'(?:\\.|[^'\\])+'"
+    r"|[^\s,;{}\[\]<>]+"
+    r")"
+)
+_CLOUDFRONT_SIGNED_COOKIE_MAX_SEQUENCE_CHARS = 8_192
+_CLOUDFRONT_SIGNED_COOKIE_SEQUENCE_GAP_RE = re.compile(
+    r"[\s,;&|*-]*"
+)
 _PGPASS_RECORD_RE = re.compile(
     r"(?m)(?:^|(?<=[\r\n\"']))[ \t]*(?!#)"
     r"(?P<host>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
@@ -3500,6 +3514,9 @@ def _public_value(
             or commander_public_mapping_is_oauth_device_authorization(
                 value
             )
+            or commander_public_mapping_is_cloudfront_signed_cookie(
+                value
+            )
         ):
             return _OMIT
         referenced_tool = value.get("tool")
@@ -3580,6 +3597,9 @@ def _validate_public_value(
         if (
             commander_public_mapping_is_private_jwk(value)
             or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+            or commander_public_mapping_is_cloudfront_signed_cookie(
                 value
             )
         ):
@@ -4863,6 +4883,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _contains_cloudfront_signed_cookie_fields(value)
         or _contains_gcs_v2_signed_url_query(value)
         or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
@@ -5061,6 +5082,45 @@ def commander_public_mapping_is_oauth_device_authorization(
     )
 
 
+def commander_public_mapping_is_cloudfront_signed_cookie(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect one complete CloudFront signed-cookie mapping."""
+
+    present_fields: set[str] = set()
+    for key, nested in value.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.casefold()
+        if normalized_key not in {
+            "cloudfront-policy",
+            "cloudfront-expires",
+            "cloudfront-signature",
+            "cloudfront-key-pair-id",
+        }:
+            continue
+        if isinstance(nested, str):
+            if not nested.strip():
+                continue
+        elif (
+            normalized_key == "cloudfront-expires"
+            and isinstance(nested, int)
+            and not isinstance(nested, bool)
+        ):
+            pass
+        else:
+            continue
+        present_fields.add(normalized_key)
+    return (
+        bool(
+            present_fields
+            & {"cloudfront-policy", "cloudfront-expires"}
+        )
+        and "cloudfront-signature" in present_fields
+        and "cloudfront-key-pair-id" in present_fields
+    )
+
+
 def _private_jwk_text_hint(value: str) -> bool:
     lowered = value.lower()
     return "kty" in lowered and (
@@ -5079,6 +5139,18 @@ def _oauth_device_authorization_text_hint(value: str) -> bool:
             *_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS,
             *_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS,
         )
+    )
+
+
+def _cloudfront_signed_cookie_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        (
+            "cloudfront-policy" in lowered
+            or "cloudfront-expires" in lowered
+        )
+        and "cloudfront-signature" in lowered
+        and "cloudfront-key-pair-id" in lowered
     )
 
 
@@ -5373,6 +5445,52 @@ def _contains_cloudfront_signed_url_query(value: str) -> bool:
                 and has_key_pair_id
             ):
                 return True
+    return False
+
+
+def _contains_cloudfront_signed_cookie_fields(value: str) -> bool:
+    if _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_cloudfront_signed_cookie
+        ),
+        exhaustion_hint=_cloudfront_signed_cookie_text_hint,
+    ):
+        return True
+
+    sequence_start: int | None = None
+    previous_end: int | None = None
+    present_fields: set[str] = set()
+    for match in _CLOUDFRONT_SIGNED_COOKIE_ASSIGNMENT_RE.finditer(value):
+        gap = (
+            ""
+            if previous_end is None
+            else value[previous_end : match.start()]
+        )
+        if (
+            sequence_start is None
+            or previous_end is None
+            or match.end() - sequence_start
+            > _CLOUDFRONT_SIGNED_COOKIE_MAX_SEQUENCE_CHARS
+            or _CLOUDFRONT_SIGNED_COOKIE_SEQUENCE_GAP_RE.fullmatch(
+                gap
+            )
+            is None
+            or "\n\n" in gap.replace("\r\n", "\n")
+        ):
+            sequence_start = match.start()
+            present_fields.clear()
+        field_value = match.group("value").strip("\"'").strip()
+        if field_value:
+            present_fields.add(match.group("key").casefold())
+        previous_end = match.end()
+        if (
+            present_fields
+            & {"cloudfront-policy", "cloudfront-expires"}
+            and "cloudfront-signature" in present_fields
+            and "cloudfront-key-pair-id" in present_fields
+        ):
+            return True
     return False
 
 
@@ -5796,6 +5914,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _contains_cloudfront_signed_cookie_fields(value)
         or _contains_gcs_v2_signed_url_query(value)
         or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
