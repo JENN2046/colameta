@@ -5633,9 +5633,6 @@ def _contains_sensitive_xml_element(value: str) -> bool:
     return any(
         _xml_element_body_is_nonempty(value[body_start:])
         for _, body_start in labeled_elements
-    ) or any(
-        _xml_element_body_is_nonempty(value[body_start:])
-        for _, body_start in open_elements
     )
 
 
