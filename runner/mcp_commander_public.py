@@ -532,7 +532,7 @@ class CommanderPublicProjector:
         # only this typed workflow's value after ordinary sanitization.
         review_manifest_contract_expiry: str | None = None
         review_manifest_page_expiry: str | None = None
-        review_manifest_page: dict[str, Any] | None = None
+        review_manifest_page_contract_fields: dict[str, Any] = {}
         review_manifest_contract_fields: dict[str, Any] = {}
         unsafe_exact_evidence = False
         if is_review_manifest and isinstance(raw_data, dict):
@@ -588,7 +588,19 @@ class CommanderPublicProjector:
                                 exact_evidence_prevalidated
                             ),
                         )
-                    review_manifest_page = copy.deepcopy(raw_page)
+                    for field in (
+                        "review_manifest_id",
+                        "subject_index",
+                        "sha256",
+                        "page",
+                        "page_count",
+                        "page_char_start",
+                        "page_char_end",
+                        "expires_at",
+                    ):
+                        review_manifest_page_contract_fields[field] = (
+                            copy.deepcopy(raw_page[field])
+                        )
                 unsafe_exact_evidence = (
                     not exact_evidence_prevalidated
                     and self._public_string(raw_content) != raw_content
@@ -772,8 +784,6 @@ class CommanderPublicProjector:
             clean_data = clean_result.get("data")
             if isinstance(clean_data, dict):
                 clean_data.update(review_manifest_contract_fields)
-                if review_manifest_page is not None:
-                    clean_data["subject_page"] = review_manifest_page
         if review_manifest_page_content is not None and isinstance(clean_result, dict):
             clean_data = clean_result.get("data")
             if isinstance(clean_data, dict):
@@ -781,6 +791,7 @@ class CommanderPublicProjector:
                     clean_data["expires_at"] = review_manifest_contract_expiry
                 clean_page = clean_data.get("subject_page")
                 if isinstance(clean_page, dict):
+                    clean_page.update(review_manifest_page_contract_fields)
                     clean_page["content"] = review_manifest_page_content
                     if review_manifest_page_expiry is not None:
                         clean_page["expires_at"] = review_manifest_page_expiry

@@ -4861,6 +4861,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _contains_gcs_v2_signed_url_query(value)
         or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
@@ -5290,6 +5291,12 @@ def _contains_oauth_authorization_code_form(value: str) -> bool:
             )
             if has_authorization_code_grant and has_code:
                 return True
+        if (
+            has_authorization_code_grant
+            and match.end() < len(value)
+            and value[match.end()] not in "\t\n\r \"'<>"
+        ):
+            return True
     return False
 
 
@@ -5363,6 +5370,33 @@ def _contains_cloudfront_signed_url_query(value: str) -> bool:
                 and has_signature
                 and has_key_pair_id
             ):
+                return True
+    return False
+
+
+def _contains_gcs_v2_signed_url_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        required_fields: set[str] = set()
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            if normalized_key in {
+                "googleaccessid",
+                "expires",
+                "signature",
+            }:
+                required_fields.add(normalized_key)
+            if required_fields == {
+                "googleaccessid",
+                "expires",
+                "signature",
+            }:
                 return True
     return False
 
@@ -5636,6 +5670,15 @@ def _contains_sensitive_xml_element(value: str) -> bool:
             # bounded tag header.
             if tag_is_forbidden:
                 return True
+            bounded_header = value[
+                match.end() :
+                match.end() + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS
+            ]
+            has_sensitive_label, _ = (
+                _xml_header_sensitive_name_value_state(bounded_header)
+            )
+            if has_sensitive_label:
+                return True
             continue
         header = value[match.end() : header_end]
         (
@@ -5751,6 +5794,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
         or _contains_cloudfront_signed_url_query(value)
+        or _contains_gcs_v2_signed_url_query(value)
         or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)

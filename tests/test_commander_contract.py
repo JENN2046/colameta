@@ -2777,6 +2777,11 @@ def test_public_text_redacts_oauth_authorization_code_callbacks(
                 )
             }
         ),
+        (
+            "grant_type=authorization_code&padding="
+            + ("a" * 8_192)
+            + "&code=synthetic-overflow-token-code"
+        ),
     ],
 )
 def test_public_text_redacts_oauth_authorization_code_token_forms(
@@ -2828,6 +2833,69 @@ def test_public_text_redacts_cloudfront_signed_queries(
 
     assert public == "<sensitive>"
     assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=synthetic-gcs-access-id"
+            "&Expires=2147483647"
+            "&Signature=synthetic-gcs-signature"
+        ),
+        (
+            "//storage.googleapis.com/example/object"
+            "?Signature=synthetic-reordered-gcs-signature"
+            "&GoogleAccessId=synthetic-reordered-gcs-access-id"
+            "&Expires=2147483647"
+        ),
+        (
+            '{"url":"https:\\/\\/storage.googleapis.com\\/example'
+            '?GoogleAccessId\\u003dsynthetic-encoded-gcs-access-id'
+            '\\u0026Expires\\u003d2147483647'
+            '\\u0026Signature\\u003dsynthetic-encoded-gcs-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002fstorage.googleapis.com/example"
+                    "?GoogleAccessId%253Dsynthetic-nested-gcs-access-id"
+                    "%2526Expires%253D2147483647"
+                    "%2526Signature%253Dsynthetic-nested-gcs-signature"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_gcs_v2_signed_queries(value: str) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=public-access-id&Expires=2147483647"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?Expires=2147483647&Signature=public-signature"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=&Expires=2147483647&Signature="
+        ),
+    ],
+)
+def test_public_text_preserves_incomplete_gcs_v2_signed_queries(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == value
 
 
 @pytest.mark.parametrize(
@@ -3267,6 +3335,11 @@ def test_public_text_preserves_safe_bracket_notation(
             'value="synthetic-xml-greater-than>secret"/>'
         ),
         (
+            '<property name="password" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-overflow-xml-secret"/>'
+        ),
+        (
             '{"xml":"\\u003cproperty\\u0020'
             'name=\\u0022password\\u0022\\u0020'
             'value=\\u0022synthetic-encoded-xml-attribute-secret'
@@ -3447,6 +3520,11 @@ def test_public_text_redacts_xml_serialized_rsa_private_keys(
         '<property name="password"/>',
         '<property name="password"></property>',
         '<property name="password"> \n\t </property>',
+        (
+            '<property name="public-key" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-public-material"/>'
+        ),
         '<entry key="public-key" value="synthetic-public-material"/>',
         '<entry key="password" value=""/>',
         '<entry key="password"/>',

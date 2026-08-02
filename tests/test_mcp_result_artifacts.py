@@ -1392,6 +1392,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&code=synthetic-oauth-token-form-artifact-code"
         ),
         (
+            "grant_type=authorization_code&padding="
+            + ("a" * 8_192)
+            + "&code=synthetic-overflow-token-form-artifact-code"
+        ),
+        (
             '{"body":"grant_type\\u003dauthorization_code'
             '\\u0026code\\u003d'
             'synthetic-encoded-token-form-artifact-code"}'
@@ -1407,6 +1412,17 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "?Expires=2147483647"
             "&Signature=synthetic-cloudfront-artifact-signature"
             "&Key-Pair-Id=synthetic-cloudfront-artifact-key-pair"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=synthetic-gcs-artifact-access-id"
+            "&Expires=2147483647"
+            "&Signature=synthetic-gcs-artifact-signature"
+        ),
+        (
+            '<property name="password" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-overflow-xml-artifact-secret"/>'
         ),
         (
             "localhost:5432:mydb:alice:"

@@ -400,6 +400,48 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
 
 
+def test_commander_typed_manifest_read_rejects_sensitive_bound_page_metadata(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    manifest = _manifest(project)
+    manifest["review_unit"] = "password=synthetic-review-unit-secret"
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": manifest,
+        },
+    )
+    inspection_contract = inspected["result"]["structuredContent"]["data"]
+    manifest_id = inspection_contract["evidence"]["review_manifest_id"]
+
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": manifest_id,
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    structured = read["result"]["structuredContent"]
+    assert structured["ok"] is False
+    assert structured["error_code"] == "INTERNAL_RESULT_INVALID"
+    assert "synthetic-review-unit-secret" not in json.dumps(
+        structured,
+        ensure_ascii=False,
+    )
+    validate_commander_response(structured["data"])
+
+
 def test_legacy_review_manifest_defaults_omitted_phase_to_inspect(
     tmp_path: Path,
 ) -> None:
@@ -3339,6 +3381,11 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "&code=synthetic-oauth-token-form-manifest-code"
         ),
         (
+            "grant_type=authorization_code&padding="
+            + ("a" * 8_192)
+            + "&code=synthetic-overflow-token-form-manifest-code"
+        ),
+        (
             '{"body":"grant_type\\u003dauthorization_code'
             '\\u0026code\\u003d'
             'synthetic-encoded-token-form-manifest-code"}'
@@ -3355,6 +3402,17 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "?Expires=2147483647"
             "&Signature=synthetic-cloudfront-manifest-signature"
             "&Key-Pair-Id=synthetic-cloudfront-manifest-key-pair"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=synthetic-gcs-manifest-access-id"
+            "&Expires=2147483647"
+            "&Signature=synthetic-gcs-manifest-signature"
+        ),
+        (
+            '<property name="password" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-overflow-xml-manifest-secret"/>'
         ),
         (
             "localhost:5432:mydb:alice:"
