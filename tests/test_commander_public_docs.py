@@ -36,6 +36,7 @@ COMMANDER_INVENTORY_GUIDES = (
     ROOT / "docs" / "ONBOARDING.md",
     ROOT / "docs" / "ONBOARDING.zh-CN.md",
     ROOT / "docs" / "agent-consumer-contract.zh-CN.md",
+    ROOT / "docs" / "jenn-private-operator-protocol.md",
     ROOT / "docs" / "private-beta-systemd.md",
     ROOT / "docs" / "web-gpt-service-entrypoint.zh-CN.md",
 )
@@ -57,6 +58,7 @@ def test_current_commander_guides_do_not_restore_the_seven_tool_contract() -> No
     stale_inventory = re.compile(
         r"(?i)(?:"
         r"exactly seven(?: public| commander)? tools"
+        r"|(?:the\s+)?seven public tools"
         r"|seven high-level tools"
         r"|seven[- ]tool(?: commander| private app| contract| profile| surface)?"
         r"|not an eighth tool"
