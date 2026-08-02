@@ -183,6 +183,10 @@ SYNTHETIC_SLACK_WEBHOOK_URL = (
     "https://hooks.slack.com/services/"
     "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
 )
+SYNTHETIC_DISCORD_WEBHOOK_URL = (
+    "https://discord.com/api/webhooks/123456789012345678/"
+    + ("Ab1_" * 16)
+)
 ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
@@ -3305,6 +3309,8 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         SYNTHETIC_SLACK_TOKEN,
         SYNTHETIC_SLACK_WEBHOOK_URL,
         SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "%2F"),
+        SYNTHETIC_DISCORD_WEBHOOK_URL,
+        SYNTHETIC_DISCORD_WEBHOOK_URL.replace("/", "%2F"),
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
         json.dumps(
             {

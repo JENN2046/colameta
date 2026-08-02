@@ -174,6 +174,10 @@ SYNTHETIC_SLACK_WEBHOOK_URL = (
     "https://hooks.slack.com/services/"
     "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
 )
+SYNTHETIC_DISCORD_WEBHOOK_URL = (
+    "https://discord.com/api/webhooks/123456789012345678/"
+    + ("Ab1_" * 16)
+)
 ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
@@ -2588,6 +2592,15 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
         '{"url":"'
         + SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "\\/")
         + '"}',
+        SYNTHETIC_DISCORD_WEBHOOK_URL,
+        SYNTHETIC_DISCORD_WEBHOOK_URL.replace(
+            "discord.com/api/",
+            "canary.discord.com/api/v10/",
+        ),
+        SYNTHETIC_DISCORD_WEBHOOK_URL.replace("/", "%2F"),
+        '{"url":"'
+        + SYNTHETIC_DISCORD_WEBHOOK_URL.replace("/", "\\/")
+        + '"}',
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
         json.dumps(
             {
@@ -2630,6 +2643,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "SG." not in public
     assert "GOCSPX-" not in public
     assert "hooks.slack" not in public
+    assert "discord.com/api/webhooks" not in public
 
 
 @pytest.mark.parametrize(
@@ -4796,6 +4810,18 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "https://hooks.slack.com/services/T0000000/B00000000/"
         + ("X" * 24),
         "https://hooks.slack.com/services/T00000000/B00000000/short",
+        "http://discord.com/api/webhooks/123456789012345678/"
+        + ("X" * 64),
+        "https://example.com/api/webhooks/123456789012345678/"
+        + ("X" * 64),
+        "https://discord.com/api/hooks/123456789012345678/"
+        + ("X" * 64),
+        "https://discord.com/api/webhooks/1234567890123456/"
+        + ("X" * 64),
+        "https://discord.com/api/webhooks/123456789012345678/"
+        + ("X" * 31),
+        "https://discord.com/api/webhooks/123456789012345678/"
+        + ("X" * 129),
         "sk-proj-short",
         "sk-proj-<redacted>",
         "sk-proj-" + ("A" * 257),

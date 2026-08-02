@@ -1086,6 +1086,12 @@ _SLACK_INCOMING_WEBHOOK_RE = re.compile(
     r"/services/T[A-Z0-9]{8,32}/B[A-Z0-9]{8,32}/"
     r"[A-Za-z0-9_-]{16,128}(?![A-Za-z0-9_-])"
 )
+_DISCORD_INCOMING_WEBHOOK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://"
+    r"(?i:(?:canary\.|ptb\.)?discord(?:app)?\.com)"
+    r"/api(?:/v[0-9]{1,2})?/webhooks/[0-9]{17,20}/"
+    r"[A-Za-z0-9_-]{32,128}(?![A-Za-z0-9_-])"
+)
 _PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
     r"[^\s\"'<>]{1,8192}"
@@ -4976,6 +4982,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _TELEGRAM_BOT_API_URL_RE.search(value)
         or _SLACK_INCOMING_WEBHOOK_RE.search(value)
+        or _DISCORD_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
@@ -6129,6 +6136,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
         or _TELEGRAM_BOT_API_URL_RE.search(value)
         or _SLACK_INCOMING_WEBHOOK_RE.search(value)
+        or _DISCORD_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
