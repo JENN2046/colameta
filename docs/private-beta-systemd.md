@@ -99,19 +99,20 @@ curl --fail http://127.0.0.1:8080/readyz
   --expected-head "$(git -C /home/jenn/tools/colameta rev-parse HEAD)"
 ```
 
-The default connector and public OAuth endpoint expose these seven high-level
+The default connector and public OAuth endpoint expose these nine high-level
 tools: `list_registered_projects`, `get_apps_connector_smoke_packet`,
 `render_commander_app`, `analyze_project_state`, `run_mcp_workflow`,
-`manage_validation_run`, and `manage_git`. The connector smoke packet is
-read-only (`mcp:read`); it does not authorize executor runs, Git writes, or
-stable replacement. Calls to any hidden tool are rejected by the active
-exposure profile, including calls made from a stale connector cache. Operators
-who need the complete 82-tool catalog can connect a local advanced client to
-`http://127.0.0.1:8768/mcp`; that endpoint is not bound to a public interface or
-forwarded by either tunnel.
+`manage_validation_run`, `manage_git`, `review_manifest`, and
+`read_result_artifact`. The connector smoke packet is read-only (`mcp:read`);
+it does not authorize executor runs, Git writes, or stable replacement. Calls
+to any hidden tool are rejected by the active exposure profile, including
+calls made from a stale connector cache. Operators who need the complete
+82-tool catalog can connect a local advanced client to
+`http://127.0.0.1:8768/mcp`; that endpoint is not bound to a public interface
+or forwarded by either tunnel.
 
 Work Item Gate review stays inside `run_mcp_workflow` as
-`workflow=gate_review_request`; it is not an eighth tool. After an install or
+`workflow=gate_review_request`; it is not a tenth tool. After an install or
 stable replacement, verify `phase=inspect` through the real private App and
 require `status=succeeded`, `read_only=true`, and `side_effects=false`. When the
 served project has governance disabled, `candidate_count=0` is a valid smoke

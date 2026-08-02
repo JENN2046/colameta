@@ -1076,6 +1076,10 @@ _STANDALONE_TELEGRAM_BOT_TOKEN_RE = re.compile(
     r"[0-9]{8,16}:[A-Za-z0-9_-]{35}"
     r"(?![A-Za-z0-9_-])"
 )
+_TELEGRAM_BOT_API_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://(?i:api\.telegram\.org)/"
+    r"(?:file/)?bot[0-9]{8,16}:[A-Za-z0-9_-]{35}(?=/)"
+)
 _SLACK_INCOMING_WEBHOOK_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])(?i:https)://"
     r"(?i:hooks\.slack(?:-gov)?\.com)"
@@ -4970,6 +4974,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _TELEGRAM_BOT_API_URL_RE.search(value)
         or _SLACK_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
@@ -6122,6 +6127,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _TELEGRAM_BOT_API_URL_RE.search(value)
         or _SLACK_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)

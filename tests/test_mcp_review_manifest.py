@@ -3509,6 +3509,12 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             }
         ),
         "123456789:" + ("A" * 35),
+        "https://api.telegram.org/bot123456789:"
+        + ("A" * 35)
+        + "/getMe",
+        "https:%2F%2Fapi.telegram.org%2Fbot123456789%3A"
+        + ("A" * 35)
+        + "%2FsendMessage",
         '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
         (
             "machine example.com login alice "

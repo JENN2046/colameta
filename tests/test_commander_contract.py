@@ -2640,6 +2640,24 @@ def test_public_text_redacts_standalone_provider_access_tokens(
             "https://telegram.example.invalid/bot?token="
             f"{SYNTHETIC_TELEGRAM_BOT_TOKEN}"
         ),
+        (
+            "https://api.telegram.org/bot"
+            f"{SYNTHETIC_TELEGRAM_BOT_TOKEN}/getMe"
+        ),
+        (
+            "https://api.telegram.org/file/bot"
+            f"{SYNTHETIC_TELEGRAM_BOT_TOKEN}/documents/report.txt"
+        ),
+        (
+            "https:%2F%2Fapi.telegram.org%2Fbot"
+            f"{SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(':', '%3A')}"
+            "%2FsendMessage"
+        ),
+        (
+            '{"url":"https:\\/\\/api.telegram.org\\/bot'
+            f"{ESCAPED_SYNTHETIC_TELEGRAM_BOT_TOKEN}\\/getUpdates"
+            '"}'
+        ),
         SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "%3A"),
         f'{{"access":"{ESCAPED_SYNTHETIC_TELEGRAM_BOT_TOKEN}"}}',
         json.dumps(
@@ -4724,6 +4742,22 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "123456789:" + ("A" * 34),
         "123456789:" + ("A" * 36),
         "123456789:<redacted>",
+        "http://api.telegram.org/bot123456789:"
+        + ("A" * 35)
+        + "/getMe",
+        "https://telegram.example.invalid/bot123456789:"
+        + ("A" * 35)
+        + "/getMe",
+        "https://api.telegram.org/bot123456789:" + ("A" * 35),
+        "https://api.telegram.org/bot1234567:"
+        + ("A" * 35)
+        + "/getMe",
+        "https://api.telegram.org/bot123456789:"
+        + ("A" * 34)
+        + "/getMe",
+        "https://api.telegram.org/bot123456789:"
+        + ("A" * 36)
+        + "/getMe",
         f"SG.{'A' * 21}.{'B' * 43}",
         f"SG.{'A' * 22}.{'B' * 42}",
         f"SG.{'A' * 22}.{'B' * 44}",
