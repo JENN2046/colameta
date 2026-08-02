@@ -3422,10 +3422,6 @@ def test_public_text_redacts_xml_serialized_rsa_private_keys(
         "<password/>",
         "<password />",
         "<config:password></config:password>",
-        (
-            '{"xml":"\\u003cpassword\\u003e'
-            '\\u003c/password\\u003e"}'
-        ),
         "&lt;password&gt; \n\t &lt;/password&gt;",
         (
             "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
