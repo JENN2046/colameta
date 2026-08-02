@@ -2772,6 +2772,19 @@ def test_public_text_redacts_oauth_authorization_code_callbacks(
             '{"device\\u005fcode":"synthetic-escaped-device-secret",'
             '"user\\u005fcode":"QRST-UVWX"}'
         ),
+        (
+            '{"device_code":"synthetic-duplicate-device-secret",'
+            '"device_code":"","user_code":"DUPL-ICAT"}'
+        ),
+        (
+            '{"device_code":"synthetic-cross-duplicate-device-secret",'
+            '"user_code":"CROS-DUPL","device_code":"","user_code":""}'
+        ),
+        (
+            '{"device\\u005fcode":'
+            '"synthetic-escaped-duplicate-device-secret",'
+            '"device_code":"","user_code":"ESCP-DUPL"}'
+        ),
         json.dumps(
             {
                 "wrapped": json.dumps(
@@ -2830,6 +2843,7 @@ def test_public_text_redacts_oauth_device_authorization_codes(
                 "user_code": "display-only",
             }
         ),
+        '{"status":"old","status":"public"}',
         "The device_code field identifies a hardware device.",
     ],
 )
@@ -3165,6 +3179,29 @@ def test_public_text_preserves_safe_bracket_notation(
             "synthetic-entity-xml-body-secret"
             "&lt;/property&gt;"
         ),
+        (
+            "<property><name>password</name>"
+            "<value>synthetic-xml-sibling-secret</value></property>"
+        ),
+        (
+            "<property><value>synthetic-xml-reverse-sibling-secret</value>"
+            "<key>clientSecret</key></property>"
+        ),
+        (
+            "<config:property><config:name>api-key</config:name>"
+            "<config:value>synthetic-xml-namespaced-sibling-secret"
+            "</config:value></config:property>"
+        ),
+        (
+            '{"xml":"\\u003cproperty\\u003e'
+            '\\u003cname\\u003epassword\\u003c/name\\u003e'
+            '\\u003cvalue\\u003esynthetic-encoded-xml-sibling-secret'
+            '\\u003c/value\\u003e\\u003c/property\\u003e"}'
+        ),
+        (
+            "<property><name>password</name>"
+            "<value>synthetic-unclosed-xml-sibling-secret"
+        ),
         '<property name="password">synthetic-unclosed-xml-body-secret',
         (
             '<property name="password"/ >'
@@ -3245,6 +3282,20 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
             "synthetic-public-material"
             "</property>"
         ),
+        (
+            "<property><name>public-key</name>"
+            "<value>synthetic-public-material</value></property>"
+        ),
+        (
+            "<property><name>password</name><value> \n\t </value>"
+            "</property>"
+        ),
+        (
+            "<root><left><name>password</name></left>"
+            "<right><value>synthetic-public-material</value></right></root>"
+        ),
+        "<property><name>password</name></property>",
+        "<property><value>synthetic-public-material</value></property>",
         (
             "<property "
             "description='name=\"password\" value=\"synthetic-example\"'/>"
@@ -3901,6 +3952,18 @@ def test_public_text_redacts_standalone_age_x25519_identities(
             '{"\\u006bty":"RSA","\\u0064":'
             '"synthetic-escaped-private-coordinate"}'
         ),
+        (
+            '{"kty":"RSA",'
+            '"d":"synthetic-duplicate-private-coordinate","d":""}'
+        ),
+        (
+            '{"kty":"RSA","d":"synthetic-cross-duplicate-coordinate",'
+            '"kty":"document-kind","d":""}'
+        ),
+        (
+            '{"\\u006bty":"RSA",'
+            '"\\u0064":"synthetic-escaped-duplicate-coordinate","d":""}'
+        ),
         json.dumps(
             {
                 "wrapped": json.dumps(
@@ -3940,6 +4003,10 @@ def test_public_text_redacts_structured_private_jwk_material(
                 "n": "synthetic-public-modulus",
                 "e": "AQAB",
             }
+        ),
+        (
+            '{"kty":"RSA","n":"synthetic-old-public-modulus",'
+            '"n":"synthetic-new-public-modulus","e":"AQAB"}'
         ),
         json.dumps(
             {

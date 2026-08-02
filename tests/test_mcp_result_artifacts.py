@@ -1012,6 +1012,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "</property>"
         ),
         (
+            "<property><name>password</name>"
+            "<value>synthetic-xml-sibling-artifact-secret"
+            "</value></property>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-artifact-secret'
             '\\u003c/clientSecret\\u003e"}'
@@ -1035,6 +1040,14 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&#92;u003cpassword&#92;u003e"
             "synthetic-entity-json-xml-artifact-secret"
             "&#92;u003c/password&#92;u003e"
+        ),
+        (
+            '{"kty":"RSA",'
+            '"d":"synthetic-duplicate-artifact-coordinate","d":""}'
+        ),
+        (
+            '{"device_code":"synthetic-duplicate-artifact-device",'
+            '"device_code":"","user_code":"DUPL-ICAT"}'
         ),
         (
             "client-key-data: "

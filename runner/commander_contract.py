@@ -13,6 +13,7 @@ import binascii
 from bisect import bisect_right
 import copy
 from datetime import datetime
+from itertools import product
 import json
 import math
 import re
@@ -69,6 +70,11 @@ COMMANDER_OBJECT_MAX_FIELDS = 160
 COMMANDER_PUBLIC_MAX_DEPTH = 12
 COMMANDER_ARTIFACT_PAGE_MAX_CHARS = 100_000
 _COMMANDER_DECODED_CANDIDATE_MAX_STATES = 16
+
+
+class _StructuredJsonObjectPairs(list[tuple[str, Any]]):
+    """Pair-preserving JSON object used only by credential scans."""
+
 
 COMMANDER_PUBLIC_ERROR_CODES = frozenset(
     {
@@ -5069,20 +5075,66 @@ def _contains_structured_json_mapping(
         _STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES
     )
 
+    def object_pairs_match(
+        pairs: _StructuredJsonObjectPairs,
+    ) -> bool:
+        nonlocal remaining_candidates
+        current: dict[str, Any] = {}
+        values_by_key: dict[str, list[Any]] = {}
+        for key, nested in pairs:
+            current[key] = nested
+            values_by_key.setdefault(key, []).append(nested)
+        duplicate_values = [
+            (key, nested_values)
+            for key, nested_values in values_by_key.items()
+            if len(nested_values) > 1
+        ]
+        if not duplicate_values:
+            return mapping_predicate(current)
+
+        combination_count = 1
+        for _, nested_values in duplicate_values:
+            if (
+                remaining_candidates <= 0
+                or combination_count
+                > remaining_candidates // len(nested_values)
+            ):
+                # Duplicate-member semantics are ambiguous.  If every
+                # occurrence cannot be checked within the bounded scan, do
+                # not let last-value-wins parsing authorize public output.
+                return True
+            combination_count *= len(nested_values)
+        remaining_candidates -= combination_count
+
+        duplicate_keys = [key for key, _ in duplicate_values]
+        for selected_values in product(
+            *(nested_values for _, nested_values in duplicate_values)
+        ):
+            candidate = dict(current)
+            candidate.update(zip(duplicate_keys, selected_values))
+            if mapping_predicate(candidate):
+                return True
+        return False
+
     def enqueue_json_containers(text: str, depth: int) -> bool:
         nonlocal remaining_candidates
         stripped = text.strip()
         if not stripped or ("{" not in stripped and "[" not in stripped):
             return False
         try:
-            parsed = json.loads(stripped)
+            parsed = json.loads(
+                stripped,
+                object_pairs_hook=_StructuredJsonObjectPairs,
+            )
         except (RecursionError, TypeError, ValueError):
             parsed = None
         if isinstance(parsed, (dict, list)):
             stack.append((parsed, depth))
             return False
 
-        decoder = json.JSONDecoder()
+        decoder = json.JSONDecoder(
+            object_pairs_hook=_StructuredJsonObjectPairs,
+        )
         cursor = 0
         while cursor < len(text):
             object_start = text.find("{", cursor)
@@ -5117,6 +5169,17 @@ def _contains_structured_json_mapping(
         visited_nodes += 1
         if visited_nodes > _STRUCTURED_CREDENTIAL_MAX_NODES:
             return exhaustion_hint(value)
+        if isinstance(node, _StructuredJsonObjectPairs):
+            if object_pairs_match(node):
+                return True
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for _, nested in node
+                )
+            elif node and exhaustion_hint(value):
+                return True
+            continue
         if isinstance(node, dict):
             if mapping_predicate(node):
                 return True
@@ -5317,8 +5380,91 @@ def _xml_element_body_is_nonempty(body: str) -> bool:
     )
 
 
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit(":", 1)[-1].casefold()
+
+
+def _contains_sensitive_xml_sibling_elements(value: str) -> bool:
+    """Associate direct XML name/key and value sibling element bodies."""
+
+    frames: list[dict[str, Any]] = [
+        {
+            "tag": None,
+            "body_start": 0,
+            "has_sensitive_label": False,
+            "has_nonempty_value": False,
+        }
+    ]
+
+    def apply_closed_body(
+        frame: dict[str, Any],
+        parent: dict[str, Any],
+        body: str,
+    ) -> bool:
+        local_name = _xml_local_name(str(frame["tag"]))
+        if local_name in {"key", "name"}:
+            if commander_public_key_is_forbidden(body):
+                parent["has_sensitive_label"] = True
+        elif local_name == "value":
+            if _xml_element_body_is_nonempty(body):
+                parent["has_nonempty_value"] = True
+        return bool(
+            parent["has_sensitive_label"]
+            and parent["has_nonempty_value"]
+        )
+
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        if match.group("closing"):
+            if len(frames) <= 1 or frames[-1]["tag"] != tag:
+                continue
+            frame = frames.pop()
+            if apply_closed_body(
+                frame,
+                frames[-1],
+                value[int(frame["body_start"]) : match.start()],
+            ):
+                return True
+            continue
+
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            continue
+        header = value[match.end() : header_end]
+        if header.rstrip().endswith("/"):
+            continue
+        if len(frames) > _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        frames.append(
+            {
+                "tag": tag,
+                "body_start": header_end + 1,
+                "has_sensitive_label": False,
+                "has_nonempty_value": False,
+            }
+        )
+
+    # Truncated XML must not evade a sibling pair merely by omitting the
+    # final closing tag.  Fold each bounded suffix into its direct parent.
+    while len(frames) > 1:
+        frame = frames.pop()
+        if apply_closed_body(
+            frame,
+            frames[-1],
+            value[int(frame["body_start"]) :],
+        ):
+            return True
+    return bool(
+        frames[0]["has_sensitive_label"]
+        and frames[0]["has_nonempty_value"]
+    )
+
+
 def _contains_sensitive_xml_element(value: str) -> bool:
     """Detect credential-bearing XML elements and bounded attributes."""
+
+    if _contains_sensitive_xml_sibling_elements(value):
+        return True
 
     open_elements: list[str] = []
     labeled_elements: list[tuple[str, int]] = []

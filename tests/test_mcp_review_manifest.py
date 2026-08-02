@@ -2955,6 +2955,11 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "</property>"
         ),
         (
+            "<property><name>password</name>"
+            "<value>synthetic-xml-sibling-manifest-secret"
+            "</value></property>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-manifest-secret'
             '\\u003c/clientSecret\\u003e"}'
@@ -2978,6 +2983,14 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "&#37;26lt&#37;3Bpassword&#37;26gt&#37;3B"
             "synthetic-entity-percent-xml-manifest-secret"
             "&#37;26lt&#37;3B/password&#37;26gt&#37;3B"
+        ),
+        (
+            '{"kty":"EC",'
+            '"d":"synthetic-duplicate-manifest-coordinate","d":""}'
+        ),
+        (
+            '{"device_code":"synthetic-duplicate-manifest-device",'
+            '"device_code":"","expires_in":600}'
         ),
         (
             "client-key-data: "
