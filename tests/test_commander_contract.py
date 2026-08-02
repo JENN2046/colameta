@@ -2711,8 +2711,17 @@ def test_public_text_redacts_form_encoded_sensitive_key_assignments(
         ),
         (
             "https://client.example.invalid/callback"
+            "?code=synthetic-empty-state-code&state="
+        ),
+        (
+            "https://client.example.invalid/callback"
             "?%63ode=synthetic-percent-code"
             "&st%61te=synthetic-percent-state"
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-encoded-empty-state-code'
+            '\\u0026state\\u003d"}'
         ),
         (
             '{"url":"https:\\/\\/client.example.invalid\\/callback'
@@ -2731,6 +2740,48 @@ def test_public_text_redacts_form_encoded_sensitive_key_assignments(
     ],
 )
 def test_public_text_redacts_oauth_authorization_code_callbacks(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-cloudfront-signature"
+            "&Key-Pair-Id=synthetic-cloudfront-key-pair"
+        ),
+        (
+            "//distribution.example.invalid/private/report.pdf"
+            "?Key-Pair-Id=synthetic-relative-key-pair"
+            "&Policy=synthetic-cloudfront-policy"
+            "&Signature=synthetic-relative-signature"
+        ),
+        (
+            '{"url":"https:\\/\\/distribution.example.invalid\\/private'
+            '?Expires\\u003d2147483647'
+            '\\u0026Signature\\u003dsynthetic-encoded-signature'
+            '\\u0026Key-Pair-Id\\u003dsynthetic-encoded-key-pair"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002fdistribution.example.invalid/private"
+                    "?Expires%253D2147483647"
+                    "%2526Signature%253Dsynthetic-nested-signature"
+                    "%2526Key-Pair-Id%253Dsynthetic-nested-key-pair"
+                )
+            }
+        ),
+    ],
+)
+def test_public_text_redacts_cloudfront_signed_queries(
     value: str,
 ) -> None:
     public = commander_public_text(value)
@@ -3188,9 +3239,23 @@ def test_public_text_preserves_safe_bracket_notation(
             "<key>clientSecret</key></property>"
         ),
         (
+            "<property><type>password</type>"
+            "<value>synthetic-xml-type-sibling-secret</value></property>"
+        ),
+        (
+            "<property><value>synthetic-xml-reverse-type-sibling-secret"
+            "</value><type>clientSecret</type></property>"
+        ),
+        (
             "<config:property><config:name>api-key</config:name>"
             "<config:value>synthetic-xml-namespaced-sibling-secret"
             "</config:value></config:property>"
+        ),
+        (
+            '{"xml":"\\u003cproperty\\u003e'
+            '\\u003ctype\\u003epassword\\u003c/type\\u003e'
+            '\\u003cvalue\\u003esynthetic-encoded-xml-type-sibling-secret'
+            '\\u003c/value\\u003e\\u003c/property\\u003e"}'
         ),
         (
             '{"xml":"\\u003cproperty\\u003e'
@@ -3291,10 +3356,23 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
             "</property>"
         ),
         (
+            "<property><type>password</type><value> \n\t </value>"
+            "</property>"
+        ),
+        (
+            "<property><type>string</type>"
+            "<value>synthetic-public-material</value></property>"
+        ),
+        (
             "<root><left><name>password</name></left>"
             "<right><value>synthetic-public-material</value></right></root>"
         ),
+        (
+            "<root><left><type>password</type></left>"
+            "<right><value>synthetic-public-material</value></right></root>"
+        ),
         "<property><name>password</name></property>",
+        "<property><type>password</type></property>",
         "<property><value>synthetic-public-material</value></property>",
         (
             "<property "
@@ -4290,6 +4368,21 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         (
             "https://client.example.invalid/callback"
             "?code=&state=public-state"
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-public-signature"
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Signature=synthetic-public-signature"
+            "&Key-Pair-Id=synthetic-public-key-pair"
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=&Signature=synthetic-public-signature"
+            "&Key-Pair-Id=synthetic-public-key-pair"
         ),
         "C++ form parsing documentation.",
         "PGPASSWORD_HINT=use-the-local-prompt",

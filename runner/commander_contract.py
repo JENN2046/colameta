@@ -4845,6 +4845,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
+        or _contains_cloudfront_signed_url_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
     )
 
@@ -5261,10 +5262,12 @@ def _contains_oauth_authorization_code_query(value: str) -> bool:
         has_state = False
         for field in query.split("&"):
             key, assignment, field_value = field.partition("=")
-            if not assignment or not field_value:
+            if not assignment:
                 continue
             normalized_key = unquote_plus(key).lower()
-            has_code = has_code or normalized_key == "code"
+            has_code = has_code or (
+                normalized_key == "code" and bool(field_value)
+            )
             has_state = has_state or normalized_key == "state"
             if has_code and has_state:
                 return True
@@ -5287,6 +5290,38 @@ def _contains_azure_sas_signature_query(value: str) -> bool:
             has_version = has_version or normalized_key == "sv"
             has_signature = has_signature or normalized_key == "sig"
             if has_version and has_signature:
+                return True
+    return False
+
+
+def _contains_cloudfront_signed_url_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        has_expiry_or_policy = False
+        has_signature = False
+        has_key_pair_id = False
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            has_expiry_or_policy = has_expiry_or_policy or (
+                normalized_key in {"expires", "policy"}
+            )
+            has_signature = (
+                has_signature or normalized_key == "signature"
+            )
+            has_key_pair_id = (
+                has_key_pair_id or normalized_key == "key-pair-id"
+            )
+            if (
+                has_expiry_or_policy
+                and has_signature
+                and has_key_pair_id
+            ):
                 return True
     return False
 
@@ -5385,7 +5420,7 @@ def _xml_local_name(tag: str) -> str:
 
 
 def _contains_sensitive_xml_sibling_elements(value: str) -> bool:
-    """Associate direct XML name/key and value sibling element bodies."""
+    """Associate direct XML name/key/type and value sibling element bodies."""
 
     frames: list[dict[str, Any]] = [
         {
@@ -5402,7 +5437,7 @@ def _contains_sensitive_xml_sibling_elements(value: str) -> bool:
         body: str,
     ) -> bool:
         local_name = _xml_local_name(str(frame["tag"]))
-        if local_name in {"key", "name"}:
+        if local_name in {"key", "name", "type"}:
             if commander_public_key_is_forbidden(body):
                 parent["has_sensitive_label"] = True
         elif local_name == "value":
@@ -5600,6 +5635,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_query(value)
         or _contains_azure_sas_signature_query(value)
+        or _contains_cloudfront_signed_url_query(value)
         or _CREDENTIAL_URI_USERINFO_RE.search(value)
         or _contains_sensitive_cli_option_credential(value)
     ):

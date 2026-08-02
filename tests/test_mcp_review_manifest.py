@@ -2960,6 +2960,11 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "</value></property>"
         ),
         (
+            "<property><type>password</type>"
+            "<value>synthetic-xml-type-sibling-manifest-secret"
+            "</value></property>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-manifest-secret'
             '\\u003c/clientSecret\\u003e"}'
@@ -3311,10 +3316,20 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "&state=synthetic-oauth-manifest-state"
         ),
         (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-empty-state-manifest-code&state="
+        ),
+        (
             '{"url":"https:\\/\\/client.example.invalid\\/callback'
             '?code\\u003dsynthetic-encoded-oauth-manifest-code'
             '\\u0026state\\u003d'
             'synthetic-encoded-oauth-manifest-state"}'
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-cloudfront-manifest-signature"
+            "&Key-Pair-Id=synthetic-cloudfront-manifest-key-pair"
         ),
         (
             "localhost:5432:mydb:alice:"

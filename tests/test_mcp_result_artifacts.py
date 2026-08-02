@@ -1017,6 +1017,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "</value></property>"
         ),
         (
+            "<property><type>password</type>"
+            "<value>synthetic-xml-type-sibling-artifact-secret"
+            "</value></property>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-artifact-secret'
             '\\u003c/clientSecret\\u003e"}'
@@ -1368,10 +1373,20 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "&state=synthetic-oauth-artifact-state"
         ),
         (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-empty-state-artifact-code&state="
+        ),
+        (
             '{"url":"https:\\/\\/client.example.invalid\\/callback'
             '?code\\u003dsynthetic-encoded-oauth-artifact-code'
             '\\u0026state\\u003d'
             'synthetic-encoded-oauth-artifact-state"}'
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-cloudfront-artifact-signature"
+            "&Key-Pair-Id=synthetic-cloudfront-artifact-key-pair"
         ),
         (
             "localhost:5432:mydb:alice:"
