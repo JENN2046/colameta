@@ -98,6 +98,8 @@ ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
     "\\u0064api",
 )
 SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+SYNTHETIC_VAULT_BATCH_TOKEN = "hvb." + ("B2" * 12)
+SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
 ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
     SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
 )
@@ -176,6 +178,10 @@ ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
 )
 SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+SYNTHETIC_SLACK_WEBHOOK_URL = (
+    "https://hooks.slack.com/services/"
+    "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
 )
 ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
@@ -3162,7 +3168,10 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             }
         ),
         SYNTHETIC_VAULT_SERVICE_TOKEN,
+        SYNTHETIC_VAULT_BATCH_TOKEN,
+        SYNTHETIC_VAULT_RECOVERY_TOKEN,
         SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        SYNTHETIC_VAULT_BATCH_TOKEN.replace("hvb.", "hvb%2E"),
         f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
         json.dumps(
             {
@@ -3294,6 +3303,8 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             }
         ),
         SYNTHETIC_SLACK_TOKEN,
+        SYNTHETIC_SLACK_WEBHOOK_URL,
+        SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "%2F"),
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
         json.dumps(
             {
@@ -3325,6 +3336,9 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
             "https://account.blob.core.windows.net/container/blob"
             "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
         ),
+        "?sv=2024-11-04&ss=b&sp=rl&sig=synthetic-standalone-sas",
+        "sig=synthetic-form-sas&sp=r&sv=2024-11-04",
+        "%3Fsv%3D2024-11-04%26sig%3Dsynthetic-percent-sas",
         (
             '{"url":"https:\\/\\/account.blob.core.windows.net'
             '\\/container\\/blob?sv\\u003d2024-11-04'

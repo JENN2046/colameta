@@ -89,6 +89,8 @@ ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
     "\\u0064api",
 )
 SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+SYNTHETIC_VAULT_BATCH_TOKEN = "hvb." + ("B2" * 12)
+SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
 ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
     SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
 )
@@ -168,6 +170,10 @@ SYNTHETIC_SLACK_TOKEN = (
     "xoxb-123456789012-123456789012-" + ("Ab" * 24)
 )
 SYNTHETIC_SLACK_APP_TOKEN = "xapp-1-" + ("Cd" * 24)
+SYNTHETIC_SLACK_WEBHOOK_URL = (
+    "https://hooks.slack.com/services/"
+    "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
+)
 ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
     "xoxb-",
     "\\u0078oxb-",
@@ -2408,11 +2414,15 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
             }
         ),
         SYNTHETIC_VAULT_SERVICE_TOKEN,
+        SYNTHETIC_VAULT_BATCH_TOKEN,
+        SYNTHETIC_VAULT_RECOVERY_TOKEN,
         (
             "https://vault.example.invalid/ui?token="
             f"{SYNTHETIC_VAULT_SERVICE_TOKEN}"
         ),
         SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        SYNTHETIC_VAULT_BATCH_TOKEN.replace("hvb.", "hvb%2E"),
+        f'{{"access":"{SYNTHETIC_VAULT_RECOVERY_TOKEN}"}}',
         f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
         json.dumps(
             {
@@ -2569,6 +2579,15 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
         ),
         SYNTHETIC_SLACK_TOKEN,
         SYNTHETIC_SLACK_APP_TOKEN,
+        SYNTHETIC_SLACK_WEBHOOK_URL,
+        SYNTHETIC_SLACK_WEBHOOK_URL.replace(
+            "hooks.slack.com",
+            "hooks.slack-gov.com",
+        ),
+        SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "%2F"),
+        '{"url":"'
+        + SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "\\/")
+        + '"}',
         f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
         json.dumps(
             {
@@ -2604,10 +2623,13 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "hf_" not in public
     assert "dapi" not in public
     assert "hvs." not in public
+    assert "hvb." not in public
+    assert "hvr." not in public
     assert "dckr_pat_" not in public
     assert "shpat_" not in public
     assert "SG." not in public
     assert "GOCSPX-" not in public
+    assert "hooks.slack" not in public
 
 
 @pytest.mark.parametrize(
@@ -3749,6 +3771,13 @@ def test_public_text_redacts_azure_storage_credentials(
             "https://account.blob.core.windows.net/container/blob"
             "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
         ),
+        "?sv=2024-11-04&ss=b&sp=rl&sig=synthetic-standalone-sas",
+        "sig=synthetic-form-sas&sp=r&sv=2024-11-04",
+        "%3Fsv%3D2024-11-04%26sp%3Dr%26sig%3Dsynthetic-percent-sas",
+        (
+            '{"sas":"?sv\\u003d2024-11-04\\u0026sig\\u003d'
+            'synthetic-json-sas"}'
+        ),
         (
             "//account.blob.core.windows.net/container/blob"
             "?sig=synthetic-relative-sas-signature&sv=2024-11-04"
@@ -3787,6 +3816,20 @@ def test_public_text_redacts_azure_storage_credentials(
 def test_public_text_redacts_azure_sas_signature_queries(
     value: str,
 ) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+def test_public_text_fails_closed_for_oversized_standalone_sas_query(
+) -> None:
+    value = (
+        "?sv=2024-11-04&padding="
+        + ("x" * 8_193)
+        + "&sig=synthetic-late-standalone-sas"
+    )
+
     public = commander_public_text(value)
 
     assert public == "<sensitive>"
@@ -4659,6 +4702,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "hvs.<redacted>",
         "x" + SYNTHETIC_VAULT_SERVICE_TOKEN,
         "HVS." + ("A" * 24),
+        "hvb." + ("A" * 23),
+        "hvr.<redacted>",
+        "x" + SYNTHETIC_VAULT_BATCH_TOKEN,
+        "HVR." + ("A" * 24),
         "shpat_" + ("a" * 31),
         "shpat_<redacted>",
         "shpat_" + ("a" * 33),
@@ -4708,6 +4755,13 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "xoxb-short",
         "xoxb-<redacted>",
         "xoxb-" + ("A" * 251),
+        "http://hooks.slack.com/services/T00000000/B00000000/"
+        + ("X" * 24),
+        "https://example.com/services/T00000000/B00000000/"
+        + ("X" * 24),
+        "https://hooks.slack.com/services/T0000000/B00000000/"
+        + ("X" * 24),
+        "https://hooks.slack.com/services/T00000000/B00000000/short",
         "sk-proj-short",
         "sk-proj-<redacted>",
         "sk-proj-" + ("A" * 257),
@@ -4720,6 +4774,9 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             "?sv=2024-11-04&sp=r"
         ),
         "sig=synthetic-ordinary-signature",
+        "?sv=2024-11-04&sp=r",
+        "?sig=synthetic-standalone-signature&sp=r",
+        "sv=2024-11-04 sig=synthetic-separate-field",
         (
             "https://provider.example.invalid/callback"
             "?topic=api%5Fkey"

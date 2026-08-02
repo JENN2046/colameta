@@ -1049,7 +1049,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"|dop_v1_[A-Fa-f0-9]{64}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])dapi[A-Fa-f0-9]{32}"
     r"(?![A-Za-z0-9_-])"
-    r"|(?<![A-Za-z0-9_-])hvs\.[A-Za-z0-9_-]{24,}"
+    r"|(?<![A-Za-z0-9_-])hv[sbr]\.[A-Za-z0-9_-]{24,}"
     r"(?![A-Za-z0-9_-])"
     r"|shpat_[A-Fa-f0-9]{32}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
@@ -1075,6 +1075,12 @@ _STANDALONE_TELEGRAM_BOT_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_-])"
     r"[0-9]{8,16}:[A-Za-z0-9_-]{35}"
     r"(?![A-Za-z0-9_-])"
+)
+_SLACK_INCOMING_WEBHOOK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://"
+    r"(?i:hooks\.slack(?:-gov)?\.com)"
+    r"/services/T[A-Z0-9]{8,32}/B[A-Z0-9]{8,32}/"
+    r"[A-Za-z0-9_-]{16,128}(?![A-Za-z0-9_-])"
 )
 _PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
@@ -4964,6 +4970,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _SLACK_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
@@ -5593,14 +5600,10 @@ def _contains_oauth_authorization_code_query(value: str) -> bool:
 
 
 def _contains_azure_sas_signature_query(value: str) -> bool:
-    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
-        _, separator, query_and_fragment = match.group(0).partition("?")
-        if not separator:
-            continue
-        query = query_and_fragment.partition("#")[0]
+    for match in _FORM_URLENCODED_SEQUENCE_RE.finditer(value):
         has_version = False
         has_signature = False
-        for field in query.split("&"):
+        for field in match.group("form").split("&"):
             key, assignment, field_value = field.partition("=")
             if not assignment or not field_value:
                 continue
@@ -5609,6 +5612,12 @@ def _contains_azure_sas_signature_query(value: str) -> bool:
             has_signature = has_signature or normalized_key == "sig"
             if has_version and has_signature:
                 return True
+        if (
+            (has_version or has_signature)
+            and match.end() < len(value)
+            and value[match.end()] not in "\t\n\r \"'<>"
+        ):
+            return True
     return False
 
 
@@ -6113,6 +6122,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
         or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _SLACK_INCOMING_WEBHOOK_RE.search(value)
         or _contains_sensitive_form_urlencoded_assignment(value)
         or _contains_pgpass_password_record(value)
         or _contains_oauth_authorization_code_form(value)
