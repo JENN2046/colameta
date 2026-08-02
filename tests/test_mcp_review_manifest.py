@@ -2965,6 +2965,11 @@ def test_commander_manifest_reads_preserve_safe_xml_closing_tags(
             "</value></property>"
         ),
         (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent>"
+            "<D>synthetic-rsa-private-manifest-d</D></RSAKeyValue>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-manifest-secret'
             '\\u003c/clientSecret\\u003e"}'

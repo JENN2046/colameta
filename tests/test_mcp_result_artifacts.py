@@ -1022,6 +1022,11 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
             "</value></property>"
         ),
         (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent>"
+            "<D>synthetic-rsa-private-artifact-d</D></RSAKeyValue>"
+        ),
+        (
             '{"xml":"\\u003cclientSecret\\u003e'
             'synthetic-encoded-xml-artifact-secret'
             '\\u003c/clientSecret\\u003e"}'

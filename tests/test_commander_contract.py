@@ -3327,6 +3327,49 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent>"
+            "<D>synthetic-rsa-private-d</D></RSAKeyValue>"
+        ),
+        (
+            "<RSAKeyValue><P>synthetic-rsa-private-p</P>"
+            "<Q>synthetic-rsa-private-q</Q>"
+            "<DP>synthetic-rsa-private-dp</DP>"
+            "<DQ>synthetic-rsa-private-dq</DQ>"
+            "<InverseQ>synthetic-rsa-private-inverse-q</InverseQ>"
+            "</RSAKeyValue>"
+        ),
+        (
+            "<crypto:RSAKeyValue><crypto:DP>"
+            "synthetic-namespaced-rsa-private-dp"
+            "</crypto:DP></crypto:RSAKeyValue>"
+        ),
+        (
+            '{"xml":"\\u003cRSAKeyValue\\u003e'
+            '\\u003cD\\u003esynthetic-encoded-rsa-private-d'
+            '\\u003c/D\\u003e\\u003c/RSAKeyValue\\u003e"}'
+        ),
+        (
+            "&lt;RSAKeyValue&gt;&lt;InverseQ&gt;"
+            "synthetic-entity-rsa-private-inverse-q"
+            "&lt;/InverseQ&gt;&lt;/RSAKeyValue&gt;"
+        ),
+        "<RSAKeyValue><D>synthetic-truncated-rsa-private-d",
+    ],
+)
+def test_public_text_redacts_xml_serialized_rsa_private_keys(
+    value: str,
+) -> None:
+    public = commander_public_text(value)
+
+    assert public == "<sensitive>"
+    assert "synthetic-" not in public
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "<status>public-ready</status>",
         "<public-key>synthetic-public-material</public-key>",
         "Discuss the <password> element without including a body.",
@@ -3374,6 +3417,16 @@ def test_public_text_redacts_sensitive_xml_elements(value: str) -> None:
         "<property><name>password</name></property>",
         "<property><type>password</type></property>",
         "<property><value>synthetic-public-material</value></property>",
+        (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent></RSAKeyValue>"
+        ),
+        "<D>synthetic-public-rsa-coordinate</D>",
+        "<RSAKeyValue><D></D><P> \n\t </P></RSAKeyValue>",
+        (
+            "<NotRSAKeyValue><D>synthetic-public-rsa-coordinate</D>"
+            "</NotRSAKeyValue>"
+        ),
         (
             "<property "
             "description='name=\"password\" value=\"synthetic-example\"'/>"

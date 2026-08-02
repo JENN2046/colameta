@@ -935,6 +935,9 @@ _SENSITIVE_XML_MAX_OPEN_ELEMENTS = 256
 _SENSITIVE_XML_MAX_TAG_HEADER_CHARS = 4_096
 _SENSITIVE_XML_MAX_ELEMENT_BODY_CHARS = 4_096
 _SENSITIVE_XML_MAX_ENTITY_STATES = 16
+_XML_RSA_PRIVATE_MEMBER_NAMES = frozenset(
+    {"d", "p", "q", "dp", "dq", "inverseq"}
+)
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
@@ -4825,6 +4828,7 @@ def _matches_sensitive_material(value: str) -> bool:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_xml_serialized_rsa_private_key(value)
         or _contains_sensitive_xml_element(value)
         or _contains_sensitive_cli_option_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
@@ -5419,6 +5423,64 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit(":", 1)[-1].casefold()
 
 
+def _contains_xml_serialized_rsa_private_key(value: str) -> bool:
+    """Detect nonempty private RSA members inside bounded RSAKeyValue XML."""
+
+    frames: list[dict[str, Any]] = []
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        local_name = _xml_local_name(tag)
+        if match.group("closing"):
+            if not frames or frames[-1]["tag"] != tag:
+                continue
+            frame = frames.pop()
+            if (
+                frame["is_private_member"]
+                and _xml_element_body_is_nonempty(
+                    value[int(frame["body_start"]) : match.start()]
+                )
+            ):
+                return True
+            continue
+
+        parent_is_rsa_key = bool(
+            frames and frames[-1]["inside_rsa_key"]
+        )
+        inside_rsa_key = (
+            parent_is_rsa_key or local_name == "rsakeyvalue"
+        )
+        is_private_member = (
+            parent_is_rsa_key
+            and local_name in _XML_RSA_PRIVATE_MEMBER_NAMES
+        )
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            if inside_rsa_key:
+                return True
+            continue
+        header = value[match.end() : header_end]
+        if header.rstrip().endswith("/"):
+            continue
+        if len(frames) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        frames.append(
+            {
+                "tag": tag,
+                "body_start": header_end + 1,
+                "inside_rsa_key": inside_rsa_key,
+                "is_private_member": is_private_member,
+            }
+        )
+
+    return any(
+        bool(frame["is_private_member"])
+        and _xml_element_body_is_nonempty(
+            value[int(frame["body_start"]) :]
+        )
+        for frame in frames
+    )
+
+
 def _contains_sensitive_xml_sibling_elements(value: str) -> bool:
     """Associate direct XML name/key/type and value sibling element bodies."""
 
@@ -5618,6 +5680,7 @@ def _redact_sensitive_material(value: str) -> str:
         _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
         or _contains_forbidden_key_assignment(value)
+        or _contains_xml_serialized_rsa_private_key(value)
         or _contains_sensitive_xml_element(value)
         or _contains_netrc_password_credential(value)
         or _CURL_USER_PASSWORD_RE.search(value)
