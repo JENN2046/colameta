@@ -2712,6 +2712,71 @@ def test_commander_manifest_reads_reject_oauth_device_authorization(
     )
 
 
+@pytest.mark.parametrize("field", ("data", "stringData"))
+@pytest.mark.parametrize(
+    "representation",
+    ("json", "python", "nested", "percent", "escaped-json"),
+)
+def test_commander_manifest_reads_reject_kubernetes_secret_payloads(
+    tmp_path: Path,
+    field: str,
+    representation: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        field: {"config": "synthetic-manifest-kubernetes-secret"},
+    }
+    serialized = json.dumps(secret, ensure_ascii=False)
+    if representation == "json":
+        content = serialized
+    elif representation == "python":
+        content = repr(secret)
+    elif representation == "nested":
+        content = json.dumps({"nested": serialized})
+    elif representation == "percent":
+        content = _percent_encode_layers(serialized, 1)
+    else:
+        content = serialized.replace("Secret", r"\u0053ecret")
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-manifest-kubernetes-secret" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-manifest-kubernetes-secret" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
 @pytest.mark.parametrize(
     "credential_kind",
     ("private-jwk", "oauth-device"),

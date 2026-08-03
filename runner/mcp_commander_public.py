@@ -15,6 +15,7 @@ from runner.commander_contract import (
     commander_public_key_is_forbidden,
     commander_public_mapping_is_oauth_authorization_callback,
     commander_public_mapping_is_cloudfront_signed_cookie,
+    commander_public_mapping_is_kubernetes_secret,
     commander_public_mapping_is_private_jwk,
     commander_public_mapping_is_oauth_device_authorization,
     commander_public_text,
@@ -327,6 +328,7 @@ class CommanderPublicProjector:
         if isinstance(value, dict):
             if (
                 commander_public_mapping_is_private_jwk(value)
+                or commander_public_mapping_is_kubernetes_secret(value)
                 or commander_public_mapping_is_oauth_device_authorization(
                     value
                 )

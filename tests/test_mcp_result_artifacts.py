@@ -2004,6 +2004,78 @@ def test_commander_artifact_reads_reject_oauth_device_authorization(
     )
 
 
+@pytest.mark.parametrize("field", ("data", "stringData"))
+@pytest.mark.parametrize(
+    "representation",
+    ("mapping", "json", "python", "nested", "percent", "escaped-json"),
+)
+def test_commander_artifact_reads_reject_kubernetes_secret_payloads(
+    tmp_path,
+    field: str,
+    representation: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        field: {"config": "synthetic-artifact-kubernetes-secret"},
+    }
+    serialized = json.dumps(secret, ensure_ascii=False)
+    if representation == "mapping":
+        content: object = secret
+    elif representation == "json":
+        content = serialized
+    elif representation == "python":
+        content = repr(secret)
+    elif representation == "nested":
+        content = json.dumps({"nested": serialized})
+    elif representation == "percent":
+        content = _percent_encode_layers(serialized, 1)
+    else:
+        content = serialized.replace("Secret", r"\u0053ecret")
+
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": content},
+    )
+    assert handle is not None
+
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-artifact-kubernetes-secret" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-artifact-kubernetes-secret" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
 @pytest.mark.parametrize(
     "credential_kind",
     ("private-jwk", "oauth-device"),

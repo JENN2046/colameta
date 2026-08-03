@@ -3586,6 +3586,7 @@ def _public_value(
     if isinstance(value, dict):
         if (
             commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_kubernetes_secret(value)
             or commander_public_mapping_is_oauth_device_authorization(
                 value
             )
@@ -3677,6 +3678,7 @@ def _validate_public_value(
     if isinstance(value, dict):
         if (
             commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_kubernetes_secret(value)
             or commander_public_mapping_is_oauth_device_authorization(
                 value
             )
@@ -4998,6 +5000,7 @@ def _matches_sensitive_material(value: str) -> bool:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _AGE_X25519_IDENTITY_RE.search(value)
         or _contains_private_jwk_material(value)
+        or _contains_kubernetes_secret_material(value)
         or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
@@ -5191,6 +5194,23 @@ def commander_public_mapping_is_private_jwk(
     )
 
 
+def _is_nonempty_structured_mapping(value: Any) -> bool:
+    return isinstance(value, (dict, _StructuredJsonObjectPairs)) and bool(value)
+
+
+def commander_public_mapping_is_kubernetes_secret(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect a Kubernetes Secret payload only within the same object."""
+
+    if value.get("kind") != "Secret":
+        return False
+    return any(
+        _is_nonempty_structured_mapping(value.get(field))
+        for field in ("data", "stringData")
+    )
+
+
 def commander_public_mapping_is_oauth_device_authorization(
     value: dict[Any, Any],
 ) -> bool:
@@ -5290,6 +5310,15 @@ def _private_jwk_text_hint(value: str) -> bool:
         or "'d'" in lowered
         or '"k"' in lowered
         or "'k'" in lowered
+    )
+
+
+def _kubernetes_secret_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        "kind" in lowered
+        and "secret" in lowered
+        and ("data" in lowered or "stringdata" in lowered)
     )
 
 
@@ -5580,6 +5609,16 @@ def _contains_private_jwk_material(value: str) -> bool:
         value,
         mapping_predicate=commander_public_mapping_is_private_jwk,
         exhaustion_hint=_private_jwk_text_hint,
+    )
+
+
+def _contains_kubernetes_secret_material(value: str) -> bool:
+    """Detect Secret payloads without joining fields from sibling objects."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=commander_public_mapping_is_kubernetes_secret,
+        exhaustion_hint=_kubernetes_secret_text_hint,
     )
 
 
@@ -6230,6 +6269,7 @@ def _redact_sensitive_material(value: str) -> str:
         or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
         or _AGE_X25519_IDENTITY_RE.search(value)
         or _contains_private_jwk_material(value)
+        or _contains_kubernetes_secret_material(value)
         or _contains_oauth_device_authorization_material(value)
         or _contains_standalone_jwt(value)
         or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)

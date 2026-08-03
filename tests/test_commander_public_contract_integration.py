@@ -1765,3 +1765,36 @@ def test_real_validation_preview_and_poll_use_the_public_contract(tmp_path) -> N
     assert current["outcome"] == "completed"
     assert current["facts"]["status"] == "passed"
     assert current["facts"]["passed"] is True
+
+
+def test_projection_omits_kubernetes_secret_objects_and_redacts_text() -> None:
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "stringData": {"config": "synthetic-summary-secret"},
+    }
+    result = _project(
+        "analyze_project_state",
+        {
+            "ok": True,
+            "context_binding": _base_context_binding(),
+            "secret_object": secret,
+            "summary": json.dumps(secret),
+            "safe_fact": "kept",
+        },
+        {"project_name": PROJECT_NAME},
+    )
+
+    contract = _assert_contract(
+        result,
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+    assert contract["facts"]["safe_fact"] == "kept"
+    assert "secret_object" not in contract["facts"]
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-summary-secret" not in json.dumps(
+        result,
+        ensure_ascii=False,
+    )

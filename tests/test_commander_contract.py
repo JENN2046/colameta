@@ -16,6 +16,7 @@ from runner.commander_contract import (
     COMMANDER_TEXT_MAX_CHARS,
     CommanderContractError,
     build_commander_response,
+    commander_public_mapping_is_kubernetes_secret,
     commander_public_text,
     commander_response_schema,
     derive_commander_outcome,
@@ -6604,3 +6605,86 @@ def test_validator_rejects_modified_context_binding_shape() -> None:
 
 def test_validator_accepts_a_minimal_completed_response() -> None:
     validate_commander_response(copy.deepcopy(_minimal_completed_response()))
+
+
+KUBERNETES_SECRET_PAYLOAD = {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "data": {"config": "c3ludGhldGljLXNlY3JldA=="},
+}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        KUBERNETES_SECRET_PAYLOAD,
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "stringData": {"config": "synthetic-secret"},
+        },
+    ],
+)
+def test_kubernetes_secret_predicate_requires_an_exact_object_payload(
+    payload: dict[str, object],
+) -> None:
+    assert commander_public_mapping_is_kubernetes_secret(payload) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "ConfigMap", "data": {"config": "visible"}},
+        {"kind": "Deployment", "data": {"config": "visible"}},
+        {"data": {"config": "visible"}},
+        {"kind": "secret", "data": {"config": "visible"}},
+        {"kind": "SecretStore", "data": {"config": "visible"}},
+        {"kind": "Secret", "data": {}},
+        {"kind": "Secret", "stringData": {}},
+        {
+            "kind": "ConfigMap",
+            "data": {"config": "visible"},
+            "nested": {"kind": "Secret"},
+        },
+    ],
+)
+def test_kubernetes_secret_predicate_does_not_join_nearby_or_sibling_fields(
+    payload: dict[str, object],
+) -> None:
+    assert commander_public_mapping_is_kubernetes_secret(payload) is False
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert commander_public_text(serialized) == serialized
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps(KUBERNETES_SECRET_PAYLOAD),
+        repr(KUBERNETES_SECRET_PAYLOAD),
+        json.dumps({"nested": json.dumps(KUBERNETES_SECRET_PAYLOAD)}),
+        _percent_encode_layers(json.dumps(KUBERNETES_SECRET_PAYLOAD), 1),
+        '{"kind":"Secret","data":{},"data":{"config":"duplicate-secret"}}',
+        json.dumps(
+            {
+                "kind": "Secret",
+                "stringData": {"config": "synthetic-secret"},
+            }
+        ).replace("Secret", r"\u0053ecret"),
+    ],
+)
+def test_public_text_redacts_kubernetes_secret_payloads_across_serializations(
+    value: str,
+) -> None:
+    assert commander_public_text(value) == "<sensitive>"
+    assert "synthetic-secret" not in commander_public_text(value)
+
+
+def test_public_text_fails_closed_for_deep_and_exhausted_kubernetes_candidates() -> None:
+    deep = json.dumps(_nest_json_containers(KUBERNETES_SECRET_PAYLOAD))
+    exhausted = _percent_encode_layers(
+        json.dumps(KUBERNETES_SECRET_PAYLOAD),
+        16,
+    )
+
+    assert commander_public_text(deep) == "<sensitive>"
+    assert commander_public_text(exhausted) == "<sensitive>"
