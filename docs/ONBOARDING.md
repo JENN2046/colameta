@@ -78,7 +78,7 @@ stable MCP: http://127.0.0.1:8766/mcp
 ## 3. First Agent Reads
 
 After an agent connects to MCP, it should not run executors or write state
-first. On the private App Commander surface, it should use the seven public
+first. On the private App Commander surface, it should use the nine public
 tools in this order:
 
 ```text
@@ -86,13 +86,15 @@ list_registered_projects
 get_apps_connector_smoke_packet
 render_commander_app
 analyze_project_state
+review_manifest only for hash-bound independent review
+read_result_artifact only for an opaque result continuation
 run_mcp_workflow only for the requested read/preview workflow
 manage_validation_run only for bounded validation
 manage_git only for reviewed Git operations
 ```
 
 Consumer contracts, individual runtime/cadence tools, and other low-level
-diagnostics are advanced loopback tools. They are not part of the seven-tool
+diagnostics are advanced loopback tools. They are not part of the nine-tool
 private App contract.
 
 Project-level tools require `project_name`. If the agent does not know the

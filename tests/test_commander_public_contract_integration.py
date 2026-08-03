@@ -20,6 +20,18 @@ from runner.mcp_server import MCPPlanningBridgeServer
 from runner.project_registry import ProjectRegistry
 
 
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
 PROJECT_NAME = "colameta-self-dev"
 GIT_HEAD = "a" * 40
 PLAN_SHA256 = "b" * 64
@@ -29,7 +41,107 @@ ARTIFACT_ID = "artifact_contract_1234567890"
 MANIFEST_ID = "manifest_contract_1234567890"
 PREVIEW_ID = "preview_contract_1234567890"
 RUN_ID = "validation_contract_1234567890"
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
 EXPIRES_AT = "2026-08-01T18:00:00+08:00"
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
+SYNTHETIC_GOOGLE_API_KEY = "AIza" + ("Ab1_-" * 7)
+ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
+    "AIza",
+    "\\u0041Iza",
+)
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
+SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
+SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
+    SYNTHETIC_STRIPE_SECRET_KEY.replace(
+        "sk_live_",
+        "\\u0073k_live_",
+    )
+)
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
+SYNTHETIC_TELEGRAM_BOT_TOKEN = "123456789:" + ("A" * 35)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-summary-secret",
+        16,
+    )
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -367,6 +479,68 @@ def test_workflow_projection_drops_non_commander_next_action() -> None:
     assert "manage_executor_workflow" not in json.dumps(contract, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    "guidance",
+    [
+        "Call %6danage_files next.",
+        "Call %256danage%255ffiles next.",
+    ],
+)
+def test_projection_redacts_percent_encoded_hidden_tools(
+    guidance: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "guidance": guidance,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["facts"]["guidance"] == "<internal-tool>"
+    assert guidance not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
+    ],
+)
+def test_projection_redacts_percent_encoded_nonpublic_resource_uris(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<resource-uri>"
+    assert summary not in json.dumps(contract, ensure_ascii=False)
+
+
 def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids() -> None:
     result = _project(
         "analyze_project_state",
@@ -379,8 +553,15 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
             "id_token": "id-value-must-not-leak",
             "client_secret": "client-value-must-not-leak",
             "oauth_authorization_code": "code-value-must-not-leak",
+            "passPhrase": "passphrase-value-must-not-leak",
+            "_auth": "npm-auth-value-must-not-leak",
+            "AccountKey": "azure-account-value-must-not-leak",
+            "SharedAccessSignature": "azure-sas-value-must-not-leak",
+            "MYSQL_PWD": "mysql-value-must-not-leak",
             "/home/jenn/private/secret.txt": "posix-key-value",
             r"C:\Users\Jenn\secret.txt": "windows-key-value",
+            r"\\server/share\secret.txt": "unc-key-value",
+            r"\Users\Jenn\secret.txt": "rooted-windows-key-value",
             "nested": {
                 "safe_nested": True,
                 "run_id": "run-private-123",
@@ -410,12 +591,26 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "id_token",
         "client_secret",
         "oauth_authorization_code",
+        "passPhrase",
+        "_auth",
+        "AccountKey",
+        "SharedAccessSignature",
+        "MYSQL_PWD",
         "oauth-value-must-not-leak",
         "id-value-must-not-leak",
         "client-value-must-not-leak",
         "code-value-must-not-leak",
+        "passphrase-value-must-not-leak",
+        "npm-auth-value-must-not-leak",
+        "azure-account-value-must-not-leak",
+        "azure-sas-value-must-not-leak",
+        "mysql-value-must-not-leak",
         "/home/jenn",
         r"C:\Users\Jenn",
+        r"\\server/share",
+        "unc-key-value",
+        r"\Users\Jenn",
+        "rooted-windows-key-value",
         "manage_git_remote",
         "get_git_status",
         "manage_plan_version",
@@ -424,6 +619,664 @@ def test_projection_removes_sensitive_keys_path_keys_hidden_tools_and_nested_ids
         "executor-private-123",
     ):
         assert forbidden not in rendered
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-summary-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-summary-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-summary-secret"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_whitespace_delimited_netrc_passwords(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        (
+            "https://huggingface.example.invalid/callback?token="
+            f"{SYNTHETIC_HUGGING_FACE_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GITLAB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_API_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GOOGLE_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
+                )
+            }
+        ),
+        SYNTHETIC_STRIPE_SECRET_KEY,
+        SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_SLACK_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_standalone_provider_access_tokens(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "ghp_" not in json.dumps(contract, ensure_ascii=False)
+    assert "hf_" not in json.dumps(contract, ensure_ascii=False)
+    assert "dop_v1_" not in json.dumps(contract, ensure_ascii=False)
+    assert "npm_" not in json.dumps(contract, ensure_ascii=False)
+    assert "pypi-" not in json.dumps(contract, ensure_ascii=False)
+    assert "SG." not in json.dumps(contract, ensure_ascii=False)
+    assert "glpat-" not in json.dumps(contract, ensure_ascii=False)
+    assert "AIza" not in json.dumps(contract, ensure_ascii=False)
+    assert "AKIA" not in json.dumps(contract, ensure_ascii=False)
+    assert "ASIA" not in json.dumps(contract, ensure_ascii=False)
+    assert "sk_live_" not in json.dumps(contract, ensure_ascii=False)
+    assert "rk_test_" not in json.dumps(contract, ensure_ascii=False)
+    assert "xoxb-" not in json.dumps(contract, ensure_ascii=False)
+    assert "sk-proj-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-summary-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-summary-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-summary-secret"
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_percent_encoded_sensitive_key_assignments(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "<password>synthetic-xml-summary-secret</password>",
+        (
+            "<config:clientSecret>"
+            "synthetic-namespaced-xml-summary-secret"
+            "</config:clientSecret>"
+        ),
+        (
+            '{"xml":"\\u003capi-key\\u003e'
+            'synthetic-encoded-xml-summary-secret'
+            '\\u003c/api-key\\u003e"}'
+        ),
+        (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-summary-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#60;clientSecret&#62;"
+            "synthetic-decimal-entity-xml-summary-secret"
+            "&#60;&#47;clientSecret&#62;"
+        ),
+        (
+            '{"xml":"\\u0026#x3c;api-key\\u0026#x3e;'
+            'synthetic-json-entity-xml-summary-secret'
+            '\\u0026#x3c;/api-key\\u0026#x3e;"}'
+        ),
+    ],
+)
+def test_projection_redacts_sensitive_xml_elements(summary: str) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-summary-secret"
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-summary-password"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-summary-code"
+            "&state=synthetic-oauth-summary-state"
+        ),
+        "PGPASSWORD=synthetic-postgres-summary-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-summary-password"}'
+        ),
+        "MYSQL_PWD=synthetic-mysql-summary-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-summary-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-summary-password"
+                )
+            }
+        ),
+        SYNTHETIC_TELEGRAM_BOT_TOKEN,
+        (
+            '{"access":"'
+            + SYNTHETIC_TELEGRAM_BOT_TOKEN.replace(":", "\\u003a")
+            + '"}'
+        ),
+    ],
+)
+def test_projection_redacts_form_pgpass_oauth_database_and_telegram_credentials(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE,
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE,
+        ),
+        (EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE, "<sensitive>"),
+        (
+            EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
+            "<sensitive>",
+        ),
+    ],
+)
+def test_projection_fails_closed_only_when_decode_budget_is_exhausted(
+    summary: str,
+    expected: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == expected
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "curl -u alice:synthetic-curl-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -U alice:synthetic-curl-proxy-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-summary-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-summary-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-summary-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-u%20alice%3A"
+                    "synthetic-nested-curl-summary-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-summary-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_curl_user_password_options(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            "curl -E client.pem:synthetic-summary-cert-password "
+            "https://example.invalid",
+            "<sensitive>",
+        ),
+        (
+            "curl --cert=client.pem:synthetic-summary-cert-password "
+            "https://example.invalid",
+            "<sensitive>",
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-summary-passphrase '
+            'https:\\/\\/example.invalid"}',
+            "<sensitive>",
+        ),
+        (
+            "curl -e https://example.test/page "
+            "https://example.invalid",
+            (
+                "curl -e https://example.test/page "
+                "https://example.invalid"
+            ),
+        ),
+        (
+            '{"command":"curl\\u0020-e\\u0020'
+            'https:\\/\\/example.test/page\\u0020'
+            'https:\\/\\/example.invalid"}',
+            (
+                '{"command":"curl\\u0020-e\\u0020'
+                'https:\\/\\/example.test/page\\u0020'
+                'https:\\/\\/example.invalid"}'
+            ),
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fsecret.txt",
+            "<local-path>",
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fsecret.txt"}',
+            "<local-path>",
+        ),
+        (
+            "root:/home/jenn/summary-secret.txt",
+            "<local-path>",
+        ),
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005csummary-secret.txt"}',
+            "<local-path>",
+        ),
+        (
+            "//example.test/docs/page",
+            "//example.test/docs/page",
+        ),
+        (
+            '{"url":"\\u002f\\u002fexample.test'
+            '\\u002fdocs\\u002fpage"}',
+            (
+                '{"url":"\\u002f\\u002fexample.test'
+                '\\u002fdocs\\u002fpage"}'
+            ),
+        ),
+    ],
+)
+def test_projection_handles_curl_certificate_path_and_scheme_relative_evidence(
+    summary: str,
+    expected: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == expected
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
+    assert "secret.txt" not in json.dumps(contract, ensure_ascii=False)
+
+
+def test_projection_preserves_token_like_opaque_resource_uri() -> None:
+    uri = (
+        f"colameta://result-artifact/{TOKEN_LIKE_OPAQUE_ID}"
+        "/pages/{page}"
+    )
+    summary = f"Read {uri} to continue."
+
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == summary
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
+                )
+            }
+        ),
+    ],
+)
+def test_projection_redacts_azure_sas_signature_queries(
+    summary: str,
+) -> None:
+    contract = _assert_contract(
+        _project(
+            "analyze_project_state",
+            {
+                "ok": True,
+                "context_binding": _base_context_binding(),
+                "summary": summary,
+            },
+            {"project_name": PROJECT_NAME},
+        ),
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-" not in json.dumps(contract, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(
@@ -912,3 +1765,36 @@ def test_real_validation_preview_and_poll_use_the_public_contract(tmp_path) -> N
     assert current["outcome"] == "completed"
     assert current["facts"]["status"] == "passed"
     assert current["facts"]["passed"] is True
+
+
+def test_projection_omits_kubernetes_secret_objects_and_redacts_text() -> None:
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "stringData": {"config": "synthetic-summary-secret"},
+    }
+    result = _project(
+        "analyze_project_state",
+        {
+            "ok": True,
+            "context_binding": _base_context_binding(),
+            "secret_object": secret,
+            "summary": json.dumps(secret),
+            "safe_fact": "kept",
+        },
+        {"project_name": PROJECT_NAME},
+    )
+
+    contract = _assert_contract(
+        result,
+        tool_name="analyze_project_state",
+        outcome="completed",
+        journey_stage="observe",
+    )
+    assert contract["facts"]["safe_fact"] == "kept"
+    assert "secret_object" not in contract["facts"]
+    assert contract["summary"] == "<sensitive>"
+    assert "synthetic-summary-secret" not in json.dumps(
+        result,
+        ensure_ascii=False,
+    )

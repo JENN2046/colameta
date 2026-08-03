@@ -22,3 +22,33 @@ def test_transport_uses_a_dedicated_commander_public_projector() -> None:
         assert "_commander_public_projector" in source
         assert projector_method in source
         assert hasattr(CommanderPublicProjector, projector_method)
+
+
+def test_artifact_sanitizer_omits_structured_oauth_callback() -> None:
+    authorization_code = "synthetic-artifact-oauth-callback-code"
+    projector = CommanderPublicProjector(None)
+
+    sanitized = projector.sanitize_for_artifact(
+        {
+            "status": "clean",
+            "oauth_callback": {
+                "code": authorization_code,
+                "state": "synthetic-artifact-oauth-callback-state",
+            },
+        }
+    )
+
+    assert sanitized == {"status": "clean"}
+    assert authorization_code not in repr(sanitized)
+
+
+def test_artifact_sanitizer_preserves_non_oauth_code_state_mapping() -> None:
+    projector = CommanderPublicProjector(None)
+    payload = {
+        "workflow_result": {
+            "code": "SUCCESS",
+            "state": "completed",
+        }
+    }
+
+    assert projector.sanitize_for_artifact(payload) == payload

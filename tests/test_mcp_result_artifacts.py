@@ -1,15 +1,202 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import threading
 
+import pytest
+
+import runner.mcp_server as mcp_server_module
+from runner.commander_contract import (
+    COMMANDER_PUBLIC_MAX_DEPTH,
+    validate_commander_response,
+)
 from runner.mcp_result_artifacts import MCPResultArtifactStore
 from runner.mcp_server import (
     COMMANDER_APP_WIDGET_URI,
+    MCP_RESULT_ARTIFACT_PAGE_CHARS,
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_RESULT_ARTIFACT_WORKFLOW,
     MCPPlanningBridgeServer,
+)
+
+
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
+def _nest_json_containers(value: object) -> object:
+    nested = value
+    for _ in range(COMMANDER_PUBLIC_MAX_DEPTH + 1):
+        nested = {"layer": nested}
+    return nested
+
+
+SYNTHETIC_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
+    "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
+)
+ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_AGE_X25519_IDENTITY = (
+    "AGE-SECRET-KEY-1" + ("Q" * 58)
+)
+ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY = (
+    SYNTHETIC_AGE_X25519_IDENTITY.replace(
+        "AGE-SECRET-KEY-",
+        "\\u0041GE-SECRET-KEY-",
+    )
+)
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
+SYNTHETIC_DATABRICKS_PAT = "dapi" + ("a1" * 16)
+ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
+    "dapi",
+    "\\u0064api",
+)
+SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+SYNTHETIC_VAULT_BATCH_TOKEN = "hvb." + ("B2" * 12)
+SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
+ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
+    SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
+)
+SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = "ops_" + ("Ab1_" * 16)
+ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = (
+    SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+        "ops_",
+        "\\u006fps\\u005f",
+    )
+)
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
+SYNTHETIC_DOCKER_PAT = "dckr_pat_" + (("Ab1_-" * 5) + "Z9")
+ESCAPED_SYNTHETIC_DOCKER_PAT = SYNTHETIC_DOCKER_PAT.replace(
+    "dckr_pat_",
+    "\\u0064ckr_pat_",
+)
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
+SYNTHETIC_GOOGLE_API_KEY = "AIza" + ("Ab1_-" * 7)
+ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
+    "AIza",
+    "\\u0041Iza",
+)
+SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    "GOCSPX-" + ("Ab1_-" * 5) + "Z9Q"
+)
+ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace(
+        "GOCSPX-",
+        "\\u0047OCSPX-",
+    )
+)
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
+SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
+SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+SYNTHETIC_STRIPE_WEBHOOK_SECRET = "whsec_" + ("C3_" * 16)
+ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
+    SYNTHETIC_STRIPE_SECRET_KEY.replace(
+        "sk_live_",
+        "\\u0073k_live_",
+    )
+)
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+SYNTHETIC_SLACK_WEBHOOK_URL = (
+    "https://hooks.slack.com/services/"
+    "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
+)
+SYNTHETIC_DISCORD_WEBHOOK_URL = (
+    "https://discord.com/api/webhooks/123456789012345678/"
+    + ("Ab1_" * 16)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-artifact-secret",
+        16,
+    )
 )
 
 
@@ -244,15 +431,245 @@ def test_result_artifact_recovery_manifest_keeps_all_recoverable_continuations(t
     ]
 
 
-def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "token_like_opaque_id",
+    [
+        TOKEN_LIKE_OPAQUE_ID,
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+    ],
+)
+def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_commander(
+    tmp_path,
+    monkeypatch,
+    token_like_opaque_id: str,
+) -> None:
+    monkeypatch.setattr(
+        "runner.mcp_result_artifacts.secrets.token_urlsafe",
+        lambda _length: token_like_opaque_id,
+    )
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    uri = "colameta://result-artifact/opaque_handle_123_/pages/{page}"
+    token_like_uri = (
+        f"colameta://result-artifact/{token_like_opaque_id}"
+        "/pages/{page}"
+    )
     payload = {
-        "content": "Literal bounded public source text\n" + ("x" * 30000),
+        "content": (
+            f"请读取{uri}。\n"
+            f"Read {uri}。Next\n"
+            f"📎{uri}✅Next\n"
+            f"请读取{uri}继续\n"
+            f"❤️{uri}👩‍💻Next\n"
+            f"1️⃣{uri}#️⃣Next\n"
+            f"↔️{uri}〰️Next\n"
+            f"Read {uri}✅,Next\n"
+            f"Read {uri}」.Next\n"
+            f"नमस्ते{uri}\n"
+            f"مُرَاجَعَةَ{uri}\n"
+            f"cafe\u0301{uri}\n"
+            f"Read {token_like_uri} to continue.\n"
+            + ("x" * 30000)
+        ),
         "label": "paged compatibility fixture",
+        "token_count": 42,
+        "prompt_token_count": 21,
+        "token_budget": 1000,
+        "python_repr_public_jwk": (
+            "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
+            "'e': 'AQAB'}"
+        ),
+        "relative_value": "safe\\/relative.txt",
+        "fraction": "1\\/2",
+        "url": "https:\\/\\/example.com",
+        "scheme_relative_url": "//example.test/docs/page",
+        "escaped_scheme_relative_url": (
+            "\\/\\/example.test\\/docs\\/page"
+        ),
+        "nested_scheme_relative_url": json.dumps(
+            {"url": "//example.test/docs/page"}
+        ),
+        "escaped_space_suffix": f"{uri}\\u0020Next",
+        "serialized_escaped_space_suffix": json.dumps(
+            {"note": f"{uri}\\u0020Next"}
+        ),
+        "zero_width_space_suffix": f"{uri}\u200bNext",
+        "escaped_zero_width_space_suffix": f"{uri}\\u200bNext",
+        "serialized_zero_width_space_suffix": json.dumps(
+            {"note": f"{uri}\u200bNext"}
+        ),
+        "bom_prefix": f"\ufeff{uri}",
+        "escaped_bom_prefix": f"\\ufeff{uri}",
+        "serialized_bom_prefix": json.dumps(
+            {"note": f"\ufeff{uri}"}
+        ),
+        "short_escape_left_boundary": json.dumps(
+            {"content": f"\n{uri}"}
+        ),
+        "nested_short_escape_left_boundary": json.dumps(
+            {"nested": json.dumps({"content": f"\t{uri}"})}
+        ),
+        "dash_boundaries": f"before—{uri}–continue",
+        "serialized_dash_boundaries": json.dumps(
+            {"note": f"before—{uri}–continue"}
+        ),
+        "paired_punctuation_boundaries": (
+            f"before」{uri}「continue; before”{uri}“continue"
+        ),
+        "serialized_paired_punctuation_boundaries": json.dumps(
+            {"note": f"before）{uri}（continue"}
+        ),
+        "ascii_opening_boundaries": (
+            f"{uri}(see page 2); {uri}[details]; "
+            f"{uri}{{details}}; {uri}<details>"
+        ),
+        "escaped_ascii_opening_boundaries": (
+            f"{uri}\\u0028see page 2\\u0029; "
+            f"{uri}\\u005bdetails\\u005d; "
+            f"{uri}\\u007bdetails\\u007d; "
+            f"{uri}\\u003cdetails\\u003e"
+        ),
+        "ascii_closing_boundaries": (
+            f"before){uri}; before]{uri}; before}}{uri}"
+        ),
+        "escaped_ascii_closing_boundaries": (
+            f"before\\u0029{uri}; before\\u005d{uri}; "
+            f"before\\u007d{uri}"
+        ),
+        "ascii_left_separator_boundaries": " ".join(
+            f"{separator}{uri}" for separator in ",;!?"
+        ),
+        "escaped_ascii_left_separator_boundaries": " ".join(
+            f"{separator}{uri}"
+            for separator in ("\\u002c", "\\u003b", "\\u0021", "\\u003f")
+        ),
+        "markdown_emphasis_boundaries": (
+            f"*{uri}* **{uri}** _{uri}_ __{uri}__"
+        ),
+        "escaped_markdown_emphasis_boundaries": (
+            f"\\u002a\\u002a{uri}\\u002a\\u002a"
+        ),
+        "public_key_assignment": "publicKey=synthetic-public-value",
+        "public_key_marker": "-----BEGIN PUBLIC KEY-----",
+        "pgp_public_key_marker": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+        "ordinary_url": "https://example.com/repo",
+        "username_only_url": "https://alice@example.com/repo",
+        "prompt_prose": "Use a passphrase prompt.",
+        "putty_header_without_colon": (
+            "PuTTY-User-Key-File-3 ssh-ed25519"
+        ),
+        "age_identity_underlength": (
+            "AGE-SECRET-KEY-1" + ("Q" * 57)
+        ),
+        "age_identity_overlength": (
+            "AGE-SECRET-KEY-1" + ("Q" * 59)
+        ),
+        "age_identity_placeholder": "AGE-SECRET-KEY-1<redacted>",
+        "age_public_recipient": "age1" + ("q" * 58),
+        "compact_placeholder": "header.payload.signature",
+        "compact_non_json_prose": (
+            "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl"
+        ),
+        "separator_prefixed_safe_assignment": (
+            "_author=Jenn; _authorship=public"
+        ),
+        "percent_encoded_safe_query": (
+            "https://provider.example.invalid/callback"
+            "?topic=api%5Fkey&api%5Fkeyboard=public"
+        ),
+        "percent_encoded_missing_value": (
+            "https://provider.example.invalid/callback?api%5Fkey"
+        ),
+        "package_marker_short": "npm_short",
+        "package_marker_placeholder": "npm_<redacted>",
+        "package_marker_overlength": "npm_" + ("A" * 37),
+        "docker_marker_underlength": "dckr_pat_" + ("A" * 26),
+        "docker_marker_placeholder": "dckr_pat_<redacted>",
+        "docker_marker_overlength": "dckr_pat_" + ("A" * 28),
+        "digitalocean_marker_underlength": "dop_v1_" + ("a" * 63),
+        "digitalocean_marker_placeholder": "dop_v1_<redacted>",
+        "digitalocean_marker_overlength": "dop_v1_" + ("a" * 65),
+        "digitalocean_marker_prefixed": "xdop_v1_" + ("a" * 64),
+        "digitalocean_marker_nonhex": "dop_v1_" + ("g" * 64),
+        "shopify_marker_underlength": "shpat_" + ("a" * 31),
+        "shopify_marker_placeholder": "shpat_<redacted>",
+        "shopify_marker_overlength": "shpat_" + ("a" * 33),
+        "shopify_marker_prefixed": "xshpat_" + ("a" * 32),
+        "shopify_marker_nonhex": "shpat_" + ("g" * 32),
+        "index_marker_short": "pypi-short",
+        "index_marker_placeholder": "pypi-<redacted>",
+        "index_marker_underlength": "pypi-" + ("A" * 84),
+        "mail_marker_first_underlength": (
+            f"SG.{'A' * 21}.{'B' * 43}"
+        ),
+        "mail_marker_second_underlength": (
+            f"SG.{'A' * 22}.{'B' * 42}"
+        ),
+        "mail_marker_overlength": f"SG.{'A' * 22}.{'B' * 44}",
+        "mail_marker_placeholder": "SG.<redacted>.<redacted>",
+        "max_budget_percent_encoded_safe_prose": (
+            MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE
+        ),
+        "non_sensitive_cli_options": (
+            "tool --username alice --region us-east-1"
+        ),
+        "non_curl_user_option": "tool --user alice:note",
+        "curl_user_only": (
+            "curl --user alice https://example.invalid"
+        ),
+        "curl_referer": (
+            "curl -e https://example.test/page "
+            "https://example.invalid"
+        ),
+        "encoded_curl_referer": (
+            '{"command":"curl\\u0020-e\\u0020'
+            'https:\\/\\/example.test/page\\u0020'
+            'https:\\/\\/example.invalid"}'
+        ),
+        "curl_user_placeholder": (
+            "curl --user <user:password> https://example.invalid"
+        ),
+        "curl_proxy_user_only": (
+            "curl --proxy-user alice https://example.invalid"
+        ),
+        "curl_proxy_user_placeholder": (
+            "curl --proxy-user <user:password> https://example.invalid"
+        ),
+        "curl_proxy_short_option_without_value": "curl -U",
+        "opaque_resource_uri": token_like_uri,
+        "sensitive_flag_without_value": "tool --password --verbose",
+        "escaped_sensitive_flag_without_value": (
+            "tool --password\\u0020\\u002d\\u002dverbose"
+        ),
+        "nested_json": json.dumps({"nested": json.dumps({"uri": uri})}),
+        "ascii_json": json.dumps({"note": f"取{uri}继续"}),
+        "symbol_json": json.dumps({"note": f"📎{uri}✅Next"}),
+        "emoji_sequence_json": json.dumps(
+            {"note": f"❤️{uri}👩‍💻Next"}
+        ),
+        "keycap_sequence_json": json.dumps(
+            {"note": f"1️⃣{uri}#️⃣Next"}
+        ),
+        "non_so_emoji_sequence_json": json.dumps(
+            {"note": f"↔️{uri}〰️Next"}
+        ),
+        "mixed_delimiter_json": json.dumps(
+            {"note": f"{uri}✅,Next; {uri}」.Next"}
+        ),
+        "combining_mark_prose_json": json.dumps(
+            {
+                "note": (
+                    f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; "
+                    f"cafe\u0301{uri}"
+                )
+            }
+        ),
     }
     handle = server._mcp_result_artifact_store.put(tool="fixture", payload=payload)
 
     assert handle is not None
+    assert handle.artifact_id == token_like_opaque_id
     assert handle.page_count > 1
     expected_content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     pages: list[str] = []
@@ -313,6 +730,1044 @@ def test_result_artifact_compatibility_reads_exact_pages_and_sha_through_command
     assert restored == expected_content
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
+
+    resource_pages: list[str] = []
+    for page_number in range(1, handle.page_count + 1):
+        resource_uri = (
+            f"colameta://result-artifact/{handle.artifact_id}"
+            if page_number == 1
+            else (
+                f"colameta://result-artifact/{handle.artifact_id}"
+                f"/pages/{page_number}"
+            )
+        )
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": page_number,
+                "method": "resources/read",
+                "params": {"uri": resource_uri},
+            }
+        )
+        assert resource is not None
+        resource_page = json.loads(
+            resource["result"]["contents"][0]["text"]
+        )
+        resource_pages.append(resource_page["content"])
+    assert "".join(resource_pages) == expected_content
+
+
+def test_commander_resource_reads_cache_full_artifact_safety_by_digest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "content": "\\" * 24_000 + "relative.txt",
+        "label": "backslash-dense artifact",
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+    assert handle is not None
+    assert handle.page_count >= 3
+
+    scans = 0
+    original_safety = (
+        server._commander_public_result_artifact_payload_safety
+    )
+
+    def counting_safety(value: dict) -> bool:
+        nonlocal scans
+        scans += 1
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_result_artifact_payload_safety",
+        counting_safety,
+    )
+
+    pages: list[str] = []
+    for page_number in range(1, handle.page_count + 1):
+        resource_uri = (
+            f"colameta://result-artifact/{handle.artifact_id}"
+            if page_number == 1
+            else (
+                f"colameta://result-artifact/{handle.artifact_id}"
+                f"/pages/{page_number}"
+            )
+        )
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": page_number,
+                "method": "resources/read",
+                "params": {"uri": resource_uri},
+            }
+        )
+        assert response is not None
+        assert "error" not in response
+        page = json.loads(response["result"]["contents"][0]["text"])
+        pages.append(page["content"])
+    repeated = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    f"colameta://result-artifact/{handle.artifact_id}"
+                    "/pages/1"
+                )
+            },
+        }
+    )
+
+    assert repeated is not None and "error" not in repeated
+    restored = "".join(pages)
+    assert json.loads(restored) == payload
+    assert scans == 1
+    assert list(
+        server._commander_public_result_artifact_safety_cache
+    ) == [(handle.artifact_id, handle.content_sha256)]
+
+
+def test_commander_concurrent_resource_reads_share_one_artifact_safety_scan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "content": "\\" * 24_000 + "relative.txt",
+            "label": "concurrent artifact",
+        },
+    )
+    assert handle is not None
+    assert handle.page_count >= 3
+
+    waiter_entered = threading.Event()
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiter_entered.set()
+            return super().result(timeout=timeout)
+
+    monkeypatch.setattr(mcp_server_module, "Future", ObservedFuture)
+
+    scan_entered = threading.Event()
+    release_scan = threading.Event()
+    scan_lock = threading.Lock()
+    scans = 0
+    original_safety = (
+        server._commander_public_result_artifact_payload_safety
+    )
+
+    def blocking_safety(value: dict) -> bool:
+        nonlocal scans
+        with scan_lock:
+            scans += 1
+        scan_entered.set()
+        assert release_scan.wait(timeout=5)
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_result_artifact_payload_safety",
+        blocking_safety,
+    )
+
+    def read_page(page: int) -> dict:
+        uri = (
+            f"colameta://result-artifact/{handle.artifact_id}"
+            if page == 1
+            else (
+                f"colameta://result-artifact/{handle.artifact_id}"
+                f"/pages/{page}"
+            )
+        )
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": page,
+                "method": "resources/read",
+                "params": {"uri": uri},
+            }
+        )
+        assert response is not None
+        return response
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(read_page, 1)
+        assert scan_entered.wait(timeout=5)
+        second = pool.submit(read_page, 2)
+        try:
+            assert waiter_entered.wait(timeout=5)
+            assert scans == 1
+        finally:
+            release_scan.set()
+        responses = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert all("error" not in response for response in responses)
+    assert scans == 1
+    assert not server._commander_public_result_artifact_safety_inflight
+    assert list(
+        server._commander_public_result_artifact_safety_cache
+    ) == [(handle.artifact_id, handle.content_sha256)]
+
+
+def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    unsafe_values = (
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}??）query"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}(/home/reviewer/private.txt)"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}∕private"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u2215private"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\u000a/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\n\\u002fhome/reviewer/private.txt"
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}.\\nC:\\u005cUsers\\u005cReviewer"
+            "\\u005cprivate.txt"
+        ),
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\Users\Jenn\secret.txt",
+        json.dumps({"reason": r"\Windows\System32\config\SAM"}),
+        (
+            '{"reason":"\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": r"\Users\Jenn\secret.txt"}
+                )
+            }
+        ),
+        r"\\server/share\private.txt",
+        "//server/share/private.txt",
+        "///server/share/private.txt",
+        json.dumps({"reason": r"\\server/share\private.txt"}),
+        json.dumps({"reason": r"\\server\share\private.txt"}),
+        json.dumps({"reason": "//server/share/private.txt"}),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": "//server/share/private.txt"}
+                )
+            }
+        ),
+        '{"reason":"\\/\\/server\\/share\\/private.txt"}',
+        (
+            '{"reason":"\\u002f\\u002fserver\\u002fshare'
+            '\\u002fprivate.txt"}'
+        ),
+        (
+            '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
+            '\\u005cprivate.txt"}'
+        ),
+        "C:/Users/Reviewer/private.txt",
+        r"C:/Users\Reviewer/private.txt",
+        '{"reason":"C:\\u002fUsers\\u002fReviewer\\u002fprivate.txt"}',
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        'password="alpha beta gamma"',
+        r'{\"client_secret\":\"alpha beta gamma\"}',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Basic dXNlcjpwYXNzd29yZA==",
+        (
+            '{"reason":"Authorization: '
+            '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        '{"API Key":"synthetic-spaced-secret"}',
+        "api key: synthetic-unquoted-artifact-secret",
+        (
+            r"api\u0020key\u003a "
+            "synthetic-encoded-unquoted-artifact-secret"
+        ),
+        "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
+        "apiKey=delta epsilon zeta",
+        "private-key=synthetic-private-key-value",
+        "<password>synthetic-xml-artifact-secret</password>",
+        (
+            '<property name="password" '
+            'value="synthetic-xml-attribute-artifact-secret"/>'
+        ),
+        (
+            '<entry key="password" '
+            'value="synthetic-xml-key-artifact-secret"/>'
+        ),
+        (
+            '<property name="password">'
+            "synthetic-xml-body-artifact-secret"
+            "</property>"
+        ),
+        (
+            "<property><name>password</name>"
+            "<value>synthetic-xml-sibling-artifact-secret"
+            "</value></property>"
+        ),
+        (
+            "<property><type>password</type>"
+            "<value>synthetic-xml-type-sibling-artifact-secret"
+            "</value></property>"
+        ),
+        (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent>"
+            "<D>synthetic-rsa-private-artifact-d</D></RSAKeyValue>"
+        ),
+        (
+            '{"xml":"\\u003cclientSecret\\u003e'
+            'synthetic-encoded-xml-artifact-secret'
+            '\\u003c/clientSecret\\u003e"}'
+        ),
+        (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-artifact-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#x3c;clientSecret&#x3e;"
+            "synthetic-hex-entity-xml-artifact-secret"
+            "&#x3c;&#x2f;clientSecret&#x3e;"
+        ),
+        (
+            '{"xml":"\\u0026amp;lt;password\\u0026amp;gt;'
+            'synthetic-nested-entity-xml-artifact-secret'
+            '\\u0026amp;lt;/password\\u0026amp;gt;"}'
+        ),
+        (
+            "&#92;u003cpassword&#92;u003e"
+            "synthetic-entity-json-xml-artifact-secret"
+            "&#92;u003c/password&#92;u003e"
+        ),
+        (
+            '{"kty":"RSA",'
+            '"d":"synthetic-duplicate-artifact-coordinate","d":""}'
+        ),
+        (
+            '{"device_code":"synthetic-duplicate-artifact-device",'
+            '"device_code":"","user_code":"DUPL-ICAT"}'
+        ),
+        (
+            "client-key-data: "
+            "c3ludGhldGljLWFydGlmYWN0LWt1YmUta2V5"
+        ),
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END PRIVATE KEY-----"
+        ),
+        SYNTHETIC_AGE_X25519_IDENTITY,
+        (
+            '{"identity":"'
+            f"{ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY}"
+            '"}'
+        ),
+        (
+            '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
+            '\\nsynthetic-encoded-key-material"}'
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        (
+            "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n"
+            "synthetic-ssh2-private-key-material\n"
+            "---- END SSH2 ENCRYPTED PRIVATE KEY ----"
+        ),
+        (
+            '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
+            '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "passphrase=synthetic-passphrase-value",
+        '{"passPhrase":"synthetic-camel-passphrase"}',
+        "--passphrase synthetic-cli-passphrase",
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Encryption: aes256-cbc\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
+        ),
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
+        ),
+        SYNTHETIC_JWT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DATABRICKS_PAT,
+        SYNTHETIC_DATABRICKS_PAT.replace("dapi", "d%61pi"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DATABRICKS_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DATABRICKS_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_VAULT_SERVICE_TOKEN,
+        SYNTHETIC_VAULT_BATCH_TOKEN,
+        SYNTHETIC_VAULT_RECOVERY_TOKEN,
+        SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        SYNTHETIC_VAULT_BATCH_TOKEN.replace("hvb.", "hvb%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN,
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+            "ops_",
+            "ops%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN}"}}',
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        (
+            "https://registry.npmjs.org/callback?token="
+            f"{SYNTHETIC_NPM_ACCESS_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DOCKER_PAT.replace("dckr_pat_", "dckr%5Fpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DOCKER_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DOCKER_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        (
+            "https://upload.pypi.org/legacy/?token="
+            f"{SYNTHETIC_PYPI_API_TOKEN}"
+        ),
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        (
+            "https://api.sendgrid.com/v3/?access="
+            f"{SYNTHETIC_SENDGRID_API_KEY}"
+        ),
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GITLAB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_API_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GOOGLE_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET,
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace("-", "%2D"),
+        (
+            '{"access":"'
+            f"{ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET}"
+            '"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "access": (
+                            ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET
+                        )
+                    }
+                )
+            }
+        ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
+                )
+            }
+        ),
+        SYNTHETIC_STRIPE_SECRET_KEY,
+        SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("_", "%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_SLACK_TOKEN,
+        SYNTHETIC_SLACK_WEBHOOK_URL,
+        SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "%2F"),
+        SYNTHETIC_DISCORD_WEBHOOK_URL,
+        SYNTHETIC_DISCORD_WEBHOOK_URL.replace("/", "%2F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
+        "AccountKey=synthetic-azure-account-key",
+        '{"Account\\u004bey":"synthetic-encoded-account-key"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "SharedAccess\\u0053ignature="
+                    "sv=synthetic-version&sig=synthetic-nested-sas"
+                )
+            }
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        "?sv=2024-11-04&ss=b&sp=rl&sig=synthetic-standalone-sas",
+        "sig=synthetic-form-sas&sp=r&sv=2024-11-04",
+        "%3Fsv%3D2024-11-04%26sig%3Dsynthetic-percent-sas",
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
+                )
+            }
+        ),
+        "client_secret: alpha beta gamma",
+        "password: correct horse battery staple",
+        "PASSWORD=#synthetic-punctuation-artifact-secret",
+        '{"shell":"PASSWORD\\u003d#synthetic-encoded-artifact-secret"}',
+        "_auth=dXNlcjpwYXNz",
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "//registry.npmjs.org/:"
+                    "\\u005fauthToken=synthetic-nested-npm-token"
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-artifact-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-artifact-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-artifact-secret"
+                        )
+                    }
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-artifact-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00252Bkey='
+            'synthetic-encoded-form-artifact-secret"}'
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-artifact-code"
+            "&state=synthetic-oauth-artifact-state"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-empty-state-artifact-code&state="
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-encoded-oauth-artifact-code'
+            '\\u0026state\\u003d'
+            'synthetic-encoded-oauth-artifact-state"}'
+        ),
+        (
+            '{"code":"synthetic-structured-oauth-artifact-code",'
+            '"state":"synthetic-structured-oauth-artifact-state"}'
+        ),
+        (
+            "{'code': 'synthetic-python-oauth-artifact-code', "
+            "'state': 'synthetic-python-oauth-artifact-state'}"
+        ),
+        (
+            "grant_type=authorization_code"
+            "&code=synthetic-oauth-token-form-artifact-code"
+        ),
+        (
+            "grant_type=authorization_code&padding="
+            + ("a" * 8_192)
+            + "&code=synthetic-overflow-token-form-artifact-code"
+        ),
+        (
+            '{"body":"grant_type\\u003dauthorization_code'
+            '\\u0026code\\u003d'
+            'synthetic-encoded-token-form-artifact-code"}'
+        ),
+        (
+            "https://account.blob.core.windows.net/"
+            + ("a" * 8193)
+            + "?sv=2024-11-04"
+            "&sig=synthetic-overflow-sas-artifact-signature"
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-cloudfront-artifact-signature"
+            "&Key-Pair-Id=synthetic-cloudfront-artifact-key-pair"
+        ),
+        json.dumps(
+            {
+                "CloudFront-Policy": "synthetic-cloudfront-artifact-policy",
+                "CloudFront-Signature": (
+                    "synthetic-cloudfront-cookie-artifact-signature"
+                ),
+                "CloudFront-Key-Pair-Id": (
+                    "synthetic-cloudfront-cookie-artifact-key-pair"
+                ),
+            }
+        ),
+        (
+            "CloudFront-Expires=2147483647; "
+            "CloudFront-Signature=synthetic-bare-cookie-artifact-signature; "
+            "CloudFront-Key-Pair-Id=synthetic-bare-cookie-artifact-key"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=synthetic-gcs-artifact-access-id"
+            "&Expires=2147483647"
+            "&Signature=synthetic-gcs-artifact-signature"
+        ),
+        "token_count=synthetic-token-metric-artifact-secret",
+        "token_count_secret=123456",
+        "token_budget_password: 987654",
+        "token_count=" + ("9" * 5_000),
+        (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-python-artifact-private-coordinate'}"
+        ),
+        (
+            "{'device_code': 'synthetic-python-artifact-device-code', "
+            "'user_code': 'ARTF-REPR'}"
+        ),
+        (
+            '<property name="password" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-overflow-xml-artifact-secret"/>'
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-artifact-password"
+        ),
+        (
+            '{"pgpass":"localhost\\u003a5432\\u003amydb'
+            '\\u003aalice\\u003a'
+            'synthetic-encoded-pgpass-artifact-password"}'
+        ),
+        "PGPASSWORD=synthetic-postgres-artifact-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-artifact-password"}'
+        ),
+        "MYSQL_PWD=synthetic-mysql-artifact-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-artifact-password"}'
+        ),
+        "SQLCMDPASSWORD=synthetic-sqlcmd-artifact-password",
+        (
+            '{"env":"SQLCMDPASSWORD\\u003d'
+            'synthetic-encoded-sqlcmd-artifact-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-artifact-password"
+                )
+            }
+        ),
+        "123456789:" + ("A" * 35),
+        "https://api.telegram.org/bot123456789:"
+        + ("A" * 35)
+        + "/getMe",
+        "https:%2F%2Fapi.telegram.org%2Fbot123456789%3A"
+        + ("A" * 35)
+        + "%2FsendMessage",
+        '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-artifact-secret"
+        ),
+        (
+            "machine example.com\n"
+            "  login alice\n"
+            "  password synthetic-multiline-netrc-artifact-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-artifact-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-artifact-secret"
+                )
+            }
+        ),
+        "https://alice:synthetic-password@example.com/repo",
+        "postgresql://dbuser:synthetic-db-password@db.example/app",
+        "//alice:synthetic-relative-password@example.com/repo",
+        (
+            '{"url":"https:\\/\\/alice:'
+            'synthetic-escaped-password@example.com/repo"}'
+        ),
+        (
+            '{"url":"https:\\u002f\\u002falice\\u003a'
+            'synthetic-encoded-authority\\u0040example.com/repo"}'
+        ),
+        "--password synthetic-cli-password",
+        "tool --api-key synthetic-cli-secret --verbose",
+        (
+            'curl --oauth2-bearer "synthetic-artifact-bearer-token" '
+            "https://example.test"
+        ),
+        (
+            "curl -u alice:synthetic-curl-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -U alice:synthetic-curl-proxy-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-artifact-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-artifact-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-artifact-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-ualice%3A"
+                    "synthetic-nested-curl-artifact-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-artifact-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        (
+            "curl -E client.pem:synthetic-artifact-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --cert=client.pem:synthetic-artifact-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-artifact-passphrase '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fartifact-secret.txt"
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fartifact-secret.txt"}'
+        ),
+        "root:/home/jenn/artifact-labeled-secret.txt",
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005cartifact-labeled-secret.txt"}'
+        ),
+        EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
+        EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
+        (
+            '{"command":"tool --api-key\\u0020'
+            'synthetic-encoded-space-cli-secret"}'
+        ),
+        (
+            '{"command":"tool --client\\u002dsecret '
+            'synthetic-encoded-cli-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"command":"tool --refresh\\u002dtoken '
+                    'synthetic-nested-cli-secret"}'
+                )
+            }
+        ),
+        "Cookie: session=abc; csrf=def",
+        (
+            'Authorization: Digest username="Mufasa", '
+            'response="deadbeef"'
+        ),
+        r'{\"Cookie\":\"session=abc; csrf=def\"}',
+        (
+            '{"reason":"Authorization: \\u0044igest '
+            'username=\\"Mufasa\\", response=\\"deadbeef\\""}'
+        ),
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"reason":"manage\\u005ffiles"}',
+        '{"reason":"%6danage_files"}',
+        '{"reason":"%256danage%255ffiles"}',
+        json.dumps(
+            {"reason": '{"tool":"manage\\u005fexecutor\\u005fworkflow"}'}
+        ),
+        '{"uri":"colameta:\\/\\/result-artifact\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002fresult-artifact'
+            '\\u002fshort"}'
+        ),
+        "Colameta://result-artifact/opaque_handle_123_",
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}%20colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
+        (
+            '{"uri":"Colameta:\\/\\/result-artifact\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002fresult-artifact'
+            '\\u002fopaque_handle_123_"}'
+        ),
+        (
+            "colameta://result-artifact/opaque_handle_123_"
+            "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "review-manifest\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://result-artifact/opaque_handle_123_"
+                    "/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+                    "review-manifest\\u002fshort"
+                )
+            }
+        ),
+    )
+    for unsafe_uri in unsafe_values:
+        handle = server._mcp_result_artifact_store.put(
+            tool="fixture",
+            payload={"content": unsafe_uri},
+        )
+
+        assert handle is not None
+        typed = server.call_tool_for_agent(
+            "read_result_artifact",
+            {"artifact_id": handle.artifact_id, "artifact_page": 1},
+        )
+        assert typed["ok"] is False
+        assert typed["data"]["outcome"] == "blocked"
+        assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert unsafe_uri not in json.dumps(typed, ensure_ascii=False)
+
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/read",
+                "params": {
+                    "uri": f"colameta://result-artifact/{handle.artifact_id}",
+                },
+            }
+        )
+        assert resource is not None
+        assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+        assert unsafe_uri not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_commander_rejects_unsafe_artifact_across_tool_and_resource_reads(
@@ -375,6 +1830,599 @@ def test_commander_rejects_unsafe_artifact_across_tool_and_resource_reads(
     assert "must-not-cross" not in json.dumps(resource, ensure_ascii=False)
 
 
+def test_commander_private_jwk_preflight_errors_use_contract_on_every_tool_route(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    private_coordinate = "synthetic-artifact-private-jwk-coordinate"
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "jwk": {
+                "kty": "RSA",
+                "n": "synthetic-public-modulus",
+                "e": "AQAB",
+                "d": private_coordinate,
+            }
+        },
+    )
+
+    assert handle is not None
+    arguments = {
+        "artifact_id": handle.artifact_id,
+        "artifact_page": 1,
+    }
+    for method in (
+        "tools/call",
+        "call_tool",
+        "read_result_artifact",
+    ):
+        params = (
+            {
+                "name": "read_result_artifact",
+                "arguments": arguments,
+            }
+            if method in {"tools/call", "call_tool"}
+            else arguments
+        )
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": method,
+                "method": method,
+                "params": params,
+            }
+        )
+
+        assert response is not None
+        result = response["result"]
+        structured = (
+            result["structuredContent"]
+            if method == "tools/call"
+            else result
+        )
+        assert structured["ok"] is False
+        contract = structured["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "blocked"
+        assert contract["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert private_coordinate not in json.dumps(
+            response,
+            ensure_ascii=False,
+        )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": "resource",
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert private_coordinate not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_artifact_read_preserves_public_jwk(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    public_jwk = {
+        "kty": "RSA",
+        "n": "synthetic-public-modulus",
+        "e": "AQAB",
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"jwk": public_jwk},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    page_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(page_content)["jwk"] == public_jwk
+
+
+def test_commander_artifact_reads_reject_oauth_device_authorization(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    device_secret = "synthetic-artifact-device-secret"
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "device_authorization": {
+                "device_code": device_secret,
+                "user_code": "ABCD-EFGH",
+                "verification_uri": (
+                    "https://provider.example.invalid/device"
+                ),
+            }
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert device_secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize("field", ("data", "stringData"))
+@pytest.mark.parametrize(
+    "representation",
+    ("mapping", "json", "python", "nested", "percent", "escaped-json"),
+)
+def test_commander_artifact_reads_reject_kubernetes_secret_payloads(
+    tmp_path,
+    field: str,
+    representation: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        field: {"config": "synthetic-artifact-kubernetes-secret"},
+    }
+    serialized = json.dumps(secret, ensure_ascii=False)
+    if representation == "mapping":
+        content: object = secret
+    elif representation == "json":
+        content = serialized
+    elif representation == "python":
+        content = repr(secret)
+    elif representation == "nested":
+        content = json.dumps({"nested": serialized})
+    elif representation == "percent":
+        content = _percent_encode_layers(serialized, 1)
+    else:
+        content = serialized.replace("Secret", r"\u0053ecret")
+
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": content},
+    )
+    assert handle is not None
+
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-artifact-kubernetes-secret" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-artifact-kubernetes-secret" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "credential_kind",
+    ("private-jwk", "oauth-device"),
+)
+def test_commander_artifact_reads_fail_closed_at_structured_depth_limit(
+    tmp_path,
+    credential_kind: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    secret = f"synthetic-depth-{credential_kind}-secret"
+    credential = (
+        {"kty": "RSA", "d": secret}
+        if credential_kind == "private-jwk"
+        else {"device_code": secret, "user_code": "ABCD-EFGH"}
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "content": json.dumps(
+                _nest_json_containers(credential),
+            )
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert secret not in json.dumps(resource, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "password[]=synthetic-artifact-bracket-secret",
+        (
+            "database[password]="
+            "synthetic-artifact-nested-bracket-secret"
+        ),
+    ),
+)
+def test_commander_artifact_reads_reject_bracket_assignments(
+    tmp_path,
+    assignment: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": assignment},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-artifact" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-artifact" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_artifact_reads_preserve_markdown_resource_link_label(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    opaque_uri = (
+        "colameta://result-artifact/"
+        "opaque_handle_123_/pages/{page}"
+    )
+    link = f"[{opaque_uri}](https://example.test/evidence)"
+    payload = {"content": link}
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    typed_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(typed_content) == payload
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert json.loads(resource_page["content"]) == payload
+
+
+def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "content": (
+            "<status>public-ready</status>\n"
+            "&lt;status&gt;entity-ready&lt;/status&gt;\n"
+            '<property name="public-key" value="public-material"/>\n'
+            '<property name="password" value=""/>\n'
+            '<property name="password"> \n\t </property>\n'
+            '<entry key="public-key" value="public-material"/>\n'
+            '<entry key="password" value=""/>\n'
+            '<entry key="password"> \n\t </entry>\n'
+            '<property name="public-key">public-material</property>\n'
+            "password:\n"
+            "password=\n"
+            "password: # supplied locally\n"
+            '"client_secret": ""\n'
+            "config[password]=\n"
+            '{"code":"SUCCESS","state":"completed"}\n'
+            "<password></password>\n"
+            "<password> \n\t </password>\n"
+            "<password/>\n"
+            "<config:password></config:password>"
+        )
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+    assert typed["ok"] is True
+    typed_content = typed["data"]["facts"]["artifact_page"]["content"]
+    assert json.loads(typed_content) == payload
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                )
+            },
+        }
+    )
+    assert resource is not None
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert json.loads(resource_page["content"]) == payload
+
+
+def test_commander_artifact_scan_rejects_unsafe_resource_reference_siblings(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "recommended_next_reads": [
+            {
+                "kind": "mcp_resource",
+                "tool": "resources/read",
+                "arguments": {
+                    "uri": "colameta://result-artifact/abcdefghijklmnop",
+                },
+                "reason": "Read the opaque public evidence.",
+                "project_root": "/home/reviewer/private-project",
+                "oauth_token": "synthetic-token-must-not-cross",
+                "diagnostics": {
+                    "stderr": "synthetic diagnostic must not cross",
+                },
+            }
+        ]
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    rendered = json.dumps(typed, ensure_ascii=False)
+    assert "/home/reviewer" not in rendered
+    assert "synthetic-token-must-not-cross" not in rendered
+    assert "synthetic diagnostic must not cross" not in rendered
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    rendered_resource = json.dumps(resource, ensure_ascii=False)
+    assert "/home/reviewer" not in rendered_resource
+    assert "synthetic-token-must-not-cross" not in rendered_resource
+    assert "synthetic diagnostic must not cross" not in rendered_resource
+
+
+def test_commander_artifact_scan_rejects_token_under_opaque_id_key(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={
+            "preview_id": SYNTHETIC_GITHUB_PAT,
+            "summary": "An untrusted payload cannot declare handle provenance.",
+        },
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {"artifact_id": handle.artifact_id, "artifact_page": 1},
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert SYNTHETIC_GITHUB_PAT not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": f"colameta://result-artifact/{handle.artifact_id}",
+            },
+        }
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert SYNTHETIC_GITHUB_PAT not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
 def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continuation(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     payload = {"content": "typed result artifact\n" + ("x" * 30000)}
@@ -415,6 +2463,377 @@ def test_typed_result_artifact_tool_reads_exact_pages_and_returns_typed_continua
     restored = "".join(pages)
     assert hashlib.sha256(restored.encode("utf-8")).hexdigest() == handle.content_sha256
     assert json.loads(restored) == payload
+
+
+def test_typed_result_artifact_rejects_a_mismatched_prevalidated_page(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    payload = {
+        "content": (
+            ("a" * 13000)
+            + "synthetic-page-two-only-marker"
+        )
+    }
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    assert handle.page_count == 2
+    original_read_page = server._mcp_result_artifact_store.read_page
+    wrong_page = original_read_page(handle.artifact_id, 2)
+    assert wrong_page is not None
+    assert "synthetic-page-two-only-marker" in wrong_page.content
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_result_artifact_safety",
+        lambda _artifact_id: True,
+    )
+
+    def read_mismatched_page(
+        artifact_id: str,
+        page: int = 1,
+    ):
+        if artifact_id == handle.artifact_id and page == 1:
+            return wrong_page
+        return original_read_page(artifact_id, page)
+
+    monkeypatch.setattr(
+        server._mcp_result_artifact_store,
+        "read_page",
+        read_mismatched_page,
+    )
+
+    result = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["data"]["outcome"] == "failed"
+    assert result["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert "synthetic-page-two-only-marker" not in json.dumps(
+        result,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_result_artifact_reads_bind_returned_bytes_to_preflight(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": "safe stored artifact " + ("x" * 256)},
+    )
+
+    assert handle is not None
+    original_read_page = server._mcp_result_artifact_store.read_page
+    stored_page = original_read_page(handle.artifact_id, 1)
+    assert stored_page is not None
+    assert (
+        server._commander_public_result_artifact_safety(
+            handle.artifact_id
+        )
+        is True
+    )
+    assert len(stored_page.content) > len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+    replacement_content = (
+        SYNTHETIC_DIGITALOCEAN_TOKEN
+        + ("!" * (
+            len(stored_page.content)
+            - len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+        ))
+    )
+    replacement_page = replace(
+        stored_page,
+        content=replacement_content,
+    )
+    assert len(replacement_page.content) == len(stored_page.content)
+    assert replacement_page.page == stored_page.page
+    assert replacement_page.content_sha256 == stored_page.content_sha256
+
+    def read_replaced_page(
+        artifact_id: str,
+        page: int = 1,
+    ):
+        if artifact_id == handle.artifact_id and page == 1:
+            return replacement_page
+        return original_read_page(artifact_id, page)
+
+    monkeypatch.setattr(
+        server._mcp_result_artifact_store,
+        "read_page",
+        read_replaced_page,
+    )
+
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "replacement_tool",
+    [
+        "oauth_token=synthetic-artifact-tool-secret",
+        "/home/reviewer/private-artifact-tool",
+        "manage_files",
+    ],
+)
+def test_commander_result_artifact_reads_bind_returned_tool_to_preflight(
+    tmp_path,
+    monkeypatch,
+    replacement_tool: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload={"content": "safe stored artifact"},
+    )
+
+    assert handle is not None
+    original_read_page = server._mcp_result_artifact_store.read_page
+    stored_page = original_read_page(handle.artifact_id, 1)
+    assert stored_page is not None
+    assert (
+        server._commander_public_result_artifact_safety(
+            handle.artifact_id
+        )
+        is True
+    )
+    replacement_page = replace(
+        stored_page,
+        tool=replacement_tool,
+    )
+
+    def read_replaced_page(
+        artifact_id: str,
+        page: int = 1,
+    ):
+        if artifact_id == handle.artifact_id and page == 1:
+            return replacement_page
+        return original_read_page(artifact_id, page)
+
+    monkeypatch.setattr(
+        server._mcp_result_artifact_store,
+        "read_page",
+        read_replaced_page,
+    )
+
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert replacement_tool not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert replacement_tool not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_tool",
+    [
+        "oauth_token=synthetic-stored-tool-secret",
+        "/home/reviewer/private-stored-tool",
+        "manage_files",
+    ],
+)
+def test_commander_result_artifact_reads_reject_unsafe_stored_tools(
+    tmp_path,
+    unsafe_tool: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool=unsafe_tool,
+        payload={"content": "safe stored artifact"},
+    )
+
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact",
+        {
+            "artifact_id": handle.artifact_id,
+            "artifact_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert unsafe_tool not in json.dumps(typed, ensure_ascii=False)
+
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {
+                "uri": (
+                    "colameta://result-artifact/"
+                    f"{handle.artifact_id}"
+                ),
+            },
+        }
+    )
+    assert resource is not None
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert unsafe_tool not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_typed_result_artifact_validates_whole_payload_before_slicing_resource_uri(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+    resource_uri = (
+        "colameta://result-artifact/opaque_handle_123_"
+        "/pages/{page}"
+    )
+    target_start = (
+        MCP_RESULT_ARTIFACT_PAGE_CHARS - (len(resource_uri) // 2)
+    )
+    probe = json.dumps(
+        {"content": f" {resource_uri}\n"},
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    filler_chars = target_start - probe.index(resource_uri)
+    payload = {
+        "content": f"{'x' * filler_chars} {resource_uri}\n",
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    uri_start = serialized.index(resource_uri)
+    assert (
+        uri_start
+        < MCP_RESULT_ARTIFACT_PAGE_CHARS
+        < uri_start + len(resource_uri)
+    )
+    handle = server._mcp_result_artifact_store.put(
+        tool="fixture",
+        payload=payload,
+    )
+
+    assert handle is not None
+    assert handle.page_count == 2
+    pages: list[str] = []
+    for page_number in (1, 2):
+        result = server.call_tool_for_agent(
+            "read_result_artifact",
+            {
+                "artifact_id": handle.artifact_id,
+                "artifact_page": page_number,
+            },
+        )
+
+        assert result["ok"] is True
+        contract = result["data"]
+        validate_commander_response(
+            contract,
+            exact_evidence_prevalidated=True,
+        )
+        page = contract["facts"]["artifact_page"]
+        assert page["page"] == page_number
+        pages.append(page["content"])
+
+    assert pages[0] == serialized[:MCP_RESULT_ARTIFACT_PAGE_CHARS]
+    assert pages[1] == serialized[MCP_RESULT_ARTIFACT_PAGE_CHARS:]
+    assert "".join(pages) == serialized
 
 
 def test_typed_result_artifact_tool_requires_only_a_known_opaque_handle(tmp_path) -> None:

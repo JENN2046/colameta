@@ -8,11 +8,19 @@ transport-specific packaging and its existing path-redaction boundary.
 
 from __future__ import annotations
 
+import ast
+import base64
+import binascii
+from bisect import bisect_right
 import copy
 from datetime import datetime
+from itertools import product
+import json
 import math
 import re
-from typing import Any, Iterable
+import unicodedata
+from typing import Any, Callable, Iterable
+from urllib.parse import unquote, unquote_plus
 
 from runner.project_context_binding import (
     BASE_CONTEXT_BINDING_FIELDS,
@@ -62,6 +70,12 @@ COMMANDER_LIST_MAX_ITEMS = 100
 COMMANDER_OBJECT_MAX_FIELDS = 160
 COMMANDER_PUBLIC_MAX_DEPTH = 12
 COMMANDER_ARTIFACT_PAGE_MAX_CHARS = 100_000
+_COMMANDER_DECODED_CANDIDATE_MAX_STATES = 16
+
+
+class _StructuredJsonObjectPairs(list[tuple[str, Any]]):
+    """Pair-preserving JSON object used only by credential scans."""
+
 
 COMMANDER_PUBLIC_ERROR_CODES = frozenset(
     {
@@ -127,6 +141,7 @@ _INTERNAL_ERROR_CODE_MAP = {
     "REQUEST_CONTEXT_BINDING_MISMATCH": "PROJECT_CONTEXT_MISMATCH",
     "CONTEXT_BINDING_UNAVAILABLE": "STALE_CONTEXT",
     "REVIEW_MANIFEST_CONTEXT_UNAVAILABLE": "STALE_CONTEXT",
+    "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH": "STALE_CONTEXT",
     "PREVIEW_STALE": "STALE_PREVIEW",
     "PREVIEW_INVALID": "STALE_PREVIEW",
     "PREVIEW_KIND_MISMATCH": "STALE_PREVIEW",
@@ -308,11 +323,13 @@ _FACT_EXCLUDED_KEYS = frozenset(
 _FORBIDDEN_PUBLIC_KEYS = frozenset(
     {
         "access_token",
+        "account_key",
         "api_key",
         "authorization",
         "authorization_code",
         "authorization_header",
         "audit_id",
+        "client_key_data",
         "client_secret",
         "cookie",
         "cookies",
@@ -326,14 +343,19 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "log",
         "log_path",
         "logs",
+        "mysql_pwd",
         "operator_confirmation_ref",
         "oauth_access_token",
         "oauth_authorization_code",
+        "oauth2_bearer",
         "oauth_code",
         "oauth_token",
         "oauth_refresh_token",
+        "passphrase",
         "password",
         "passwd",
+        "pgpassword",
+        "sqlcmdpassword",
         "pid",
         "ppid",
         "private_key",
@@ -349,14 +371,19 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
         "refresh_token",
         "runtime_dir",
         "runtime_project_root",
+        "sas_signature",
+        "sas_token",
+        "secret",
         "session_id",
         "session_ref",
         "settings_path",
+        "shared_access_key",
+        "shared_access_signature",
         "source_root",
         "stable_runtime_dir",
         "stderr",
         "stdout",
-        "secret",
+        "storage_account_key",
         "trace_id",
         "token",
         "workflow_id",
@@ -382,21 +409,60 @@ _ALLOWED_PUBLIC_OPAQUE_ID_KEYS = frozenset(
 )
 _SENSITIVE_PUBLIC_KEY_RE = re.compile(
     r"(?i)(?:^|_)(?:"
-    r"access_token"
-    r"|api_key"
+    r"access_?key(?:_?id)?"
+    r"|access_?token"
+    r"|api_?key"
     r"|auth(?:orization)?"
     r"|authorization_code"
-    r"|client_secret"
+    r"|client_?secret"
     r"|cookie"
     r"|credentials?"
-    r"|id_token"
+    r"|id_?token"
     r"|oauth(?:_[a-z0-9]+)*(?:_code|_token)"
-    r"|pass(?:word|wd)"
-    r"|private_key"
-    r"|refresh_token"
+    r"|pass(?:_?phrase|word|wd)"
+    r"|private_?key"
+    r"|refresh_?token"
+    r"|secret_?access_?key"
     r"|secret"
     r"|token"
     r")(?:$|_)"
+)
+_NUMERIC_TOKEN_METADATA_METRICS = frozenset(
+    {"budget", "count", "limit", "remaining", "usage", "used"}
+)
+_NUMERIC_TOKEN_METADATA_QUALIFIERS = frozenset(
+    {
+        "accepted",
+        "audio",
+        "billable",
+        "cached",
+        "completion",
+        "configured",
+        "default",
+        "effective",
+        "estimated",
+        "hard",
+        "input",
+        "llm",
+        "max",
+        "maximum",
+        "metric",
+        "metrics",
+        "min",
+        "minimum",
+        "output",
+        "prediction",
+        "prompt",
+        "reasoning",
+        "rejected",
+        "soft",
+        "text",
+        "total",
+    }
+)
+_NUMERIC_TOKEN_METADATA_MAX_DIGITS = 19
+_NUMERIC_TOKEN_METADATA_MAX_VALUE = (
+    (10**_NUMERIC_TOKEN_METADATA_MAX_DIGITS) - 1
 )
 _INTERNAL_ID_PUBLIC_KEY_RE = re.compile(
     r"(?i)^(?:"
@@ -490,19 +556,259 @@ _REVIEW_MANIFEST_URI_RE = re.compile(
     r"^colameta://review-manifest/(?P<manifest_id>[A-Za-z0-9_-]{16,128})"
     r"(?:/subjects/[1-9][0-9]*)?$"
 )
+_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN = (
+    r"colameta://(?:"
+    r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
+    r"|review-manifest/[A-Za-z0-9_-]{16,128}"
+    r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
+    r")"
+)
+COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
+    rf"^{_COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN}$"
+)
+_PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE = re.compile(
+    _COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_PATTERN
+)
+_PUBLIC_COLAMETA_URI_TOKEN_RE = re.compile(
+    r"colameta://[^\s\"'`<>]+",
+    re.IGNORECASE,
+)
+_PUBLIC_COLAMETA_URI_SCHEME_RE = re.compile(
+    r"colameta://",
+    re.IGNORECASE,
+)
+_PUBLIC_RESOURCE_URI_PLACEHOLDER = "<resource-uri>"
+_PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS = frozenset("([{<")
+_PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS = frozenset(")]}")
+_PUBLIC_RESOURCE_URI_ASCII_LEFT_SEPARATORS = frozenset(",;!?")
+_PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS = frozenset(
+    "。，、；：！？…．｡"
+)
+# Unicode 17.0 ``Emoji`` property ranges from
+# https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt, compacted only
+# across adjacent entries. ASCII keycap bases are intentionally excluded and
+# recognized solely as complete keycap sequences.
+_PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES = (
+    (0x00A9, 0x00A9),
+    (0x00AE, 0x00AE),
+    (0x203C, 0x203C),
+    (0x2049, 0x2049),
+    (0x2122, 0x2122),
+    (0x2139, 0x2139),
+    (0x2194, 0x2199),
+    (0x21A9, 0x21AA),
+    (0x231A, 0x231B),
+    (0x2328, 0x2328),
+    (0x23CF, 0x23CF),
+    (0x23E9, 0x23F3),
+    (0x23F8, 0x23FA),
+    (0x24C2, 0x24C2),
+    (0x25AA, 0x25AB),
+    (0x25B6, 0x25B6),
+    (0x25C0, 0x25C0),
+    (0x25FB, 0x25FE),
+    (0x2600, 0x2604),
+    (0x260E, 0x260E),
+    (0x2611, 0x2611),
+    (0x2614, 0x2615),
+    (0x2618, 0x2618),
+    (0x261D, 0x261D),
+    (0x2620, 0x2620),
+    (0x2622, 0x2623),
+    (0x2626, 0x2626),
+    (0x262A, 0x262A),
+    (0x262E, 0x262F),
+    (0x2638, 0x263A),
+    (0x2640, 0x2640),
+    (0x2642, 0x2642),
+    (0x2648, 0x2653),
+    (0x265F, 0x2660),
+    (0x2663, 0x2663),
+    (0x2665, 0x2666),
+    (0x2668, 0x2668),
+    (0x267B, 0x267B),
+    (0x267E, 0x267F),
+    (0x2692, 0x2697),
+    (0x2699, 0x2699),
+    (0x269B, 0x269C),
+    (0x26A0, 0x26A1),
+    (0x26A7, 0x26A7),
+    (0x26AA, 0x26AB),
+    (0x26B0, 0x26B1),
+    (0x26BD, 0x26BE),
+    (0x26C4, 0x26C5),
+    (0x26C8, 0x26C8),
+    (0x26CE, 0x26CF),
+    (0x26D1, 0x26D1),
+    (0x26D3, 0x26D4),
+    (0x26E9, 0x26EA),
+    (0x26F0, 0x26F5),
+    (0x26F7, 0x26FA),
+    (0x26FD, 0x26FD),
+    (0x2702, 0x2702),
+    (0x2705, 0x2705),
+    (0x2708, 0x270D),
+    (0x270F, 0x270F),
+    (0x2712, 0x2712),
+    (0x2714, 0x2714),
+    (0x2716, 0x2716),
+    (0x271D, 0x271D),
+    (0x2721, 0x2721),
+    (0x2728, 0x2728),
+    (0x2733, 0x2734),
+    (0x2744, 0x2744),
+    (0x2747, 0x2747),
+    (0x274C, 0x274C),
+    (0x274E, 0x274E),
+    (0x2753, 0x2755),
+    (0x2757, 0x2757),
+    (0x2763, 0x2764),
+    (0x2795, 0x2797),
+    (0x27A1, 0x27A1),
+    (0x27B0, 0x27B0),
+    (0x27BF, 0x27BF),
+    (0x2934, 0x2935),
+    (0x2B05, 0x2B07),
+    (0x2B1B, 0x2B1C),
+    (0x2B50, 0x2B50),
+    (0x2B55, 0x2B55),
+    (0x3030, 0x3030),
+    (0x303D, 0x303D),
+    (0x3297, 0x3297),
+    (0x3299, 0x3299),
+    (0x1F004, 0x1F004),
+    (0x1F0CF, 0x1F0CF),
+    (0x1F170, 0x1F171),
+    (0x1F17E, 0x1F17F),
+    (0x1F18E, 0x1F18E),
+    (0x1F191, 0x1F19A),
+    (0x1F1E6, 0x1F1FF),
+    (0x1F201, 0x1F202),
+    (0x1F21A, 0x1F21A),
+    (0x1F22F, 0x1F22F),
+    (0x1F232, 0x1F23A),
+    (0x1F250, 0x1F251),
+    (0x1F300, 0x1F321),
+    (0x1F324, 0x1F393),
+    (0x1F396, 0x1F397),
+    (0x1F399, 0x1F39B),
+    (0x1F39E, 0x1F3F0),
+    (0x1F3F3, 0x1F3F5),
+    (0x1F3F7, 0x1F4FD),
+    (0x1F4FF, 0x1F53D),
+    (0x1F549, 0x1F54E),
+    (0x1F550, 0x1F567),
+    (0x1F56F, 0x1F570),
+    (0x1F573, 0x1F57A),
+    (0x1F587, 0x1F587),
+    (0x1F58A, 0x1F58D),
+    (0x1F590, 0x1F590),
+    (0x1F595, 0x1F596),
+    (0x1F5A4, 0x1F5A5),
+    (0x1F5A8, 0x1F5A8),
+    (0x1F5B1, 0x1F5B2),
+    (0x1F5BC, 0x1F5BC),
+    (0x1F5C2, 0x1F5C4),
+    (0x1F5D1, 0x1F5D3),
+    (0x1F5DC, 0x1F5DE),
+    (0x1F5E1, 0x1F5E1),
+    (0x1F5E3, 0x1F5E3),
+    (0x1F5E8, 0x1F5E8),
+    (0x1F5EF, 0x1F5EF),
+    (0x1F5F3, 0x1F5F3),
+    (0x1F5FA, 0x1F64F),
+    (0x1F680, 0x1F6C5),
+    (0x1F6CB, 0x1F6D2),
+    (0x1F6D5, 0x1F6D8),
+    (0x1F6DC, 0x1F6E5),
+    (0x1F6E9, 0x1F6E9),
+    (0x1F6EB, 0x1F6EC),
+    (0x1F6F0, 0x1F6F0),
+    (0x1F6F3, 0x1F6FC),
+    (0x1F7E0, 0x1F7EB),
+    (0x1F7F0, 0x1F7F0),
+    (0x1F90C, 0x1F93A),
+    (0x1F93C, 0x1F945),
+    (0x1F947, 0x1F9FF),
+    (0x1FA70, 0x1FA7C),
+    (0x1FA80, 0x1FA8A),
+    (0x1FA8E, 0x1FAC6),
+    (0x1FAC8, 0x1FAC8),
+    (0x1FACD, 0x1FADC),
+    (0x1FADF, 0x1FAEA),
+    (0x1FAEF, 0x1FAF8),
+)
+_PUBLIC_RESOURCE_URI_EMOJI_BASE_STARTS = tuple(
+    start for start, _ in _PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES
+)
+_PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
 _PUBLIC_POSIX_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
+    r"(?<![A-Za-z0-9:/\\])/(?!/)[^\s,;\]\[(){}<>\"']+"
+)
+_PUBLIC_IPV6_URL_AUTHORITY_SUFFIX_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"\[(?=[^\]\r\n]*:)[0-9A-Fa-f:.]+\]"
+    r"(?::[0-9]{1,5})?$"
+)
+_PUBLIC_LABELED_POSIX_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])"
+    r"[A-Za-z_][A-Za-z0-9_.-]{0,127}:[ \t]*"
+    r"/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_FILE_URI_RE = re.compile(
     r"(?<![A-Za-z0-9])file:(?://(?:localhost)?/|/)[^\s,;\]\[(){}<>\"']+",
     re.IGNORECASE,
 )
+_PUBLIC_SCHEME_RELATIVE_AUTHORITY_BODY = (
+    r"(?:"
+    r"localhost"
+    r"|(?:"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\."
+    r")+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"|\[[0-9A-Fa-f:.]+\]"
+    r")"
+    r"(?::[0-9]{1,5})?"
+)
 _PUBLIC_UNC_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9\\])\\\\[^\\\s,;\]\[(){}<>\"']+\\[^\s,;\]\[(){}<>\"']+"
+    r"(?:(?<![A-Za-z0-9\\])\\\\|"
+    r"(?<![A-Za-z0-9:/\\])(?:/{3,}|//(?!"
+    + _PUBLIC_SCHEME_RELATIVE_AUTHORITY_BODY
+    + r"(?:[/#?]|$))))"
+    r"[^\\/\s,;\]\[(){}<>\"']+[\\/][^\s,;\]\[(){}<>\"']+"
 )
 _PUBLIC_WINDOWS_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\)[^\s,;\]\[(){}<>\"']+",
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])[^\s,;\]\[(){}<>\"']*",
     re.IGNORECASE,
+)
+# A single leading backslash is rooted on the current Windows drive.  Keep
+# JSON short/Unicode escape introducers out of the one-segment form; decoded
+# multi-segment paths are checked again by the fixed-point candidate scan.
+_PUBLIC_WINDOWS_ROOTED_PATH_BODY = (
+    r"\\(?!\\)(?=[\w.-])(?:"
+    r"(?![uU][0-9A-Fa-f]{4})"
+    r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
+    r"\\[^\x00-\x1f\x7f\s,;\]\[(){}<>\"']*"
+    r"|(?!(?:[bfnrt]|[uU][0-9A-Fa-f]{4}))"
+    r"[^\\/\x00-\x1f\x7f\s,;\]\[(){}<>\"']+"
+    r")"
+)
+_PUBLIC_WINDOWS_ROOTED_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:\\])" + _PUBLIC_WINDOWS_ROOTED_PATH_BODY
+)
+_PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])"
+    r"[A-Za-z_][A-Za-z0-9_.-]{0,127}:[ \t]*"
+    + _PUBLIC_WINDOWS_ROOTED_PATH_BODY
 )
 _SUMMARY_SENTENCE_END_RE = re.compile(r"[。！？!?]+|\.+(?=\s|$)")
 _INTERNAL_TOOL_REFERENCE_RE = re.compile(
@@ -526,6 +832,12 @@ _TOOL_LIKE_IDENTIFIER_RE = re.compile(
     r"(?P<name>[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
     r"(?![A-Za-z0-9_])"
 )
+_SENSITIVE_HEADER_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[\"']?(?:"
+    r"(?:proxy[_-])?authorization"
+    r"|(?:set[_-])?cookie"
+    r")[\"']?\s*[:=]"
+)
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])[\"']?(?:"
     r"authorization"
@@ -538,16 +850,310 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"|oauth_authorization_code"
     r"|refresh_token"
     r"|oauth_token"
+    r"|passphrase"
     r"|password"
     r"|private_key"
     r"|secret"
     r"|token"
-    r")[\"']?\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
+    r")[\"']?[ \t]*[:=][ \t]*(?:(?:bearer|basic)[ \t]+)?"
+    r"(?![#;,}\]\r\n])(?:"
+    r"\"(?:\\.|[^\"\\])+\""
+    r"|'(?:\\.|[^'\\])+'"
+    r"|\"(?:\\.|[^\"\\])+$"
+    r"|'(?:\\.|[^'\\])+$"
+    r"|[^\s,;\"']+"
+    r")"
+)
+_SENSITIVE_CLI_OPTION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])--"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{0,127})"
+    r"[ \t]+(?!-)[^\s,;]+"
+)
+_CURL_USER_PASSWORD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"-[uU](?:[ \t]+|=)?"
+    r"|--(?:proxy-)?user(?:[ \t]+|=)"
+    r")"
+    r"(?:"
+    r'"[^:\s"<>]{0,512}:[^\s"<>]{1,2048}"'
+    r"|'[^:\s'<>]{0,512}:[^\s'<>]{1,2048}'"
+    r"|[^:\s\"'<>]{0,512}:[^\s\"'<>]{1,2048}"
+    r")"
+)
+_CURL_CERTIFICATE_PASSWORD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"(?-i:-E)(?:[ \t]+|=)?"
+    r"|--(?:proxy-)?cert(?:[ \t]+|=)"
+    r")"
+    r"(?:"
+    r'"[^:\s"<>]{1,2048}:[^\s"<>]{1,2048}"'
+    r"|'[^:\s'<>]{1,2048}:[^\s'<>]{1,2048}'"
+    r"|[^:\s\"'<>]{1,2048}:[^\s\"'<>]{1,2048}"
+    r")"
+)
+_CURL_PASSPHRASE_OPTION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])curl(?=[ \t])"
+    r"[^\r\n;&|]{0,4096}?"
+    r"(?<![A-Za-z0-9_-])--(?:proxy-)?pass"
+    r"(?:[ \t]+|=)(?!-)(?:"
+    r'"(?:\\.|[^"\\]){1,2048}"'
+    r"|'(?:\\.|[^'\\]){1,2048}'"
+    r"|[^\s,;]{1,2048}"
+    r")"
+)
+_NETRC_ENTRY_START_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:"
+    r"machine[ \t\r\n]+[^\s#]+"
+    r"|default"
+    r")(?![A-Za-z0-9_])"
+)
+_NETRC_PASSWORD_FIELD_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:password|passwd)"
+    r"[ \t\r\n]+[^\s#]+"
+)
+_ASSIGNMENT_KEY_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(?:"
+    r"(?P<key_quote>[\"'])"
+    r"(?P<quoted_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. /-]{0,127})"
+    r"(?P=key_quote)"
+    r"|(?P<bare_key>[_.-]{0,8}[A-Za-z][A-Za-z0-9_. \t-]{0,127})"
+    r")\s*[:=]"
+)
+_BRACKET_ASSIGNMENT_KEY_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(?:"
+    r"(?P<bracket_key_quote>[\"'])"
+    r"(?P<quoted_bracket_base>"
+    r"[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127}"
+    r")"
+    r"(?P<quoted_bracket_segments>"
+    r"(?:\[[A-Za-z0-9_. /-]{0,127}\])+"
+    r")"
+    r"(?P=bracket_key_quote)"
+    r"|"
+    r"(?P<bare_bracket_base>"
+    r"[_.-]{0,8}[A-Za-z][A-Za-z0-9_.-]{0,127}"
+    r")"
+    r"(?P<bare_bracket_segments>"
+    r"(?:\[[A-Za-z0-9_. /-]{0,127}\])+"
+    r")"
+    r")\s*[:=]"
+)
+_NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE = re.compile(
+    rf"[ \t]*(?P<value>[0-9]{{1,{_NUMERIC_TOKEN_METADATA_MAX_DIGITS}}})[ \t]*"
+    r"(?=$|[,;}\]\r\n])"
+)
+_XML_ELEMENT_TAG_RE = re.compile(
+    r"<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
+    r"(?=[\t\n\r />])"
+)
+_XML_CLOSING_TAG_PATH_RE = re.compile(
+    r"/[A-Za-z_][A-Za-z0-9_.:-]{0,127}"
+)
+_XML_ATTRIBUTE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.:-])"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_.:-]{0,127})"
+    r"\s*=\s*"
+    r"(?P<quote>[\"'])(?P<value>[\s\S]*?)(?P=quote)"
+)
+_XML_ENTITY_RE = re.compile(
+    r"&(?:"
+    r"(?P<named>lt|gt|amp|quot|apos)"
+    r"|#(?P<decimal>[0-9]{1,7})"
+    r"|#[xX](?P<hexadecimal>[0-9A-Fa-f]{1,6})"
+    r");"
+)
+_XML_NAMED_ENTITY_VALUES = {
+    "lt": "<",
+    "gt": ">",
+    "amp": "&",
+    "quot": '"',
+    "apos": "'",
+}
+_SENSITIVE_XML_MAX_OPEN_ELEMENTS = 256
+_SENSITIVE_XML_MAX_TAG_HEADER_CHARS = 4_096
+_SENSITIVE_XML_MAX_ELEMENT_BODY_CHARS = 4_096
+_SENSITIVE_XML_MAX_ENTITY_STATES = 16
+_XML_RSA_PRIVATE_MEMBER_NAMES = frozenset(
+    {"d", "p", "q", "dp", "dq", "inverseq"}
 )
 _BEARER_TOKEN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9_])bearer\s+"
     r"(?!resource_metadata\s*=)"
-    r"[A-Za-z0-9._~+/=-]{8,}"
+    r"(?:colameta://[^\s,;]*|[A-Za-z0-9._~+/=-]{8,})"
+)
+_BASIC_AUTHORIZATION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])basic\s+"
+    r"(?P<token>[A-Za-z0-9+/]{2,}={0,2})"
+    r"(?![A-Za-z0-9+/=])"
+)
+_PRIVATE_KEY_BLOCK_RE = re.compile(
+    r"(?i)(?:"
+    r"-----BEGIN[ \t]+"
+    r"(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY"
+    r"(?:[ \t]+BLOCK)?-----"
+    r"|----[ \t]+BEGIN[ \t]+SSH2[ \t]+ENCRYPTED[ \t]+"
+    r"PRIVATE[ \t]+KEY[ \t]+----"
+    r")"
+)
+_PUTTY_PRIVATE_KEY_FILE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])"
+    r"putty-user-key-file-[1-9][0-9]*[ \t]*:"
+)
+# A 32-byte X25519 identity encodes to 52 Bech32 data characters plus
+# the six-character checksum after the fixed uppercase HRP and separator.
+_AGE_X25519_IDENTITY_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"AGE-SECRET-KEY-1"
+    r"[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}"
+    r"(?![A-Za-z0-9_-])"
+)
+_PRIVATE_JWK_ASYMMETRIC_KEY_TYPES = frozenset({"RSA", "EC", "OKP"})
+_STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES = 64
+_STRUCTURED_CREDENTIAL_MAX_NODES = 4_096
+_STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH = 4
+_STRUCTURED_CREDENTIAL_MAX_PYTHON_LITERAL_CHARS = 8_192
+_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS = frozenset(
+    {
+        "user_code",
+        "verification_uri",
+        "verification_uri_complete",
+    }
+)
+_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS = frozenset(
+    {
+        "expires_in",
+        "interval",
+    }
+)
+_OAUTH_AUTHORIZATION_CALLBACK_CONTEXT_KEYS = frozenset(
+    {
+        "client_id",
+        "iss",
+        "redirect_uri",
+        "response_mode",
+        "response_type",
+        "session_state",
+    }
+)
+_OAUTH_AUTHORIZATION_CODE_MIN_CHARS = 16
+_OAUTH_AUTHORIZATION_CODE_MAX_CHARS = 4_096
+_PUBLIC_STATUS_CODE_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,63}")
+_STANDALONE_JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?P<header>[A-Za-z0-9_-]{8,1024})\."
+    r"(?P<payload>[A-Za-z0-9_-]{8,16384})\."
+    r"(?P<signature>[A-Za-z0-9_-]{8,8192})"
+    r"(?![A-Za-z0-9_-])"
+)
+# PyPI's Base64URL Macaroon suffix is at least 85 characters and may grow
+# without a fixed upper bound as caveats are added.  SendGrid API keys use
+# the fixed 69-character ``SG.<22>.<43>`` Base64URL shape. DigitalOcean
+# personal access tokens use ``dop_v1_`` followed by exactly 64 hex digits.
+_STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
+    r"|github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"
+    r"|hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"
+    r"|dop_v1_[A-Fa-f0-9]{64}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_-])dapi[A-Fa-f0-9]{32}"
+    r"(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])hv[sbr]\.[A-Za-z0-9_-]{24,}"
+    r"(?![A-Za-z0-9_-])"
+    r"|ops_[A-Za-z0-9_-]{24,4096}(?![A-Za-z0-9_-])"
+    r"|shpat_[A-Fa-f0-9]{32}(?![A-Za-z0-9_])"
+    r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_-])"
+    r"dckr_pat_[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
+    r"|pypi-[A-Za-z0-9_-]{85,}(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])"
+    r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}"
+    r"(?![A-Za-z0-9_-])"
+    r"|glpat-[A-Za-z0-9_-]{20}(?![A-Za-z0-9_-])"
+    r"|AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])"
+    r"GOCSPX-[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9_-])"
+    r"|[sr]k_(?:live|test)_[A-Za-z0-9]{24}(?![A-Za-z0-9_-])"
+    r"|whsec_[A-Za-z0-9_-]{24,128}(?![A-Za-z0-9_-])"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
+    r"|xapp-[A-Za-z0-9-]{10,250}(?![A-Za-z0-9-])"
+    r"|sk-(?:proj-|svcacct-)?"
+    r"[A-Za-z0-9_-]{20,256}(?![A-Za-z0-9_-])"
+    r")"
+)
+_STANDALONE_TELEGRAM_BOT_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"[0-9]{8,16}:[A-Za-z0-9_-]{35}"
+    r"(?![A-Za-z0-9_-])"
+)
+_TELEGRAM_BOT_API_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://(?i:api\.telegram\.org)/"
+    r"(?:file/)?bot[0-9]{8,16}:[A-Za-z0-9_-]{35}(?=/)"
+)
+_SLACK_INCOMING_WEBHOOK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://"
+    r"(?i:hooks\.slack(?:-gov)?\.com)"
+    r"/services/T[A-Z0-9]{8,32}/B[A-Z0-9]{8,32}/"
+    r"[A-Za-z0-9_-]{16,128}(?![A-Za-z0-9_-])"
+)
+_DISCORD_INCOMING_WEBHOOK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?i:https)://"
+    r"(?i:(?:canary\.|ptb\.)?discord(?:app)?\.com)"
+    r"/api(?:/v[0-9]{1,2})?/webhooks/[0-9]{17,20}/"
+    r"[A-Za-z0-9_-]{32,128}(?![A-Za-z0-9_-])"
+)
+_PUBLIC_URL_QUERY_CANDIDATE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"[^\s\"'<>]{1,8192}"
+)
+_PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])(?:https?:)?//"
+    r"[^\s\"'<>]{8192}(?=[^\s\"'<>])"
+)
+_FORM_URLENCODED_SEQUENCE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.%+-])"
+    r"(?P<form>[A-Za-z][A-Za-z0-9_.%+-]{0,255}"
+    r"=[^\s\"'<>]{0,8192})"
+)
+_FORM_URLENCODED_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.%+-])"
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.%+-]{0,255})"
+    r"=(?P<value>[^&\s\"'<>]{1,8192})"
+)
+_CLOUDFRONT_SIGNED_COOKIE_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])"
+    r"(?P<key>CloudFront-(?:Policy|Expires|Signature|Key-Pair-Id))"
+    r"(?![A-Za-z0-9_-])[ \t]*=[ \t]*"
+    r"(?P<value>"
+    r'"(?:\\.|[^"\\])+"'
+    r"|'(?:\\.|[^'\\])+'"
+    r"|[^\s,;{}\[\]<>]+"
+    r")"
+)
+_CLOUDFRONT_SIGNED_COOKIE_MAX_SEQUENCE_CHARS = 8_192
+_CLOUDFRONT_SIGNED_COOKIE_SEQUENCE_GAP_RE = re.compile(
+    r"[\s,;&|*-]*"
+)
+_PGPASS_RECORD_RE = re.compile(
+    r"(?m)(?:^|(?<=[\r\n\"']))[ \t]*(?!#)"
+    r"(?P<host>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<port>\*|[0-9]{1,5}):"
+    r"(?P<database>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<username>(?:\\[\\:]|[^:\\\r\n\"']){1,512}):"
+    r"(?P<password>(?:\\[\\:]|[^\\\r\n\"']){1,2048})"
+    r"(?=$|[\r\n\"'])"
+)
+_CREDENTIAL_URI_USERINFO_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9+.-])"
+    r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//"
+    r"[^/?#@\s:]*:[^/?#@\s]+@"
+    r"(?=[^/?#\s]+)"
 )
 
 _OMIT = object()
@@ -572,7 +1178,7 @@ def derive_commander_outcome(
         return "failed"
 
     containers = _result_containers(result)
-    public_error_code = _public_error_code(_raw_error_code(result))
+    public_error_code = commander_public_error_code_for_result(result)
     if public_error_code in _FAILED_PUBLIC_ERROR_CODES:
         return "failed"
 
@@ -628,11 +1234,14 @@ def build_commander_response(
     tool_name: str,
     raw_result: dict[str, Any],
     params: dict[str, Any] | None = None,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
     """Build one validated ``commander_response.v1`` data object.
 
     Policy lookup is intentionally lazy so this pure contract module remains
-    independent of the public projector's import graph.
+    independent of the public projector's import graph.  The exact-evidence
+    override is reserved for typed pages whose complete hash-bound content was
+    already verified before slicing.
     """
 
     safe_params = params if isinstance(params, dict) else {}
@@ -652,13 +1261,17 @@ def build_commander_response(
 
         outcome = derive_commander_outcome(tool_name, raw_result)
         journey_stage = journey_stage_for(tool_name, safe_params, raw_result)
+        evidence = _normalize_evidence(raw_result)
         selected_action = select_commander_next_action(
             tool_name=tool_name,
             params=safe_params,
             raw_result=raw_result,
             outcome=outcome,
         )
-        next_action = _normalize_action(selected_action)
+        next_action = _normalize_action(
+            selected_action,
+            evidence=evidence,
+        )
         context_binding = _extract_context_binding(raw_result)
         if _result_requires_context_binding(
             tool_name=tool_name,
@@ -669,7 +1282,6 @@ def build_commander_response(
                 "INTERNAL_RESULT_INVALID",
                 "Project-bound Commander response is missing context_binding.",
             )
-        evidence = _normalize_evidence(raw_result)
         confirmation = (
             _normalize_confirmation(
                 tool_name=tool_name,
@@ -697,7 +1309,12 @@ def build_commander_response(
             "summary": _summary_for(tool_name, raw_result, outcome),
             "journey_stage": journey_stage,
             "context_binding": context_binding,
-            "facts": _extract_facts(tool_name, raw_result),
+            "facts": _extract_facts(
+                tool_name,
+                raw_result,
+                params=safe_params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            ),
             "evidence": evidence,
             "next_action": next_action,
             "confirmation": confirmation,
@@ -708,7 +1325,10 @@ def build_commander_response(
                 "INTERNAL_RESULT_INVALID",
                 "confirmation_required 缺少可验证的公开确认动作。",
             )
-        validate_commander_response(response)
+        validate_commander_response(
+            response,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
         return response
     except CommanderContractError as exc:
         return _safe_failed_response(
@@ -730,8 +1350,17 @@ def build_commander_response(
         )
 
 
-def validate_commander_response(response: dict[str, Any]) -> None:
-    """Fail closed unless ``response`` is an exact public contract object."""
+def validate_commander_response(
+    response: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
+) -> None:
+    """Fail closed unless ``response`` is an exact public contract object.
+
+    ``exact_evidence_prevalidated`` is valid only after the complete
+    hash-bound Artifact payload or Manifest subject passed public safety
+    projection before its requested page was sliced.
+    """
 
     if not isinstance(response, dict):
         raise CommanderContractError(
@@ -780,12 +1409,28 @@ def validate_commander_response(response: dict[str, Any]) -> None:
             "INTERNAL_RESULT_INVALID",
             "Commander facts must be an object.",
         )
-    _validate_public_value(facts, depth=0, facts=True)
+    _validate_public_value(
+        facts,
+        depth=0,
+        facts=True,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     evidence = response.get("evidence")
     _validate_evidence(evidence)
-    _validate_artifact_page_binding(facts, evidence)
-    _validate_review_manifest_page_binding(facts, evidence)
-    _validate_action(response.get("next_action"))
+    _validate_artifact_page_binding(
+        facts,
+        evidence,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
+    _validate_review_manifest_page_binding(
+        facts,
+        evidence,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
+    _validate_action(
+        response.get("next_action"),
+        evidence=response.get("evidence"),
+    )
 
     confirmation = response.get("confirmation")
     error = response.get("error")
@@ -1248,13 +1893,23 @@ def _first_nested_string(
     return None
 
 
-def _public_error_code(value: Any) -> str | None:
+def commander_public_error_code(value: Any) -> str | None:
+    """Map one internal or public error code to the stable Commander code."""
+
     if not isinstance(value, str) or not value.strip():
         return None
     normalized = re.sub(r"[^A-Z0-9_]+", "_", value.strip().upper()).strip("_")
     if normalized in COMMANDER_PUBLIC_ERROR_CODES:
         return normalized
     return _INTERNAL_ERROR_CODE_MAP.get(normalized, "INTERNAL_ERROR")
+
+
+def commander_public_error_code_for_result(
+    result: dict[str, Any],
+) -> str | None:
+    """Select and map the primary error code using the public contract order."""
+
+    return commander_public_error_code(_raw_error_code(result))
 
 
 def _raw_error_code(result: dict[str, Any]) -> str | None:
@@ -1660,7 +2315,11 @@ def _validate_context_binding(value: Any) -> None:
 def _extract_facts(
     tool_name: str,
     raw_result: dict[str, Any],
+    *,
+    params: dict[str, Any] | None = None,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
+    safe_params = params if isinstance(params, dict) else {}
     payload = raw_result.get("data")
     if not isinstance(payload, dict):
         payload = raw_result
@@ -1676,7 +2335,28 @@ def _extract_facts(
         payload.get("artifact_page"),
         dict,
     ):
-        artifact_page = _normalize_artifact_page_fact(payload["artifact_page"])
+        requested_artifact_id = safe_params.get("artifact_id")
+        if isinstance(requested_artifact_id, str):
+            requested_artifact_id = requested_artifact_id.strip()
+        requested_page = safe_params.get("artifact_page", 1)
+        raw_page = payload["artifact_page"]
+        if (
+            exact_evidence_prevalidated
+            and (
+                raw_page.get("artifact_id") != requested_artifact_id
+                or isinstance(requested_page, bool)
+                or not isinstance(requested_page, int)
+                or raw_page.get("page") != requested_page
+            )
+        ):
+            raise CommanderContractError(
+                "INTERNAL_RESULT_INVALID",
+                "Prevalidated artifact page does not match the requested handle or page.",
+            )
+        artifact_page = _normalize_artifact_page_fact(
+            payload["artifact_page"],
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
     is_review_manifest_read = tool_name == "review_manifest" or (
         tool_name == "run_mcp_workflow"
         and payload_workflow == "review_manifest"
@@ -1687,7 +2367,27 @@ def _extract_facts(
         payload.get("subject_page"),
         dict,
     ):
-        subject_page = _normalize_review_manifest_page_fact(payload["subject_page"])
+        if exact_evidence_prevalidated:
+            requested_page = safe_params.get("review_manifest_page", 1)
+            requested_manifest_id = safe_params.get("review_manifest_id")
+            if isinstance(requested_manifest_id, str):
+                requested_manifest_id = requested_manifest_id.strip()
+            raw_page = payload["subject_page"]
+            if (
+                raw_page.get("review_manifest_id")
+                != requested_manifest_id
+                or raw_page.get("subject_index")
+                != safe_params.get("review_manifest_subject_index")
+                or raw_page.get("page") != requested_page
+            ):
+                raise CommanderContractError(
+                    "INTERNAL_RESULT_INVALID",
+                    "Prevalidated manifest page does not match the requested subject.",
+                )
+        subject_page = _normalize_review_manifest_page_fact(
+            payload["subject_page"],
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
     facts_source: dict[str, Any] = {}
     source_summary = payload.get("summary")
     for key, value in payload.items():
@@ -1715,7 +2415,11 @@ def _extract_facts(
     return facts
 
 
-def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
+def _normalize_artifact_page_fact(
+    value: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
+) -> dict[str, Any]:
     required = {
         "artifact_id",
         "tool",
@@ -1767,7 +2471,10 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
-        or _contains_unsafe_public_text(content)
+        or (
+            not exact_evidence_prevalidated
+            and _contains_unsafe_public_text(content)
+        )
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -1792,6 +2499,8 @@ def _normalize_artifact_page_fact(value: dict[str, Any]) -> dict[str, Any]:
 def _validate_artifact_page_binding(
     facts: dict[str, Any],
     evidence: Any,
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     artifact_page = facts.get("artifact_page")
     if artifact_page is None:
@@ -1801,7 +2510,10 @@ def _validate_artifact_page_binding(
             "INTERNAL_RESULT_INVALID",
             "facts.artifact_page must be an object.",
         )
-    normalized = _normalize_artifact_page_fact(artifact_page)
+    normalized = _normalize_artifact_page_fact(
+        artifact_page,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     if normalized != artifact_page:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -1823,6 +2535,8 @@ def _validate_artifact_page_binding(
 
 def _normalize_review_manifest_page_fact(
     value: dict[str, Any],
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> dict[str, Any]:
     required = {
         "review_manifest_id",
@@ -1887,7 +2601,10 @@ def _normalize_review_manifest_page_fact(
         or not _valid_expiry(expires_at)
         or not isinstance(content, str)
         or len(content) > COMMANDER_ARTIFACT_PAGE_MAX_CHARS
-        or _contains_unsafe_public_text(content)
+        or (
+            not exact_evidence_prevalidated
+            and _contains_unsafe_public_text(content)
+        )
         or page_char_end - page_char_start != len(content)
     ):
         raise CommanderContractError(
@@ -1913,6 +2630,8 @@ def _normalize_review_manifest_page_fact(
 def _validate_review_manifest_page_binding(
     facts: dict[str, Any],
     evidence: Any,
+    *,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     subject_page = facts.get("subject_page")
     if subject_page is None:
@@ -1922,7 +2641,10 @@ def _validate_review_manifest_page_binding(
             "INTERNAL_RESULT_INVALID",
             "facts.subject_page must be an object.",
         )
-    normalized = _normalize_review_manifest_page_fact(subject_page)
+    normalized = _normalize_review_manifest_page_fact(
+        subject_page,
+        exact_evidence_prevalidated=exact_evidence_prevalidated,
+    )
     if normalized != subject_page:
         raise CommanderContractError(
             "INTERNAL_RESULT_INVALID",
@@ -2252,8 +2974,7 @@ def _normalize_error(
     next_action: dict[str, Any] | None,
 ) -> dict[str, Any]:
     containers = _result_containers(raw_result)
-    raw_code = _raw_error_code(raw_result)
-    public_code = _public_error_code(raw_code)
+    public_code = commander_public_error_code_for_result(raw_result)
     if public_code is None:
         public_code = _infer_blocker_error_code(_blocker_values(containers))
     if (
@@ -2360,7 +3081,11 @@ def _default_public_error_message(code: str) -> str:
     return messages.get(code, "当前调用被前置条件阻断。")
 
 
-def _normalize_action(value: Any) -> dict[str, Any] | None:
+def _normalize_action(
+    value: Any,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     tool = value.get("tool")
@@ -2381,6 +3106,13 @@ def _normalize_action(value: Any) -> dict[str, Any] | None:
     )
     if not isinstance(public_arguments, dict):
         return None
+    if not _rebind_action_to_evidence(
+        tool=tool,
+        source_arguments=arguments,
+        public_arguments=public_arguments,
+        evidence=evidence,
+    ):
+        return None
     reason = value.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         reason = "继续当前受控流程。"
@@ -2389,6 +3121,49 @@ def _normalize_action(value: Any) -> dict[str, Any] | None:
         "arguments": public_arguments,
         "reason": _public_text(reason, max_chars=COMMANDER_REASON_MAX_CHARS),
     }
+
+
+def _rebind_action_to_evidence(
+    *,
+    tool: str,
+    source_arguments: dict[str, Any],
+    public_arguments: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> bool:
+    """Restore only an action handle proven by the response evidence envelope."""
+
+    if not isinstance(evidence, dict):
+        return True
+    kind = evidence.get("kind")
+    workflow = _normalized_string(source_arguments.get("workflow"))
+    if kind == "result_artifact" and (
+        tool == "read_result_artifact"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "result_artifact"
+        )
+    ):
+        key = "artifact_id"
+    elif kind == "review_manifest" and (
+        tool == "review_manifest"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "review_manifest"
+        )
+    ):
+        key = "review_manifest_id"
+    else:
+        return True
+    evidence_id = evidence.get(key)
+    source_id = source_arguments.get(key)
+    if (
+        not isinstance(evidence_id, str)
+        or not _OPAQUE_ID_RE.fullmatch(evidence_id)
+        or source_id not in {evidence_id, "<sensitive>"}
+    ):
+        return False
+    public_arguments[key] = evidence_id
+    return True
 
 
 def _commander_tools() -> frozenset[str]:
@@ -2418,7 +3193,11 @@ def _contains_noncommander_tool_reference(value: Any) -> bool:
     return False
 
 
-def _validate_action(value: Any) -> None:
+def _validate_action(
+    value: Any,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> None:
     if value is None:
         return
     if not isinstance(value, dict) or set(value) != {
@@ -2441,7 +3220,22 @@ def _validate_action(value: Any) -> None:
             "INTERNAL_RESULT_INVALID",
             "next_action.arguments must be an object.",
         )
-    _validate_public_value(arguments, depth=0, facts=False)
+    validation_arguments = copy.deepcopy(arguments)
+    if not _mask_evidence_bound_action_handle(
+        tool=str(value.get("tool") or ""),
+        arguments=arguments,
+        validation_arguments=validation_arguments,
+        evidence=evidence,
+    ):
+        raise CommanderContractError(
+            "INTERNAL_RESULT_INVALID",
+            "next_action opaque handle does not match response evidence.",
+        )
+    _validate_public_value(
+        validation_arguments,
+        depth=0,
+        facts=False,
+    )
     reason = value.get("reason")
     if (
         not isinstance(reason, str)
@@ -2453,6 +3247,42 @@ def _validate_action(value: Any) -> None:
             "INTERNAL_RESULT_INVALID",
             "next_action.reason is missing, oversized, or unsafe.",
         )
+
+
+def _mask_evidence_bound_action_handle(
+    *,
+    tool: str,
+    arguments: dict[str, Any],
+    validation_arguments: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(evidence, dict):
+        return True
+    kind = evidence.get("kind")
+    workflow = _normalized_string(arguments.get("workflow"))
+    if kind == "result_artifact" and (
+        tool == "read_result_artifact"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "result_artifact"
+        )
+    ):
+        key = "artifact_id"
+    elif kind == "review_manifest" and (
+        tool == "review_manifest"
+        or (
+            tool == "run_mcp_workflow"
+            and workflow == "review_manifest"
+        )
+    ):
+        key = "review_manifest_id"
+    else:
+        return True
+    evidence_id = evidence.get(key)
+    if arguments.get(key) != evidence_id:
+        return False
+    validation_arguments[key] = "opaque_handle_1234567890"
+    return True
 
 
 def _is_mutating_action(action: dict[str, Any]) -> bool:
@@ -2754,6 +3584,20 @@ def _public_value(
                 result.append(public)
         return result
     if isinstance(value, dict):
+        if (
+            commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_kubernetes_secret(value)
+            or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+            or commander_public_mapping_is_oauth_authorization_callback(
+                value
+            )
+            or commander_public_mapping_is_cloudfront_signed_cookie(
+                value
+            )
+        ):
+            return _OMIT
         referenced_tool = value.get("tool")
         if (
             isinstance(referenced_tool, str)
@@ -2770,6 +3614,9 @@ def _public_value(
             if commander_public_key_is_forbidden(
                 clean_key,
                 include_internal_ids=facts,
+            ) and not commander_public_value_is_numeric_token_metadata(
+                clean_key,
+                nested,
             ):
                 continue
             if strip_actions and normalized_key in _ACTION_CONTAINER_KEYS:
@@ -2791,6 +3638,7 @@ def _validate_public_value(
     *,
     depth: int,
     facts: bool,
+    exact_evidence_prevalidated: bool = False,
 ) -> None:
     if depth > COMMANDER_PUBLIC_MAX_DEPTH:
         raise CommanderContractError(
@@ -2820,9 +3668,31 @@ def _validate_public_value(
                 "Public list exceeds the item limit.",
             )
         for item in value:
-            _validate_public_value(item, depth=depth + 1, facts=facts)
+            _validate_public_value(
+                item,
+                depth=depth + 1,
+                facts=facts,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            )
         return
     if isinstance(value, dict):
+        if (
+            commander_public_mapping_is_private_jwk(value)
+            or commander_public_mapping_is_kubernetes_secret(value)
+            or commander_public_mapping_is_oauth_device_authorization(
+                value
+            )
+            or commander_public_mapping_is_oauth_authorization_callback(
+                value
+            )
+            or commander_public_mapping_is_cloudfront_signed_cookie(
+                value
+            )
+        ):
+            raise CommanderContractError(
+                "INTERNAL_RESULT_INVALID",
+                "Public value contains structured credential material.",
+            )
         if len(value) > COMMANDER_OBJECT_MAX_FIELDS:
             raise CommanderContractError(
                 "INTERNAL_RESULT_INVALID",
@@ -2844,6 +3714,9 @@ def _validate_public_value(
             if commander_public_key_is_forbidden(
                 clean_key,
                 include_internal_ids=facts,
+            ) and not commander_public_value_is_numeric_token_metadata(
+                clean_key,
+                nested,
             ):
                 raise CommanderContractError(
                     "INTERNAL_RESULT_INVALID",
@@ -2860,7 +3733,15 @@ def _validate_public_value(
                         "INTERNAL_RESULT_INVALID",
                         "facts.artifact_page must be an object.",
                     )
-                if _normalize_artifact_page_fact(nested) != nested:
+                if (
+                    _normalize_artifact_page_fact(
+                        nested,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
+                    != nested
+                ):
                     raise CommanderContractError(
                         "INTERNAL_RESULT_INVALID",
                         "facts.artifact_page is not in canonical form.",
@@ -2872,18 +3753,42 @@ def _validate_public_value(
                         "INTERNAL_RESULT_INVALID",
                         "facts.subject_page must be an object.",
                     )
-                if _normalize_review_manifest_page_fact(nested) != nested:
+                if (
+                    _normalize_review_manifest_page_fact(
+                        nested,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
+                    != nested
+                ):
                     raise CommanderContractError(
                         "INTERNAL_RESULT_INVALID",
                         "facts.subject_page is not in canonical form.",
                     )
                 continue
-            _validate_public_value(nested, depth=depth + 1, facts=facts)
+            _validate_public_value(
+                nested,
+                depth=depth + 1,
+                facts=facts,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
+            )
         return
     raise CommanderContractError(
         "INTERNAL_RESULT_INVALID",
         "Public value contains a non-JSON type.",
     )
+
+
+def _normalize_public_key_for_match(value: Any) -> str:
+    key = str(value).strip()
+    key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    key = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", key)
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        key.lower(),
+    ).strip("_")
 
 
 def commander_public_key_is_forbidden(
@@ -2895,28 +3800,64 @@ def commander_public_key_is_forbidden(
 
     key = str(value)
     normalized = key.strip().lower()
-    normalized_for_match = re.sub(
-        r"[^a-z0-9]+",
-        "_",
-        normalized,
-    ).strip("_")
+    normalized_for_match = _normalize_public_key_for_match(key)
     if (
         not normalized
-        or normalized in _FORBIDDEN_PUBLIC_KEYS
+        or normalized_for_match in _FORBIDDEN_PUBLIC_KEYS
         or _SENSITIVE_PUBLIC_KEY_RE.search(normalized_for_match)
         or _contains_private_path(key)
     ):
         return True
     if (
         include_internal_ids
-        and normalized not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS
+        and normalized_for_match not in _ALLOWED_PUBLIC_OPAQUE_ID_KEYS
         and (
-            normalized in _FACT_INTERNAL_ID_KEYS
-            or _INTERNAL_ID_PUBLIC_KEY_RE.fullmatch(normalized)
+            normalized_for_match in _FACT_INTERNAL_ID_KEYS
+            or _INTERNAL_ID_PUBLIC_KEY_RE.fullmatch(
+                normalized_for_match
+            )
         )
     ):
         return True
     return False
+
+
+def commander_public_value_is_numeric_token_metadata(
+    key: Any,
+    value: Any,
+) -> bool:
+    """Allow only non-negative integer metrics under token-like keys."""
+
+    return bool(
+        _public_key_is_numeric_token_metadata(key)
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _NUMERIC_TOKEN_METADATA_MAX_VALUE
+    )
+
+
+def _public_key_is_numeric_token_metadata(key: Any) -> bool:
+    components = _normalize_public_key_for_match(key).split("_")
+    token_indexes = [
+        index
+        for index, component in enumerate(components)
+        if component in {"token", "tokens"}
+    ]
+    if len(token_indexes) != 1:
+        return False
+    token_index = token_indexes[0]
+    metric_index = token_index + 1
+    if (
+        metric_index >= len(components)
+        or components[metric_index]
+        not in _NUMERIC_TOKEN_METADATA_METRICS
+    ):
+        return False
+    return all(
+        component in _NUMERIC_TOKEN_METADATA_QUALIFIERS
+        for index, component in enumerate(components)
+        if index not in {token_index, metric_index}
+    )
 
 
 def _redact_noncommander_tool_references(
@@ -2954,23 +3895,20 @@ def commander_public_text(
     normalized = str(value)
     if not preserve_whitespace:
         normalized = " ".join(normalized.split())
-    redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", normalized)
-    redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
-    redacted = _PUBLIC_POSIX_PATH_RE.sub("<local-path>", redacted)
-    redacted = _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
-    redacted = _redact_noncommander_tool_references(
-        redacted,
+    redacted = _redact_public_text_preserving_resource_uris(
+        normalized,
         forbidden_tools=forbidden_tools,
     )
-    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("<sensitive>", redacted)
-    redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
     if max_chars is None:
         return redacted
     if len(redacted) <= max_chars:
         return redacted
     if max_chars <= 1:
         return redacted[:max_chars]
-    return f"{redacted[: max_chars - 1]}…"
+    return _truncate_public_text_preserving_resource_uris(
+        redacted,
+        max_chars=max_chars,
+    )
 
 
 def _public_text(value: str, *, max_chars: int) -> str:
@@ -2994,20 +3932,2536 @@ def _summary_sentence_count(value: str) -> int:
     return max(1, count)
 
 
-def _contains_private_path(value: str) -> bool:
+def _posix_path_match_is_ipv6_url_path(
+    value: str,
+    match: re.Match[str],
+) -> bool:
+    return (
+        _PUBLIC_IPV6_URL_AUTHORITY_SUFFIX_RE.search(
+            value,
+            0,
+            match.start(),
+        )
+        is not None
+    )
+
+
+def _xml_entity_ending_at(
+    value: str,
+    end: int,
+    *,
+    decoded: str,
+) -> bool:
+    for match in _XML_ENTITY_RE.finditer(
+        value,
+        max(0, end - 12),
+        end,
+    ):
+        if (
+            match.end() == end
+            and _decode_xml_entities_once(match.group(0)) == decoded
+        ):
+            return True
+    return False
+
+
+def _posix_path_match_is_xml_closing_tag(
+    value: str,
+    match: re.Match[str],
+) -> bool:
+    """Distinguish a bounded XML closing tag from an absolute POSIX path."""
+
+    if not (
+        (
+            match.start() > 0
+            and value[match.start() - 1] == "<"
+        )
+        or _xml_entity_ending_at(
+            value,
+            match.start(),
+            decoded="<",
+        )
+    ):
+        return False
+    tag = _XML_CLOSING_TAG_PATH_RE.match(value, match.start())
+    if tag is None:
+        return False
+    cursor = tag.end()
+    while cursor < len(value) and value[cursor] in "\t\n\r ":
+        cursor += 1
+    if cursor < len(value) and value[cursor] == ">":
+        return match.end() == tag.end()
+    entity = _XML_ENTITY_RE.match(value, cursor)
+    if (
+        entity is None
+        or _decode_xml_entities_once(entity.group(0)) != ">"
+    ):
+        return False
+    expected_match_end = (
+        tag.end()
+        if cursor > tag.end()
+        else entity.end() - 1
+    )
+    return match.end() == expected_match_end
+
+
+def _redact_public_posix_paths(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        if _posix_path_match_is_xml_closing_tag(value, match):
+            return match.group(0)
+        if not _posix_path_match_is_ipv6_url_path(value, match):
+            return "<local-path>"
+        matched = match.group(0)
+        query_boundaries = [
+            index
+            for marker in "?#"
+            if (index := matched.find(marker)) >= 0
+        ]
+        if not query_boundaries:
+            return matched
+        boundary = min(query_boundaries)
+        return (
+            matched[:boundary]
+            + _PUBLIC_POSIX_PATH_RE.sub(
+                "<local-path>",
+                matched[boundary:],
+            )
+        )
+
+    return _PUBLIC_POSIX_PATH_RE.sub(
+        replace,
+        value,
+    )
+
+
+def _contains_public_posix_path(value: str) -> bool:
+    for match in _PUBLIC_POSIX_PATH_RE.finditer(value):
+        if _posix_path_match_is_xml_closing_tag(value, match):
+            continue
+        if not _posix_path_match_is_ipv6_url_path(value, match):
+            return True
+        matched = match.group(0)
+        query_boundaries = [
+            index
+            for marker in "?#"
+            if (index := matched.find(marker)) >= 0
+        ]
+        if query_boundaries and _PUBLIC_POSIX_PATH_RE.search(
+            matched[min(query_boundaries) :]
+        ):
+            return True
+    return False
+
+
+def _redact_public_path_segment_once(value: str) -> str:
+    redacted = _PUBLIC_FILE_URI_RE.sub("<local-path>", value)
+    redacted = _PUBLIC_UNC_PATH_RE.sub("<local-path>", redacted)
+    redacted = _PUBLIC_LABELED_POSIX_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
+    redacted = _redact_public_posix_paths(redacted)
+    redacted = _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
+    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
+    return _PUBLIC_WINDOWS_PATH_RE.sub("<local-path>", redacted)
+
+
+def _segment_contains_private_path(value: str) -> bool:
     return bool(
         _PUBLIC_FILE_URI_RE.search(value)
         or _PUBLIC_UNC_PATH_RE.search(value)
-        or _PUBLIC_POSIX_PATH_RE.search(value)
+        or _PUBLIC_LABELED_POSIX_PATH_RE.search(value)
+        or _contains_public_posix_path(value)
+        or _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.search(value)
+        or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
         or _PUBLIC_WINDOWS_PATH_RE.search(value)
     )
 
 
-def _contains_unsafe_public_text(value: str) -> bool:
-    return _contains_private_path(value) or bool(
-        _redact_noncommander_tool_references(value) != value
+def _scan_nested_json_escape(
+    value: str,
+    index: int,
+) -> tuple[int, str | None]:
+    if index >= len(value) or value[index] != "\\":
+        return index, None
+    cursor = index
+    while cursor < len(value) and value[cursor] == "\\":
+        cursor += 1
+    if cursor >= len(value):
+        return cursor, None
+    token = value[cursor]
+    if token == "u":
+        digits = value[cursor + 1 : cursor + 5]
+        if len(digits) == 4 and all(
+            character in "0123456789abcdefABCDEF"
+            for character in digits
+        ):
+            return cursor + 5, chr(int(digits, 16))
+        return cursor, None
+    decoded = _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS.get(token)
+    if decoded is None:
+        return cursor, None
+    return cursor + 1, decoded
+
+
+def _nested_json_escape_tokens(
+    value: str,
+) -> Iterable[tuple[int, int, str]]:
+    cursor = 0
+    while cursor < len(value):
+        start = value.find("\\", cursor)
+        if start < 0:
+            return
+        end, decoded = _scan_nested_json_escape(value, start)
+        if decoded is not None:
+            yield start, end, decoded
+            cursor = end
+            continue
+        cursor = max(start + 1, end)
+
+
+def _decode_json_escapes_with_stack(
+    value: str,
+    *,
+    collapse_escaped_backslashes: bool,
+) -> str:
+    rebuilt: list[str] = []
+    changed = False
+    for character in value:
+        rebuilt.append(character)
+        while True:
+            if (
+                len(rebuilt) >= 6
+                and rebuilt[-6] == "\\"
+                and rebuilt[-5] == "u"
+                and all(
+                    digit in "0123456789abcdefABCDEF"
+                    for digit in rebuilt[-4:]
+                )
+            ):
+                decoded = chr(int("".join(rebuilt[-4:]), 16))
+                del rebuilt[-6:]
+                rebuilt.append(decoded)
+                changed = True
+                continue
+            if (
+                len(rebuilt) >= 2
+                and rebuilt[-2] == "\\"
+                and rebuilt[-1] in _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS
+                and (
+                    rebuilt[-1] != "\\"
+                    or collapse_escaped_backslashes
+                )
+            ):
+                decoded = _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS[rebuilt[-1]]
+                del rebuilt[-2:]
+                rebuilt.append(decoded)
+                changed = True
+                continue
+            break
+    return "".join(rebuilt) if changed else value
+
+
+def _decode_escaped_backslash_layer(value: str) -> str:
+    rebuilt: list[str] = []
+    cursor = 0
+    changed = False
+    while cursor < len(value):
+        if value[cursor : cursor + 2] == "\\\\":
+            rebuilt.append("\\")
+            cursor += 2
+            changed = True
+            continue
+        rebuilt.append(value[cursor])
+        cursor += 1
+    return "".join(rebuilt) if changed else value
+
+
+def _json_escape_decoded_candidates(value: str) -> Iterable[str]:
+    # First decode escape-generated introducers while retaining backslash
+    # pairs.  Then decode escaped-backslash pairs one serialization layer at a
+    # time: four serialized leading backslashes must be observable as the UNC
+    # pair before a later layer collapses it to one.  The final fixed point
+    # catches other escape-generated absolute paths without recursive suffix
+    # rescans.
+    preserved_backslashes = _decode_json_escapes_with_stack(
+        value,
+        collapse_escaped_backslashes=False,
+    )
+    if preserved_backslashes != value:
+        yield preserved_backslashes
+    candidate = preserved_backslashes
+    while True:
+        decoded = _decode_escaped_backslash_layer(candidate)
+        if decoded == candidate:
+            break
+        yield decoded
+        candidate = decoded
+    fixed_point = _decode_json_escapes_with_stack(
+        value,
+        collapse_escaped_backslashes=True,
+    )
+    if fixed_point not in {value, preserved_backslashes, candidate}:
+        yield fixed_point
+
+
+def _json_escape_is_path_boundary(decoded: str) -> bool:
+    # Mirror the characters that block an absolute POSIX path at its left edge.
+    return not (
+        decoded.isascii()
+        and (decoded.isalnum() or decoded in ":/\\")
+    )
+
+
+def _json_escaped_path_boundary_matches(
+    value: str,
+) -> Iterable[tuple[int, int]]:
+    return (
+        (start, end)
+        for start, end, decoded in _nested_json_escape_tokens(value)
+        if _json_escape_is_path_boundary(decoded)
+    )
+
+
+def _segment_or_json_boundary_contains_private_path(value: str) -> bool:
+    cursor = 0
+    for start, end in _json_escaped_path_boundary_matches(value):
+        if _segment_contains_private_path(value[cursor:start]):
+            return True
+        cursor = end
+    return _segment_contains_private_path(value[cursor:])
+
+
+def _contains_private_path_segment(value: str) -> bool:
+    if (
+        _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.search(value)
+        or _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(value)
+        or _segment_or_json_boundary_contains_private_path(value)
+    ):
+        return True
+    return any(
+        _PUBLIC_WINDOWS_ROOTED_PATH_RE.search(candidate)
+        or _segment_or_json_boundary_contains_private_path(candidate)
+        for candidate in _json_escape_decoded_candidates(value)
+    )
+
+
+def _redact_public_path_segment_with_json_boundaries(value: str) -> str:
+    rebuilt: list[str] = []
+    cursor = 0
+    for start, end in _json_escaped_path_boundary_matches(value):
+        rebuilt.append(
+            _redact_public_path_segment_once(
+                value[cursor:start]
+            )
+        )
+        rebuilt.append(value[start:end])
+        cursor = end
+    if rebuilt:
+        rebuilt.append(_redact_public_path_segment_once(value[cursor:]))
+        return "".join(rebuilt)
+    return _redact_public_path_segment_once(value)
+
+
+def _redact_public_path_segment(value: str) -> str:
+    redacted = _PUBLIC_LABELED_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        value,
+    )
+    redacted = _PUBLIC_WINDOWS_ROOTED_PATH_RE.sub(
+        "<local-path>",
+        redacted,
+    )
+    redacted = _redact_public_path_segment_with_json_boundaries(redacted)
+    if _decoded_candidate_matches(
+        redacted,
+        _contains_private_path_segment,
+    ):
+        return "<local-path>"
+    return redacted
+
+
+def _is_unicode_resource_uri_emoji_base(value: str) -> bool:
+    if len(value) != 1:
+        return False
+    codepoint = ord(value)
+    range_index = bisect_right(
+        _PUBLIC_RESOURCE_URI_EMOJI_BASE_STARTS,
+        codepoint,
+    ) - 1
+    return bool(
+        range_index >= 0
+        and codepoint
+        <= _PUBLIC_RESOURCE_URI_EMOJI_BASE_RANGES[range_index][1]
+    )
+
+
+def _is_unicode_resource_uri_delimiter(value: str) -> bool:
+    return (
+        bool(value)
+        and not value.isascii()
+        and (
+            value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or unicodedata.category(value) in {"Pd", "Pe", "Pf", "Pi", "Ps"}
+            or _is_unicode_resource_uri_emoji_base(value)
+        )
+    )
+
+
+def _is_unicode_resource_uri_prose(value: str) -> bool:
+    return bool(
+        value
+        and not value.isascii()
+        and unicodedata.category(value).startswith(("L", "N"))
+    )
+
+
+def _is_unicode_emoji_sequence_component(value: str) -> bool:
+    if not value:
+        return False
+    codepoint = ord(value)
+    return bool(
+        value == "\u200d"
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+        or 0xE0020 <= codepoint <= 0xE007F
+    )
+
+
+def _is_unicode_resource_uri_prose_mark(value: str) -> bool:
+    return bool(
+        value
+        and not value.isascii()
+        and value != "\u20e3"
+        and not _is_unicode_emoji_sequence_component(value)
+        and unicodedata.category(value).startswith("M")
+    )
+
+
+def _resource_character_with_start_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    decoded = _decoded_json_unicode_character_with_start_ending_at(
+        value,
+        index,
+    )
+    if decoded is None:
+        decoded = _decoded_json_short_character_with_start_ending_at(
+            value,
+            index,
+        )
+    if decoded is not None:
+        return decoded
+    if index <= 0:
+        return None
+    return index - 1, value[index - 1]
+
+
+def _resource_character_with_end_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    decoded = _decoded_json_unicode_character_with_end_at(value, index)
+    if decoded is not None:
+        return decoded
+    if index >= len(value):
+        return None
+    return index + 1, value[index]
+
+
+def _complete_keycap_sequence_start_ending_at(
+    value: str,
+    index: int,
+) -> int | None:
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None or current[1] != "\u20e3":
+        return None
+    cursor = current[0]
+    current = _resource_character_with_start_ending_at(value, cursor)
+    if current is not None and current[1] == "\ufe0f":
+        cursor = current[0]
+        current = _resource_character_with_start_ending_at(value, cursor)
+    if current is None or current[1] not in "#*0123456789":
+        return None
+    return current[0]
+
+
+def _complete_keycap_sequence_end_at(
+    value: str,
+    index: int,
+) -> int | None:
+    current = _resource_character_with_end_at(value, index)
+    if current is None or current[1] not in "#*0123456789":
+        return None
+    cursor = current[0]
+    current = _resource_character_with_end_at(value, cursor)
+    if current is not None and current[1] == "\ufe0f":
+        cursor = current[0]
+        current = _resource_character_with_end_at(value, cursor)
+    if current is None or current[1] != "\u20e3":
+        return None
+    return current[0]
+
+
+def _is_resource_uri_whitespace(value: str) -> bool:
+    return value.isspace() or value in {"\u200b", "\ufeff"}
+
+
+def _is_resource_uri_left_boundary_character(value: str) -> bool:
+    category = unicodedata.category(value)
+    if (
+        _is_resource_uri_whitespace(value)
+        or value in "\"'`<>([{"
+        or value in _PUBLIC_RESOURCE_URI_ASCII_CLOSING_DELIMITERS
+        or value in _PUBLIC_RESOURCE_URI_ASCII_LEFT_SEPARATORS
+        or category == "Cc"
+    ):
+        return True
+    return bool(
+        not value.isascii()
+        and (
+            category.startswith(("L", "N"))
+            or value in _PUBLIC_RESOURCE_URI_UNICODE_SENTENCE_DELIMITERS
+            or category in {"Pd", "Pe", "Pf", "Pi", "Ps"}
+            or _is_unicode_resource_uri_emoji_base(value)
+        )
+    )
+
+
+def _json_unicode_escape_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, int] | None:
+    token_start = index - 5
+    if token_start < 1 or value[token_start] != "u":
+        return None
+    escape_start = token_start
+    while escape_start > 0 and value[escape_start - 1] == "\\":
+        escape_start -= 1
+    if escape_start == token_start:
+        return None
+    end, decoded = _scan_nested_json_escape(value, escape_start)
+    if end != index or decoded is None:
+        return None
+    return escape_start, ord(decoded)
+
+
+def _decoded_json_short_character_with_start_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    if index <= 1:
+        return None
+    token = value[index - 1]
+    if token not in _PUBLIC_JSON_SHORT_ESCAPE_CHARACTERS:
+        return None
+    escape_start = index - 1
+    while escape_start > 0 and value[escape_start - 1] == "\\":
+        escape_start -= 1
+    if escape_start == index - 1:
+        return None
+    end, decoded = _scan_nested_json_escape(value, escape_start)
+    if end != index or decoded is None:
+        return None
+    return escape_start, decoded
+
+
+def _json_unicode_escape_at(
+    value: str,
+    index: int,
+) -> tuple[int, int] | None:
+    cursor = index
+    while cursor < len(value) and value[cursor] == "\\":
+        cursor += 1
+    if cursor >= len(value) or value[cursor] != "u":
+        return None
+    end, decoded = _scan_nested_json_escape(value, index)
+    if decoded is None:
+        return None
+    return end, ord(decoded)
+
+
+def _decoded_json_unicode_character_with_start_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    current = _json_unicode_escape_ending_at(value, index)
+    if current is None:
+        return None
+    start, codepoint = current
+    if 0xDC00 <= codepoint <= 0xDFFF:
+        previous = _json_unicode_escape_ending_at(value, start)
+        if previous is not None:
+            previous_start, high = previous
+            if 0xD800 <= high <= 0xDBFF:
+                combined = (
+                    0x10000
+                    + ((high - 0xD800) << 10)
+                    + (codepoint - 0xDC00)
+                )
+                return previous_start, chr(combined)
+    return start, chr(codepoint)
+
+
+def _decoded_json_unicode_character_ending_at(
+    value: str,
+    index: int,
+) -> str | None:
+    decoded = _decoded_json_unicode_character_with_start_ending_at(
+        value,
+        index,
+    )
+    return decoded[1] if decoded is not None else None
+
+
+def _decoded_json_unicode_character_with_end_at(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    current = _json_unicode_escape_at(value, index)
+    if current is None:
+        return None
+    end, codepoint = current
+    if 0xD800 <= codepoint <= 0xDBFF:
+        following = _json_unicode_escape_at(value, end)
+        if following is not None:
+            following_end, low = following
+            if 0xDC00 <= low <= 0xDFFF:
+                combined = (
+                    0x10000
+                    + ((codepoint - 0xD800) << 10)
+                    + (low - 0xDC00)
+                )
+                return following_end, chr(combined)
+    return end, chr(codepoint)
+
+
+def _decoded_json_unicode_character_at(
+    value: str,
+    index: int,
+) -> str | None:
+    decoded = _decoded_json_unicode_character_with_end_at(value, index)
+    return decoded[1] if decoded is not None else None
+
+
+def _is_resource_uri_left_boundary(value: str, index: int) -> bool:
+    if index <= 0:
+        return True
+    if _complete_keycap_sequence_start_ending_at(value, index) is not None:
+        return True
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None:
+        return True
+    cursor, preceding = current
+    if _is_resource_uri_left_boundary_character(preceding):
+        return True
+    if _is_unicode_resource_uri_prose_mark(preceding):
+        while cursor > 0:
+            current = _resource_character_with_start_ending_at(value, cursor)
+            if current is None:
+                return False
+            cursor, preceding = current
+            if _is_unicode_resource_uri_prose_mark(preceding):
+                continue
+            return bool(
+                _is_unicode_resource_uri_prose(preceding)
+                or (
+                    preceding.isascii()
+                    and preceding.isalpha()
+                )
+            )
+        return False
+    if (
+        preceding == "\u200d"
+        or not _is_unicode_emoji_sequence_component(preceding)
+    ):
+        return False
+    while cursor > 0:
+        current = _resource_character_with_start_ending_at(value, cursor)
+        if current is None:
+            return False
+        cursor, preceding = current
+        if _is_unicode_resource_uri_emoji_base(preceding):
+            return True
+        if (
+            preceding == "\u200d"
+            or not _is_unicode_emoji_sequence_component(preceding)
+        ):
+            return False
+    return False
+
+
+def _is_resource_uri_hard_delimiter(value: str) -> bool:
+    return bool(
+        _is_resource_uri_whitespace(value)
+        or unicodedata.category(value) == "Cc"
+        or value in "\"'`>"
+        or value in _PUBLIC_RESOURCE_URI_ASCII_OPENING_DELIMITERS
+    )
+
+
+def _json_escaped_resource_delimiter(
+    value: str,
+    index: int,
+) -> tuple[int, str] | None:
+    unicode_escape = _decoded_json_unicode_character_with_end_at(
+        value,
+        index,
+    )
+    if unicode_escape is not None:
+        end, decoded = unicode_escape
+    else:
+        end, decoded = _scan_nested_json_escape(value, index)
+        if decoded is None:
+            return None
+    if (
+        _is_resource_uri_hard_delimiter(decoded)
+        or decoded in ".,;:!?)]}"
+        or _is_unicode_resource_uri_delimiter(decoded)
+        or _is_unicode_emoji_sequence_component(decoded)
+    ):
+        return end, decoded
+    return None
+
+
+def _is_json_escaped_resource_delimiter(value: str, index: int) -> bool:
+    return _json_escaped_resource_delimiter(value, index) is not None
+
+
+def _is_resource_uri_following_delimiter(value: str, index: int) -> bool:
+    cursor = index
+    ascii_before_unicode_delimiter = False
+    saw_unicode_delimiter = False
+    saw_emoji_base = False
+    emoji_joiner_pending = False
+    saw_hard_escaped_delimiter = False
+    while cursor < len(value):
+        keycap_end = _complete_keycap_sequence_end_at(value, cursor)
+        if keycap_end is not None:
+            if emoji_joiner_pending:
+                break
+            saw_unicode_delimiter = True
+            saw_emoji_base = False
+            cursor = keycap_end
+            continue
+        following = value[cursor]
+        if following in ".,;:!?)]}":
+            if not saw_unicode_delimiter:
+                ascii_before_unicode_delimiter = True
+            saw_emoji_base = False
+            cursor += 1
+            continue
+        if _is_unicode_resource_uri_delimiter(following):
+            is_emoji_base = _is_unicode_resource_uri_emoji_base(
+                following
+            )
+            if (
+                emoji_joiner_pending
+                and not is_emoji_base
+            ):
+                break
+            saw_unicode_delimiter = True
+            saw_emoji_base = is_emoji_base
+            if is_emoji_base:
+                emoji_joiner_pending = False
+            cursor += 1
+            continue
+        if (
+            saw_emoji_base
+            and _is_unicode_emoji_sequence_component(following)
+        ):
+            if emoji_joiner_pending:
+                break
+            emoji_joiner_pending = following == "\u200d"
+            cursor += 1
+            continue
+        escaped_delimiter = _json_escaped_resource_delimiter(
+            value,
+            cursor,
+        )
+        if escaped_delimiter is not None:
+            end, decoded = escaped_delimiter
+            if _is_unicode_emoji_sequence_component(decoded):
+                if not saw_emoji_base or emoji_joiner_pending:
+                    break
+                emoji_joiner_pending = decoded == "\u200d"
+                cursor = end
+                continue
+            if _is_resource_uri_hard_delimiter(decoded):
+                saw_hard_escaped_delimiter = True
+                saw_emoji_base = False
+            elif _is_unicode_resource_uri_delimiter(decoded):
+                is_emoji_base = _is_unicode_resource_uri_emoji_base(
+                    decoded
+                )
+                if (
+                    emoji_joiner_pending
+                    and not is_emoji_base
+                ):
+                    break
+                saw_unicode_delimiter = True
+                saw_emoji_base = is_emoji_base
+                if is_emoji_base:
+                    emoji_joiner_pending = False
+            else:
+                if not saw_unicode_delimiter:
+                    ascii_before_unicode_delimiter = True
+                saw_emoji_base = False
+            cursor = end
+            continue
+        break
+    if emoji_joiner_pending:
+        return False
+    if cursor >= len(value):
+        return True
+    following = value[cursor]
+    decoded_following = _decoded_json_unicode_character_at(value, cursor)
+    return bool(
+        _is_resource_uri_whitespace(following)
+        or following in "\"'`>"
+        or saw_hard_escaped_delimiter
+        or (
+            saw_unicode_delimiter
+            # A preceding ASCII punctuation run can still be an invalid URI
+            # continuation (for example, ``??）query``).
+            and not ascii_before_unicode_delimiter
+            and (
+                unicodedata.category(following).startswith(("L", "N"))
+                or (
+                    decoded_following is not None
+                    and unicodedata.category(decoded_following).startswith(
+                        ("L", "N")
+                    )
+                )
+            )
+        )
+    )
+
+
+def _is_resource_uri_boundary(value: str, index: int) -> bool:
+    if index >= len(value):
+        return True
+    following = value[index]
+    if _is_resource_uri_hard_delimiter(following):
+        return True
+    if _is_unicode_resource_uri_prose(following):
+        return True
+    decoded_following = _decoded_json_unicode_character_at(value, index)
+    if (
+        decoded_following is not None
+        and _is_unicode_resource_uri_prose(decoded_following)
+    ):
+        return True
+    if _complete_keycap_sequence_end_at(value, index) is not None:
+        return _is_resource_uri_following_delimiter(value, index)
+    if (
+        following in ".,;:!?)]}"
+        or _is_unicode_resource_uri_delimiter(following)
+        or _is_json_escaped_resource_delimiter(value, index)
+    ):
+        return _is_resource_uri_following_delimiter(value, index)
+    return False
+
+
+def _markdown_emphasis_run_ending_at(
+    value: str,
+    index: int,
+) -> tuple[int, str, int] | None:
+    current = _resource_character_with_start_ending_at(value, index)
+    if current is None or current[1] not in "*_":
+        return None
+    cursor, marker = current
+    width = 1
+    while cursor > 0 and width < 4:
+        previous = _resource_character_with_start_ending_at(value, cursor)
+        if previous is None or previous[1] != marker:
+            break
+        cursor = previous[0]
+        width += 1
+    if width not in {1, 2, 3}:
+        return None
+    return cursor, marker, width
+
+
+def _markdown_emphasis_run_starting_at(
+    value: str,
+    index: int,
+) -> tuple[int, str, int] | None:
+    current = _resource_character_with_end_at(value, index)
+    if current is None or current[1] not in "*_":
+        return None
+    cursor, marker = current
+    width = 1
+    while cursor < len(value) and width < 4:
+        following = _resource_character_with_end_at(value, cursor)
+        if following is None or following[1] != marker:
+            break
+        cursor = following[0]
+        width += 1
+    if width not in {1, 2, 3}:
+        return None
+    return cursor, marker, width
+
+
+def _is_resource_uri_inside_markdown_emphasis(
+    value: str,
+    start: int,
+    end: int,
+) -> bool:
+    opening = _markdown_emphasis_run_ending_at(value, start)
+    closing = _markdown_emphasis_run_starting_at(value, end)
+    if opening is None or closing is None:
+        return False
+    opening_start, opening_marker, opening_width = opening
+    closing_end, closing_marker, closing_width = closing
+    return bool(
+        opening_marker == closing_marker
+        and opening_width == closing_width
+        and _is_resource_uri_left_boundary(value, opening_start)
+        and _is_resource_uri_boundary(value, closing_end)
+    )
+
+
+def _markdown_public_link_destination_end(
+    value: str,
+    index: int,
+) -> int | None:
+    closing_label = _resource_character_with_end_at(value, index)
+    if closing_label is None or closing_label[1] != "]":
+        return None
+    opening_destination = _resource_character_with_end_at(
+        value,
+        closing_label[0],
+    )
+    if (
+        opening_destination is None
+        or opening_destination[1] != "("
+    ):
+        return None
+    destination_start = opening_destination[0]
+    if not value.startswith(
+        ("https://", "http://"),
+        destination_start,
+    ):
+        return None
+    cursor = destination_start
+    while cursor < len(value):
+        current = _resource_character_with_end_at(value, cursor)
+        if current is None:
+            return None
+        end, character = current
+        if character == ")":
+            return end
+        if (
+            _is_resource_uri_whitespace(character)
+            or character in "()<>\"'"
+        ):
+            return None
+        cursor = end
+    return None
+
+
+def _is_resource_uri_inside_markdown_link_label(
+    value: str,
+    start: int,
+    end: int,
+) -> bool:
+    opening_label = _resource_character_with_start_ending_at(
+        value,
+        start,
+    )
+    if opening_label is None or opening_label[1] != "[":
+        return False
+    destination_end = _markdown_public_link_destination_end(
+        value,
+        end,
+    )
+    return bool(
+        destination_end is not None
+        and _is_resource_uri_left_boundary(
+            value,
+            opening_label[0],
+        )
+        and _is_resource_uri_boundary(value, destination_end)
+    )
+
+
+def _public_resource_uri_spans(value: str) -> Iterable[re.Match[str]]:
+    for match in _PUBLIC_OPAQUE_RESOURCE_URI_CANDIDATE_RE.finditer(value):
+        ordinary_boundaries = (
+            _is_resource_uri_left_boundary(value, match.start())
+            and _is_resource_uri_boundary(value, match.end())
+        )
+        if ordinary_boundaries or _is_resource_uri_inside_markdown_emphasis(
+            value,
+            match.start(),
+            match.end(),
+        ) or _is_resource_uri_inside_markdown_link_label(
+            value,
+            match.start(),
+            match.end(),
+        ):
+            yield match
+
+
+def _truncate_public_text_preserving_resource_uris(
+    value: str,
+    *,
+    max_chars: int,
+) -> str:
+    bounded = value
+    cutoff = max_chars - 1
+    while len(bounded) > max_chars:
+        crossing = next(
+            (
+                match
+                for match in _public_resource_uri_spans(bounded)
+                if match.start() < cutoff < match.end()
+            ),
+            None,
+        )
+        if crossing is None:
+            return f"{bounded[:cutoff]}…"
+        bounded = (
+            f"{bounded[: crossing.start()]}"
+            f"{_PUBLIC_RESOURCE_URI_PLACEHOLDER}"
+            f"{bounded[crossing.end() :]}"
+        )
+    return bounded
+
+
+def _redact_public_non_resource_segment(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None,
+) -> str:
+    redacted = _PUBLIC_COLAMETA_URI_TOKEN_RE.sub(
+        _PUBLIC_RESOURCE_URI_PLACEHOLDER,
+        value,
+    )
+    redacted = _redact_public_path_segment(redacted)
+    if _decoded_candidate_contains_noncommander_tool_reference(
+        redacted,
+        forbidden_tools=forbidden_tools,
+    ):
+        return "<internal-tool>"
+    redacted = _redact_noncommander_tool_references(
+        redacted,
+        forbidden_tools=forbidden_tools,
+    )
+    return _redact_sensitive_material(redacted)
+
+
+def _decoded_candidate_contains_noncommander_tool_reference(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None = None,
+) -> bool:
+    hidden_tools = (
+        None
+        if forbidden_tools is None
+        else frozenset(forbidden_tools)
+    )
+    return _decoded_candidate_matches(
+        value,
+        lambda candidate: (
+            _redact_noncommander_tool_references(
+                candidate,
+                forbidden_tools=hidden_tools,
+            )
+            != candidate
+        ),
+    )
+
+
+def _matches_sensitive_material(value: str) -> bool:
+    return bool(
+        _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
         or _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _contains_forbidden_key_assignment(value)
+        or _contains_xml_serialized_rsa_private_key(value)
+        or _contains_sensitive_xml_element(value)
+        or _contains_sensitive_cli_option_credential(value)
+        or _CURL_USER_PASSWORD_RE.search(value)
+        or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
+        or _CURL_PASSPHRASE_OPTION_RE.search(value)
+        or _contains_netrc_password_credential(value)
         or _BEARER_TOKEN_RE.search(value)
+        or _contains_basic_authorization_credential(value)
+        or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _AGE_X25519_IDENTITY_RE.search(value)
+        or _contains_private_jwk_material(value)
+        or _contains_kubernetes_secret_material(value)
+        or _contains_oauth_device_authorization_material(value)
+        or _contains_standalone_jwt(value)
+        or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _TELEGRAM_BOT_API_URL_RE.search(value)
+        or _SLACK_INCOMING_WEBHOOK_RE.search(value)
+        or _DISCORD_INCOMING_WEBHOOK_RE.search(value)
+        or _contains_sensitive_form_urlencoded_assignment(value)
+        or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_form(value)
+        or _contains_oauth_authorization_code_query(value)
+        or _contains_oauth_authorization_callback_material(value)
+        or _contains_azure_sas_signature_query(value)
+        or _contains_cloudfront_signed_url_query(value)
+        or _contains_cloudfront_signed_cookie_fields(value)
+        or _contains_gcs_v2_signed_url_query(value)
+        or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
+        or _CREDENTIAL_URI_USERINFO_RE.search(value)
+    )
+
+
+def _decoded_candidate_matches(
+    value: str,
+    predicate: Callable[[str], bool],
+    *,
+    decode_xml_entities: bool = False,
+) -> bool:
+    """Scan a bounded decode closure and fail closed on real exhaustion.
+
+    Each round applies canonical URL and JSON decoding, plus XML entity
+    decoding when requested by the sensitive-material boundary.  Their state
+    budgets are counted independently so unrelated legal escapes cannot
+    consume a deep chain's allowance.  The preserved backslash candidate is
+    checked as well so JSON string boundaries cannot hide a forbidden value.
+    Work remains linear in the public value and each decoder fails closed
+    before accepting a seventeenth state.
+    """
+
+    candidate = value
+    percent_state_count = 1
+    json_state_count = 1
+    xml_entity_state_count = 1
+    while True:
+        decoded = candidate
+        changed = False
+        if "%" in candidate:
+            percent_decoded = unquote(candidate)
+            if (
+                percent_decoded != candidate
+                and predicate(percent_decoded)
+            ):
+                return True
+            if percent_decoded != candidate:
+                if (
+                    percent_state_count
+                    >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES
+                ):
+                    return True
+                decoded = percent_decoded
+                percent_state_count += 1
+                changed = True
+        if "\\" in decoded:
+            preserved_backslashes = _decode_json_escapes_with_stack(
+                decoded,
+                collapse_escaped_backslashes=False,
+            )
+            if (
+                preserved_backslashes != decoded
+                and predicate(preserved_backslashes)
+            ):
+                return True
+            json_decoded = _decode_json_escapes_with_stack(
+                decoded,
+                collapse_escaped_backslashes=True,
+            )
+            if (
+                json_decoded != decoded
+                and predicate(json_decoded)
+            ):
+                return True
+            if json_decoded != decoded:
+                if (
+                    json_state_count
+                    >= _COMMANDER_DECODED_CANDIDATE_MAX_STATES
+                ):
+                    return True
+                decoded = json_decoded
+                json_state_count += 1
+                changed = True
+        if decode_xml_entities and "&" in decoded:
+            xml_decoded = _decode_xml_entities_once(decoded)
+            if (
+                xml_decoded != decoded
+                and predicate(xml_decoded)
+            ):
+                return True
+            if xml_decoded != decoded:
+                if (
+                    xml_entity_state_count
+                    >= _SENSITIVE_XML_MAX_ENTITY_STATES
+                ):
+                    return True
+                decoded = xml_decoded
+                xml_entity_state_count += 1
+                changed = True
+        if not changed or decoded == candidate:
+            return False
+        candidate = decoded
+
+
+def _decoded_candidate_contains_sensitive_material(value: str) -> bool:
+    return _decoded_candidate_matches(
+        value,
+        _matches_sensitive_material,
+        decode_xml_entities=True,
+    )
+
+
+def _is_basic_authorization_credential(match: re.Match[str]) -> bool:
+    token = match.group("token").rstrip("=")
+    if not token:
+        return False
+    padded = token + ("=" * (-len(token) % 4))
+    try:
+        decoded = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return b":" in decoded
+
+
+def _contains_basic_authorization_credential(value: str) -> bool:
+    return any(
+        _is_basic_authorization_credential(match)
+        for match in _BASIC_AUTHORIZATION_RE.finditer(value)
+    )
+
+
+def _base64url_json_object(value: str) -> dict[str, Any] | None:
+    padded = value + ("=" * (-len(value) % 4))
+    try:
+        decoded = base64.b64decode(
+            padded,
+            altchars=b"-_",
+            validate=True,
+        )
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (
+        binascii.Error,
+        RecursionError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_standalone_jwt(match: re.Match[str]) -> bool:
+    header = _base64url_json_object(match.group("header"))
+    payload = _base64url_json_object(match.group("payload"))
+    return bool(
+        header is not None
+        and payload is not None
+        and isinstance(header.get("alg"), str)
+        and header["alg"].strip()
+    )
+
+
+def _contains_standalone_jwt(value: str) -> bool:
+    return any(
+        _is_standalone_jwt(match)
+        for match in _STANDALONE_JWT_RE.finditer(value)
+    )
+
+
+def commander_public_mapping_is_private_jwk(
+    value: dict[Any, Any],
+) -> bool:
+    key_type = value.get("kty")
+    if not isinstance(key_type, str):
+        return False
+    normalized_key_type = key_type.strip().upper()
+    if normalized_key_type in _PRIVATE_JWK_ASYMMETRIC_KEY_TYPES:
+        private_coordinate = value.get("d")
+    elif normalized_key_type == "OCT":
+        private_coordinate = value.get("k")
+    else:
+        return False
+    return (
+        isinstance(private_coordinate, str)
+        and bool(private_coordinate.strip())
+    )
+
+
+def _is_nonempty_structured_mapping(value: Any) -> bool:
+    return isinstance(value, (dict, _StructuredJsonObjectPairs)) and bool(value)
+
+
+def commander_public_mapping_is_kubernetes_secret(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect a Kubernetes Secret payload only within the same object."""
+
+    if value.get("kind") != "Secret":
+        return False
+    return any(
+        _is_nonempty_structured_mapping(value.get(field))
+        for field in ("data", "stringData")
+    )
+
+
+def commander_public_mapping_is_oauth_device_authorization(
+    value: dict[Any, Any],
+) -> bool:
+    device_code = value.get("device_code")
+    if not isinstance(device_code, str) or not device_code.strip():
+        return False
+    if any(
+        isinstance(value.get(key), str)
+        and bool(value[key].strip())
+        for key in _OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS
+    ):
+        return True
+    return any(
+        not isinstance(value.get(key), bool)
+        and isinstance(value.get(key), int)
+        and value[key] > 0
+        for key in _OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS
+    )
+
+
+def commander_public_mapping_is_oauth_authorization_callback(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect one parsed OAuth callback mapping without joining siblings."""
+
+    code: Any = None
+    has_state = False
+    has_callback_context = False
+    for key, nested in value.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.casefold()
+        if normalized_key == "code":
+            code = nested
+        has_state = has_state or normalized_key == "state"
+        has_callback_context = (
+            has_callback_context
+            or normalized_key
+            in _OAUTH_AUTHORIZATION_CALLBACK_CONTEXT_KEYS
+        )
+    if not has_state or not isinstance(code, str) or not code:
+        return False
+    if has_callback_context:
+        return True
+    return (
+        _OAUTH_AUTHORIZATION_CODE_MIN_CHARS
+        <= len(code)
+        <= _OAUTH_AUTHORIZATION_CODE_MAX_CHARS
+        and all("!" <= character <= "~" for character in code)
+        and _PUBLIC_STATUS_CODE_RE.fullmatch(code) is None
+    )
+
+
+def commander_public_mapping_is_cloudfront_signed_cookie(
+    value: dict[Any, Any],
+) -> bool:
+    """Detect one complete CloudFront signed-cookie mapping."""
+
+    present_fields: set[str] = set()
+    for key, nested in value.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.casefold()
+        if normalized_key not in {
+            "cloudfront-policy",
+            "cloudfront-expires",
+            "cloudfront-signature",
+            "cloudfront-key-pair-id",
+        }:
+            continue
+        if isinstance(nested, str):
+            if not nested.strip():
+                continue
+        elif (
+            normalized_key == "cloudfront-expires"
+            and isinstance(nested, int)
+            and not isinstance(nested, bool)
+        ):
+            pass
+        else:
+            continue
+        present_fields.add(normalized_key)
+    return (
+        bool(
+            present_fields
+            & {"cloudfront-policy", "cloudfront-expires"}
+        )
+        and "cloudfront-signature" in present_fields
+        and "cloudfront-key-pair-id" in present_fields
+    )
+
+
+def _private_jwk_text_hint(value: str) -> bool:
+    lowered = value.lower()
+    return "kty" in lowered and (
+        '"d"' in lowered
+        or "'d'" in lowered
+        or '"k"' in lowered
+        or "'k'" in lowered
+    )
+
+
+def _kubernetes_secret_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        "kind" in lowered
+        and "secret" in lowered
+        and ("data" in lowered or "stringdata" in lowered)
+    )
+
+
+def _oauth_device_authorization_text_hint(value: str) -> bool:
+    lowered = value.lower()
+    return "device_code" in lowered and any(
+        key in lowered
+        for key in (
+            *_OAUTH_DEVICE_AUTHORIZATION_STRING_CONTEXT_KEYS,
+            *_OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS,
+        )
+    )
+
+
+def _oauth_authorization_callback_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        ('"code"' in lowered or "'code'" in lowered)
+        and ('"state"' in lowered or "'state'" in lowered)
+    )
+
+
+def _cloudfront_signed_cookie_text_hint(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        (
+            "cloudfront-policy" in lowered
+            or "cloudfront-expires" in lowered
+        )
+        and "cloudfront-signature" in lowered
+        and "cloudfront-key-pair-id" in lowered
+    )
+
+
+def _bounded_python_literal_container_end(
+    value: str,
+    start: int,
+) -> tuple[int | None, bool]:
+    expected_closers: list[str] = []
+    quote: str | None = None
+    escaped = False
+    limit = min(
+        len(value),
+        start + _STRUCTURED_CREDENTIAL_MAX_PYTHON_LITERAL_CHARS,
+    )
+    closer_by_opener = {"{": "}", "[": "]", "(": ")"}
+    for cursor in range(start, limit):
+        character = value[cursor]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character in closer_by_opener:
+            expected_closers.append(closer_by_opener[character])
+            if len(expected_closers) > COMMANDER_PUBLIC_MAX_DEPTH + 1:
+                return None, True
+            continue
+        if character in "}])":
+            if not expected_closers or character != expected_closers[-1]:
+                return None, False
+            expected_closers.pop()
+            if not expected_closers:
+                return cursor + 1, False
+    return None, bool(expected_closers and limit < len(value))
+
+
+def _bounded_python_literal_value(value: str) -> Any | None:
+    if "'" not in value:
+        return None
+    try:
+        expression = ast.parse(value, mode="eval")
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return None
+    remaining_nodes = _STRUCTURED_CREDENTIAL_MAX_NODES
+
+    def convert(node: ast.AST, depth: int) -> Any:
+        nonlocal remaining_nodes
+        remaining_nodes -= 1
+        if remaining_nodes < 0 or depth > COMMANDER_PUBLIC_MAX_DEPTH:
+            raise ValueError("Python literal exceeds structured scan limits")
+        if isinstance(node, ast.Dict):
+            pairs = _StructuredJsonObjectPairs()
+            for key_node, value_node in zip(node.keys, node.values):
+                if (
+                    not isinstance(key_node, ast.Constant)
+                    or not isinstance(key_node.value, str)
+                ):
+                    raise ValueError("Python mapping key is not a string")
+                pairs.append(
+                    (
+                        key_node.value,
+                        convert(value_node, depth + 1),
+                    )
+                )
+            return pairs
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [convert(item, depth + 1) for item in node.elts]
+        if isinstance(node, ast.Constant) and (
+            node.value is None
+            or isinstance(node.value, (bool, int, float, str))
+        ):
+            return node.value
+        raise ValueError("Unsupported Python literal node")
+
+    try:
+        return convert(expression.body, 0)
+    except (MemoryError, RecursionError, ValueError):
+        return None
+
+
+def _contains_structured_json_mapping(
+    value: str,
+    *,
+    mapping_predicate: Callable[[dict[Any, Any]], bool],
+    exhaustion_hint: Callable[[str], bool],
+) -> bool:
+    """Scan bounded JSON/Python-literal structured credential mappings."""
+
+    stack: list[tuple[Any, int]] = []
+    remaining_candidates = (
+        _STRUCTURED_CREDENTIAL_MAX_JSON_CANDIDATES
+    )
+
+    def object_pairs_match(
+        pairs: _StructuredJsonObjectPairs,
+    ) -> bool:
+        nonlocal remaining_candidates
+        current: dict[str, Any] = {}
+        values_by_key: dict[str, list[Any]] = {}
+        for key, nested in pairs:
+            current[key] = nested
+            values_by_key.setdefault(key, []).append(nested)
+        duplicate_values = [
+            (key, nested_values)
+            for key, nested_values in values_by_key.items()
+            if len(nested_values) > 1
+        ]
+        if not duplicate_values:
+            return mapping_predicate(current)
+
+        combination_count = 1
+        for _, nested_values in duplicate_values:
+            if (
+                remaining_candidates <= 0
+                or combination_count
+                > remaining_candidates // len(nested_values)
+            ):
+                # Duplicate-member semantics are ambiguous.  If every
+                # occurrence cannot be checked within the bounded scan, do
+                # not let last-value-wins parsing authorize public output.
+                return True
+            combination_count *= len(nested_values)
+        remaining_candidates -= combination_count
+
+        duplicate_keys = [key for key, _ in duplicate_values]
+        for selected_values in product(
+            *(nested_values for _, nested_values in duplicate_values)
+        ):
+            candidate = dict(current)
+            candidate.update(zip(duplicate_keys, selected_values))
+            if mapping_predicate(candidate):
+                return True
+        return False
+
+    def enqueue_json_containers(text: str, depth: int) -> bool:
+        nonlocal remaining_candidates
+        stripped = text.strip()
+        if not stripped or ("{" not in stripped and "[" not in stripped):
+            return False
+        try:
+            parsed = json.loads(
+                stripped,
+                object_pairs_hook=_StructuredJsonObjectPairs,
+            )
+        except (RecursionError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            stack.append((parsed, depth))
+            return False
+
+        decoder = json.JSONDecoder(
+            object_pairs_hook=_StructuredJsonObjectPairs,
+        )
+        cursor = 0
+        while cursor < len(text):
+            object_start = text.find("{", cursor)
+            array_start = text.find("[", cursor)
+            starts = [
+                start
+                for start in (object_start, array_start)
+                if start >= 0
+            ]
+            if not starts:
+                return False
+            start = min(starts)
+            if remaining_candidates <= 0:
+                return exhaustion_hint(text)
+            remaining_candidates -= 1
+            try:
+                candidate, end = decoder.raw_decode(text, start)
+            except (RecursionError, ValueError):
+                end, exhausted = _bounded_python_literal_container_end(
+                    text,
+                    start,
+                )
+                if exhausted:
+                    return exhaustion_hint(text)
+                candidate = (
+                    None
+                    if end is None
+                    else _bounded_python_literal_value(text[start:end])
+                )
+                if candidate is None:
+                    cursor = start + 1
+                    continue
+                if isinstance(candidate, (dict, list)):
+                    stack.append((candidate, depth))
+                cursor = max(start + 1, end)
+                continue
+            if isinstance(candidate, (dict, list)):
+                stack.append((candidate, depth))
+            cursor = max(start + 1, end)
+        return False
+
+    if enqueue_json_containers(value, 0):
+        return True
+
+    visited_nodes = 0
+    while stack:
+        node, depth = stack.pop()
+        visited_nodes += 1
+        if visited_nodes > _STRUCTURED_CREDENTIAL_MAX_NODES:
+            return exhaustion_hint(value)
+        if isinstance(node, _StructuredJsonObjectPairs):
+            if object_pairs_match(node):
+                return True
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for _, nested in node
+                )
+            elif node and exhaustion_hint(value):
+                return True
+            continue
+        if isinstance(node, dict):
+            if mapping_predicate(node):
+                return True
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for nested in node.values()
+                )
+            elif node and exhaustion_hint(value):
+                return True
+            continue
+        if isinstance(node, list):
+            if depth < COMMANDER_PUBLIC_MAX_DEPTH:
+                stack.extend(
+                    (nested, depth + 1)
+                    for nested in node
+                )
+            elif node and exhaustion_hint(value):
+                return True
+            continue
+        if isinstance(node, str):
+            if (
+                depth
+                < _STRUCTURED_CREDENTIAL_MAX_NESTED_STRING_DEPTH
+            ):
+                if enqueue_json_containers(node, depth + 1):
+                    return True
+            elif node and exhaustion_hint(node):
+                return True
+    return False
+
+
+def _contains_private_jwk_material(value: str) -> bool:
+    """Detect private JWKs without treating an ordinary ``d`` as secret."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=commander_public_mapping_is_private_jwk,
+        exhaustion_hint=_private_jwk_text_hint,
+    )
+
+
+def _contains_kubernetes_secret_material(value: str) -> bool:
+    """Detect Secret payloads without joining fields from sibling objects."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=commander_public_mapping_is_kubernetes_secret,
+        exhaustion_hint=_kubernetes_secret_text_hint,
+    )
+
+
+def _contains_oauth_device_authorization_material(
+    value: str,
+) -> bool:
+    """Detect a device code only inside an OAuth device response context."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_oauth_device_authorization
+        ),
+        exhaustion_hint=_oauth_device_authorization_text_hint,
+    )
+
+
+def _contains_oauth_authorization_callback_material(
+    value: str,
+) -> bool:
+    """Detect a code only in the same parsed callback object as state."""
+
+    return _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_oauth_authorization_callback
+        ),
+        exhaustion_hint=_oauth_authorization_callback_text_hint,
+    )
+
+
+def _contains_sensitive_form_urlencoded_assignment(value: str) -> bool:
+    for match in _FORM_URLENCODED_ASSIGNMENT_RE.finditer(value):
+        encoded_key = match.group("key")
+        if "+" not in encoded_key and "%" not in encoded_key:
+            continue
+        decoded_key = unquote_plus(encoded_key)
+        decoded_value = unquote_plus(match.group("value"))
+        if (
+            1
+            <= len(decoded_value)
+            <= _NUMERIC_TOKEN_METADATA_MAX_DIGITS
+            and decoded_value.isascii()
+            and decoded_value.isdecimal()
+            and _public_key_is_numeric_token_metadata(decoded_key)
+        ):
+            continue
+        if commander_public_key_is_forbidden(decoded_key):
+            return True
+    return False
+
+
+def _contains_pgpass_password_record(value: str) -> bool:
+    return _PGPASS_RECORD_RE.search(value) is not None
+
+
+def _contains_oauth_authorization_code_form(value: str) -> bool:
+    for match in _FORM_URLENCODED_SEQUENCE_RE.finditer(value):
+        has_authorization_code_grant = False
+        has_code = False
+        for field in match.group("form").split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            decoded_value = unquote_plus(field_value)
+            has_authorization_code_grant = (
+                has_authorization_code_grant
+                or (
+                    normalized_key == "grant_type"
+                    and decoded_value.lower() == "authorization_code"
+                )
+            )
+            has_code = has_code or (
+                normalized_key == "code" and bool(decoded_value)
+            )
+            if has_authorization_code_grant and has_code:
+                return True
+        if (
+            has_authorization_code_grant
+            and match.end() < len(value)
+            and value[match.end()] not in "\t\n\r \"'<>"
+        ):
+            return True
+    return False
+
+
+def _contains_oauth_authorization_code_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        has_code = False
+        has_state = False
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            has_code = has_code or (
+                normalized_key == "code" and bool(field_value)
+            )
+            has_state = has_state or normalized_key == "state"
+            if has_code and has_state:
+                return True
+    return False
+
+
+def _contains_azure_sas_signature_query(value: str) -> bool:
+    for match in _FORM_URLENCODED_SEQUENCE_RE.finditer(value):
+        has_version = False
+        has_signature = False
+        for field in match.group("form").split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            has_version = has_version or normalized_key == "sv"
+            has_signature = has_signature or normalized_key == "sig"
+            if has_version and has_signature:
+                return True
+        if (
+            (has_version or has_signature)
+            and match.end() < len(value)
+            and value[match.end()] not in "\t\n\r \"'<>"
+        ):
+            return True
+    return False
+
+
+def _contains_cloudfront_signed_url_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        has_expiry_or_policy = False
+        has_signature = False
+        has_key_pair_id = False
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            has_expiry_or_policy = has_expiry_or_policy or (
+                normalized_key in {"expires", "policy"}
+            )
+            has_signature = (
+                has_signature or normalized_key == "signature"
+            )
+            has_key_pair_id = (
+                has_key_pair_id or normalized_key == "key-pair-id"
+            )
+            if (
+                has_expiry_or_policy
+                and has_signature
+                and has_key_pair_id
+            ):
+                return True
+    return False
+
+
+def _contains_cloudfront_signed_cookie_fields(value: str) -> bool:
+    if _contains_structured_json_mapping(
+        value,
+        mapping_predicate=(
+            commander_public_mapping_is_cloudfront_signed_cookie
+        ),
+        exhaustion_hint=_cloudfront_signed_cookie_text_hint,
+    ):
+        return True
+
+    sequence_start: int | None = None
+    previous_end: int | None = None
+    present_fields: set[str] = set()
+    for match in _CLOUDFRONT_SIGNED_COOKIE_ASSIGNMENT_RE.finditer(value):
+        gap = (
+            ""
+            if previous_end is None
+            else value[previous_end : match.start()]
+        )
+        if (
+            sequence_start is None
+            or previous_end is None
+            or match.end() - sequence_start
+            > _CLOUDFRONT_SIGNED_COOKIE_MAX_SEQUENCE_CHARS
+            or _CLOUDFRONT_SIGNED_COOKIE_SEQUENCE_GAP_RE.fullmatch(
+                gap
+            )
+            is None
+            or "\n\n" in gap.replace("\r\n", "\n")
+        ):
+            sequence_start = match.start()
+            present_fields.clear()
+        field_value = match.group("value").strip("\"'").strip()
+        if field_value:
+            present_fields.add(match.group("key").casefold())
+        previous_end = match.end()
+        if (
+            present_fields
+            & {"cloudfront-policy", "cloudfront-expires"}
+            and "cloudfront-signature" in present_fields
+            and "cloudfront-key-pair-id" in present_fields
+        ):
+            return True
+    return False
+
+
+def _contains_gcs_v2_signed_url_query(value: str) -> bool:
+    for match in _PUBLIC_URL_QUERY_CANDIDATE_RE.finditer(value):
+        _, separator, query_and_fragment = match.group(0).partition("?")
+        if not separator:
+            continue
+        query = query_and_fragment.partition("#")[0]
+        required_fields: set[str] = set()
+        for field in query.split("&"):
+            key, assignment, field_value = field.partition("=")
+            if not assignment or not field_value:
+                continue
+            normalized_key = unquote_plus(key).lower()
+            if normalized_key in {
+                "googleaccessid",
+                "expires",
+                "signature",
+            }:
+                required_fields.add(normalized_key)
+            if required_fields == {
+                "googleaccessid",
+                "expires",
+                "signature",
+            }:
+                return True
+    return False
+
+
+def _redact_basic_authorization_credentials(value: str) -> str:
+    return _BASIC_AUTHORIZATION_RE.sub(
+        lambda match: (
+            "<sensitive>"
+            if _is_basic_authorization_credential(match)
+            else match.group(0)
+        ),
+        value,
+    )
+
+
+def _assignment_key(match: re.Match[str]) -> str:
+    return str(match.group("quoted_key") or match.group("bare_key") or "")
+
+
+def _bracket_assignment_key(match: re.Match[str]) -> str:
+    return "".join(
+        str(match.group(name) or "")
+        for name in (
+            "quoted_bracket_base",
+            "quoted_bracket_segments",
+            "bare_bracket_base",
+            "bare_bracket_segments",
+        )
+    )
+
+
+def _assignment_has_value_token(value: str, start: int) -> bool:
+    cursor = start
+    while cursor < len(value) and value[cursor] in " \t":
+        cursor += 1
+    skipped_whitespace = cursor > start
+    if (
+        cursor >= len(value)
+        or value[cursor] in "\r\n,;}]"
+        or (value[cursor] == "#" and skipped_whitespace)
+    ):
+        return False
+    if (
+        value[cursor] in {'"', "'"}
+        and cursor + 1 < len(value)
+        and value[cursor + 1] == value[cursor]
+    ):
+        return False
+    return True
+
+
+def _contains_forbidden_key_assignment(value: str) -> bool:
+    for pattern, key_getter in (
+        (_ASSIGNMENT_KEY_RE, _assignment_key),
+        (_BRACKET_ASSIGNMENT_KEY_RE, _bracket_assignment_key),
+    ):
+        for match in pattern.finditer(value):
+            key = key_getter(match)
+            if not commander_public_key_is_forbidden(key):
+                continue
+            if not _assignment_has_value_token(value, match.end()):
+                continue
+            numeric_value = (
+                _NUMERIC_TOKEN_METADATA_ASSIGNMENT_VALUE_RE.match(
+                    value,
+                    match.end(),
+                )
+            )
+            if numeric_value is not None and (
+                _public_key_is_numeric_token_metadata(key)
+            ):
+                continue
+            return True
+    return False
+
+
+def _xml_tag_header_end(value: str, start: int) -> int | None:
+    quote: str | None = None
+    limit = min(
+        len(value),
+        start + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS + 1,
+    )
+    for cursor in range(start, limit):
+        character = value[cursor]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character == ">":
+            return cursor
+        if character == "<":
+            return None
+    return None
+
+
+def _xml_header_sensitive_name_value_state(
+    header: str,
+) -> tuple[bool, bool]:
+    has_sensitive_label = False
+    has_nonempty_value = False
+    for attribute in _XML_ATTRIBUTE_RE.finditer(header):
+        attribute_name = attribute.group("name").rsplit(":", 1)[-1]
+        normalized_name = attribute_name.casefold()
+        attribute_value = attribute.group("value")
+        if normalized_name in {"key", "name", "type"}:
+            has_sensitive_label = (
+                has_sensitive_label
+                or commander_public_key_is_forbidden(attribute_value)
+            )
+        elif normalized_name == "value" and attribute_value.strip():
+            has_nonempty_value = True
+    return has_sensitive_label, has_nonempty_value
+
+
+def _xml_element_body_is_nonempty(body: str) -> bool:
+    return (
+        len(body) > _SENSITIVE_XML_MAX_ELEMENT_BODY_CHARS
+        or bool(body.strip())
+    )
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit(":", 1)[-1].casefold()
+
+
+def _contains_xml_serialized_rsa_private_key(value: str) -> bool:
+    """Detect nonempty private RSA members inside bounded RSAKeyValue XML."""
+
+    frames: list[dict[str, Any]] = []
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        local_name = _xml_local_name(tag)
+        if match.group("closing"):
+            if not frames or frames[-1]["tag"] != tag:
+                continue
+            frame = frames.pop()
+            if (
+                frame["is_private_member"]
+                and _xml_element_body_is_nonempty(
+                    value[int(frame["body_start"]) : match.start()]
+                )
+            ):
+                return True
+            continue
+
+        parent_is_rsa_key = bool(
+            frames and frames[-1]["inside_rsa_key"]
+        )
+        inside_rsa_key = (
+            parent_is_rsa_key or local_name == "rsakeyvalue"
+        )
+        is_private_member = (
+            parent_is_rsa_key
+            and local_name in _XML_RSA_PRIVATE_MEMBER_NAMES
+        )
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            if inside_rsa_key:
+                return True
+            continue
+        header = value[match.end() : header_end]
+        if header.rstrip().endswith("/"):
+            continue
+        if len(frames) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        frames.append(
+            {
+                "tag": tag,
+                "body_start": header_end + 1,
+                "inside_rsa_key": inside_rsa_key,
+                "is_private_member": is_private_member,
+            }
+        )
+
+    return any(
+        bool(frame["is_private_member"])
+        and _xml_element_body_is_nonempty(
+            value[int(frame["body_start"]) :]
+        )
+        for frame in frames
+    )
+
+
+def _contains_sensitive_xml_sibling_elements(value: str) -> bool:
+    """Associate direct XML name/key/type and value sibling element bodies."""
+
+    frames: list[dict[str, Any]] = [
+        {
+            "tag": None,
+            "body_start": 0,
+            "has_sensitive_label": False,
+            "has_nonempty_value": False,
+        }
+    ]
+
+    def apply_closed_body(
+        frame: dict[str, Any],
+        parent: dict[str, Any],
+        body: str,
+    ) -> bool:
+        local_name = _xml_local_name(str(frame["tag"]))
+        if local_name in {"key", "name", "type"}:
+            if commander_public_key_is_forbidden(body):
+                parent["has_sensitive_label"] = True
+        elif local_name == "value":
+            if _xml_element_body_is_nonempty(body):
+                parent["has_nonempty_value"] = True
+        return bool(
+            parent["has_sensitive_label"]
+            and parent["has_nonempty_value"]
+        )
+
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        if match.group("closing"):
+            if len(frames) <= 1 or frames[-1]["tag"] != tag:
+                continue
+            frame = frames.pop()
+            if apply_closed_body(
+                frame,
+                frames[-1],
+                value[int(frame["body_start"]) : match.start()],
+            ):
+                return True
+            continue
+
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            continue
+        header = value[match.end() : header_end]
+        if header.rstrip().endswith("/"):
+            continue
+        if len(frames) > _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        frames.append(
+            {
+                "tag": tag,
+                "body_start": header_end + 1,
+                "has_sensitive_label": False,
+                "has_nonempty_value": False,
+            }
+        )
+
+    # Truncated XML must not evade a sibling pair merely by omitting the
+    # final closing tag.  Fold each bounded suffix into its direct parent.
+    while len(frames) > 1:
+        frame = frames.pop()
+        if apply_closed_body(
+            frame,
+            frames[-1],
+            value[int(frame["body_start"]) :],
+        ):
+            return True
+    return bool(
+        frames[0]["has_sensitive_label"]
+        and frames[0]["has_nonempty_value"]
+    )
+
+
+def _contains_sensitive_xml_element(value: str) -> bool:
+    """Detect credential-bearing XML elements and bounded attributes."""
+
+    if _contains_sensitive_xml_sibling_elements(value):
+        return True
+
+    open_elements: list[tuple[str, int]] = []
+    labeled_elements: list[tuple[str, int]] = []
+    for match in _XML_ELEMENT_TAG_RE.finditer(value):
+        tag = match.group("tag")
+        tag_is_forbidden = commander_public_key_is_forbidden(tag)
+        normalized_tag = _normalize_public_key_for_match(tag)
+        if match.group("closing"):
+            for index in range(len(open_elements) - 1, -1, -1):
+                open_tag, body_start = open_elements[index]
+                if open_tag != normalized_tag:
+                    continue
+                del open_elements[index]
+                if _xml_element_body_is_nonempty(
+                    value[body_start : match.start()]
+                ):
+                    return True
+                break
+            for index in range(len(labeled_elements) - 1, -1, -1):
+                labeled_tag, body_start = labeled_elements[index]
+                if labeled_tag != tag:
+                    continue
+                del labeled_elements[index]
+                if _xml_element_body_is_nonempty(
+                    value[body_start : match.start()]
+                ):
+                    return True
+                break
+            continue
+        header_end = _xml_tag_header_end(value, match.end())
+        if header_end is None:
+            # Keep the existing fail-closed rule for a credential-named tag.
+            # A generic unterminated ``<name`` token may instead be ordinary
+            # source code, so attribute-pair detection requires a complete
+            # bounded tag header.
+            if tag_is_forbidden:
+                return True
+            bounded_header = value[
+                match.end() :
+                match.end() + _SENSITIVE_XML_MAX_TAG_HEADER_CHARS
+            ]
+            has_sensitive_label, _ = (
+                _xml_header_sensitive_name_value_state(bounded_header)
+            )
+            if has_sensitive_label:
+                return True
+            continue
+        header = value[match.end() : header_end]
+        (
+            has_sensitive_label,
+            has_nonempty_value,
+        ) = _xml_header_sensitive_name_value_state(header)
+        if has_sensitive_label and has_nonempty_value:
+            return True
+        if (
+            has_sensitive_label
+            and not header.endswith("/")
+        ):
+            if len(labeled_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+                return True
+            labeled_elements.append((tag, header_end + 1))
+        if not tag_is_forbidden:
+            continue
+        is_self_closing = header.endswith("/")
+        header_without_self_close = (
+            header[:-1] if is_self_closing else header
+        )
+        # Attributes or malformed tag syntax can carry a credential without
+        # a later body.  A bare self-closing credential field is empty.
+        if header_without_self_close.strip():
+            return True
+        if is_self_closing:
+            continue
+        if len(open_elements) >= _SENSITIVE_XML_MAX_OPEN_ELEMENTS:
+            return True
+        open_elements.append((normalized_tag, header_end + 1))
+    return any(
+        _xml_element_body_is_nonempty(value[body_start:])
+        for _, body_start in labeled_elements
+    )
+
+
+def _decode_xml_entities_once(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        named = match.group("named")
+        if named is not None:
+            return _XML_NAMED_ENTITY_VALUES[named]
+        encoded_codepoint = (
+            match.group("decimal")
+            or match.group("hexadecimal")
+            or ""
+        )
+        base = 10 if match.group("decimal") is not None else 16
+        try:
+            codepoint = int(encoded_codepoint, base)
+        except ValueError:
+            return match.group(0)
+        if (
+            codepoint in {0x9, 0xA, 0xD}
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        ):
+            return chr(codepoint)
+        return match.group(0)
+
+    return _XML_ENTITY_RE.sub(replace, value)
+
+
+def _contains_sensitive_cli_option_credential(value: str) -> bool:
+    return any(
+        commander_public_key_is_forbidden(match.group("key"))
+        for match in _SENSITIVE_CLI_OPTION_RE.finditer(value)
+    )
+
+
+def _contains_netrc_password_credential(value: str) -> bool:
+    entry_start: re.Match[str] | None = None
+    for next_entry_start in _NETRC_ENTRY_START_RE.finditer(value):
+        if entry_start is not None and _NETRC_PASSWORD_FIELD_RE.search(
+            value,
+            entry_start.end(),
+            next_entry_start.start(),
+        ):
+            return True
+        entry_start = next_entry_start
+    if entry_start is not None:
+        if _NETRC_PASSWORD_FIELD_RE.search(
+            value,
+            entry_start.end(),
+            len(value),
+        ):
+            return True
+    return False
+
+
+def _redact_sensitive_material(value: str) -> str:
+    if (
+        _SENSITIVE_HEADER_ASSIGNMENT_RE.search(value)
+        or _SENSITIVE_ASSIGNMENT_RE.search(value)
+        or _contains_forbidden_key_assignment(value)
+        or _contains_xml_serialized_rsa_private_key(value)
+        or _contains_sensitive_xml_element(value)
+        or _contains_netrc_password_credential(value)
+        or _CURL_USER_PASSWORD_RE.search(value)
+        or _CURL_CERTIFICATE_PASSWORD_RE.search(value)
+        or _CURL_PASSPHRASE_OPTION_RE.search(value)
+        or _PRIVATE_KEY_BLOCK_RE.search(value)
+        or _PUTTY_PRIVATE_KEY_FILE_RE.search(value)
+        or _AGE_X25519_IDENTITY_RE.search(value)
+        or _contains_private_jwk_material(value)
+        or _contains_kubernetes_secret_material(value)
+        or _contains_oauth_device_authorization_material(value)
+        or _contains_standalone_jwt(value)
+        or _STANDALONE_PROVIDER_ACCESS_TOKEN_RE.search(value)
+        or _STANDALONE_TELEGRAM_BOT_TOKEN_RE.search(value)
+        or _TELEGRAM_BOT_API_URL_RE.search(value)
+        or _SLACK_INCOMING_WEBHOOK_RE.search(value)
+        or _DISCORD_INCOMING_WEBHOOK_RE.search(value)
+        or _contains_sensitive_form_urlencoded_assignment(value)
+        or _contains_pgpass_password_record(value)
+        or _contains_oauth_authorization_code_form(value)
+        or _contains_oauth_authorization_code_query(value)
+        or _contains_oauth_authorization_callback_material(value)
+        or _contains_azure_sas_signature_query(value)
+        or _contains_cloudfront_signed_url_query(value)
+        or _contains_cloudfront_signed_cookie_fields(value)
+        or _contains_gcs_v2_signed_url_query(value)
+        or _PUBLIC_URL_QUERY_CANDIDATE_OVERFLOW_RE.search(value)
+        or _CREDENTIAL_URI_USERINFO_RE.search(value)
+        or _contains_sensitive_cli_option_credential(value)
+    ):
+        return "<sensitive>"
+    redacted = value
+    redacted = _BEARER_TOKEN_RE.sub("<sensitive>", redacted)
+    redacted = _redact_basic_authorization_credentials(redacted)
+    if _decoded_candidate_contains_sensitive_material(value):
+        return "<sensitive>"
+    return redacted
+
+
+def _redact_public_text_preserving_resource_uris(
+    value: str,
+    *,
+    forbidden_tools: Iterable[str] | None,
+) -> str:
+    resource_spans = list(_public_resource_uri_spans(value))
+    if not resource_spans:
+        # Preserve the historical precedence in which credentials are
+        # recognized before path or tool-name cleanup.
+        value = _redact_sensitive_material(value)
+    else:
+        masked = _mask_public_resource_uri_spans(
+            value,
+            resource_spans=resource_spans,
+        )
+        if _redact_sensitive_material(masked) != masked:
+            # The credential syntax spans a valid resource reference (for
+            # example ``Bearer <opaque-uri>``).  The reference must not make
+            # the surrounding credential context public.
+            return "<sensitive>"
+    if _decoded_candidate_contains_disallowed_public_resource_uri(value):
+        return _PUBLIC_RESOURCE_URI_PLACEHOLDER
+    parts: list[str] = []
+    cursor = 0
+    for match in _public_resource_uri_spans(value):
+        parts.append(
+            _redact_public_non_resource_segment(
+                value[cursor : match.start()],
+                forbidden_tools=forbidden_tools,
+            )
+        )
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(
+        _redact_public_non_resource_segment(
+            value[cursor:],
+            forbidden_tools=forbidden_tools,
+        )
+    )
+    return "".join(parts)
+
+
+def _mask_public_resource_uri_spans(
+    value: str,
+    *,
+    resource_spans: Iterable[re.Match[str]] | None = None,
+) -> str:
+    spans = (
+        list(resource_spans)
+        if resource_spans is not None
+        else list(_public_resource_uri_spans(value))
+    )
+    if not spans:
+        return value
+    parts: list[str] = []
+    cursor = 0
+    for match in spans:
+        parts.append(value[cursor : match.start()])
+        # Keep a token-shaped neutral value so authorization grammars such as
+        # ``Bearer VALUE`` still match without scanning the opaque handle.
+        parts.append("opaque_resource_reference_1234567890")
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return "".join(parts)
+
+
+def _public_text_non_resource_segments(value: str) -> Iterable[str]:
+    cursor = 0
+    for match in _public_resource_uri_spans(value):
+        yield value[cursor : match.start()]
+        cursor = match.end()
+    yield value[cursor:]
+
+
+def _contains_sensitive_material_outside_resource_uris(
+    value: str,
+) -> bool:
+    masked = _mask_public_resource_uri_spans(value)
+    return bool(
+        _matches_sensitive_material(masked)
+        or _decoded_candidate_contains_sensitive_material(masked)
+    )
+
+
+def _contains_private_path(value: str) -> bool:
+    return any(
+        _contains_private_path_segment(segment)
+        or _decoded_candidate_matches(
+            segment,
+            _contains_private_path_segment,
+        )
+        for segment in _public_text_non_resource_segments(value)
+    )
+
+
+def _contains_disallowed_public_resource_uri(value: str) -> bool:
+    return any(
+        _PUBLIC_COLAMETA_URI_TOKEN_RE.search(segment)
+        for segment in _public_text_non_resource_segments(value)
+    )
+
+
+def _mask_literal_resource_uri_tokens_for_decoded_scan(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    search_cursor = 0
+    while True:
+        match = _PUBLIC_COLAMETA_URI_SCHEME_RE.search(
+            value,
+            search_cursor,
+        )
+        if match is None:
+            break
+        parts.append(value[cursor : match.start()])
+        parts.append("<literal-resource-uri>")
+        token_cursor = match.end()
+        while (
+            token_cursor < len(value)
+            and not _is_resource_uri_whitespace(value[token_cursor])
+            and value[token_cursor] not in "\"'`<>"
+        ):
+            if value[token_cursor] == "%":
+                break
+            if value[token_cursor] == "\\":
+                _end, decoded = _scan_nested_json_escape(
+                    value,
+                    token_cursor,
+                )
+                if decoded is not None:
+                    break
+            token_cursor += 1
+        cursor = token_cursor
+        search_cursor = cursor
+    if not parts:
+        return value
+    parts.append(value[cursor:])
+    return "".join(parts)
+
+
+def _decoded_candidate_contains_disallowed_public_resource_uri(
+    value: str,
+) -> bool:
+    # Literal tokens are checked against exact URI spans in the original text.
+    # Retain every token suffix beginning at its first percent or JSON escape so
+    # a decoded delimiter followed by another encoded URI cannot hide inside
+    # the greedy literal-token match.
+    encoded_only = _mask_literal_resource_uri_tokens_for_decoded_scan(value)
+    return _decoded_candidate_matches(
+        encoded_only,
+        _contains_disallowed_public_resource_uri,
+    )
+
+
+def _contains_unsafe_public_text(value: str) -> bool:
+    return bool(
+        _contains_sensitive_material_outside_resource_uris(value)
+        or _contains_private_path(value)
+        or _contains_disallowed_public_resource_uri(value)
+        or _decoded_candidate_contains_disallowed_public_resource_uri(value)
+    ) or any(
+        _redact_noncommander_tool_references(segment) != segment
+        or _decoded_candidate_contains_noncommander_tool_reference(segment)
+        for segment in _public_text_non_resource_segments(value)
     )
 
 

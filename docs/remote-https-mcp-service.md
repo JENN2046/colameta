@@ -7,7 +7,7 @@ a stable HTTPS remote MCP service for ChatGPT Developer Mode. It does not
 authorize DNS, TLS, cloud resource creation, deployment, production routing, or
 public app submission by itself.
 
-For installation, source/venv setup, the seven-tool Commander, systemd, stable
+For installation, source/venv setup, the nine-tool Commander, systemd, stable
 replacement, verification, and rollback, start with
 [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md).
 
@@ -182,8 +182,8 @@ principal remains denied before a mutating handler runs. Any other remote
 write/plan capability requires a separate trusted operator channel and explicit
 design.
 
-The Commander App still exposes exactly seven tools. Gate review is routed
-through `run_mcp_workflow(workflow="gate_review_request")`; no eighth tool or
+The Commander App exposes exactly nine tools. Gate review is routed
+through `run_mcp_workflow(workflow="gate_review_request")`; no tenth tool or
 hidden Work Item list endpoint is published.
 
 The current `oauth` mode remains available for Jenn-only private operation and
@@ -241,7 +241,7 @@ After the live preflight passes:
    prompt that should not trigger a tool.
 5. Record only redacted evidence: status, reason code, endpoint class,
    observed time, and whether tool listing succeeded.
-6. For the ColaMeta private App, also verify exactly seven tools,
+6. For the ColaMeta private App, also verify exactly nine tools,
    `gate_review_request/inspect` as read-only, and
    `get_apps_connector_smoke_packet` as `connector_closeout_ready / ready`.
 

@@ -60,7 +60,7 @@ repeatable local contract rehearsal:
 ```
 
 It creates a temporary Git fixture and verifies the exact nine-tool Commander
-inventory; a deliberate `CONTEXT_BINDING_MISMATCH` without an archive write;
+inventory; a deliberate `PROJECT_CONTEXT_MISMATCH` without an archive write;
 typed `review_manifest` inspect/read/verify pagination with hash continuity;
 and complete typed `read_result_artifact` recovery with stable SHA-256 and
 expiry. It invokes no `resources/read`, Connector, OAuth, tunnel, stable
@@ -660,52 +660,58 @@ curl -sS http://127.0.0.1:8768/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_registered_projects","arguments":{}}}'
 ```
 
-Generic result reading:
+Commander result reading:
 
 ```text
-ok=true
-  Read data, then check read_only, side_effects, and recommended_next_reads.
+result.structuredContent.data.schema_version=commander_response.v1
+  Read data.outcome first.
 
-ok=false
-  Read error_code, message, and details first. Do not guess parameters.
-  If safe_recovery_actions is present, run only those read-only recovery tools
-  before retrying any preview or commit-scoped action.
+data.outcome=completed
+  The current call completed. Read bounded current facts from data.facts.
 
-packaged=true
-  The result was compressed into a manifest. In ChatGPT, use the returned
-  read_result_artifact call first:
-  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>).
-  It returns exactly one stored page and keeps the same artifact_id, page_count,
-  expires_at, and content_sha256. Continue only through its next-page call,
-  concatenate the returned artifact_page.content values in page order, then
-  verify content_sha256. These short-lived artifacts are read-only and do not
-  grant any workflow, executor, Git, or delivery authority.
-  A resource-capable MCP client may instead read resource_uri through
-  resources/read, then continue with page_uri_template for pages 2..page_count.
-  The legacy
-  run_mcp_workflow(workflow=result_artifact, phase=read, ...) call remains in
-  the response as a compatibility fallback for existing clients.
-  This read route requires mcp:read and cannot read project files, run an
-  executor or validation, change Git, or advance delivery state.
-  resources/templates/list advertises only the static artifact URI shapes; it
-  never lists live artifact IDs. Read only the opaque handle returned by the
-  packaged response before it expires.
-  Otherwise, continue through recommended_next_reads.
+data.outcome=in_progress
+  Follow the single polling or status-read data.next_action.
+
+data.outcome=confirmation_required
+  Read data.confirmation.decision, impact, risks, preview_id, and expiry.
+  Run only the exact context-bound data.next_action after Jenn confirms.
+
+data.outcome=blocked or failed
+  Read data.error.code, message, recoverable, and recovery.
+  When recovery exists, it is identical to the single data.next_action.
+
+data.evidence.kind=result_artifact
+  When data.outcome=completed, follow data.next_action to read_result_artifact.
+  For confirmation_required, retain the exact apply/confirmation
+  data.next_action: read the preview evidence first by calling
+  read_result_artifact with data.evidence.artifact_id and artifact_page=1, or
+  use resources/read. Do not invoke the confirmation action merely to read the
+  artifact. Each artifact read returns one page in data.facts.artifact_page
+  while data.evidence preserves the same artifact_id, page_count, expires_at,
+  and content_sha256. Concatenate pages in order and verify the hash.
+  Resource-capable MCP clients may instead read the opaque
+  data.evidence.resource_uri through resources/read and continue through
+  data.evidence.page_uri_template. Artifacts are read-only and grant no
+  workflow, executor, Git, or delivery authority.
 ```
 
 Common errors:
 
 ```text
-PROJECT_NAME_REQUIRED
-  Call list_registered_projects, then retry with project_name.
+PROJECT_REQUIRED or PROJECT_NOT_REGISTERED
+  Follow data.next_action to list_registered_projects, then retry the original
+  call with a returned project_name.
 
-PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
-  Service mode does not accept arbitrary project_root. Use registered
-  project_name.
+PROJECT_CONTEXT_MISMATCH
+  Follow data.next_action to analyze_project_state for the same project. Read
+  the current facts again and rebuild any stale preview or manifest before
+  retrying the operation.
 
-UNKNOWN_SERVICE_ENTRY_PROFILE
-  Call get_agent_consumer_contract and choose a profile_id from
-  service_entry_profiles.
+INTERNAL_ERROR
+  No hidden profile or internal error detail is public. Use
+  get_apps_connector_smoke_packet for bounded connection diagnostics, then
+  retry the original Commander call only if the connection is healthy. Stop
+  and report the public error code if it repeats.
 ```
 
 ### Manifest-bound independent review
@@ -731,9 +737,10 @@ no validation command:
 }
 ```
 
-The response includes `context_binding`. Copy its `project_name`, `branch`,
-`head`, `runner_plan`, and `current_version` exactly into an external review
-manifest, then supply the caller-owned review unit and exact subject hashes:
+The response includes `data.context_binding`. Copy its `project_name`,
+`branch`, `head`, `runner_plan`, and `current_version` exactly into an external
+review manifest, then supply the caller-owned review unit and exact subject
+hashes:
 
 ```json
 {
@@ -774,8 +781,8 @@ only previewed in this workflow; they are never run.
 The review workflow never executes the declarations itself. To convert the
 short-lived inspected session into a separately authorised validation preview,
 call manage_validation_run with action=preview, the registered project_name,
-and the returned review_manifest_id. This works for registered source-only and
-managed projects.
+and `data.evidence.review_manifest_id`. This works for registered source-only
+and managed projects.
 
 That call first rechecks the manifest project context and every declared
 subject hash. It then accepts only shell-free, locally allowed command forms
@@ -786,21 +793,23 @@ validation contract. If any declared command is unsafe, contains a
 secret-shaped value, or has a timeout outside the local execution policy, the
 entire contract is blocked rather than partially run.
 
-Only a runnable preview returns a copyable manage_validation_run action=run
-next action, containing both the normal context binding and the preview ID.
+Only a runnable preview returns a copyable
+`data.next_action=manage_validation_run action=run`, containing both the
+normal context binding and the preview ID.
 Immediately before that commit-scoped call starts fixed preview commands,
 ColaMeta rechecks the generic validation context and the original manifest
 context and every subject hash. The manifest session therefore supplies bounded
 evidence input; it does not by itself grant validation execution authority.
 
-On success, ChatGPT should use each returned typed `read_call` that names
-`review_manifest`; it reads only its declared subject page and rechecks the
-project context and subject hash before returning text. `phase=verify` with
-`review_manifest_id` rechecks every declared subject without returning file
-content. A resource-capable MCP client may instead discover the static manifest
-URI shapes through `resources/templates/list`, read `manifest_resource_uri`
-through `resources/read`, then read only the returned subject `resource_uri`
-values. Subject pages use `page_uri_template`.
+On success, `data.facts.subjects` describes the declared subjects and
+`data.next_action` provides the primary typed `review_manifest` read. It reads
+only its declared subject page and rechecks the project context and subject
+hash before returning text. `phase=verify` with
+`data.evidence.review_manifest_id` rechecks every declared subject without
+returning file content. A resource-capable MCP client may instead discover the
+static manifest URI shapes through `resources/templates/list`, read
+`data.evidence.resource_uri` through `resources/read`, then read only the
+returned subject resource URIs. Subject pages use their page URI templates.
 
 Each returned subject includes this typed `read_call`:
 
@@ -817,23 +826,26 @@ Each returned subject includes this typed `read_call`:
 }
 ```
 
-`read` returns only that declared page, rechecks the current context and that
-subject's SHA-256, and returns a bound next-page call when more pages remain.
-It is ChatGPT's primary narrow read route, not arbitrary file access. Existing
-clients may continue to use resource methods or the legacy generic workflow form.
+`read` returns the declared page in `data.facts.subject_page`, rechecks the
+current context and that subject's SHA-256, and returns a bound
+`data.next_action` when more pages remain. It is ChatGPT's primary narrow read
+route, not arbitrary file access. Existing clients may continue to use resource
+methods or the legacy generic workflow form.
 
-`CONTEXT_BINDING_MISMATCH` means the project route, branch, HEAD, Runner plan,
+Public error `PROJECT_CONTEXT_MISMATCH` means the project route, branch, HEAD, Runner plan,
 or current version no longer matches the manifest. Stop combining evidence,
 request a fresh template, and build a new manifest. A changed subject returns
-`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`. Sensitive, private-runtime, symlinked,
-and high-risk configuration paths are denied even when a manifest names them.
+public error `STALE_CONTEXT`; the internal hash-mismatch code is not exposed.
+Sensitive, private-runtime, symlinked, and high-risk configuration paths are
+denied even when a manifest names them.
 The short-lived manifest session does not authorize executor runs, commits,
 pushes, ReviewDecision, or delivery acceptance. Validation requires the
 separate preview and commit-scoped confirmation described above.
 
 ### Confirmation-bound actions and canonical project state
 
-The Commander surface now carries one exact, copyable `context_binding` for
+The Commander surface now carries one exact, copyable
+`data.context_binding` for
 every core-workflow confirmation boundary. This applies to real mutating
 `run_mcp_workflow` phases (`apply`, `apply_all`, `plan_apply`, `run`, `commit`,
 and `execute`) where that phase is supported by its workflow,
@@ -843,14 +855,16 @@ and `execute`) where that phase is supported by its workflow,
 `gate_review_request` keeps its separately signed Work Item Gate contract;
 neither is weakened or replaced by this generic binding.
 
-A prior inspect or preview returns both `context_binding` and
-`context_binding_contract`. `confirmation_required=true` means that the
-matching confirmation needs this binding; `current_call_requires_context_binding`
-distinguishes that future boundary from the read or preview currently being
-performed. For the matching confirmation, copy the entire `context_binding`
-object unchanged; generated `next_actions` already contain that copy when the
-next Commander call has the same operation identity. The server rechecks all
-seven fields immediately before the side effect:
+A prior inspect or preview returns `data.context_binding` and places
+`context_binding_contract` in `data.facts`.
+`data.facts.context_binding_contract.confirmation_required=true` means that
+the matching confirmation needs this binding;
+`current_call_requires_context_binding` distinguishes that future boundary
+from the read or preview currently being performed. For the matching
+confirmation, copy the entire `data.context_binding` object unchanged;
+generated `data.next_action` already contains that copy when the next Commander
+call has the same operation identity. The server rechecks all seven fields
+immediately before the side effect:
 
 ```text
 project_name
@@ -866,13 +880,14 @@ The binding is operation-specific. It cannot be reused for a different
 workflow or review unit. The Git workflow family intentionally shares the
 same identity across `run_mcp_workflow workflow=git_*` and the corresponding
 `manage_git` confirmation, so a high-level Git preview can continue through
-the public Git tool. `CONTEXT_BINDING_MISMATCH` means the current checkout or
-operation identity changed; stop and create a fresh inspect/preview. If branch
-or HEAD cannot be read, the server returns `CONTEXT_BINDING_UNAVAILABLE` and
-does not perform the action. A context binding is evidence only; it grants no
-executor, validation, Git, push, stable-replacement, or delivery authority.
+the public Git tool. Public error `PROJECT_CONTEXT_MISMATCH` means the current
+checkout or operation identity changed; stop and create a fresh
+inspect/preview. If branch or HEAD cannot be read, the public error is
+`STALE_CONTEXT` and the server does not perform the action. A context binding
+is evidence only; it grants no executor, validation, Git, push,
+stable-replacement, or delivery authority.
 
-`analyze_project_state` also returns `canonical_state` with schema
+`analyze_project_state` also returns `data.facts.canonical_state` with schema
 `colameta.canonical_project_state.v1`. Use it instead of treating a local
 workflow's `unified_status` as global truth:
 
@@ -920,13 +935,14 @@ the snapshot.
 }
 ```
 
-`inspect` is read-only. It returns a redacted, versioned JSON/Markdown snapshot
-through the normal packaged-result contract: `artifact_id`, `resource_uri`,
-`page_count`, `content_sha256`, and `expires_at`. Read every required page with
-the typed `read_result_artifact` tool; the returned pages retain the same
-artifact ID, SHA-256, and expiry. The artifact states its observation time,
-historical versus current observation, freshness conclusion, canonical-state
-digest, and explicit `observation_only` authority boundary.
+`inspect` is read-only. Its `commander_response.v1` result describes the
+redacted, versioned JSON/Markdown snapshot in `data.evidence`, including
+`artifact_id`, `resource_uri`, `page_count`, `content_sha256`, and `expires_at`.
+Read every required page through the single `data.next_action` to
+`read_result_artifact`; returned pages retain the same artifact ID, SHA-256,
+and expiry. The artifact states its observation time, historical versus
+current observation, freshness conclusion, canonical-state digest, and
+explicit `observation_only` authority boundary.
 
 `preview` creates a short-lived, process-local archive preview without writing
 anything. Its generated next action carries both the opaque `preview_id` and

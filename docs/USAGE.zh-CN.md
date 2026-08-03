@@ -61,7 +61,7 @@ consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback 
 ```
 
 它会创建临时 Git fixture，并检查精确的九工具 Commander inventory；故意触发且不写 archive 的
-`CONTEXT_BINDING_MISMATCH`；typed `review_manifest` 的 inspect/read/verify 分页与 hash continuity；以及
+`PROJECT_CONTEXT_MISMATCH`；typed `review_manifest` 的 inspect/read/verify 分页与 hash continuity；以及
 typed `read_result_artifact` 的全页恢复、稳定 SHA-256 和 expiry。它不调用 `resources/read`，也不触碰
 Connector、OAuth、tunnel、stable service、executor、Git 写操作或 release 操作。
 
@@ -777,44 +777,54 @@ curl -sS http://127.0.0.1:8768/mcp \
 
 `curl` 会返回完整 JSON-RPC envelope。人工阅读时优先找 `result.structuredContent`。
 
-工具结果的通用读法：
+Commander 工具结果的通用读法：
 
 ```text
-ok=true
-  读取 data；继续看 read_only、side_effects、recommended_next_reads。
+result.structuredContent.data.schema_version=commander_response.v1
+  先读取 data.outcome。
 
-ok=false
-  先读 error_code、message、details；不要猜参数。
+data.outcome=completed
+  只表示当前调用完成；当前有界事实位于 data.facts。
 
-packaged=true
-  当前结果被压成 manifest。在 ChatGPT 中先使用返回的
-  read_result_artifact 调用：
-  read_result_artifact(artifact_id=<opaque artifact_id>, artifact_page=<page>)。
-  它只返回一个已存储页，并保留同一 artifact_id、page_count、expires_at 与
-  content_sha256。只沿着它返回的 next-page 调用继续；按页码拼接
-  artifact_page.content 后再核对 content_sha256。这些短期 artifact 只读，
-  不授予 workflow、executor、Git 或 delivery authority。
-  支持资源方法的 MCP client 也可通过 resources/read 读取 resource_uri，再按
-  page_uri_template 读取第 2 到 page_count 页。返回中仍会保留旧的
-  run_mcp_workflow(workflow=result_artifact, phase=read, ...) 兼容调用，供既有
-  client 使用。该读取路线只需要 mcp:read，不能读取项目文件、运行 executor
-  或 validation、修改 Git，或推进 Delivery State。
-  resources/templates/list 只公布静态 artifact URI 形状，不会枚举 live
-  artifact ID；只能在过期前读取该 packaged response 返回的 opaque handle。
-  否则按 recommended_next_reads 分段续读。
+data.outcome=in_progress
+  只沿着唯一的轮询或状态查询 data.next_action 继续。
+
+data.outcome=confirmation_required
+  阅读 data.confirmation 中的 decision、impact、risks、preview_id 和 expiry。
+  Jenn 确认后，只运行与当前上下文精确绑定的 data.next_action。
+
+data.outcome=blocked 或 failed
+  阅读 data.error.code、message、recoverable 和 recovery。
+  如存在恢复动作，它与唯一的 data.next_action 完全相同。
+
+data.evidence.kind=result_artifact
+  仅当 data.outcome=completed 时，ChatGPT 才沿 data.next_action 调用
+  read_result_artifact。对于 confirmation_required，必须保留精确的
+  apply/confirmation data.next_action；先使用 data.evidence.artifact_id 和
+  artifact_page=1 直接调用 read_result_artifact，或使用 resources/read
+  阅读 preview 证据。不得为了读取 Artifact 而执行确认动作。每次读取的一页
+  位于 data.facts.artifact_page；data.evidence 保持同一 artifact_id、
+  page_count、expires_at 和 content_sha256。按页拼接并校验哈希。支持资源
+  方法的 MCP client 也可通过 resources/read 读取 opaque
+  data.evidence.resource_uri，再按 data.evidence.page_uri_template 续读。
+  Artifact 只读，不授予 workflow、executor、Git 或 delivery authority。
 ```
 
 最常见的错误处理：
 
 ```text
-PROJECT_NAME_REQUIRED
-  先 list_registered_projects，再带 project_name 重试。
+PROJECT_REQUIRED 或 PROJECT_NOT_REGISTERED
+  沿 data.next_action 调用 list_registered_projects，再使用返回的
+  project_name 重试原调用。
 
-PROJECT_ROOT_OVERRIDE_NOT_ALLOWED
-  服务模式不接受任意 project_root，只能使用 registry 中的 project_name。
+PROJECT_CONTEXT_MISMATCH
+  沿 data.next_action 对同一项目调用 analyze_project_state，重新读取当前事实；
+  旧 preview 或 manifest 必须重新建立，之后才能重试原操作。
 
-UNKNOWN_SERVICE_ENTRY_PROFILE
-  先 get_agent_consumer_contract，看 service_entry_profiles 里的 profile_id。
+INTERNAL_ERROR
+  公共层不会泄漏隐藏 profile 或内部错误细节。先用
+  get_apps_connector_smoke_packet 读取有界连接诊断；仅在连接健康时重试原
+  Commander 调用。如错误重复出现，应停止并报告公共错误码。
 ```
 
 ### Manifest 绑定的独立审查
@@ -836,7 +846,7 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 }
 ```
 
-响应中的 `context_binding` 给出当前的 `project_name`、`branch`、`head`、
+响应中的 `data.context_binding` 给出当前的 `project_name`、`branch`、`head`、
 `runner_plan`、`current_version`。把它们原样放入外部审查 manifest，再由调用方补入
 审查单元和每个 subject 的精确哈希：
 
@@ -875,16 +885,17 @@ UNKNOWN_SERVICE_ENTRY_PROFILE
 managed 项目必须使用模板中实际返回的 `runner_plan` 与 `current_version`，不能套用
 source-only 示例。`acceptance_commands` 在这个 workflow 中只做 preview，绝不执行。
 
-成功后，ChatGPT 应使用每个返回的、指向 `review_manifest` 的 typed `read_call`；它只读取
-已声明的 subject 页，并在返回内容前重新核对项目上下文与 subject hash。带
-`review_manifest_id` 调用 `phase=verify` 会复核所有声明的 subject，但不返回文件内容。
-支持资源方法的 MCP client 也可通过 `resources/templates/list` 发现静态 manifest URI 形状，
-再通过 `resources/read` 读取 `manifest_resource_uri`，并只读取其中返回的 subject
-`resource_uri`。大 subject 按 `page_uri_template` 分页。
+成功后，`data.facts.subjects` 描述已声明 subject，`data.next_action` 提供主要的 typed
+`review_manifest` 读取；它只读取已声明的 subject 页，并在返回内容前重新核对项目上下文与
+subject hash。带 `data.evidence.review_manifest_id` 调用 `phase=verify` 会复核所有声明的
+subject，但不返回文件内容。支持资源方法的 MCP client 也可通过
+`resources/templates/list` 发现静态 manifest URI 形状，再通过 `resources/read` 读取
+`data.evidence.resource_uri`，并只读取返回的 subject resource URI。大 subject 按其 page
+URI template 分页。
 
 review_manifest workflow 本身绝不执行这些声明。若要把短期 inspect 会话转换为独立授权的
 validation preview，调用 manage_validation_run，并传 action=preview、已登记的 project_name
-和返回的 review_manifest_id 即可；已登记 source-only 项目和 managed 项目都适用。
+和 `data.evidence.review_manifest_id`；已登记 source-only 项目和 managed 项目都适用。
 
 该调用会先重新核对 manifest 的项目上下文和全部 subject hash，再只接受本地 shell-free
 策略允许的命令形式，返回精确的有效 argv、manifest_validation 合同 SHA-256 和 command-spec
@@ -892,8 +903,9 @@ SHA-256。它不会运行命令。带 review_manifest_id 时不要再传 scope �
 manifest 就是完整验证合同。若任一声明命令不安全、包含秘密形状的值，或 timeout 超出本地
 执行策略，整份合同会被阻断，不会只执行其中一部分。
 
-只有可运行的 preview 才会返回可原样调用的 manage_validation_run action=run next action，
-其中带有普通 context binding 和 preview ID。进入这个 commit-scoped 调用前，ColaMeta 会
+只有可运行的 preview 才会返回可原样调用的
+`data.next_action=manage_validation_run action=run`，其中带有普通 context binding 和
+preview ID。进入这个 commit-scoped 调用前，ColaMeta 会
 重新核对通用 validation context，并重新核对原始 manifest 的上下文和全部 subject hash，
 之后才启动固定 preview 中的命令。因此 manifest 会话只提供有界证据输入，本身不授予
 validation 执行权。
@@ -913,30 +925,34 @@ validation 执行权。
 }
 ```
 
-`read` 只返回该已声明 subject 的指定页；每次都会重新核对当前上下文和该 subject 的 SHA-256。若还有
-后续页，它会返回同一绑定下的下一页调用。它是 ChatGPT 的主读取路线，不是任意文件读取；既有
-client 仍可使用 resource 方法或旧的 generic workflow 形式。
+`read` 在 `data.facts.subject_page` 返回该已声明 subject 的指定页；每次都会重新核对当前上下文和
+该 subject 的 SHA-256。若还有后续页，它会返回同一绑定下的 `data.next_action`。它是
+ChatGPT 的主读取路线，不是任意文件读取；既有 client 仍可使用 resource 方法或旧的 generic
+workflow 形式。
 
-`CONTEXT_BINDING_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
-不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回
-`REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH`。即使 manifest 声明，敏感路径、私有 runtime、
-符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、push、
-ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与 commit-scoped 确认。
+公共错误 `PROJECT_CONTEXT_MISMATCH` 表示 project route、branch、HEAD、Runner plan 或当前版本已
+不再与 manifest 一致。此时停止混合证据，重新取得模板并建立新 manifest。subject 改动会返回公共
+错误 `STALE_CONTEXT`，内部哈希不匹配错误码不会公开。即使 manifest 声明，敏感路径、私有
+runtime、符号链接路径和高风险配置路径仍会被拒绝。短期 manifest 会话不授权 executor、commit、
+push、ReviewDecision 或 Delivery accepted；validation 必须走上面的独立 preview 与
+commit-scoped 确认。
 
 ### 确认性操作上下文绑定与统一项目状态
 
-Commander 现在会为每个核心 workflow 的确认性边界携带一个可原样复制的 `context_binding`。它适用于实际
+Commander 现在会为每个核心 workflow 的确认性边界携带一个可原样复制的
+`data.context_binding`。它适用于实际
 支持且有副作用的 `run_mcp_workflow` phase（`apply`、`apply_all`、`plan_apply`、`run`、`commit`、`execute`）、
 `manage_validation_run action=run` 和 `manage_git` 的各类 apply action。
 
 `review_manifest` 保留自己的不可变哈希绑定 read-session verifier；`gate_review_request` 保留自己独立签名的
 Work Item Gate 合同。通用绑定不会替代或削弱这两份专属合同。
 
-前一步 inspect 或 preview 会同时返回 `context_binding` 与 `context_binding_contract`。
-`confirmation_required=true` 表示匹配的确认调用必须携带该绑定；
+前一步 inspect 或 preview 会返回 `data.context_binding`，并把
+`context_binding_contract` 放在 `data.facts`。
+`data.facts.context_binding_contract.confirmation_required=true` 表示匹配的确认调用必须携带该绑定；
 `current_call_requires_context_binding` 用来区分将来的确认边界与当前正在进行的 read 或 preview。
-进入对应确认调用时，必须把整个 `context_binding` 原样回传；同一操作身份下的生成 `next_actions` 已经自动带上
-这份绑定。服务会在副作用发生前重新核对以下七项：
+进入对应确认调用时，必须把整个 `data.context_binding` 原样回传；同一操作身份下的
+`data.next_action` 已经自动带上这份绑定。服务会在副作用发生前重新核对以下七项：
 
 ```text
 project_name
@@ -950,13 +966,13 @@ workflow_intent
 
 绑定只属于一个操作身份，不能跨 workflow 或 review unit 复用。Git 家族特意让
 `run_mcp_workflow workflow=git_*` 与对应 `manage_git` 确认动作共用同一身份，因此高层 Git preview
-可以自然续到公开 Git 工具。`CONTEXT_BINDING_MISMATCH` 表示 checkout 或操作身份已变化：停止并重新
-inspect/preview。branch 或 HEAD 无法读取时会返回 `CONTEXT_BINDING_UNAVAILABLE`，不会继续执行。
-context binding 只是证据，不授予 executor、validation、Git、push、stable replacement 或 delivery
-authority。
+可以自然续到公开 Git 工具。公共错误 `PROJECT_CONTEXT_MISMATCH` 表示 checkout 或操作身份已变化：
+停止并重新 inspect/preview。branch 或 HEAD 无法读取时，公共错误为 `STALE_CONTEXT`，不会继续执行。
+context binding 只是证据，不授予 executor、validation、Git、push、stable replacement 或
+delivery authority。
 
-`analyze_project_state` 还会返回 schema 为
-`colameta.canonical_project_state.v1` 的 `canonical_state`。不要再把某一次 workflow 的
+`analyze_project_state` 还会在 `data.facts.canonical_state` 返回 schema 为
+`colameta.canonical_project_state.v1` 的统一状态。不要再把某一次 workflow 的
 `unified_status` 当作全局真相：
 
 ```text
@@ -999,11 +1015,12 @@ summary 只是指向独立的项目状态真相。要判断 runtime 或外部 co
 }
 ```
 
-`inspect` 是只读操作。它通过常规 packaged-result contract 返回脱敏、版本化的 JSON/Markdown
-snapshot：`artifact_id`、`resource_uri`、`page_count`、`content_sha256` 和 `expires_at`。使用 typed
-`read_result_artifact` 读取所需的每一页；所有页面保持同一 artifact ID、SHA-256 和 expiry。artifact
-会明确写出 observation time、historical/current observation 的区别、freshness conclusion、
-canonical-state digest 以及 `observation_only` authority boundary。
+`inspect` 是只读操作。它的 `commander_response.v1` 在 `data.evidence` 中描述脱敏、版本化的
+JSON/Markdown snapshot，包括 `artifact_id`、`resource_uri`、`page_count`、`content_sha256` 和
+`expires_at`。沿唯一的 `data.next_action` 调用 `read_result_artifact` 读取所需的每一页；所有页面保持
+同一 artifact ID、SHA-256 和 expiry。artifact 会明确写出 observation time、
+historical/current observation 的区别、freshness conclusion、canonical-state digest 以及
+`observation_only` authority boundary。
 
 `preview` 只建立一个短期、进程内 archive preview，不写任何文件。它给出的 next action 同时携带 opaque
 `preview_id` 与完整 `context_binding`。只有那一次 context-bound 的

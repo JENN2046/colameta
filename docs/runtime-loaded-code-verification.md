@@ -87,7 +87,7 @@ runtime_loaded_code_stale == false
 reload_needed_for_verification == false
 installed package matches its stable source checkout
 authorized services are active/running
-real private App still exposes exactly seven Commander tools
+real private App exposes exactly nine Commander tools
 gate_review_request/inspect succeeds read-only
 connector smoke reports connector_closeout_ready / ready
 ```

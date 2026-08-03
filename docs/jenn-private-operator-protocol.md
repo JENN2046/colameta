@@ -4,7 +4,7 @@ Status: implementation specification
 
 ## Purpose
 
-ColaMeta has two remote operating tiers while retaining the public seven-tool
+ColaMeta has two remote operating tiers while retaining the public nine-tool
 Commander surface.
 
 1. `Commander` is the default. GPT may inspect and prepare previews with
@@ -37,9 +37,13 @@ opaque, in-process dispatch capability.
 
 ## Public interface
 
-The seven public tools and their names remain unchanged. Tool descriptors and
-annotations are static and conservative; composite tools that can write remain
-marked as write tools for both tiers.
+The public Commander interface remains exactly nine tools:
+`list_registered_projects`, `get_apps_connector_smoke_packet`,
+`render_commander_app`, `analyze_project_state`, `run_mcp_workflow`,
+`manage_validation_run`, `manage_git`, `review_manifest`, and
+`read_result_artifact`. Tool descriptors and annotations are static and
+conservative; composite tools that can write remain marked as write tools for
+both tiers.
 
 ### Preview
 

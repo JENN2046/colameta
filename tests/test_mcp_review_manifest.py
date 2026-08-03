@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -8,10 +10,17 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
 
+import runner.mcp_review_manifest as mcp_review_manifest_module
+import runner.mcp_server as mcp_server_module
+from runner.commander_contract import (
+    COMMANDER_PUBLIC_MAX_DEPTH,
+    validate_commander_response,
+)
 from runner.mcp_server import (
     MCP_RESULT_ARTIFACT_RESOURCE_TEMPLATES,
     MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES,
@@ -25,6 +34,7 @@ from runner.mcp_validation_run import (
 )
 from runner.project_registry import ProjectRegistry
 from runner.review_manifest import (
+    REVIEW_MANIFEST_PAGE_CHARS,
     REVIEW_MANIFEST_SCHEMA_VERSION,
     ReviewManifestStore,
     collect_review_context_binding,
@@ -33,6 +43,182 @@ from runner.review_manifest import (
 from runner.review_manifest_validation import (
     canonical_manifest_validation_sha256,
     manifest_validation_contract_from_artifact,
+)
+
+
+def _percent_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = "".join(
+            character
+            if character.isalnum()
+            else f"%{ord(character):02X}"
+            for character in encoded
+        )
+    return encoded
+
+
+def _nest_json_containers(value: object) -> object:
+    nested = value
+    for _ in range(COMMANDER_PUBLIC_MAX_DEPTH + 1):
+        nested = {"layer": nested}
+    return nested
+
+
+SYNTHETIC_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiJzeW50aGV0aWMtdXNlciIsInNjb3BlIjoicmVhZCJ9."
+    "c3ludGhldGljLXNpZ25hdHVyZS1ieXRlcw"
+)
+ESCAPED_SYNTHETIC_JWT = SYNTHETIC_JWT.replace(".", "\\u002e")
+SYNTHETIC_AGE_X25519_IDENTITY = (
+    "AGE-SECRET-KEY-1" + ("Q" * 58)
+)
+ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY = (
+    SYNTHETIC_AGE_X25519_IDENTITY.replace(
+        "AGE-SECRET-KEY-",
+        "\\u0041GE-SECRET-KEY-",
+    )
+)
+SYNTHETIC_GITHUB_PAT = "ghp_" + ("A1" * 18)
+SYNTHETIC_HUGGING_FACE_TOKEN = "hf_" + ("A1" * 17)
+ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN = (
+    SYNTHETIC_HUGGING_FACE_TOKEN.replace("hf_", "\\u0068f_")
+)
+SYNTHETIC_DIGITALOCEAN_TOKEN = "dop_v1_" + ("a1" * 32)
+ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN = (
+    SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+        "dop_v1_",
+        "\\u0064op_v1_",
+    )
+)
+SYNTHETIC_DATABRICKS_PAT = "dapi" + ("a1" * 16)
+ESCAPED_SYNTHETIC_DATABRICKS_PAT = SYNTHETIC_DATABRICKS_PAT.replace(
+    "dapi",
+    "\\u0064api",
+)
+SYNTHETIC_VAULT_SERVICE_TOKEN = "hvs." + ("A1" * 12)
+SYNTHETIC_VAULT_BATCH_TOKEN = "hvb." + ("B2" * 12)
+SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
+ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
+    SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
+)
+SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = "ops_" + ("Ab1_" * 16)
+ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = (
+    SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+        "ops_",
+        "\\u006fps\\u005f",
+    )
+)
+SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
+ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
+    SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
+        "shpat_",
+        "\\u0073hpat_",
+    )
+)
+ESCAPED_SYNTHETIC_GITHUB_PAT = SYNTHETIC_GITHUB_PAT.replace(
+    "ghp_",
+    "\\u0067hp_",
+)
+SYNTHETIC_NPM_ACCESS_TOKEN = "npm_" + ("A1" * 18)
+ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN = (
+    SYNTHETIC_NPM_ACCESS_TOKEN.replace(
+        "npm_",
+        "\\u006epm_",
+    )
+)
+SYNTHETIC_DOCKER_PAT = "dckr_pat_" + (("Ab1_-" * 5) + "Z9")
+ESCAPED_SYNTHETIC_DOCKER_PAT = SYNTHETIC_DOCKER_PAT.replace(
+    "dckr_pat_",
+    "\\u0064ckr_pat_",
+)
+SYNTHETIC_PYPI_API_TOKEN = "pypi-" + ("Ab1_-" * 17)
+SYNTHETIC_LONG_PYPI_API_TOKEN = "pypi-" + ("B2" * 160)
+ESCAPED_SYNTHETIC_PYPI_API_TOKEN = (
+    SYNTHETIC_PYPI_API_TOKEN.replace(
+        "pypi-",
+        "\\u0070ypi-",
+    )
+)
+SYNTHETIC_SENDGRID_API_KEY = (
+    f"SG.{'A' * 22}.{'B' * 43}"
+)
+TOKEN_LIKE_OPAQUE_ID = "sk-" + ("R" * 29)
+ESCAPED_SYNTHETIC_SENDGRID_API_KEY = (
+    SYNTHETIC_SENDGRID_API_KEY.replace(".", "\\u002e")
+)
+SYNTHETIC_GITLAB_PAT = "glpat-" + ("A1" * 10)
+ESCAPED_SYNTHETIC_GITLAB_PAT = SYNTHETIC_GITLAB_PAT.replace(
+    "glpat-",
+    "\\u0067lpat-",
+)
+SYNTHETIC_GOOGLE_API_KEY = "AIza" + ("Ab1_-" * 7)
+ESCAPED_SYNTHETIC_GOOGLE_API_KEY = SYNTHETIC_GOOGLE_API_KEY.replace(
+    "AIza",
+    "\\u0041Iza",
+)
+SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    "GOCSPX-" + ("Ab1_-" * 5) + "Z9Q"
+)
+ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET = (
+    SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace(
+        "GOCSPX-",
+        "\\u0047OCSPX-",
+    )
+)
+SYNTHETIC_AWS_ACCESS_KEY_ID = "AKIA" + ("A1" * 8)
+SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID = "ASIA" + ("B2" * 8)
+ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID = (
+    SYNTHETIC_AWS_ACCESS_KEY_ID.replace(
+        "AKIA",
+        "\\u0041KIA",
+    )
+)
+SYNTHETIC_STRIPE_SECRET_KEY = "sk_live_" + ("A1" * 12)
+SYNTHETIC_STRIPE_RESTRICTED_KEY = "rk_test_" + ("B2" * 12)
+SYNTHETIC_STRIPE_WEBHOOK_SECRET = "whsec_" + ("C3_" * 16)
+ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY = (
+    SYNTHETIC_STRIPE_SECRET_KEY.replace(
+        "sk_live_",
+        "\\u0073k_live_",
+    )
+)
+SYNTHETIC_SLACK_TOKEN = (
+    "xoxb-123456789012-123456789012-" + ("Ab" * 24)
+)
+SYNTHETIC_SLACK_WEBHOOK_URL = (
+    "https://hooks.slack.com/services/"
+    "T0123456789/B1001010101/7IsoQTrixdUtE971O1xQTm4T"
+)
+SYNTHETIC_DISCORD_WEBHOOK_URL = (
+    "https://discord.com/api/webhooks/123456789012345678/"
+    + ("Ab1_" * 16)
+)
+ESCAPED_SYNTHETIC_SLACK_TOKEN = SYNTHETIC_SLACK_TOKEN.replace(
+    "xoxb-",
+    "\\u0078oxb-",
+)
+SYNTHETIC_OPENAI_PROJECT_KEY = "sk-proj-" + ("Ab1_" * 24)
+ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY = (
+    SYNTHETIC_OPENAI_PROJECT_KEY.replace(
+        "sk-proj-",
+        "\\u0073k-proj-",
+    )
+)
+MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    15,
+)
+EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE = _percent_encode_layers(
+    "public_key=visible",
+    16,
+)
+EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT = (
+    _percent_encode_layers(
+        "api_key=synthetic-budget-manifest-secret",
+        16,
+    )
 )
 
 
@@ -234,6 +420,48 @@ def test_review_manifest_binds_inputs_and_exposes_only_subject_resources(tmp_pat
     assert verified["ok"] is True
     assert verified["data"]["verification"]["context_binding"] == "matched"
     assert verified["data"]["verification"]["subject_hashes"] == "matched"
+
+
+def test_commander_typed_manifest_read_rejects_sensitive_bound_page_metadata(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    manifest = _manifest(project)
+    manifest["review_unit"] = "password=synthetic-review-unit-secret"
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": manifest,
+        },
+    )
+    inspection_contract = inspected["result"]["structuredContent"]["data"]
+    manifest_id = inspection_contract["evidence"]["review_manifest_id"]
+
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": manifest_id,
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    structured = read["result"]["structuredContent"]
+    assert structured["ok"] is False
+    assert structured["error_code"] == "INTERNAL_RESULT_INVALID"
+    assert "synthetic-review-unit-secret" not in json.dumps(
+        structured,
+        ensure_ascii=False,
+    )
+    validate_commander_response(structured["data"])
 
 
 def test_legacy_review_manifest_defaults_omitted_phase_to_inspect(
@@ -1040,8 +1268,166 @@ def test_resource_templates_advertise_only_static_uri_shapes(tmp_path: Path) -> 
     assert descriptor["page_uri_template"].endswith("/subjects/1/pages/{page}")
 
 
-def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_path: Path) -> None:
+def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: "review_manifest_handle_ending_",
+    )
     project = _make_git_checkout(tmp_path)
+    uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    combining_mark_prose_json = json.dumps(
+        {"note": f"नमस्ते{uri}; مُرَاجَعَةَ{uri}; cafe\u0301{uri}"}
+    )
+    escaped_space_json = json.dumps({"note": f"{uri}\\u0020Next"})
+    zero_width_space_json = json.dumps({"note": f"{uri}\u200bNext"})
+    bom_prefix_json = json.dumps({"note": f"\ufeff{uri}"})
+    short_escape_left_boundary = json.dumps(
+        {"content": f"\n{uri}"}
+    )
+    nested_short_escape_left_boundary = json.dumps(
+        {"nested": json.dumps({"content": f"\t{uri}"})}
+    )
+    dash_boundaries = f"before—{uri}–continue"
+    serialized_dash_boundaries = json.dumps(
+        {"note": dash_boundaries}
+    )
+    paired_punctuation_boundaries = (
+        f"before」{uri}「continue; before”{uri}“continue"
+    )
+    serialized_paired_punctuation_boundaries = json.dumps(
+        {"note": f"before）{uri}（continue"}
+    )
+    ascii_opening_boundaries = (
+        f"{uri}(see page 2); {uri}[details]; "
+        f"{uri}{{details}}; {uri}<details>"
+    )
+    escaped_ascii_opening_boundaries = (
+        f"{uri}\\u0028see page 2\\u0029; "
+        f"{uri}\\u005bdetails\\u005d; "
+        f"{uri}\\u007bdetails\\u007d; "
+        f"{uri}\\u003cdetails\\u003e"
+    )
+    ascii_closing_boundaries = (
+        f"before){uri}; before]{uri}; before}}{uri}"
+    )
+    escaped_ascii_closing_boundaries = (
+        f"before\\u0029{uri}; before\\u005d{uri}; "
+        f"before\\u007d{uri}"
+    )
+    ascii_left_separator_boundaries = " ".join(
+        f"{separator}{uri}" for separator in ",;!?"
+    )
+    escaped_ascii_left_separator_boundaries = " ".join(
+        f"{separator}{uri}"
+        for separator in ("\\u002c", "\\u003b", "\\u0021", "\\u003f")
+    )
+    content = (
+        f"\ufeff{uri}\n"
+        f"\\ufeff{uri}\n"
+        f"{bom_prefix_json}\n"
+        f"请读取{uri}。\n"
+        f"Read {uri}。Next\n"
+        f"📎{uri}✅Next\n"
+        f"请读取{uri}继续\n"
+        f"❤️{uri}👩‍💻Next\n"
+        f"1️⃣{uri}#️⃣Next\n"
+        f"↔️{uri}〰️Next\n"
+        f"Read {uri}✅,Next\n"
+        f"Read {uri}」.Next\n"
+        f"नमस्ते{uri}\n"
+        f"مُرَاجَعَةَ{uri}\n"
+        f"cafe\u0301{uri}\n"
+        "safe\\/relative.txt\n"
+        "1\\/2\n"
+        "https:\\/\\/example.com\n"
+        f"Read {uri}\\u0020Next\n"
+        f"{escaped_space_json}\n"
+        f"Read {uri}\u200bNext\n"
+        f"Read {uri}\\u200bNext\n"
+        f"{zero_width_space_json}\n"
+        f"{short_escape_left_boundary}\n"
+        f"{nested_short_escape_left_boundary}\n"
+        f"{dash_boundaries}\n"
+        f"{serialized_dash_boundaries}\n"
+        f"{paired_punctuation_boundaries}\n"
+        f"{serialized_paired_punctuation_boundaries}\n"
+        f"{ascii_opening_boundaries}\n"
+        f"{escaped_ascii_opening_boundaries}\n"
+        f"{ascii_closing_boundaries}\n"
+        f"{escaped_ascii_closing_boundaries}\n"
+        f"{ascii_left_separator_boundaries}\n"
+        f"{escaped_ascii_left_separator_boundaries}\n"
+        f"*{uri}* **{uri}** _{uri}_ __{uri}__\n"
+        f"\\u002a\\u002a{uri}\\u002a\\u002a\n"
+        "publicKey=synthetic-public-value\n"
+        "-----BEGIN PUBLIC KEY-----\n"
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+        "https://example.com/repo\n"
+        "https://alice@example.com/repo\n"
+        "tool --username alice --region us-east-1\n"
+        "tool --password --verbose\n"
+        "tool --password\\u0020\\u002d\\u002dverbose\n"
+        "tool --passphrase --prompt\n"
+        "Use a passphrase prompt.\n"
+        "PuTTY-User-Key-File-3 ssh-ed25519\n"
+        f"AGE-SECRET-KEY-1{'Q' * 57}\n"
+        f"AGE-SECRET-KEY-1{'Q' * 59}\n"
+        "AGE-SECRET-KEY-1<redacted>\n"
+        f"age1{'q' * 58}\n"
+        "header.payload.signature\n"
+        "c3ludGhldGlj.aGVhZGVy.c2lnbmF0dXJl\n"
+        "_author=Jenn\n"
+        "_authorship=public\n"
+        "https://provider.example.invalid/callback"
+        "?topic=api%5Fkey&api%5Fkeyboard=public\n"
+        "https://provider.example.invalid/callback?api%5Fkey\n"
+        "npm_short\n"
+        "npm_<redacted>\n"
+        f"npm_{'A' * 37}\n"
+        f"dckr_pat_{'A' * 26}\n"
+        "dckr_pat_<redacted>\n"
+        f"dckr_pat_{'A' * 28}\n"
+        f"dop_v1_{'a' * 63}\n"
+        "dop_v1_<redacted>\n"
+        f"dop_v1_{'a' * 65}\n"
+        f"xdop_v1_{'a' * 64}\n"
+        f"dop_v1_{'g' * 64}\n"
+        "pypi-short\n"
+        "pypi-<redacted>\n"
+        f"pypi-{'A' * 84}\n"
+        f"SG.{'A' * 21}.{'B' * 43}\n"
+        f"SG.{'A' * 22}.{'B' * 42}\n"
+        f"SG.{'A' * 22}.{'B' * 44}\n"
+        "SG.<redacted>.<redacted>\n"
+        f"{MAX_BUDGET_PERCENT_ENCODED_SAFE_PROSE}\n"
+        "tool --user alice:note\n"
+        "curl --user alice https://example.invalid\n"
+        "curl -e https://example.test/page https://example.invalid\n"
+        '{"command":"curl\\u0020-e\\u0020'
+        'https:\\/\\/example.test/page\\u0020'
+        'https:\\/\\/example.invalid"}\n'
+        "curl --user <user:password> https://example.invalid\n"
+        "curl --proxy-user alice https://example.invalid\n"
+        "curl --proxy-user <user:password> https://example.invalid\n"
+        "curl -U\n"
+        f"colameta://review-manifest/{TOKEN_LIKE_OPAQUE_ID}"
+        "/subjects/1/pages/{page}\n"
+        f"{json.dumps({'nested': json.dumps({'uri': uri})})}\n"
+        f"{json.dumps({'note': f'取{uri}继续'})}\n"
+        f"{json.dumps({'note': f'📎{uri}✅Next'})}\n"
+        f"{json.dumps({'note': f'❤️{uri}👩‍💻Next'})}\n"
+        f"{json.dumps({'note': f'1️⃣{uri}#️⃣Next'})}\n"
+        f"{json.dumps({'note': f'↔️{uri}〰️Next'})}\n"
+        f"{json.dumps({'note': f'{uri}✅,Next; {uri}」.Next'})}\n"
+        f"{combining_mark_prose_json}\n"
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
     server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
 
     response = _tool_call(
@@ -1059,7 +1445,668 @@ def test_commander_mcp_surface_keeps_review_manifest_continuation_handles(tmp_pa
     assert evidence["review_manifest_id"]
     assert evidence["resource_uri"].startswith("colameta://review-manifest/")
     assert facts["subjects"][0]["resource_uri"].startswith("colameta://review-manifest/")
-    assert facts["subjects"][0]["page_uri_template"].endswith("/pages/{page}")
+    assert facts["subjects"][0]["page_uri_template"] == (
+        "colameta://review-manifest/review_manifest_handle_ending_"
+        "/subjects/1/pages/{page}"
+    )
+    manifest_resource = _resource_read(server, evidence["resource_uri"])
+    manifest_summary = json.loads(
+        manifest_resource["result"]["contents"][0]["text"]
+    )
+    assert manifest_summary["review_manifest_id"] == evidence[
+        "review_manifest_id"
+    ]
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": evidence["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+    read_structured = read["result"]["structuredContent"]
+    assert read_structured["ok"] is True
+    assert read_structured["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, facts["subjects"][0]["resource_uri"])
+    resource_page = json.loads(resource["result"]["contents"][0]["text"])
+    assert resource_page["content"] == content
+
+
+@pytest.mark.parametrize(
+    "token_like_opaque_id",
+    [
+        TOKEN_LIKE_OPAQUE_ID,
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+    ],
+)
+def test_commander_manifest_preserves_token_like_opaque_handles(
+    tmp_path: Path,
+    monkeypatch,
+    token_like_opaque_id: str,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: token_like_opaque_id,
+    )
+    project = _make_git_checkout(tmp_path)
+    content = (
+        "# Review input\n\n"
+        "A bounded subject.\n\n"
+        "//example.test/docs/page\n"
+        '{"url":"\\/\\/example.test\\/docs\\/page"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection = inspected["result"]["structuredContent"]
+    assert inspection["ok"] is True
+    contract = inspection["data"]
+    assert contract["evidence"]["review_manifest_id"] == token_like_opaque_id
+    assert contract["evidence"]["resource_uri"] == (
+        f"colameta://review-manifest/{token_like_opaque_id}"
+    )
+    subject_uri = contract["facts"]["subjects"][0]["resource_uri"]
+    assert subject_uri == (
+        f"colameta://review-manifest/{token_like_opaque_id}/subjects/1"
+    )
+    assert contract["next_action"]["arguments"]["review_manifest_id"] == (
+        token_like_opaque_id
+    )
+
+    root_resource = _resource_read(
+        server,
+        contract["evidence"]["resource_uri"],
+    )
+    assert "error" not in root_resource
+    root_summary = json.loads(
+        root_resource["result"]["contents"][0]["text"]
+    )
+    assert root_summary["review_manifest_id"] == token_like_opaque_id
+    assert root_summary["manifest_resource_uri"] == (
+        f"colameta://review-manifest/{token_like_opaque_id}"
+    )
+    assert all(
+        subject["read_call"]["arguments"]["review_manifest_id"]
+        == token_like_opaque_id
+        for subject in root_summary["subjects"]
+    )
+
+    typed = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": token_like_opaque_id,
+            "review_manifest_subject_index": 1,
+        },
+    )
+    assert typed["result"]["structuredContent"]["ok"] is True
+    assert typed["result"]["structuredContent"]["data"]["facts"][
+        "subject_page"
+    ]["content"] == content
+
+    resource = _resource_read(server, subject_uri)
+    resource_page = json.loads(resource["result"]["contents"][0]["text"])
+    assert resource_page["content"] == content
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    [
+        "root_id",
+        "subject_read_id",
+        "sensitive_sibling",
+        "mime_type",
+        "content_item_extra",
+    ],
+)
+def test_commander_manifest_root_resource_rejects_unbound_ids_and_siblings(
+    tmp_path: Path,
+    monkeypatch,
+    tampering: str,
+) -> None:
+    monkeypatch.setattr(
+        "runner.review_manifest.secrets.token_urlsafe",
+        lambda _length: TOKEN_LIKE_OPAQUE_ID,
+    )
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    contract = inspected["result"]["structuredContent"]["data"]
+    root_uri = contract["evidence"]["resource_uri"]
+    original_read = server._review_manifest_resource_read_result
+    injected_value = "other_review_manifest_handle_1234567890"
+    if tampering == "sensitive_sibling":
+        injected_value = SYNTHETIC_GITHUB_PAT
+    elif tampering == "mime_type":
+        injected_value = "text/html"
+    elif tampering == "content_item_extra":
+        injected_value = "unexpected-resource-metadata"
+
+    def tampered_read(uri: str) -> dict | None:
+        result = original_read(uri)
+        if result is None or uri != root_uri:
+            return result
+        candidate = copy.deepcopy(result)
+        summary = json.loads(candidate["contents"][0]["text"])
+        if tampering == "root_id":
+            summary["review_manifest_id"] = injected_value
+        elif tampering == "subject_read_id":
+            summary["subjects"][0]["read_call"]["arguments"][
+                "review_manifest_id"
+            ] = injected_value
+        elif tampering == "mime_type":
+            candidate["contents"][0]["mimeType"] = injected_value
+        elif tampering == "content_item_extra":
+            candidate["contents"][0]["debug"] = injected_value
+        else:
+            summary["preview_id"] = injected_value
+        candidate["contents"][0]["text"] = json.dumps(
+            summary,
+            ensure_ascii=False,
+        )
+        return candidate
+
+    monkeypatch.setattr(
+        server,
+        "_review_manifest_resource_read_result",
+        tampered_read,
+    )
+    resource = _resource_read(server, root_uri)
+
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert injected_value not in json.dumps(resource, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    ["page_content", "page_resource", "mime_type", "content_item_extra"],
+)
+def test_commander_manifest_subject_root_binds_first_page(
+    tmp_path: Path,
+    monkeypatch,
+    tampering: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    page_two_marker = "synthetic-page-two-only-marker"
+    (project / "docs" / "review-input.md").write_text(
+        ("a" * REVIEW_MANIFEST_PAGE_CHARS) + page_two_marker,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    contract = inspected["result"]["structuredContent"]["data"]
+    subject = contract["facts"]["subjects"][0]
+    subject_uri = subject["resource_uri"]
+    page_two_uri = subject["page_uri_template"].replace("{page}", "2")
+    original_read = server._review_manifest_resource_read_result
+    page_one_resource = original_read(subject_uri)
+    page_two_resource = original_read(page_two_uri)
+
+    assert page_one_resource is not None
+    assert page_two_resource is not None
+    page_two = json.loads(page_two_resource["contents"][0]["text"])
+    assert page_two["page"] == 2
+    assert page_two_marker in page_two["content"]
+
+    def tampered_read(uri: str) -> dict | None:
+        if uri != subject_uri:
+            return original_read(uri)
+        if tampering == "page_resource":
+            return copy.deepcopy(page_two_resource)
+        candidate = copy.deepcopy(page_one_resource)
+        if tampering == "mime_type":
+            candidate["contents"][0]["mimeType"] = "text/html"
+        elif tampering == "content_item_extra":
+            candidate["contents"][0]["debug"] = (
+                "unexpected-resource-metadata"
+            )
+        else:
+            candidate["contents"][0]["text"] = page_two_resource[
+                "contents"
+            ][0]["text"]
+        return candidate
+
+    monkeypatch.setattr(
+        server,
+        "_review_manifest_resource_read_result",
+        tampered_read,
+    )
+    resource = _resource_read(server, subject_uri)
+
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert page_two_marker not in json.dumps(resource, ensure_ascii=False)
+
+
+def test_commander_resources_read_validates_whole_subject_before_paging(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    resource_uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    uri_start = REVIEW_MANIFEST_PAGE_CHARS - (len(resource_uri) // 2)
+    content = f"{'x' * (uri_start - 1)} {resource_uri}\n"
+    assert content.index(resource_uri) < REVIEW_MANIFEST_PAGE_CHARS
+    assert (
+        content.index(resource_uri) + len(resource_uri)
+        > REVIEW_MANIFEST_PAGE_CHARS
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection_data = inspected["result"]["structuredContent"]["data"]
+    descriptor = inspection_data["facts"]["subjects"][0]
+    assert descriptor["page_count"] == 2
+
+    typed_pages: list[str] = []
+    pages: list[str] = []
+    for page_number in (1, 2):
+        typed = server.call_tool_for_agent(
+            "review_manifest",
+            {
+                "phase": "read",
+                "review_manifest_id": inspection_data["evidence"][
+                    "review_manifest_id"
+                ],
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": page_number,
+            },
+        )
+        assert typed["ok"] is True
+        typed_contract = typed["data"]
+        validate_commander_response(
+            typed_contract,
+            exact_evidence_prevalidated=True,
+        )
+        typed_page = typed_contract["facts"]["subject_page"]
+        assert typed_page["page"] == page_number
+        typed_pages.append(typed_page["content"])
+
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert "error" not in response
+        page = json.loads(response["result"]["contents"][0]["text"])
+        assert page["page"] == page_number
+        pages.append(page["content"])
+
+    assert pages[0] == content[:REVIEW_MANIFEST_PAGE_CHARS]
+    assert pages[1] == content[REVIEW_MANIFEST_PAGE_CHARS:]
+    assert typed_pages == pages
+    assert "".join(pages) == content
+
+
+def test_commander_resources_read_rejects_unsafe_whole_subject_across_pages(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    unsafe_uri = "Colameta://review-manifest/opaque_handle_123_"
+    uri_start = REVIEW_MANIFEST_PAGE_CHARS - (len(unsafe_uri) // 2)
+    content = f"{'x' * (uri_start - 1)} {unsafe_uri}\n"
+    assert content.index(unsafe_uri) < REVIEW_MANIFEST_PAGE_CHARS
+    assert content.index(unsafe_uri) + len(unsafe_uri) > REVIEW_MANIFEST_PAGE_CHARS
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    review_manifest_id = inspected["result"]["structuredContent"]["data"][
+        "evidence"
+    ]["review_manifest_id"]
+    assert descriptor["page_count"] == 2
+
+    for page_number in (1, 2):
+        typed = server.call_tool_for_agent(
+            "review_manifest",
+            {
+                "phase": "read",
+                "review_manifest_id": review_manifest_id,
+                "review_manifest_subject_index": 1,
+                "review_manifest_page": page_number,
+            },
+        )
+        assert typed["ok"] is False
+        assert typed["data"]["outcome"] == "blocked"
+        assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+        assert unsafe_uri not in json.dumps(typed, ensure_ascii=False)
+
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert response["error"]["data"]["error_code"] == "evidence_unavailable"
+        assert unsafe_uri not in json.dumps(response, ensure_ascii=False)
+
+
+def test_commander_manifest_reads_bind_returned_bytes_to_preflight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = "safe manifest subject " + ("x" * 256)
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection = inspected["result"]["structuredContent"]["data"]
+    review_manifest_id = inspection["evidence"][
+        "review_manifest_id"
+    ]
+    subject_uri = inspection["facts"]["subjects"][0][
+        "resource_uri"
+    ]
+    stored = server._review_manifest_store.get(review_manifest_id)
+
+    assert stored is not None
+    original_read_page = (
+        mcp_review_manifest_module.read_stored_review_manifest_page
+    )
+    stored_page = original_read_page(
+        stored,
+        subject_index=1,
+        page=1,
+    )
+    parsed_subject = server._parse_mcp_review_manifest_uri(
+        subject_uri
+    )
+    assert parsed_subject is not None
+    assert (
+        server._commander_public_review_manifest_subject_safety(
+            parsed_subject
+        )
+        is True
+    )
+    assert len(stored_page.content) > len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+    replacement_content = (
+        SYNTHETIC_DIGITALOCEAN_TOKEN
+        + (
+            "!"
+            * (
+                len(stored_page.content)
+                - len(SYNTHETIC_DIGITALOCEAN_TOKEN)
+            )
+        )
+    )
+    replacement_page = replace(
+        stored_page,
+        content=replacement_content,
+    )
+    assert len(replacement_page.content) == len(stored_page.content)
+    assert replacement_page.page == stored_page.page
+    assert replacement_page.sha256 == stored_page.sha256
+
+    def read_replaced_page(
+        candidate_stored,
+        *,
+        subject_index: int,
+        page: int,
+    ):
+        if (
+            candidate_stored.handle.review_manifest_id
+            == review_manifest_id
+            and subject_index == 1
+            and page == 1
+        ):
+            return replacement_page
+        return original_read_page(
+            candidate_stored,
+            subject_index=subject_index,
+            page=page,
+        )
+
+    monkeypatch.setattr(
+        mcp_review_manifest_module,
+        "read_stored_review_manifest_page",
+        read_replaced_page,
+    )
+
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "read",
+            "review_manifest_id": review_manifest_id,
+            "review_manifest_subject_index": 1,
+            "review_manifest_page": 1,
+        },
+    )
+
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "failed"
+    assert typed["data"]["error"]["code"] == "INTERNAL_RESULT_INVALID"
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject_uri)
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert SYNTHETIC_DIGITALOCEAN_TOKEN not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_resources_read_caches_whole_subject_safety_by_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        '{"content":"'
+        + ("\\" * (REVIEW_MANIFEST_PAGE_CHARS * 2))
+        + 'relative.txt"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(content, encoding="utf-8")
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    assert descriptor["page_count"] == 3
+
+    scans = 0
+    original_safety = (
+        server._commander_public_review_manifest_content_safety
+    )
+
+    def counting_safety(value: str) -> bool:
+        nonlocal scans
+        scans += 1
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_review_manifest_content_safety",
+        counting_safety,
+    )
+
+    pages: list[str] = []
+    for page_number in range(1, descriptor["page_count"] + 1):
+        response = _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page_number}",
+        )
+        assert "error" not in response
+        page = json.loads(response["result"]["contents"][0]["text"])
+        pages.append(page["content"])
+    repeated = _resource_read(
+        server,
+        f"{descriptor['resource_uri']}/pages/1",
+    )
+
+    assert "error" not in repeated
+    assert "".join(pages) == content
+    assert scans == 1
+    assert list(
+        server._commander_public_review_manifest_safety_cache
+    ) == [descriptor["sha256"]]
+
+
+def test_commander_concurrent_resource_reads_share_one_manifest_safety_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        '{"content":"'
+        + ("\\" * (REVIEW_MANIFEST_PAGE_CHARS * 2))
+        + 'relative.txt"}\n'
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    descriptor = inspected["result"]["structuredContent"]["data"]["facts"][
+        "subjects"
+    ][0]
+    assert descriptor["page_count"] == 3
+
+    waiter_entered = threading.Event()
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiter_entered.set()
+            return super().result(timeout=timeout)
+
+    monkeypatch.setattr(mcp_server_module, "Future", ObservedFuture)
+
+    scan_entered = threading.Event()
+    release_scan = threading.Event()
+    scan_lock = threading.Lock()
+    scans = 0
+    original_safety = (
+        server._commander_public_review_manifest_content_safety
+    )
+
+    def blocking_safety(value: str) -> bool:
+        nonlocal scans
+        with scan_lock:
+            scans += 1
+        scan_entered.set()
+        assert release_scan.wait(timeout=5)
+        return original_safety(value)
+
+    monkeypatch.setattr(
+        server,
+        "_commander_public_review_manifest_content_safety",
+        blocking_safety,
+    )
+
+    def read_page(page: int) -> dict:
+        return _resource_read(
+            server,
+            f"{descriptor['resource_uri']}/pages/{page}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(read_page, 1)
+        assert scan_entered.wait(timeout=5)
+        second = pool.submit(read_page, 2)
+        try:
+            assert waiter_entered.wait(timeout=5)
+            assert scans == 1
+        finally:
+            release_scan.set()
+        responses = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert all("error" not in response for response in responses)
+    assert scans == 1
+    assert not server._commander_public_review_manifest_safety_inflight
+    assert list(
+        server._commander_public_review_manifest_safety_cache
+    ) == [descriptor["sha256"]]
 
 
 def test_review_manifest_requires_a_git_context_template(tmp_path: Path) -> None:
@@ -1418,6 +2465,79 @@ def test_typed_review_manifest_tool_keeps_the_same_bound_read_and_verify_contrac
     assert verified["data"]["facts"]["verification"]["context_binding"] == "matched"
     assert verified["data"]["facts"]["verification"]["subject_hashes"] == "matched"
 
+    (project / "docs" / "review-input.md").write_text(
+        "changed after Commander inspect\n",
+        encoding="utf-8",
+    )
+    changed_subject = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "verify", "review_manifest_id": manifest_id},
+    )
+    assert changed_subject["ok"] is False
+    assert changed_subject["error_code"] == "STALE_CONTEXT"
+    assert changed_subject["data"]["outcome"] == "blocked"
+    assert changed_subject["data"]["error"]["code"] == "STALE_CONTEXT"
+
+
+def test_commander_manifest_resource_read_maps_subject_drift_to_stale_context(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    subject = inspected["data"]["facts"]["subjects"][0]
+    subject_uri = subject["resource_uri"]
+    arguments = subject["read_call"]["arguments"]
+    (project / "docs" / "review-input.md").write_text(
+        "changed after Commander inspect\n",
+        encoding="utf-8",
+    )
+
+    for method in ("tools/call", "call_tool", "review_manifest"):
+        params = (
+            {"name": "review_manifest", "arguments": arguments}
+            if method in {"tools/call", "call_tool"}
+            else arguments
+        )
+        tool_response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": method,
+                "method": method,
+                "params": params,
+            }
+        )
+
+        assert tool_response is not None
+        result = tool_response["result"]
+        structured = (
+            result["structuredContent"]
+            if method == "tools/call"
+            else result
+        )
+        assert structured["ok"] is False
+        contract = structured["data"]
+        assert contract["schema_version"] == "commander_response.v1"
+        assert contract["outcome"] == "blocked"
+        assert contract["error"]["code"] == "STALE_CONTEXT"
+        assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in repr(
+            tool_response
+        )
+
+    response = _resource_read(server, subject_uri)
+
+    assert response["error"]["data"]["error_code"] == "STALE_CONTEXT"
+    assert "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH" not in repr(response)
+
 
 def test_typed_review_manifest_tool_routes_registered_service_projects(tmp_path: Path) -> None:
     project = _make_git_checkout(tmp_path)
@@ -1481,6 +2601,1247 @@ def test_commander_manifest_read_rejects_private_path_content(tmp_path: Path) ->
     assert contract["outcome"] == "blocked"
     assert contract["error"]["code"] == "EVIDENCE_UNAVAILABLE"
     assert "/home/reviewer" not in json.dumps(structured, ensure_ascii=False)
+
+
+def test_commander_manifest_reads_reject_private_jwk_material(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    private_coordinate = "synthetic-manifest-private-jwk-coordinate"
+    content = json.dumps(
+        {
+            "keys": [
+                {
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": "synthetic-public-x",
+                    "y": "synthetic-public-y",
+                    "d": private_coordinate,
+                }
+            ]
+        }
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert private_coordinate not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert private_coordinate not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_manifest_reads_reject_oauth_device_authorization(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    device_secret = "synthetic-manifest-device-secret"
+    content = json.dumps(
+        {
+            "device_code": device_secret,
+            "user_code": "ABCD-EFGH",
+            "expires_in": 600,
+        }
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert device_secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert device_secret not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize("field", ("data", "stringData"))
+@pytest.mark.parametrize(
+    "representation",
+    ("json", "python", "nested", "percent", "escaped-json"),
+)
+def test_commander_manifest_reads_reject_kubernetes_secret_payloads(
+    tmp_path: Path,
+    field: str,
+    representation: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        field: {"config": "synthetic-manifest-kubernetes-secret"},
+    }
+    serialized = json.dumps(secret, ensure_ascii=False)
+    if representation == "json":
+        content = serialized
+    elif representation == "python":
+        content = repr(secret)
+    elif representation == "nested":
+        content = json.dumps({"nested": serialized})
+    elif representation == "percent":
+        content = _percent_encode_layers(serialized, 1)
+    else:
+        content = serialized.replace("Secret", r"\u0053ecret")
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {"phase": "inspect", "review_manifest": _manifest(project)},
+    )
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-manifest-kubernetes-secret" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-manifest-kubernetes-secret" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "credential_kind",
+    ("private-jwk", "oauth-device"),
+)
+def test_commander_manifest_reads_fail_closed_at_structured_depth_limit(
+    tmp_path: Path,
+    credential_kind: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    secret = f"synthetic-depth-{credential_kind}-secret"
+    credential = (
+        {"kty": "EC", "d": secret}
+        if credential_kind == "private-jwk"
+        else {"device_code": secret, "expires_in": 600}
+    )
+    content = json.dumps(_nest_json_containers(credential))
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert secret not in json.dumps(typed, ensure_ascii=False)
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert secret not in json.dumps(resource, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "password[]=synthetic-manifest-bracket-secret",
+        (
+            "database[password]="
+            "synthetic-manifest-nested-bracket-secret"
+        ),
+    ),
+)
+def test_commander_manifest_reads_reject_bracket_assignments(
+    tmp_path: Path,
+    assignment: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    (project / "docs" / "review-input.md").write_text(
+        assignment,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["outcome"] == "blocked"
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert "synthetic-manifest" not in json.dumps(
+        typed,
+        ensure_ascii=False,
+    )
+
+    resource = _resource_read(server, subject["resource_uri"])
+    assert (
+        resource["error"]["data"]["error_code"]
+        == "evidence_unavailable"
+    )
+    assert "synthetic-manifest" not in json.dumps(
+        resource,
+        ensure_ascii=False,
+    )
+
+
+def test_commander_manifest_reads_preserve_markdown_resource_link_label(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    opaque_uri = (
+        "colameta://review-manifest/opaque_handle_123_"
+        "/subjects/1/pages/{page}"
+    )
+    content = f"[{opaque_uri}](https://example.test/evidence)"
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is True
+    assert typed["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, subject["resource_uri"])
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert resource_page["content"] == content
+
+
+def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
+    tmp_path: Path,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    content = (
+        "<status>public-ready</status>\n"
+        "<ns:status>namespace-ready</ns:status>\n"
+        "&lt;status&gt;entity-ready&lt;/status&gt;\n"
+        '<property name="public-key" value="public-material"/>\n'
+        '<property name="password" value=""/>\n'
+        '<property name="password"> \n\t </property>\n'
+        '<entry key="public-key" value="public-material"/>\n'
+        '<entry key="password" value=""/>\n'
+        '<entry key="password"> \n\t </entry>\n'
+        '<property name="public-key">public-material</property>\n'
+        "<password></password>\n"
+        "<password> \n\t </password>\n"
+        "<password/>\n"
+        "<config:password></config:password>\n"
+        "token_count: 42\n"
+        "prompt_token_count=21\n"
+        "token_budget=1000\n"
+        '{"output_token_count":12}\n'
+        "password:\n"
+        "password=\n"
+        "password: # supplied locally\n"
+        '"client_secret": ""\n'
+        "config[password]=\n"
+        '{"code":"SUCCESS","state":"completed"}\n'
+        "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
+        "'e': 'AQAB'}\n"
+    )
+    (project / "docs" / "review-input.md").write_text(
+        content,
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+    inspected = server.call_tool_for_agent(
+        "review_manifest",
+        {
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+
+    assert inspected["ok"] is True
+    subject = inspected["data"]["facts"]["subjects"][0]
+    typed = server.call_tool_for_agent(
+        "review_manifest",
+        subject["read_call"]["arguments"],
+    )
+    assert typed["ok"] is True
+    assert typed["data"]["facts"]["subject_page"]["content"] == content
+
+    resource = _resource_read(server, subject["resource_uri"])
+    resource_page = json.loads(
+        resource["result"]["contents"][0]["text"]
+    )
+    assert resource_page["content"] == content
+
+
+@pytest.mark.parametrize(
+    "unsafe_uri",
+    [
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}??）query"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}(/home/reviewer/private.txt)"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}∕private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}\\u2215private"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\u000a/home/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\n\\u002fhome/reviewer/private.txt"
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}.\\nC:\\u005cUsers"
+            "\\u005cReviewer\\u005cprivate.txt"
+        ),
+        '{"reason":"\\u002fhome/reviewer/private.txt"}',
+        '{"reason":"\\u005cu002fhome/reviewer/private.txt"}',
+        r"\Users\Jenn\secret.txt",
+        json.dumps({"reason": r"\Windows\System32\config\SAM"}),
+        (
+            '{"reason":"\\u005cUsers\\u005cJenn'
+            '\\u005csecret.txt"}'
+        ),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": r"\Users\Jenn\secret.txt"}
+                )
+            }
+        ),
+        r"\\server/share\private.txt",
+        "//server/share/private.txt",
+        "///server/share/private.txt",
+        json.dumps({"reason": r"\\server/share\private.txt"}),
+        json.dumps({"reason": r"\\server\share\private.txt"}),
+        json.dumps({"reason": "//server/share/private.txt"}),
+        json.dumps(
+            {
+                "nested": json.dumps(
+                    {"reason": "//server/share/private.txt"}
+                )
+            }
+        ),
+        '{"reason":"\\/\\/server\\/share\\/private.txt"}',
+        (
+            '{"reason":"\\u002f\\u002fserver\\u002fshare'
+            '\\u002fprivate.txt"}'
+        ),
+        (
+            '{"reason":"safe C:\\u005cUsers\\u005cReviewer'
+            '\\u005cprivate.txt"}'
+        ),
+        "C:/Users/Reviewer/private.txt",
+        r"C:/Users\Reviewer/private.txt",
+        '{"reason":"C:\\u002fUsers\\u002fReviewer\\u002fprivate.txt"}',
+        '{"oauth\\u005ftoken":"synthetic-secret-value"}',
+        'password="alpha beta gamma"',
+        r'{\"client_secret\":\"alpha beta gamma\"}',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Basic dXNlcjpwYXNzd29yZA==",
+        (
+            '{"reason":"Authorization: '
+            '\\u0042asic dXNlcjpwYXNzd29yZA=="}'
+        ),
+        '{"reason":"\\u0042asic dXNlcjpwYXNzd29yZA=="}',
+        '{"apiKey":"synthetic-secret-value"}',
+        '{"API Key":"synthetic-spaced-secret"}',
+        "api key: synthetic-unquoted-manifest-secret",
+        (
+            r"api\u0020key\u003a "
+            "synthetic-encoded-unquoted-manifest-secret"
+        ),
+        "AWS_ACCESS_KEY_ID=synthetic-aws-access-id",
+        "apiKey=delta epsilon zeta",
+        "private-key=synthetic-private-key-value",
+        "<password>synthetic-xml-manifest-secret</password>",
+        (
+            '<property name="password" '
+            'value="synthetic-xml-attribute-manifest-secret"/>'
+        ),
+        (
+            '<add key="ClientSecret" '
+            'value="synthetic-xml-key-manifest-secret"/>'
+        ),
+        (
+            '<property name="password">'
+            "synthetic-xml-body-manifest-secret"
+            "</property>"
+        ),
+        (
+            "<property><name>password</name>"
+            "<value>synthetic-xml-sibling-manifest-secret"
+            "</value></property>"
+        ),
+        (
+            "<property><type>password</type>"
+            "<value>synthetic-xml-type-sibling-manifest-secret"
+            "</value></property>"
+        ),
+        (
+            "<RSAKeyValue><Modulus>synthetic-public-modulus</Modulus>"
+            "<Exponent>AQAB</Exponent>"
+            "<D>synthetic-rsa-private-manifest-d</D></RSAKeyValue>"
+        ),
+        (
+            '{"xml":"\\u003cclientSecret\\u003e'
+            'synthetic-encoded-xml-manifest-secret'
+            '\\u003c/clientSecret\\u003e"}'
+        ),
+        (
+            "&lt;password&gt;"
+            "synthetic-named-entity-xml-manifest-secret"
+            "&lt;/password&gt;"
+        ),
+        (
+            "&#60;clientSecret&#62;"
+            "synthetic-decimal-entity-xml-manifest-secret"
+            "&#60;&#47;clientSecret&#62;"
+        ),
+        (
+            '{"xml":"\\u0026amp;lt;password\\u0026amp;gt;'
+            'synthetic-nested-entity-xml-manifest-secret'
+            '\\u0026amp;lt;/password\\u0026amp;gt;"}'
+        ),
+        (
+            "&#37;26lt&#37;3Bpassword&#37;26gt&#37;3B"
+            "synthetic-entity-percent-xml-manifest-secret"
+            "&#37;26lt&#37;3B/password&#37;26gt&#37;3B"
+        ),
+        (
+            '{"kty":"EC",'
+            '"d":"synthetic-duplicate-manifest-coordinate","d":""}'
+        ),
+        (
+            '{"device_code":"synthetic-duplicate-manifest-device",'
+            '"device_code":"","expires_in":600}'
+        ),
+        (
+            "client-key-data: "
+            "c3ludGhldGljLW1hbmlmZXN0LWt1YmUta2V5"
+        ),
+        "AWS_SECRET_ACCESS_KEY=synthetic-aws-secret-value",
+        r'{\"apiKey\":\"synthetic-escaped-secret\"}',
+        (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "synthetic-private-key-material\n"
+            "-----END OPENSSH PRIVATE KEY-----"
+        ),
+        SYNTHETIC_AGE_X25519_IDENTITY,
+        (
+            '{"identity":"'
+            f"{ESCAPED_SYNTHETIC_AGE_X25519_IDENTITY}"
+            '"}'
+        ),
+        (
+            '{"pem":"-----BEGIN \\u0050RIVATE KEY-----'
+            '\\nsynthetic-encoded-key-material"}'
+        ),
+        (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "synthetic-pgp-key-material\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        (
+            "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n"
+            "synthetic-ssh2-private-key-material\n"
+            "---- END SSH2 ENCRYPTED PRIVATE KEY ----"
+        ),
+        (
+            '{"armor":"-----BEGIN PGP \\u0050RIVATE KEY '
+            '\\u0042LOCK-----\\nsynthetic-encoded-pgp-material"}'
+        ),
+        "passphrase=synthetic-passphrase-value",
+        '{"passPhrase":"synthetic-camel-passphrase"}',
+        "--passphrase synthetic-cli-passphrase",
+        (
+            "PuTTY-User-Key-File-3: ssh-ed25519\n"
+            "Encryption: aes256-cbc\n"
+            "Private-Lines: 1\n"
+            "synthetic-putty-private-material"
+        ),
+        (
+            '{"ppk":"PuTTY-User-Key-File-\\u0032\\u003a ssh-rsa'
+            '\\nPrivate-Lines: 1'
+            '\\nsynthetic-encoded-putty-private-material"}'
+        ),
+        SYNTHETIC_JWT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_JWT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_JWT}
+                )
+            }
+        ),
+        SYNTHETIC_GITHUB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITHUB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITHUB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_HUGGING_FACE_TOKEN,
+        f'{{"access":"{ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_HUGGING_FACE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN,
+        (
+            "https://cloud.digitalocean.com/account/api/tokens"
+            f"?token={SYNTHETIC_DIGITALOCEAN_TOKEN}"
+        ),
+        SYNTHETIC_DIGITALOCEAN_TOKEN.replace(
+            "dop_v1_",
+            "dop%5Fv1%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DIGITALOCEAN_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DATABRICKS_PAT,
+        SYNTHETIC_DATABRICKS_PAT.replace("dapi", "d%61pi"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DATABRICKS_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DATABRICKS_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_VAULT_SERVICE_TOKEN,
+        SYNTHETIC_VAULT_BATCH_TOKEN,
+        SYNTHETIC_VAULT_RECOVERY_TOKEN,
+        SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "hvs%2E"),
+        SYNTHETIC_VAULT_BATCH_TOKEN.replace("hvb.", "hvb%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN,
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+            "ops_",
+            "ops%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN}"}}',
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
+        (
+            "https://shop.example.invalid/admin?token="
+            f"{SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"
+        ),
+        SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace("shpat_", "shpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_NPM_ACCESS_TOKEN,
+        (
+            "https://registry.npmjs.org/callback?token="
+            f"{SYNTHETIC_NPM_ACCESS_TOKEN}"
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_NPM_ACCESS_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_DOCKER_PAT,
+        SYNTHETIC_DOCKER_PAT.replace("dckr_pat_", "dckr%5Fpat%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_DOCKER_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_DOCKER_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_PYPI_API_TOKEN,
+        SYNTHETIC_LONG_PYPI_API_TOKEN,
+        (
+            "https://upload.pypi.org/legacy/?token="
+            f"{SYNTHETIC_PYPI_API_TOKEN}"
+        ),
+        SYNTHETIC_PYPI_API_TOKEN.replace("pypi-", "pypi%2D"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_PYPI_API_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_PYPI_API_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_SENDGRID_API_KEY,
+        (
+            "https://api.sendgrid.com/v3/?access="
+            f"{SYNTHETIC_SENDGRID_API_KEY}"
+        ),
+        SYNTHETIC_SENDGRID_API_KEY.replace(".", "%2E"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SENDGRID_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SENDGRID_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GITLAB_PAT,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GITLAB_PAT}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GITLAB_PAT}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_API_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_GOOGLE_API_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_GOOGLE_API_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET,
+        SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET.replace("-", "%2D"),
+        (
+            '{"access":"'
+            f"{ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET}"
+            '"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "access": (
+                            ESCAPED_SYNTHETIC_GOOGLE_OAUTH_CLIENT_SECRET
+                        )
+                    }
+                )
+            }
+        ),
+        SYNTHETIC_AWS_ACCESS_KEY_ID,
+        SYNTHETIC_AWS_TEMPORARY_ACCESS_KEY_ID,
+        f'{{"access":"{ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_AWS_ACCESS_KEY_ID}
+                )
+            }
+        ),
+        SYNTHETIC_STRIPE_SECRET_KEY,
+        SYNTHETIC_STRIPE_RESTRICTED_KEY,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET,
+        SYNTHETIC_STRIPE_WEBHOOK_SECRET.replace("_", "%5F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_STRIPE_SECRET_KEY}
+                )
+            }
+        ),
+        SYNTHETIC_SLACK_TOKEN,
+        SYNTHETIC_SLACK_WEBHOOK_URL,
+        SYNTHETIC_SLACK_WEBHOOK_URL.replace("/", "%2F"),
+        SYNTHETIC_DISCORD_WEBHOOK_URL,
+        SYNTHETIC_DISCORD_WEBHOOK_URL.replace("/", "%2F"),
+        f'{{"access":"{ESCAPED_SYNTHETIC_SLACK_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_SLACK_TOKEN}
+                )
+            }
+        ),
+        SYNTHETIC_OPENAI_PROJECT_KEY,
+        f'{{"access":"{ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {"access": ESCAPED_SYNTHETIC_OPENAI_PROJECT_KEY}
+                )
+            }
+        ),
+        "AccountKey=synthetic-azure-account-key",
+        '{"Account\\u004bey":"synthetic-encoded-account-key"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "SharedAccess\\u0053ignature="
+                    "sv=synthetic-version&sig=synthetic-nested-sas"
+                )
+            }
+        ),
+        (
+            "https://account.blob.core.windows.net/container/blob"
+            "?sv=2024-11-04&sp=r&sig=synthetic-sas-url-signature"
+        ),
+        "?sv=2024-11-04&ss=b&sp=rl&sig=synthetic-standalone-sas",
+        "sig=synthetic-form-sas&sp=r&sv=2024-11-04",
+        "%3Fsv%3D2024-11-04%26sig%3Dsynthetic-percent-sas",
+        (
+            '{"url":"https:\\/\\/account.blob.core.windows.net'
+            '\\/container\\/blob?sv\\u003d2024-11-04'
+            '\\u0026sig\\u003dsynthetic-encoded-sas-signature"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "https:\\u002f\\u002faccount.blob.core.windows.net"
+                    "/container/blob?sig=synthetic-nested-sas-signature"
+                    "\\u0026sv=2024-11-04"
+                )
+            }
+        ),
+        "client_secret: alpha beta gamma",
+        "password: correct horse battery staple",
+        "PASSWORD=#synthetic-punctuation-manifest-secret",
+        '{"shell":"PASSWORD\\u003d#synthetic-encoded-manifest-secret"}',
+        "_auth=dXNlcjpwYXNz",
+        '{"\\u005fauth":"dXNlcjpwYXNz"}',
+        json.dumps(
+            {
+                "wrapped": (
+                    "//registry.npmjs.org/:"
+                    "\\u005fauthToken=synthetic-nested-npm-token"
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api%5Fkey=synthetic-percent-manifest-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00255Fkey=synthetic-json-percent-manifest-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "url": (
+                            "https://provider.example.invalid/callback"
+                            "?api%255Fkey="
+                            "synthetic-nested-percent-manifest-secret"
+                        )
+                    }
+                )
+            }
+        ),
+        (
+            "https://provider.example.invalid/callback"
+            "?api+key=synthetic-form-manifest-secret"
+        ),
+        (
+            '{"url":"https:\\/\\/provider.example.invalid\\/callback'
+            '?api\\u00252Bkey='
+            'synthetic-encoded-form-manifest-secret"}'
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-manifest-code"
+            "&state=synthetic-oauth-manifest-state"
+        ),
+        (
+            "https://client.example.invalid/callback"
+            "?code=synthetic-oauth-empty-state-manifest-code&state="
+        ),
+        (
+            '{"url":"https:\\/\\/client.example.invalid\\/callback'
+            '?code\\u003dsynthetic-encoded-oauth-manifest-code'
+            '\\u0026state\\u003d'
+            'synthetic-encoded-oauth-manifest-state"}'
+        ),
+        (
+            '{"code":"synthetic-structured-oauth-manifest-code",'
+            '"state":"synthetic-structured-oauth-manifest-state"}'
+        ),
+        (
+            "{'code': 'synthetic-python-oauth-manifest-code', "
+            "'state': 'synthetic-python-oauth-manifest-state'}"
+        ),
+        (
+            "grant_type=authorization_code"
+            "&code=synthetic-oauth-token-form-manifest-code"
+        ),
+        (
+            "grant_type=authorization_code&padding="
+            + ("a" * 8_192)
+            + "&code=synthetic-overflow-token-form-manifest-code"
+        ),
+        (
+            '{"body":"grant_type\\u003dauthorization_code'
+            '\\u0026code\\u003d'
+            'synthetic-encoded-token-form-manifest-code"}'
+        ),
+        (
+            "https://distribution.example.invalid/"
+            + ("b" * 8193)
+            + "?Expires=2147483647"
+            "&Signature=synthetic-overflow-manifest-signature"
+            "&Key-Pair-Id=synthetic-overflow-manifest-key-pair"
+        ),
+        (
+            "https://distribution.example.invalid/private/report.pdf"
+            "?Expires=2147483647"
+            "&Signature=synthetic-cloudfront-manifest-signature"
+            "&Key-Pair-Id=synthetic-cloudfront-manifest-key-pair"
+        ),
+        json.dumps(
+            {
+                "CloudFront-Policy": "synthetic-cloudfront-manifest-policy",
+                "CloudFront-Signature": (
+                    "synthetic-cloudfront-cookie-manifest-signature"
+                ),
+                "CloudFront-Key-Pair-Id": (
+                    "synthetic-cloudfront-cookie-manifest-key-pair"
+                ),
+            }
+        ),
+        (
+            "CloudFront-Expires=2147483647; "
+            "CloudFront-Signature=synthetic-bare-cookie-manifest-signature; "
+            "CloudFront-Key-Pair-Id=synthetic-bare-cookie-manifest-key"
+        ),
+        (
+            "https://storage.googleapis.com/example/object"
+            "?GoogleAccessId=synthetic-gcs-manifest-access-id"
+            "&Expires=2147483647"
+            "&Signature=synthetic-gcs-manifest-signature"
+        ),
+        "token_count=synthetic-token-metric-manifest-secret",
+        "token_count_secret=123456",
+        "token_budget_password: 987654",
+        "token_count=" + ("9" * 5_000),
+        (
+            "{'kty': 'RSA', "
+            "'d': 'synthetic-python-manifest-private-coordinate'}"
+        ),
+        (
+            "{'device_code': 'synthetic-python-manifest-device-code', "
+            "'user_code': 'MNFT-REPR'}"
+        ),
+        (
+            '<property name="password" filler="'
+            + ("x" * 4_097)
+            + '" value="synthetic-overflow-xml-manifest-secret"/>'
+        ),
+        (
+            "localhost:5432:mydb:alice:"
+            "synthetic-pgpass-manifest-password"
+        ),
+        (
+            '{"pgpass":"localhost\\u003a5432\\u003amydb'
+            '\\u003aalice\\u003a'
+            'synthetic-encoded-pgpass-manifest-password"}'
+        ),
+        "PGPASSWORD=synthetic-postgres-manifest-password",
+        (
+            '{"env":"PGPASSWORD\\u003d'
+            'synthetic-encoded-postgres-manifest-password"}'
+        ),
+        "MYSQL_PWD=synthetic-mysql-manifest-password",
+        (
+            '{"env":"MYSQL\\u005fPWD\\u003d'
+            'synthetic-encoded-mysql-manifest-password"}'
+        ),
+        "SQLCMDPASSWORD=synthetic-sqlcmd-manifest-password",
+        (
+            '{"env":"SQLCMDPASSWORD\\u003d'
+            'synthetic-encoded-sqlcmd-manifest-password"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "MYSQL%255FPWD%253D"
+                    "synthetic-nested-mysql-manifest-password"
+                )
+            }
+        ),
+        "123456789:" + ("A" * 35),
+        "https://api.telegram.org/bot123456789:"
+        + ("A" * 35)
+        + "/getMe",
+        "https:%2F%2Fapi.telegram.org%2Fbot123456789%3A"
+        + ("A" * 35)
+        + "%2FsendMessage",
+        '{"access":"123456789\\u003a' + ("B" * 35) + '"}',
+        (
+            "machine example.com login alice "
+            "password synthetic-netrc-manifest-secret"
+        ),
+        (
+            "machine example.com\n"
+            "  login alice\n"
+            "  password synthetic-multiline-netrc-manifest-secret"
+        ),
+        (
+            '{"netrc":"machine example.com login alice '
+            'password\\u0020synthetic-encoded-netrc-manifest-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "machine example.com\\u0020login alice"
+                    "\\u0020password synthetic-nested-netrc-manifest-secret"
+                )
+            }
+        ),
+        "redis://cache:synthetic-password@cache.example/0",
+        "//cache:synthetic-relative-password@cache.example/0",
+        (
+            '{"url":"postgresql:\\u002f\\u002fdbuser:'
+            'synthetic-db-password@db.example/app"}'
+        ),
+        (
+            '{"url":"redis:\\u002f\\u002fcache\\u003a'
+            'synthetic-encoded-authority\\u0040cache.example/0"}'
+        ),
+        "--password synthetic-cli-password",
+        "tool --api-key synthetic-cli-secret --verbose",
+        (
+            'curl --oauth2-bearer "synthetic-manifest-bearer-token" '
+            "https://example.test"
+        ),
+        (
+            "curl -u alice:synthetic-curl-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --user=alice:synthetic-equals-curl-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl -U alice:synthetic-curl-proxy-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --proxy-user=alice:"
+            "synthetic-equals-proxy-manifest-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--user\\u0020alice\\u003a'
+            'synthetic-encoded-curl-manifest-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-user\\u0020alice\\u003a'
+            'synthetic-encoded-proxy-manifest-password '
+            'https:\\/\\/example.invalid"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20-ualice%3A"
+                    "synthetic-nested-curl-manifest-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    "curl%20--proxy-user%3Dalice%3A"
+                    "synthetic-nested-proxy-manifest-password%20"
+                    "https%3A%2F%2Fexample.invalid"
+                )
+            }
+        ),
+        (
+            "curl -E client.pem:synthetic-manifest-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            "curl --cert=client.pem:synthetic-manifest-cert-password "
+            "https://example.invalid"
+        ),
+        (
+            '{"command":"curl\\u0020--proxy-pass\\u003d'
+            'synthetic-encoded-manifest-passphrase '
+            'https:\\/\\/example.invalid"}'
+        ),
+        (
+            "https://example.test/download"
+            "?file=%2Fhome%2Fjenn%2Fmanifest-secret.txt"
+        ),
+        (
+            '{"url":"https:\\/\\/example.test\\/download'
+            '?file=\\u00252Fhome\\u00252Fjenn'
+            '\\u00252Fmanifest-secret.txt"}'
+        ),
+        "root:/home/jenn/manifest-labeled-secret.txt",
+        (
+            '{"note":"root:\\u005cUsers\\u005cJenn'
+            '\\u005cmanifest-labeled-secret.txt"}'
+        ),
+        EXHAUSTING_PERCENT_ENCODED_SAFE_PROSE,
+        EXHAUSTING_PERCENT_ENCODED_SENSITIVE_ASSIGNMENT,
+        (
+            '{"command":"tool --api-key\\u0020'
+            'synthetic-encoded-space-cli-secret"}'
+        ),
+        (
+            '{"command":"tool --client\\u002dsecret '
+            'synthetic-encoded-cli-secret"}'
+        ),
+        json.dumps(
+            {
+                "wrapped": (
+                    '{"command":"tool --refresh\\u002dtoken '
+                    'synthetic-nested-cli-secret"}'
+                )
+            }
+        ),
+        "Cookie: session=abc; csrf=def",
+        (
+            'Authorization: Digest username="Mufasa", '
+            'response="deadbeef"'
+        ),
+        r'{\"Cookie\":\"session=abc; csrf=def\"}',
+        (
+            '{"reason":"Authorization: \\u0044igest '
+            'username=\\"Mufasa\\", response=\\"deadbeef\\""}'
+        ),
+        '{"reason":"\\u0042earer abcdefghijklmnop"}',
+        '{"reason":"manage\\u005ffiles"}',
+        '{"reason":"%6danage_files"}',
+        '{"reason":"%256danage%255ffiles"}',
+        json.dumps(
+            {"reason": '{"tool":"manage\\u005fexecutor\\u005fworkflow"}'}
+        ),
+        '{"uri":"colameta:\\/\\/review-manifest\\/short"}',
+        (
+            '{"uri":"colameta:\\u002f\\u002freview-manifest'
+            '\\u002fshort"}'
+        ),
+        "Colameta://review-manifest/opaque_handle_123_",
+        "colameta%3A%2F%2Finternal-tool%2Fsecret",
+        "colameta%253A%252F%252Finternal-tool%252Fsecret",
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}%20"
+            "colameta%3A%2F%2Finternal-tool%2Fsecret"
+        ),
+        (
+            '{"uri":"Colameta:\\/\\/review-manifest\\/'
+            'opaque_handle_123_"}'
+        ),
+        (
+            '{"uri":"COLAMETA:\\u002f\\u002freview-manifest'
+            '\\u002fopaque_handle_123_"}'
+        ),
+        (
+            "colameta://review-manifest/opaque_handle_123_"
+            "/subjects/1/pages/{page}\\u0020Colameta:\\u002f\\u002f"
+            "result-artifact\\u002fshort"
+        ),
+        json.dumps(
+            {
+                "note": (
+                    "colameta://review-manifest/opaque_handle_123_"
+                    "/subjects/1/pages/{page}\\u0020"
+                    "Colameta:\\u002f\\u002fresult-artifact\\u002fshort"
+                )
+            }
+        ),
+    ],
+)
+def test_commander_manifest_read_rejects_unsafe_uri_boundaries(
+    tmp_path: Path,
+    unsafe_uri: str,
+) -> None:
+    project = _make_git_checkout(tmp_path)
+    (project / "docs" / "review-input.md").write_text(
+        f"{unsafe_uri}\n",
+        encoding="utf-8",
+    )
+    server = MCPPlanningBridgeServer(str(project), exposure_profile="commander")
+
+    inspected = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "inspect",
+            "review_manifest": _manifest(project),
+        },
+    )
+    inspection_data = inspected["result"]["structuredContent"]["data"]
+    subject_resource_uri = inspection_data["facts"]["subjects"][0][
+        "resource_uri"
+    ]
+    read = _tool_call(
+        server,
+        {
+            "workflow": "review_manifest",
+            "phase": "read",
+            "review_manifest_id": inspection_data["evidence"]["review_manifest_id"],
+            "review_manifest_subject_index": 1,
+        },
+    )
+
+    structured = read["result"]["structuredContent"]
+    assert structured["ok"] is False
+    assert structured["data"]["outcome"] == "blocked"
+    assert structured["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    assert unsafe_uri not in json.dumps(structured, ensure_ascii=False)
+
+    resource = _resource_read(server, subject_resource_uri)
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert unsafe_uri not in json.dumps(resource, ensure_ascii=False)
 
 
 def test_review_manifest_routes_source_only_registered_projects_without_opening_arbitrary_paths(tmp_path: Path) -> None:

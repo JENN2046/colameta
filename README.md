@@ -459,22 +459,24 @@ Reference documents:
 - [AGENTS.md generation rules](assets/gpts/agents-generation-rules.zh-CN.md)
 - [Project memory rules](assets/gpts/project-memory-rules.zh-CN.md)
 
-## Private App And The Seven-Tool Commander
+## Private App And The Nine-Tool Commander
 
 The ChatGPT/Codex private App uses a focused Commander surface instead of the
-complete advanced MCP catalog. It exposes exactly seven high-level tools:
+complete advanced MCP catalog. It exposes exactly nine high-level tools:
 
 ```text
 list_registered_projects
 get_apps_connector_smoke_packet
 render_commander_app
 analyze_project_state
+review_manifest
+read_result_artifact
 run_mcp_workflow
 manage_validation_run
 manage_git
 ```
 
-Work Item Gate review does not add an eighth tool. Use
+Work Item Gate review does not add a tenth tool. Use
 `run_mcp_workflow` with `workflow=gate_review_request`: start with read-only
 `phase=inspect`, generate a bounded signed preview held server-side, and return
 the copyable apply call with its opaque continuation handle unchanged. Apply

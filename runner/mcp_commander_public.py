@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from typing import Any, Iterable
 
 from runner.canonical_project_state import CANONICAL_PROJECT_STATE_SCHEMA_VERSION
 from runner.commander_contract import (
+    COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE,
     COMMANDER_RESPONSE_SCHEMA_VERSION,
     build_commander_response,
     commander_public_key_is_forbidden,
+    commander_public_mapping_is_oauth_authorization_callback,
+    commander_public_mapping_is_cloudfront_signed_cookie,
+    commander_public_mapping_is_kubernetes_secret,
+    commander_public_mapping_is_private_jwk,
+    commander_public_mapping_is_oauth_device_authorization,
     commander_public_text,
+    commander_public_value_is_numeric_token_metadata,
     validate_commander_response,
 )
 from runner.commander_projections import CommanderProjectionService
@@ -72,6 +80,130 @@ COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
         "analyze_project_state",
     }
 )
+
+
+def _commander_result_artifact_tool_is_public(value: Any) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return False
+    return (
+        commander_public_text(
+            value,
+            max_chars=128,
+            forbidden_tools=(
+                COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
+            ),
+        )
+        == value
+    )
+
+
+def commander_result_artifact_page_matches_binding(
+    page: dict[str, Any],
+    binding: dict[str, Any] | None,
+    *,
+    projected_tool: str | None = None,
+) -> bool:
+    if not isinstance(binding, dict):
+        return False
+    if set(page) != {
+        "artifact_id",
+        "tool",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "content_sha256",
+        "expires_at",
+        "content",
+    }:
+        return False
+    content = page.get("content")
+    page_content_sha256 = binding.get("page_content_sha256")
+    if (
+        not isinstance(content, str)
+        or not isinstance(page_content_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", page_content_sha256)
+        is None
+    ):
+        return False
+    page_tool = page.get("tool")
+    bound_tool = binding.get("tool")
+    if not (
+        _commander_result_artifact_tool_is_public(page_tool)
+        and _commander_result_artifact_tool_is_public(bound_tool)
+    ):
+        return False
+    if page_tool != bound_tool and not (
+        projected_tool in COMMANDER_EXPOSED_TOOLS
+        and page_tool == projected_tool
+    ):
+        return False
+    for field in (
+        "artifact_id",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "content_sha256",
+        "expires_at",
+    ):
+        if page.get(field) != binding.get(field):
+            return False
+    return (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == page_content_sha256
+    )
+
+
+def commander_review_manifest_page_matches_binding(
+    page: dict[str, Any],
+    binding: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(binding, dict):
+        return False
+    if set(page) != {
+        "review_manifest_id",
+        "review_unit",
+        "subject_index",
+        "path",
+        "sha256",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "expires_at",
+        "content",
+    }:
+        return False
+    content = page.get("content")
+    page_content_sha256 = binding.get("page_content_sha256")
+    if (
+        not isinstance(content, str)
+        or not isinstance(page_content_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", page_content_sha256)
+        is None
+    ):
+        return False
+    for field in (
+        "review_manifest_id",
+        "review_unit",
+        "subject_index",
+        "path",
+        "sha256",
+        "page",
+        "page_count",
+        "page_char_start",
+        "page_char_end",
+        "expires_at",
+    ):
+        if page.get(field) != binding.get(field):
+            return False
+    return (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == page_content_sha256
+    )
+
+
 COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS = frozenset(
     {
         "context_binding",
@@ -149,13 +281,6 @@ COMMANDER_PUBLIC_COMPACT_OMIT_KEYS = frozenset(
         "unreconciled_direct_versions",
     }
 )
-COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE = re.compile(
-    r"^colameta://(?:"
-    r"result-artifact/[A-Za-z0-9_-]{16,128}(?:/pages/(?:[1-9][0-9]*|\{page\}))?"
-    r"|review-manifest/[A-Za-z0-9_-]{16,128}"
-    r"(?:/subjects/[1-9][0-9]*(?:/pages/(?:[1-9][0-9]*|\{page\}))?)?"
-    r")$"
-)
 COMMANDER_PUBLIC_POSIX_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9:/])/(?!/)[^\s,;\]\[(){}<>\"']+"
 )
@@ -201,8 +326,22 @@ class CommanderPublicProjector:
         artifact: bool = False,
     ) -> Any:
         if isinstance(value, dict):
+            if (
+                commander_public_mapping_is_private_jwk(value)
+                or commander_public_mapping_is_kubernetes_secret(value)
+                or commander_public_mapping_is_oauth_device_authorization(
+                    value
+                )
+                or commander_public_mapping_is_oauth_authorization_callback(
+                    value
+                )
+                or commander_public_mapping_is_cloudfront_signed_cookie(
+                    value
+                )
+            ):
+                return None
             if self._is_resource_read_reference(value):
-                return copy.deepcopy(value)
+                return self._project_resource_read_reference(value)
             referenced_tool = value.get("tool")
             if (
                 isinstance(referenced_tool, str)
@@ -273,6 +412,10 @@ class CommanderPublicProjector:
         self,
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
+        *,
+        exact_evidence_prevalidated: bool = False,
+        exact_result_artifact_page_binding: dict[str, Any] | None = None,
+        exact_review_manifest_page_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(tool_result, dict):
             return tool_result
@@ -284,8 +427,73 @@ class CommanderPublicProjector:
             and isinstance(raw_data, dict)
             and raw_data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
+            contract_facts = raw_data.get("facts")
+            contract_artifact_page = (
+                contract_facts.get("artifact_page")
+                if isinstance(contract_facts, dict)
+                else None
+            )
+            contract_manifest_page = (
+                contract_facts.get("subject_page")
+                if isinstance(contract_facts, dict)
+                else None
+            )
+            if (
+                exact_evidence_prevalidated
+                and isinstance(contract_artifact_page, dict)
+                and not commander_result_artifact_page_matches_binding(
+                    contract_artifact_page,
+                    exact_result_artifact_page_binding,
+                    projected_tool=tool_name,
+                )
+            ):
+                return self._wrap_commander_contract(
+                    tool_name=tool_name,
+                    projected_result={
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "INTERNAL_RESULT_INVALID",
+                        "message": (
+                            "预检后的结果证据页与已验证的存储页不一致，"
+                            "已安全拒绝返回。"
+                        ),
+                    },
+                    params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
+            if (
+                exact_evidence_prevalidated
+                and isinstance(contract_manifest_page, dict)
+                and not commander_review_manifest_page_matches_binding(
+                    contract_manifest_page,
+                    exact_review_manifest_page_binding,
+                )
+            ):
+                return self._wrap_commander_contract(
+                    tool_name=tool_name,
+                    projected_result={
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "INTERNAL_RESULT_INVALID",
+                        "message": (
+                            "预检后的审查证据页与已验证的 subject 页不一致，"
+                            "已安全拒绝返回。"
+                        ),
+                    },
+                    params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
             try:
-                validate_commander_response(raw_data)
+                validate_commander_response(
+                    raw_data,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
+                )
             except Exception:
                 return self._wrap_commander_contract(
                     tool_name=tool_name,
@@ -296,6 +504,9 @@ class CommanderPublicProjector:
                         "message": "Commander 公共响应重复投影校验失败。",
                     },
                     params=params,
+                    exact_evidence_prevalidated=(
+                        exact_evidence_prevalidated
+                    ),
                 )
             projected_contract: dict[str, Any] = {
                 "ok": public_tool_result.get("ok") is True
@@ -332,18 +543,79 @@ class CommanderPublicProjector:
         # only this typed workflow's value after ordinary sanitization.
         review_manifest_contract_expiry: str | None = None
         review_manifest_page_expiry: str | None = None
+        review_manifest_page_contract_fields: dict[str, Any] = {}
+        review_manifest_contract_fields: dict[str, Any] = {}
         unsafe_exact_evidence = False
         if is_review_manifest and isinstance(raw_data, dict):
             raw_expiry = raw_data.get("expires_at")
             if isinstance(raw_expiry, str) and raw_expiry:
                 review_manifest_contract_expiry = raw_expiry
+            manifest_id = raw_data.get("review_manifest_id")
+            manifest_uri = raw_data.get("manifest_resource_uri")
+            if (
+                isinstance(manifest_id, str)
+                and isinstance(manifest_uri, str)
+                and manifest_uri
+                == f"colameta://review-manifest/{manifest_id}"
+                and COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(
+                    manifest_uri
+                )
+                is not None
+            ):
+                for field in (
+                    "review_manifest_id",
+                    "manifest_resource_uri",
+                    "manifest_sha256",
+                    "expires_at",
+                ):
+                    if field in raw_data:
+                        review_manifest_contract_fields[field] = (
+                            copy.deepcopy(raw_data[field])
+                        )
         review_manifest_page_content: str | None = None
         if is_review_manifest_read:
             raw_page = raw_data.get("subject_page") if isinstance(raw_data, dict) else None
             raw_content = raw_page.get("content") if isinstance(raw_page, dict) else None
             if isinstance(raw_content, str):
                 review_manifest_page_content = raw_content
-                unsafe_exact_evidence = self._public_string(raw_content) != raw_content
+                if exact_evidence_prevalidated:
+                    if not commander_review_manifest_page_matches_binding(
+                        raw_page,
+                        exact_review_manifest_page_binding,
+                    ):
+                        return self._wrap_commander_contract(
+                            tool_name=tool_name,
+                            projected_result={
+                                "ok": False,
+                                "tool": tool_name,
+                                "error_code": "INTERNAL_RESULT_INVALID",
+                                "message": (
+                                    "预检后的审查证据页与已验证的 "
+                                    "subject 页不一致，已安全拒绝返回。"
+                                ),
+                            },
+                            params=params,
+                            exact_evidence_prevalidated=(
+                                exact_evidence_prevalidated
+                            ),
+                        )
+                    for field in (
+                        "review_manifest_id",
+                        "subject_index",
+                        "sha256",
+                        "page",
+                        "page_count",
+                        "page_char_start",
+                        "page_char_end",
+                        "expires_at",
+                    ):
+                        review_manifest_page_contract_fields[field] = (
+                            copy.deepcopy(raw_page[field])
+                        )
+                unsafe_exact_evidence = (
+                    not exact_evidence_prevalidated
+                    and self._public_string(raw_content) != raw_content
+                )
             raw_page_expiry = raw_page.get("expires_at") if isinstance(raw_page, dict) else None
             if isinstance(raw_page_expiry, str) and raw_page_expiry:
                 review_manifest_page_expiry = raw_page_expiry
@@ -372,11 +644,39 @@ class CommanderPublicProjector:
         if is_result_artifact_read and isinstance(raw_data, dict):
             raw_page = raw_data.get("artifact_page")
             if isinstance(raw_page, dict) and isinstance(raw_page.get("content"), str):
+                if (
+                    exact_evidence_prevalidated
+                    and not commander_result_artifact_page_matches_binding(
+                        raw_page,
+                        exact_result_artifact_page_binding,
+                        projected_tool=tool_name,
+                    )
+                ):
+                    return self._wrap_commander_contract(
+                        tool_name=tool_name,
+                        projected_result={
+                            "ok": False,
+                            "tool": tool_name,
+                            "error_code": "INTERNAL_RESULT_INVALID",
+                            "message": (
+                                "预检后的结果证据页与已验证的存储页不一致，"
+                                "已安全拒绝返回。"
+                            ),
+                        },
+                        params=params,
+                        exact_evidence_prevalidated=(
+                            exact_evidence_prevalidated
+                        ),
+                    )
                 result_artifact_page = copy.deepcopy(raw_page)
                 result_artifact_page["tool"] = tool_name
                 unsafe_exact_evidence = (
                     unsafe_exact_evidence
-                    or self._public_string(raw_page["content"]) != raw_page["content"]
+                    or (
+                        not exact_evidence_prevalidated
+                        and self._public_string(raw_page["content"])
+                        != raw_page["content"]
+                    )
                 )
                 for field in COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS:
                     if field in raw_data:
@@ -391,6 +691,7 @@ class CommanderPublicProjector:
                     "message": "证据页包含 Commander 公共边界不允许公开的内容，已安全拒绝返回。",
                 },
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if public_tool_result.get("ok") is False:
             is_review_manifest_mismatch = (
@@ -435,6 +736,7 @@ class CommanderPublicProjector:
                 tool_name=tool_name,
                 projected_result=projected,
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if (
             tool_name == "run_mcp_workflow"
@@ -445,6 +747,7 @@ class CommanderPublicProjector:
                 tool_name=tool_name,
                 projected_result=self._project_gate_review_result(public_tool_result),
                 params=params,
+                exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
         if tool_name not in COMMANDER_EXPOSED_TOOLS:
             sanitized_root: dict[str, Any] = {}
@@ -485,6 +788,13 @@ class CommanderPublicProjector:
                         clean_data["project_name"] = project_name.strip()
                     projected["data"] = clean_data
         clean_result = self.sanitize(projected, compact=False)
+        if review_manifest_contract_fields and isinstance(
+            clean_result,
+            dict,
+        ):
+            clean_data = clean_result.get("data")
+            if isinstance(clean_data, dict):
+                clean_data.update(review_manifest_contract_fields)
         if review_manifest_page_content is not None and isinstance(clean_result, dict):
             clean_data = clean_result.get("data")
             if isinstance(clean_data, dict):
@@ -492,6 +802,7 @@ class CommanderPublicProjector:
                     clean_data["expires_at"] = review_manifest_contract_expiry
                 clean_page = clean_data.get("subject_page")
                 if isinstance(clean_page, dict):
+                    clean_page.update(review_manifest_page_contract_fields)
                     clean_page["content"] = review_manifest_page_content
                     if review_manifest_page_expiry is not None:
                         clean_page["expires_at"] = review_manifest_page_expiry
@@ -515,6 +826,7 @@ class CommanderPublicProjector:
                 clean_result if isinstance(clean_result, dict) else projected
             ),
             params=params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
         )
 
     @staticmethod
@@ -523,13 +835,18 @@ class CommanderPublicProjector:
         tool_name: str,
         projected_result: dict[str, Any],
         params: dict[str, Any] | None,
+        exact_evidence_prevalidated: bool = False,
     ) -> dict[str, Any]:
         response = build_commander_response(
             tool_name=tool_name,
             raw_result=projected_result,
             params=params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
         )
-        validate_commander_response(response)
+        validate_commander_response(
+            response,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+        )
         result: dict[str, Any] = {
             "ok": projected_result.get("ok") is True
             and response["outcome"] != "failed",
@@ -587,6 +904,9 @@ class CommanderPublicProjector:
         if commander_public_key_is_forbidden(
             key,
             include_internal_ids=artifact,
+        ) and not commander_public_value_is_numeric_token_metadata(
+            key,
+            value,
         ):
             return True
         if normalized in COMMANDER_PUBLIC_ALWAYS_OMIT_KEYS:
@@ -618,6 +938,23 @@ class CommanderPublicProjector:
         uri = arguments.get("uri")
         return isinstance(uri, str) and COMMANDER_PUBLIC_OPAQUE_RESOURCE_URI_RE.fullmatch(uri) is not None
 
+    def _project_resource_read_reference(
+        self,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild an opaque resource continuation from an exact public allowlist."""
+
+        arguments = value["arguments"]
+        projected: dict[str, Any] = {
+            "kind": "mcp_resource",
+            "tool": "resources/read",
+            "arguments": {"uri": arguments["uri"]},
+        }
+        reason = value.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            projected["reason"] = self._public_string(reason)
+        return projected
+
     @staticmethod
     def _is_context_binding(value: Any) -> bool:
         if not isinstance(value, dict):
@@ -632,7 +969,10 @@ class CommanderPublicProjector:
 
     def _contract_sanitize(self, value: Any) -> Any:
         if isinstance(value, dict):
-            return {str(key): self._contract_sanitize(nested) for key, nested in value.items()}
+            return {
+                str(key): self._contract_sanitize(nested)
+                for key, nested in value.items()
+            }
         if isinstance(value, list):
             return [self._contract_sanitize(item) for item in value]
         if isinstance(value, str):

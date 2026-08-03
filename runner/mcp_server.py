@@ -10,6 +10,8 @@ import time
 import hashlib
 import hmac
 import urllib.request
+from collections import OrderedDict
+from concurrent.futures import Future
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -106,6 +108,8 @@ from runner.mcp_private_operator import (
 from runner.mcp_result_artifacts import MCPResultArtifactStore, ResultArtifactHandle
 from runner.current_facts_artifact import process_current_facts_preview_store
 from runner.review_manifest import (
+    REVIEW_MANIFEST_MAX_SUBJECTS,
+    REVIEW_MANIFEST_PAGE_CHARS,
     REVIEW_MANIFEST_WORKFLOW,
     ReviewManifestError,
     ReviewManifestHandle,
@@ -114,6 +118,7 @@ from runner.review_manifest import (
     StoredReviewManifest,
     collect_review_context_binding,
     inspect_review_manifest,
+    read_manifest_subject_file,
     read_stored_review_manifest_page,
     verify_stored_review_context,
     verify_stored_review_manifest,
@@ -161,6 +166,7 @@ from runner.app_submission_work_items import AppSubmissionWorkItemCommands
 from runner.commander_projections import CommanderProjectionService
 from runner.commander_contract import (
     COMMANDER_RESPONSE_SCHEMA_VERSION,
+    commander_public_error_code,
     commander_response_schema,
     validate_commander_response,
 )
@@ -177,6 +183,8 @@ from runner.mcp_commander_public import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION as _COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
     CommanderPublicProjector,
+    commander_review_manifest_page_matches_binding,
+    commander_result_artifact_page_matches_binding,
 )
 from runner.stable_promotion_work_item import StablePromotionWorkItemReader
 from runner.service_lifecycle_store import ServiceLifecycleStore
@@ -292,6 +300,9 @@ MCP_RESULT_ARTIFACT_TTL_SECONDS = _env_int(
 )
 MCP_RESULT_ARTIFACT_PAGE_CHARS = 12000
 MCP_RESULT_ARTIFACT_MAX_ITEMS = 64
+COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS = (
+    MCP_RESULT_ARTIFACT_MAX_ITEMS
+)
 COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS = 5_000_000
 MCP_RESULT_ARTIFACT_WORKFLOW = RESULT_ARTIFACT_WORKFLOW
 MCP_RESULT_ARTIFACT_ID_RE = RESULT_ARTIFACT_ID_RE
@@ -303,6 +314,9 @@ MCP_REVIEW_MANIFEST_TTL_SECONDS = _env_int(
     minimum=60,
 )
 MCP_REVIEW_MANIFEST_MAX_ITEMS = 32
+COMMANDER_PUBLIC_REVIEW_MANIFEST_SAFETY_CACHE_MAX_ITEMS = (
+    MCP_REVIEW_MANIFEST_MAX_ITEMS * REVIEW_MANIFEST_MAX_SUBJECTS
+)
 MCP_REVIEW_MANIFEST_URI_RE = REVIEW_MANIFEST_URI_RE
 MCP_REVIEW_MANIFEST_RESOURCE_TEMPLATES = REVIEW_MANIFEST_RESOURCE_TEMPLATES
 COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION = _COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION
@@ -1042,6 +1056,49 @@ class MCPToolInputError(Exception):
     details: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _CommanderResultArtifactPageBinding:
+    artifact_id: str
+    tool: str
+    page: int
+    page_count: int
+    page_char_start: int
+    page_char_end: int
+    content_sha256: str
+    expires_at: str
+    page_content_sha256: str
+
+    def as_projection_binding(self) -> dict[str, Any]:
+        return {
+            "artifact_id": self.artifact_id,
+            "tool": self.tool,
+            "page": self.page,
+            "page_count": self.page_count,
+            "page_char_start": self.page_char_start,
+            "page_char_end": self.page_char_end,
+            "content_sha256": self.content_sha256,
+            "expires_at": self.expires_at,
+            "page_content_sha256": self.page_content_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class _CommanderResultArtifactSafetyVerdict:
+    safe: bool
+    pages: tuple[_CommanderResultArtifactPageBinding, ...] = ()
+
+    def page_binding(
+        self,
+        page: int,
+    ) -> _CommanderResultArtifactPageBinding | None:
+        if not self.safe or page < 1 or page > len(self.pages):
+            return None
+        binding = self.pages[page - 1]
+        if binding.page != page:
+            return None
+        return binding
+
+
 class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     def __init__(
         self,
@@ -1068,11 +1125,29 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             page_chars=MCP_RESULT_ARTIFACT_PAGE_CHARS,
             max_items=MCP_RESULT_ARTIFACT_MAX_ITEMS,
         )
+        self._commander_public_result_artifact_safety_cache: OrderedDict[
+            tuple[str, str], _CommanderResultArtifactSafetyVerdict
+        ] = OrderedDict()
+        self._commander_public_result_artifact_safety_inflight: dict[
+            tuple[str, str], Future[_CommanderResultArtifactSafetyVerdict]
+        ] = {}
+        self._commander_public_result_artifact_safety_cache_lock = (
+            threading.Lock()
+        )
         self._gate_review_preview_store = GateReviewPreviewStore()
         self._current_facts_preview_store = process_current_facts_preview_store()
         self._review_manifest_store = ReviewManifestStore(
             ttl_seconds=MCP_REVIEW_MANIFEST_TTL_SECONDS,
             max_items=MCP_REVIEW_MANIFEST_MAX_ITEMS,
+        )
+        self._commander_public_review_manifest_safety_cache: OrderedDict[
+            str, bool
+        ] = OrderedDict()
+        self._commander_public_review_manifest_safety_inflight: dict[
+            str, Future[bool]
+        ] = {}
+        self._commander_public_review_manifest_safety_cache_lock = (
+            threading.Lock()
         )
         self._project_route_server_factory = ProjectRouteServerFactory(self)
         self.bridge = PlanningBridge()
@@ -2420,45 +2495,835 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> dict[str, Any]:
         return self._mcp_resources_service().result_artifact_manifest_fields(handle)
 
-    def _commander_public_result_artifact_safety(
+    def _commander_public_result_artifact_preflight(
         self,
         artifact_id: str,
-    ) -> bool | None:
-        """Check the complete stored JSON payload before exposing any page."""
+    ) -> _CommanderResultArtifactSafetyVerdict | None:
+        """Check and bind the complete stored JSON payload before page reads."""
 
         first = self._mcp_result_artifact_store.read_page(artifact_id, 1)
         if first is None:
             return None
-        pages: list[str] = []
-        total_chars = 0
-        for page_number in range(1, first.page_count + 1):
-            page = self._mcp_result_artifact_store.read_page(
-                artifact_id,
-                page_number,
+        cache_key = (artifact_id, first.content_sha256)
+        owns_scan = False
+        with self._commander_public_result_artifact_safety_cache_lock:
+            cached = self._commander_public_result_artifact_safety_cache.get(
+                cache_key
             )
+            if cached is not None:
+                self._commander_public_result_artifact_safety_cache.move_to_end(
+                    cache_key
+                )
+                return cached
+            flight = (
+                self._commander_public_result_artifact_safety_inflight.get(
+                    cache_key
+                )
+            )
+            if flight is None:
+                flight = Future()
+                self._commander_public_result_artifact_safety_inflight[
+                    cache_key
+                ] = flight
+                owns_scan = True
+        if not owns_scan:
+            return flight.result()
+
+        def scan_complete_payload() -> _CommanderResultArtifactSafetyVerdict:
+            pages: list[str] = []
+            page_bindings: list[_CommanderResultArtifactPageBinding] = []
+            total_chars = 0
+            for page_number in range(1, first.page_count + 1):
+                page = self._mcp_result_artifact_store.read_page(
+                    artifact_id,
+                    page_number,
+                )
+                if (
+                    page is None
+                    or page.artifact_id != artifact_id
+                    or page.tool != first.tool
+                    or page.page != page_number
+                    or page.content_sha256 != first.content_sha256
+                    or page.page_count != first.page_count
+                    or page.expires_at != first.expires_at
+                    or page.page_char_start != total_chars
+                    or page.page_char_end
+                    != total_chars + len(page.content)
+                ):
+                    return _CommanderResultArtifactSafetyVerdict(False)
+                page_bindings.append(
+                    _CommanderResultArtifactPageBinding(
+                        artifact_id=artifact_id,
+                        tool=page.tool,
+                        page=page_number,
+                        page_count=page.page_count,
+                        page_char_start=page.page_char_start,
+                        page_char_end=page.page_char_end,
+                        content_sha256=page.content_sha256,
+                        expires_at=page.expires_at,
+                        page_content_sha256=hashlib.sha256(
+                            page.content.encode("utf-8")
+                        ).hexdigest(),
+                    )
+                )
+                total_chars += len(page.content)
+                if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
+                    return _CommanderResultArtifactSafetyVerdict(False)
+                pages.append(page.content)
+            content = "".join(pages)
             if (
-                page is None
-                or page.content_sha256 != first.content_sha256
-                or page.page_count != first.page_count
+                hashlib.sha256(content.encode("utf-8")).hexdigest()
+                != first.content_sha256
             ):
-                return False
-            total_chars += len(page.content)
-            if total_chars > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
-                return False
-            pages.append(page.content)
-        content = "".join(pages)
-        if hashlib.sha256(content.encode("utf-8")).hexdigest() != first.content_sha256:
-            return False
+                return _CommanderResultArtifactSafetyVerdict(False)
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                return _CommanderResultArtifactSafetyVerdict(False)
+            if not isinstance(payload, dict):
+                return _CommanderResultArtifactSafetyVerdict(False)
+            return _CommanderResultArtifactSafetyVerdict(
+                self._commander_public_result_artifact_payload_safety(
+                    payload
+                ),
+                tuple(page_bindings),
+            )
+
         try:
-            payload = json.loads(content)
-        except (TypeError, ValueError):
-            return False
-        if not isinstance(payload, dict):
-            return False
+            verdict = scan_complete_payload()
+        except BaseException as exc:
+            with self._commander_public_result_artifact_safety_cache_lock:
+                current = (
+                    self._commander_public_result_artifact_safety_inflight.get(
+                        cache_key
+                    )
+                )
+                if current is flight:
+                    del self._commander_public_result_artifact_safety_inflight[
+                        cache_key
+                    ]
+            flight.set_exception(exc)
+            raise
+
+        with self._commander_public_result_artifact_safety_cache_lock:
+            self._commander_public_result_artifact_safety_cache[
+                cache_key
+            ] = verdict
+            self._commander_public_result_artifact_safety_cache.move_to_end(
+                cache_key
+            )
+            while (
+                len(
+                    self._commander_public_result_artifact_safety_cache
+                )
+                > COMMANDER_PUBLIC_RESULT_ARTIFACT_SAFETY_CACHE_MAX_ITEMS
+            ):
+                self._commander_public_result_artifact_safety_cache.popitem(
+                    last=False
+                )
+            current = (
+                self._commander_public_result_artifact_safety_inflight.get(
+                    cache_key
+                )
+            )
+            if current is flight:
+                del self._commander_public_result_artifact_safety_inflight[
+                    cache_key
+                ]
+        flight.set_result(verdict)
+        return verdict
+
+    def _commander_public_result_artifact_safety(
+        self,
+        artifact_id: str,
+    ) -> bool | None:
+        verdict = self._commander_public_result_artifact_preflight(
+            artifact_id
+        )
+        return None if verdict is None else verdict.safe
+
+    def _commander_public_result_artifact_page_binding(
+        self,
+        artifact_id: str,
+        page: int,
+    ) -> dict[str, Any] | None:
+        verdict = self._commander_public_result_artifact_preflight(
+            artifact_id
+        )
+        if verdict is None:
+            return None
+        binding = verdict.page_binding(page)
+        return (
+            None
+            if binding is None
+            else binding.as_projection_binding()
+        )
+
+    def _commander_public_result_artifact_payload_safety(
+        self,
+        payload: dict[str, Any],
+    ) -> bool:
         sanitized = self._commander_public_projector().sanitize_for_artifact(
             payload
         )
         return isinstance(sanitized, dict) and sanitized == payload
+
+    def _commander_public_resource_read_safety(
+        self,
+        resource_result: dict[str, Any],
+    ) -> bool:
+        """Require an exact public projection for opaque evidence resources."""
+
+        sanitized = self._commander_public_projector().sanitize_for_artifact(
+            resource_result
+        )
+        return isinstance(sanitized, dict) and sanitized == resource_result
+
+    @staticmethod
+    def _commander_public_result_artifact_page_envelope_safety(
+        resource_result: dict[str, Any],
+        *,
+        requested_uri: str,
+        page_binding: dict[str, Any] | None,
+    ) -> bool:
+        if set(resource_result) != {"contents"}:
+            return False
+        contents = resource_result.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("uri") != requested_uri
+            or content_item.get("mimeType") != "application/json"
+        ):
+            return False
+        serialized_page = content_item.get("text")
+        if not isinstance(serialized_page, str):
+            return False
+        try:
+            page = json.loads(serialized_page)
+        except (TypeError, ValueError):
+            return False
+        return (
+            isinstance(page, dict)
+            and commander_result_artifact_page_matches_binding(
+                page,
+                page_binding,
+            )
+        )
+
+    def _commander_public_review_manifest_content_safety(
+        self,
+        content: str,
+    ) -> bool:
+        whole_subject = {"content": content}
+        sanitized_subject = (
+            self._commander_public_projector().sanitize_for_artifact(
+                whole_subject
+            )
+        )
+        return (
+            isinstance(sanitized_subject, dict)
+            and sanitized_subject == whole_subject
+        )
+
+    def _commander_public_review_manifest_cached_safety(
+        self,
+        *,
+        subject_sha256: str,
+        content: str,
+    ) -> bool:
+        owns_scan = False
+        with self._commander_public_review_manifest_safety_cache_lock:
+            cached = self._commander_public_review_manifest_safety_cache.get(
+                subject_sha256
+            )
+            if cached is not None:
+                self._commander_public_review_manifest_safety_cache.move_to_end(
+                    subject_sha256
+                )
+                return cached
+            flight = (
+                self._commander_public_review_manifest_safety_inflight.get(
+                    subject_sha256
+                )
+            )
+            if flight is None:
+                flight = Future()
+                self._commander_public_review_manifest_safety_inflight[
+                    subject_sha256
+                ] = flight
+                owns_scan = True
+        if not owns_scan:
+            return flight.result()
+
+        try:
+            safe = self._commander_public_review_manifest_content_safety(
+                content
+            )
+        except BaseException as exc:
+            with self._commander_public_review_manifest_safety_cache_lock:
+                current = (
+                    self._commander_public_review_manifest_safety_inflight.get(
+                        subject_sha256
+                    )
+                )
+                if current is flight:
+                    del (
+                        self._commander_public_review_manifest_safety_inflight[
+                            subject_sha256
+                        ]
+                    )
+            flight.set_exception(exc)
+            raise
+
+        with self._commander_public_review_manifest_safety_cache_lock:
+            self._commander_public_review_manifest_safety_cache[
+                subject_sha256
+            ] = safe
+            self._commander_public_review_manifest_safety_cache.move_to_end(
+                subject_sha256
+            )
+            while (
+                len(self._commander_public_review_manifest_safety_cache)
+                > COMMANDER_PUBLIC_REVIEW_MANIFEST_SAFETY_CACHE_MAX_ITEMS
+            ):
+                self._commander_public_review_manifest_safety_cache.popitem(
+                    last=False
+                )
+            current = (
+                self._commander_public_review_manifest_safety_inflight.get(
+                    subject_sha256
+                )
+            )
+            if current is flight:
+                del self._commander_public_review_manifest_safety_inflight[
+                    subject_sha256
+                ]
+        flight.set_result(safe)
+        return safe
+
+    def _commander_public_review_manifest_subject_safety(
+        self,
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> bool | None:
+        """Verify and cache complete-subject safety before page slicing."""
+
+        review_manifest_id, subject_index, _page = parsed_review_manifest
+        if subject_index is None:
+            return None
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return None
+        current_context = collect_review_context_binding(
+            stored.project_root,
+            project_name=str(stored.context_binding.get("project_name") or ""),
+        )
+        verify_stored_review_context(
+            stored,
+            current_context_binding=current_context,
+        )
+        if subject_index < 1 or subject_index > len(stored.subjects):
+            return None
+        subject = stored.subjects[subject_index - 1]
+        raw, text = read_manifest_subject_file(stored.project_root, subject.path)
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if not secrets.compare_digest(actual_sha256, subject.sha256):
+            raise ReviewManifestError(
+                "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH",
+                f"manifest subject 的 SHA-256 与当前文件不一致：{subject.path}",
+                {
+                    "path": subject.path,
+                    "expected_sha256": subject.sha256,
+                    "actual_sha256": actual_sha256,
+                },
+            )
+        if len(text) > COMMANDER_PUBLIC_ARTIFACT_SCAN_MAX_CHARS:
+            return False
+        return self._commander_public_review_manifest_cached_safety(
+            subject_sha256=subject.sha256,
+            content=text,
+        )
+
+    def _commander_public_review_manifest_page_binding(
+        self,
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> dict[str, Any] | None:
+        review_manifest_id, subject_index, requested_page = (
+            parsed_review_manifest
+        )
+        if subject_index is None:
+            return None
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return None
+        current_context = collect_review_context_binding(
+            stored.project_root,
+            project_name=str(
+                stored.context_binding.get("project_name") or ""
+            ),
+        )
+        verify_stored_review_context(
+            stored,
+            current_context_binding=current_context,
+        )
+        if subject_index < 1 or subject_index > len(stored.subjects):
+            return None
+        subject = stored.subjects[subject_index - 1]
+        page = requested_page or 1
+        if page < 1 or page > subject.page_count:
+            return None
+        raw, text = read_manifest_subject_file(
+            stored.project_root,
+            subject.path,
+        )
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if not secrets.compare_digest(
+            actual_sha256,
+            subject.sha256,
+        ):
+            raise ReviewManifestError(
+                "REVIEW_MANIFEST_SUBJECT_HASH_MISMATCH",
+                (
+                    "manifest subject 的 SHA-256 与当前文件不一致："
+                    f"{subject.path}"
+                ),
+                {
+                    "path": subject.path,
+                    "expected_sha256": subject.sha256,
+                    "actual_sha256": actual_sha256,
+                },
+            )
+        start = (page - 1) * REVIEW_MANIFEST_PAGE_CHARS
+        end = min(start + REVIEW_MANIFEST_PAGE_CHARS, len(text))
+        return {
+            "review_manifest_id": review_manifest_id,
+            "review_unit": str(
+                stored.context_binding["review_unit"]
+            ),
+            "subject_index": subject_index,
+            "path": subject.path,
+            "sha256": subject.sha256,
+            "page": page,
+            "page_count": subject.page_count,
+            "page_char_start": start,
+            "page_char_end": end,
+            "expires_at": stored.handle.expires_at,
+            "page_content_sha256": hashlib.sha256(
+                text[start:end].encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _commander_public_typed_evidence_safety(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> bool | None:
+        """Preflight complete typed evidence before projecting an exact page."""
+
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_artifact_read = tool_name == "read_result_artifact" or (
+            tool_name == "run_mcp_workflow"
+            and workflow == MCP_RESULT_ARTIFACT_WORKFLOW
+            and phase == "read"
+        )
+        if is_artifact_read:
+            artifact_id = params.get("artifact_id")
+            if (
+                not isinstance(artifact_id, str)
+                or MCP_RESULT_ARTIFACT_ID_RE.fullmatch(
+                    artifact_id.strip()
+                )
+                is None
+            ):
+                return None
+            return self._commander_public_result_artifact_safety(
+                artifact_id.strip()
+            )
+
+        is_review_manifest_read = (
+            (
+                tool_name == "review_manifest"
+                or (
+                    tool_name == "run_mcp_workflow"
+                    and workflow == REVIEW_MANIFEST_WORKFLOW
+                )
+            )
+            and phase == "read"
+        )
+        if not is_review_manifest_read:
+            return None
+        review_manifest_id = params.get("review_manifest_id")
+        subject_index = params.get("review_manifest_subject_index")
+        page = params.get("review_manifest_page")
+        if (
+            not isinstance(review_manifest_id, str)
+            or not review_manifest_id.strip()
+            or isinstance(subject_index, bool)
+            or not isinstance(subject_index, int)
+            or subject_index < 1
+            or (
+                page is not None
+                and (
+                    isinstance(page, bool)
+                    or not isinstance(page, int)
+                    or page < 1
+                )
+            )
+        ):
+            return None
+        parsed = self._parse_mcp_review_manifest_uri(
+            self._mcp_review_manifest_uri(
+                review_manifest_id.strip(),
+                subject_index=subject_index,
+                page=page,
+            )
+        )
+        if parsed is None:
+            return None
+        return self._commander_public_review_manifest_subject_safety(
+            parsed
+        )
+
+    def _commander_public_typed_result_artifact_page_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_artifact_read = tool_name == "read_result_artifact" or (
+            tool_name == "run_mcp_workflow"
+            and workflow == MCP_RESULT_ARTIFACT_WORKFLOW
+            and phase == "read"
+        )
+        if not is_artifact_read:
+            return None
+        artifact_id = params.get("artifact_id")
+        page = params.get("artifact_page", 1)
+        if (
+            not isinstance(artifact_id, str)
+            or MCP_RESULT_ARTIFACT_ID_RE.fullmatch(
+                artifact_id.strip()
+            )
+            is None
+            or isinstance(page, bool)
+            or not isinstance(page, int)
+            or page < 1
+        ):
+            return None
+        return self._commander_public_result_artifact_page_binding(
+            artifact_id.strip(),
+            page,
+        )
+
+    def _commander_public_typed_review_manifest_page_binding(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if (
+            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            or not isinstance(params, dict)
+        ):
+            return None
+        workflow = _policy_string_param(params, "workflow")
+        phase = _policy_string_param(params, "phase")
+        is_manifest_read = (
+            tool_name == "review_manifest"
+            or (
+                tool_name == "run_mcp_workflow"
+                and workflow == REVIEW_MANIFEST_WORKFLOW
+            )
+        ) and phase == "read"
+        if not is_manifest_read:
+            return None
+        review_manifest_id = params.get("review_manifest_id")
+        subject_index = params.get(
+            "review_manifest_subject_index"
+        )
+        page = params.get("review_manifest_page", 1)
+        if (
+            not isinstance(review_manifest_id, str)
+            or not review_manifest_id.strip()
+            or isinstance(subject_index, bool)
+            or not isinstance(subject_index, int)
+            or subject_index < 1
+            or isinstance(page, bool)
+            or not isinstance(page, int)
+            or page < 1
+        ):
+            return None
+        parsed = self._parse_mcp_review_manifest_uri(
+            self._mcp_review_manifest_uri(
+                review_manifest_id.strip(),
+                subject_index=subject_index,
+                page=page,
+            )
+        )
+        if parsed is None:
+            return None
+        return self._commander_public_review_manifest_page_binding(
+            parsed
+        )
+
+    def _commander_public_review_manifest_page_envelope_safety(
+        self,
+        resource_result: dict[str, Any],
+        parsed_review_manifest: tuple[str, int | None, int | None],
+        page_binding: dict[str, Any] | None,
+    ) -> bool:
+        """Bind page metadata to its request without reinterpreting a slice."""
+
+        (
+            requested_manifest_id,
+            requested_subject_index,
+            requested_page,
+        ) = parsed_review_manifest
+        if requested_subject_index is None:
+            return False
+        if set(resource_result) != {"contents"}:
+            return False
+        expected_resource_uri = self._mcp_review_manifest_uri(
+            requested_manifest_id,
+            subject_index=requested_subject_index,
+            page=requested_page,
+        )
+
+        candidate = copy.deepcopy(resource_result)
+        contents = candidate.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("mimeType") != "application/json"
+        ):
+            return False
+        serialized_page = content_item.get("text")
+        if not isinstance(serialized_page, str):
+            return False
+        try:
+            page = json.loads(serialized_page)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(page, dict) or not isinstance(page.get("content"), str):
+            return False
+        resource_uri = content_item.get("uri")
+        if resource_uri != expected_resource_uri:
+            return False
+        parsed_resource = self._parse_mcp_review_manifest_uri(
+            resource_uri
+        )
+        if parsed_resource != parsed_review_manifest:
+            return False
+        (
+            resource_manifest_id,
+            resource_subject_index,
+            resource_page,
+        ) = parsed_review_manifest
+        expected_page_fields = {
+            "review_manifest_id",
+            "review_unit",
+            "subject_index",
+            "path",
+            "sha256",
+            "page",
+            "page_count",
+            "page_char_start",
+            "page_char_end",
+            "expires_at",
+            "content",
+        }
+        if set(page) != expected_page_fields:
+            return False
+        if (
+            page.get("review_manifest_id") != resource_manifest_id
+            or page.get("subject_index") != resource_subject_index
+            or page.get("page") != (resource_page or 1)
+        ):
+            return False
+        if not commander_review_manifest_page_matches_binding(
+            page,
+            page_binding,
+        ):
+            return False
+        expires_at = page.get("expires_at")
+        if not isinstance(expires_at, str):
+            return False
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                expires_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if parsed_expiry.tzinfo is None:
+            return False
+        page["content"] = ""
+        # The resource page is a typed JSON envelope.  Validate its fields
+        # structurally so allowlisted opaque ID fields are not reinterpreted
+        # as free-text provider tokens merely because the envelope is
+        # serialized into MCP ``text``.
+        sanitized_page = (
+            self._commander_public_projector().sanitize_for_artifact(page)
+        )
+        if not isinstance(sanitized_page, dict):
+            return False
+        # Restore the handle only after binding it to the parsed resource URI.
+        sanitized_page["review_manifest_id"] = resource_manifest_id
+        # Generic artifact projection intentionally omits timestamps.  This
+        # typed envelope requires its validated expiry for continuation.
+        sanitized_page["expires_at"] = expires_at
+        if sanitized_page != page:
+            return False
+        content_item["text"] = ""
+        return self._commander_public_resource_read_safety(candidate)
+
+    def _commander_public_review_manifest_root_envelope_safety(
+        self,
+        resource_result: dict[str, Any],
+        parsed_review_manifest: tuple[str, int | None, int | None],
+    ) -> bool:
+        """Bind a root summary's opaque handles to its requested resource."""
+
+        review_manifest_id, subject_index, page = parsed_review_manifest
+        if subject_index is not None or page is not None:
+            return False
+        if set(resource_result) != {"contents"}:
+            return False
+        expected_resource_uri = self._mcp_review_manifest_uri(
+            review_manifest_id
+        )
+        candidate = copy.deepcopy(resource_result)
+        contents = candidate.get("contents")
+        if not isinstance(contents, list) or len(contents) != 1:
+            return False
+        content_item = contents[0]
+        if (
+            not isinstance(content_item, dict)
+            or set(content_item) != {"uri", "mimeType", "text"}
+            or content_item.get("mimeType") != "application/json"
+        ):
+            return False
+        resource_uri = content_item.get("uri")
+        serialized_summary = content_item.get("text")
+        if (
+            resource_uri != expected_resource_uri
+            or not isinstance(serialized_summary, str)
+        ):
+            return False
+        try:
+            summary = json.loads(serialized_summary)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(summary, dict):
+            return False
+        stored = self._review_manifest_store.get(review_manifest_id)
+        if stored is None:
+            return False
+        expected_summary = self._review_manifest_resource_summary(stored)
+        if summary != expected_summary:
+            return False
+        if (
+            summary.get("review_manifest_id") != review_manifest_id
+            or summary.get("manifest_resource_uri")
+            != expected_resource_uri
+        ):
+            return False
+        expires_at = summary.get("expires_at")
+        if not isinstance(expires_at, str):
+            return False
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                expires_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if parsed_expiry.tzinfo is None:
+            return False
+
+        # Mask only relation-bound standalone handle fields before applying
+        # the generic credential scan.  URI fields remain exact and continue
+        # through the ordinary opaque-resource allowlist.
+        scan_summary = copy.deepcopy(summary)
+        neutral_manifest_id = "opaque_review_manifest_handle_1234567890"
+        scan_summary["review_manifest_id"] = neutral_manifest_id
+        subjects = scan_summary.get("subjects")
+        if not isinstance(subjects, list):
+            return False
+        for expected_subject_index, subject in enumerate(
+            subjects,
+            start=1,
+        ):
+            if not isinstance(subject, dict):
+                return False
+            subject_resource_uri = subject.get("resource_uri")
+            parsed_subject_resource = (
+                self._parse_mcp_review_manifest_uri(
+                    subject_resource_uri
+                )
+                if isinstance(subject_resource_uri, str)
+                else None
+            )
+            if parsed_subject_resource != (
+                review_manifest_id,
+                expected_subject_index,
+                None,
+            ):
+                return False
+            if subject.get("page_uri_template") != (
+                f"{subject_resource_uri}/pages/{{page}}"
+            ):
+                return False
+            read_call = subject.get("read_call")
+            if (
+                not isinstance(read_call, dict)
+                or read_call.get("tool") != "run_mcp_workflow"
+            ):
+                return False
+            arguments = read_call.get("arguments")
+            if (
+                not isinstance(arguments, dict)
+                or arguments.get("workflow")
+                != REVIEW_MANIFEST_WORKFLOW
+                or arguments.get("phase") != "read"
+                or arguments.get("review_manifest_id")
+                != review_manifest_id
+                or arguments.get("review_manifest_subject_index")
+                != expected_subject_index
+                or arguments.get("review_manifest_page") != 1
+            ):
+                return False
+            arguments["review_manifest_id"] = neutral_manifest_id
+
+        sanitized_summary = (
+            self._commander_public_projector().sanitize_for_artifact(
+                scan_summary
+            )
+        )
+        if not isinstance(sanitized_summary, dict):
+            return False
+        # Generic artifact projection omits timestamps.  The root manifest
+        # envelope requires its already validated continuation expiry.
+        sanitized_summary["expires_at"] = expires_at
+        if sanitized_summary != scan_summary:
+            return False
+        content_item["text"] = ""
+        return self._commander_public_resource_read_safety(candidate)
 
     @staticmethod
     def _result_artifact_next_read(artifact_fields: dict[str, Any]) -> dict[str, Any]:
@@ -2738,7 +3603,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     return self._protocol_error(req_id, -32602, "invalid_resource_uri", "resources/read 需要 uri。")
                 normalized_uri = uri.strip()
                 is_result_artifact = self._parse_mcp_result_artifact_uri(normalized_uri) is not None
-                is_review_manifest = self._parse_mcp_review_manifest_uri(normalized_uri) is not None
+                parsed_review_manifest = self._parse_mcp_review_manifest_uri(
+                    normalized_uri
+                )
+                is_review_manifest = parsed_review_manifest is not None
                 if (
                     normalized_uri != COMMANDER_APP_WIDGET_URI
                     and not is_result_artifact
@@ -2750,6 +3618,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "resource_not_found",
                         f"未知 resource uri：{normalized_uri}",
                     )
+                parsed_artifact: tuple[str, int] | None = None
+                result_artifact_page_binding: dict[str, Any] | None = None
                 if is_result_artifact:
                     access_error = self._mcp_result_artifact_resource_access_error(auth_context)
                     if access_error is not None:
@@ -2758,14 +3628,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     parsed_artifact = self._parse_mcp_result_artifact_uri(
                         normalized_uri
                     )
-                    if (
-                        self.mcp_exposure_profile
-                        == MCP_EXPOSURE_PROFILE_COMMANDER
-                        and parsed_artifact is not None
-                        and self._commander_public_result_artifact_safety(
+                    artifact_safety = (
+                        self._commander_public_result_artifact_safety(
                             parsed_artifact[0]
                         )
-                        is False
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            and parsed_artifact is not None
+                        )
+                        else None
+                    )
+                    if (
+                        artifact_safety is False
                     ):
                         return self._protocol_error(
                             req_id,
@@ -2773,6 +3648,20 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             "evidence_unavailable",
                             "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
                         )
+                    if (
+                        artifact_safety is True
+                        and parsed_artifact is not None
+                    ):
+                        result_artifact_page_binding = (
+                            self._commander_public_result_artifact_page_binding(
+                                parsed_artifact[0],
+                                parsed_artifact[1],
+                            )
+                        )
+                whole_subject_safety: bool | None = None
+                review_manifest_page_binding: dict[str, Any] | None = (
+                    None
+                )
                 if is_review_manifest:
                     access_error = self._mcp_read_scoped_resource_access_error(
                         auth_context,
@@ -2782,12 +3671,45 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         error_code, message = access_error
                         return self._protocol_error(req_id, -32602, error_code, message)
                     try:
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            and parsed_review_manifest is not None
+                            and parsed_review_manifest[1] is not None
+                        ):
+                            whole_subject_safety = (
+                                self._commander_public_review_manifest_subject_safety(
+                                    parsed_review_manifest
+                                )
+                            )
+                            if whole_subject_safety is False:
+                                return self._protocol_error(
+                                    req_id,
+                                    -32602,
+                                    "evidence_unavailable",
+                                    "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
+                                )
+                            if whole_subject_safety is True:
+                                review_manifest_page_binding = (
+                                    self._commander_public_review_manifest_page_binding(
+                                        parsed_review_manifest
+                                    )
+                                )
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
+                        error_code = exc.error_code
+                        if (
+                            self.mcp_exposure_profile
+                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                        ):
+                            error_code = (
+                                commander_public_error_code(error_code)
+                                or "INTERNAL_ERROR"
+                            )
                         return self._protocol_error(
                             req_id,
                             -32602,
-                            exc.error_code,
+                            error_code,
                             exc.message,
                             exc.details,
                         )
@@ -2812,16 +3734,71 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             else f"未知 resource uri：{normalized_uri}"
                         ),
                     )
+                if (
+                    self.mcp_exposure_profile
+                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    and parsed_artifact is not None
+                    and not self._commander_public_result_artifact_page_envelope_safety(
+                        resource_result,
+                        requested_uri=normalized_uri,
+                        page_binding=result_artifact_page_binding,
+                    )
+                ):
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        "evidence_unavailable",
+                        "结果证据页与已验证的存储页不一致，已拒绝读取。",
+                    )
+                if (
+                    self.mcp_exposure_profile
+                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    and parsed_review_manifest is not None
+                    and not (
+                        (
+                            self._commander_public_review_manifest_root_envelope_safety(
+                                resource_result,
+                                parsed_review_manifest,
+                            )
+                            if parsed_review_manifest[1] is None
+                            else self._commander_public_review_manifest_page_envelope_safety(
+                                resource_result,
+                                parsed_review_manifest,
+                                review_manifest_page_binding,
+                            )
+                            if whole_subject_safety is True
+                            else self._commander_public_resource_read_safety(
+                                resource_result
+                            )
+                        )
+                    )
+                ):
+                    return self._protocol_error(
+                        req_id,
+                        -32602,
+                        "evidence_unavailable",
+                        "审查证据未通过 Commander 公共安全校验，已拒绝读取。",
+                    )
                 return self._result(req_id, resource_result)
             if method in ("call_tool", "tools/call"):
                 if not isinstance(params, dict):
                     return self._result(req_id, self._tool_error("call_tool", "INVALID_PARAMS", "params 必须是对象。"))
                 name = params.get("name")
                 arguments = params.get("arguments", {})
-                tool_result = self._call_tool(name, arguments, auth_context=auth_context)
+                tool_result = self._call_tool(
+                    name,
+                    arguments,
+                    auth_context=auth_context,
+                )
                 if method == "tools/call":
                     return self._result(req_id, self._as_mcp_call_result(tool_result, arguments))
-                return self._result(req_id, tool_result)
+                return self._result(
+                    req_id,
+                    self._commander_public_project_tool_result(
+                        tool_result,
+                        arguments,
+                    ),
+                )
             if method == "apply_plan_patch":
                 return self._result(
                     req_id,
@@ -2839,7 +3816,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "direct_tool_method_disabled",
                         "Direct named JSON-RPC tool methods are disabled; use tools/call.",
                     )
-                return self._result(req_id, self._call_tool(method, params, auth_context=auth_context))
+                return self._result(
+                    req_id,
+                    self._commander_public_project_tool_result(
+                        self._call_tool(
+                            method,
+                            params,
+                            auth_context=auth_context,
+                        ),
+                        params,
+                    ),
+                )
             return self._protocol_error(req_id, -32601, "method_not_found", f"未知方法：{method}")
         except Exception as e:
             return self._result(
@@ -3311,25 +4298,118 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self,
         tool_result: dict[str, Any],
         params: dict[str, Any] | None = None,
+        *,
+        prevalidated_review_manifest_page_binding: (
+            dict[str, Any] | None
+        ) = None,
     ) -> dict[str, Any]:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
             return tool_result
         projector = self._commander_public_projector()
+        tool_name = str(tool_result.get("tool") or "unknown_tool")
+        try:
+            exact_evidence_safety = (
+                self._commander_public_typed_evidence_safety(
+                    tool_name,
+                    params,
+                )
+            )
+        except ReviewManifestError as exc:
+            public_error_code = (
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR"
+            )
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    public_error_code,
+                    exc.message,
+                ),
+                params,
+            )
+        if exact_evidence_safety is False:
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    "EVIDENCE_UNAVAILABLE",
+                    "完整证据未通过 Commander 公共安全校验，已拒绝读取。",
+                ),
+                params,
+            )
+        exact_evidence_prevalidated = exact_evidence_safety is True
+        exact_result_artifact_page_binding = (
+            self._commander_public_typed_result_artifact_page_binding(
+                tool_name,
+                params,
+            )
+            if exact_evidence_prevalidated
+            else None
+        )
+        try:
+            if not exact_evidence_prevalidated:
+                exact_review_manifest_page_binding = None
+            elif prevalidated_review_manifest_page_binding is not None:
+                exact_review_manifest_page_binding = copy.deepcopy(
+                    prevalidated_review_manifest_page_binding
+                )
+            else:
+                exact_review_manifest_page_binding = (
+                    self._commander_public_typed_review_manifest_page_binding(
+                        tool_name,
+                        params,
+                    )
+                )
+        except ReviewManifestError as exc:
+            public_error_code = (
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR"
+            )
+            return projector.project_tool_result(
+                self._tool_error(
+                    tool_name,
+                    public_error_code,
+                    exc.message,
+                ),
+                params,
+            )
         data = tool_result.get("data") if isinstance(tool_result, dict) else None
         if (
             isinstance(data, dict)
             and data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
-            return projector.project_tool_result(tool_result, params)
+            return projector.project_tool_result(
+                tool_result,
+                params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
+            )
 
-        tool_name = str(tool_result.get("tool") or "unknown_tool")
         target_chars = (
             MCP_HARD_TOOL_RESULT_CHARS
             if tool_name == "render_commander_app"
             else MCP_TARGET_TOOL_RESULT_CHARS
         )
         if self._json_char_count(tool_result) <= target_chars:
-            return projector.project_tool_result(tool_result, params)
+            return projector.project_tool_result(
+                tool_result,
+                params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
+            )
 
         safe_artifact_payload = projector.sanitize_for_artifact(tool_result)
         if not isinstance(safe_artifact_payload, dict):
@@ -3341,6 +4421,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法建立安全的 Commander 公共证据。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
         artifact_fields = self._store_packaged_result_artifact(
             tool_name,
@@ -3355,9 +4444,28 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法建立可恢复的 Commander 公共证据。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
 
-        projected = projector.project_tool_result(tool_result, params)
+        projected = projector.project_tool_result(
+            tool_result,
+            params,
+            exact_evidence_prevalidated=exact_evidence_prevalidated,
+            exact_result_artifact_page_binding=(
+                exact_result_artifact_page_binding
+            ),
+            exact_review_manifest_page_binding=(
+                exact_review_manifest_page_binding
+            ),
+        )
         contract = projected.get("data") if isinstance(projected, dict) else None
         if not isinstance(contract, dict):
             return projector.project_tool_result(
@@ -3368,6 +4476,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果的 Commander 公共响应构建失败。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
         packaged_contract = copy.deepcopy(contract)
         packaged_contract["evidence"] = {
@@ -3400,7 +4517,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "reason": "读取完整公共安全结果的第 1 页并核对内容哈希。",
             }
         try:
-            validate_commander_response(packaged_contract)
+            validate_commander_response(
+                packaged_contract,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+            )
         except Exception:
             return projector.project_tool_result(
                 {
@@ -3410,6 +4532,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "message": "大结果无法满足 Commander 公共响应契约。",
                 },
                 params,
+                exact_evidence_prevalidated=(
+                    exact_evidence_prevalidated
+                ),
+                exact_result_artifact_page_binding=(
+                    exact_result_artifact_page_binding
+                ),
+                exact_review_manifest_page_binding=(
+                    exact_review_manifest_page_binding
+                ),
             )
         packaged_result = copy.deepcopy(projected)
         packaged_result["data"] = packaged_contract
@@ -4268,33 +5399,44 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
         if relay_scope_error is not None:
             return relay_scope_error
-        is_commander_artifact_read = (
-            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
-            and (
-                name == "read_result_artifact"
-                or (
-                    name == "run_mcp_workflow"
-                    and _policy_string_param(params, "workflow")
-                    == MCP_RESULT_ARTIFACT_WORKFLOW
-                    and _policy_string_param(params, "phase") == "read"
+        try:
+            exact_evidence_safety = (
+                self._commander_public_typed_evidence_safety(
+                    name,
+                    params,
                 )
             )
-        )
-        artifact_id = params.get("artifact_id")
-        if (
-            is_commander_artifact_read
-            and isinstance(artifact_id, str)
-            and MCP_RESULT_ARTIFACT_ID_RE.fullmatch(artifact_id.strip())
-            and self._commander_public_result_artifact_safety(
-                artifact_id.strip()
+        except ReviewManifestError as exc:
+            return self._tool_error(
+                name,
+                commander_public_error_code(exc.error_code)
+                or "INTERNAL_ERROR",
+                exc.message,
             )
-            is False
-        ):
+        if exact_evidence_safety is False:
             return self._tool_error(
                 name,
                 "EVIDENCE_UNAVAILABLE",
-                "结果证据未通过 Commander 公共安全校验，已拒绝读取。",
+                "完整证据未通过 Commander 公共安全校验，已拒绝读取。",
             )
+        prevalidated_review_manifest_page_binding: (
+            dict[str, Any] | None
+        ) = None
+        if exact_evidence_safety is True:
+            try:
+                prevalidated_review_manifest_page_binding = (
+                    self._commander_public_typed_review_manifest_page_binding(
+                        name,
+                        params,
+                    )
+                )
+            except ReviewManifestError as exc:
+                return self._tool_error(
+                    name,
+                    commander_public_error_code(exc.error_code)
+                    or "INTERNAL_ERROR",
+                    exc.message,
+                )
         operator_request = (
             name == "run_mcp_workflow"
             and _policy_string_param(params, "workflow") == "operator_batch"
@@ -4313,7 +5455,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 clean_data = dict(data)
                 result["_meta"] = copy.deepcopy(clean_data.pop("_meta"))
                 result["data"] = clean_data
-            return self._commander_public_project_tool_result(result, params)
+            return self._commander_public_project_tool_result(
+                result,
+                params,
+                prevalidated_review_manifest_page_binding=(
+                    prevalidated_review_manifest_page_binding
+                ),
+            )
         except MCPToolInputError as e:
             self._stop_authoritative_canary_if_inactive()
             if operator_request:

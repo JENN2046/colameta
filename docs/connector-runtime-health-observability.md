@@ -66,7 +66,7 @@ Current safe surfaces:
   first-class read-only tool. It accepts optional caller-provided sanitized
   `tunnel_client` and `control_plane` summaries with only these fields:
   `status`, `reason_code`, `evidence_source`, and `last_observed_at`.
-- The seven-tool private App exposes `get_apps_connector_smoke_packet`, which
+- The nine-tool private App exposes `get_apps_connector_smoke_packet`, which
   packages the same connector/runtime closeout without exposing the dedicated
   advanced health tool.
 - Web `/api/status` includes a compact card based on the fact that the Web API

@@ -10,6 +10,8 @@ import copy
 import re
 from typing import Any, Iterable
 
+from runner.commander_contract import commander_public_error_code_for_result
+
 
 COMMANDER_JOURNEY_STAGES = frozenset(
     {"connect", "observe", "plan", "execute", "review", "validate", "close", "recover"}
@@ -50,6 +52,9 @@ _RECOVERY_WORKFLOWS = frozenset({"git_restore_file", "git_revert", "git_undo_ver
 _COMPATIBILITY_ONLY_WORKFLOWS = frozenset({"auto_preview"})
 _RECOVERY_GIT_ACTIONS = frozenset(
     {"restore_file_preview", "restore_file_apply", "revert_preview", "revert_apply"}
+)
+_PROJECT_SELECTION_PUBLIC_ERROR_CODES = frozenset(
+    {"PROJECT_REQUIRED", "PROJECT_NOT_REGISTERED"}
 )
 _ACTION_CONTAINER_KEYS = frozenset(
     {
@@ -453,7 +458,17 @@ def _synthetic_poll_action(
 
 def _synthetic_recovery_action(
     params: dict[str, Any],
+    raw_result: dict[str, Any],
 ) -> dict[str, Any]:
+    if (
+        commander_public_error_code_for_result(raw_result)
+        in _PROJECT_SELECTION_PUBLIC_ERROR_CODES
+    ):
+        return {
+            "tool": "list_registered_projects",
+            "arguments": {},
+            "reason": "列出可用项目后，使用有效 project_name 重试原调用。",
+        }
     project_name = params.get("project_name")
     return {
         "tool": "analyze_project_state",
@@ -476,6 +491,12 @@ def select_commander_next_action(
     """Select at most one public action using the frozen priority order."""
 
     safe_params = params if isinstance(params, dict) else {}
+    if (
+        outcome == "blocked"
+        and commander_public_error_code_for_result(raw_result)
+        in _PROJECT_SELECTION_PUBLIC_ERROR_CODES
+    ):
+        return _synthetic_recovery_action(safe_params, raw_result)
     candidates: list[tuple[int, int, dict[str, Any]]] = []
     for index, candidate in enumerate(_walk_action_candidates(raw_result)):
         normalized = _normalized_candidate(candidate)
@@ -492,5 +513,5 @@ def select_commander_next_action(
     if outcome == "in_progress":
         return _synthetic_poll_action(tool_name, safe_params, raw_result)
     if outcome == "blocked":
-        return _synthetic_recovery_action(safe_params)
+        return _synthetic_recovery_action(safe_params, raw_result)
     return None
