@@ -2881,6 +2881,7 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         "password: # supplied locally\n"
         '"client_secret": ""\n'
         "config[password]=\n"
+        '{"code":"SUCCESS","state":"completed"}\n'
         "{'kty': 'RSA', 'n': 'synthetic-python-public-modulus', "
         "'e': 'AQAB'}\n"
     )
@@ -3369,6 +3370,8 @@ def test_commander_manifest_reads_preserve_safe_xml_and_token_metrics(
         ),
         "client_secret: alpha beta gamma",
         "password: correct horse battery staple",
+        "PASSWORD=#synthetic-punctuation-manifest-secret",
+        '{"shell":"PASSWORD\\u003d#synthetic-encoded-manifest-secret"}',
         "_auth=dXNlcjpwYXNz",
         '{"\\u005fauth":"dXNlcjpwYXNz"}',
         json.dumps(

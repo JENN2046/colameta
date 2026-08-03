@@ -40,3 +40,15 @@ def test_artifact_sanitizer_omits_structured_oauth_callback() -> None:
 
     assert sanitized == {"status": "clean"}
     assert authorization_code not in repr(sanitized)
+
+
+def test_artifact_sanitizer_preserves_non_oauth_code_state_mapping() -> None:
+    projector = CommanderPublicProjector(None)
+    payload = {
+        "workflow_result": {
+            "code": "SUCCESS",
+            "state": "completed",
+        }
+    }
+
+    assert projector.sanitize_for_artifact(payload) == payload

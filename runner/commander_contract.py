@@ -1031,6 +1031,19 @@ _OAUTH_DEVICE_AUTHORIZATION_INTEGER_CONTEXT_KEYS = frozenset(
         "interval",
     }
 )
+_OAUTH_AUTHORIZATION_CALLBACK_CONTEXT_KEYS = frozenset(
+    {
+        "client_id",
+        "iss",
+        "redirect_uri",
+        "response_mode",
+        "response_type",
+        "session_state",
+    }
+)
+_OAUTH_AUTHORIZATION_CODE_MIN_CHARS = 16
+_OAUTH_AUTHORIZATION_CODE_MAX_CHARS = 4_096
+_PUBLIC_STATUS_CODE_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,63}")
 _STANDALONE_JWT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])"
     r"(?P<header>[A-Za-z0-9_-]{8,1024})\."
@@ -5202,19 +5215,32 @@ def commander_public_mapping_is_oauth_authorization_callback(
 ) -> bool:
     """Detect one parsed OAuth callback mapping without joining siblings."""
 
-    has_code = False
+    code: Any = None
     has_state = False
+    has_callback_context = False
     for key, nested in value.items():
         if not isinstance(key, str):
             continue
         normalized_key = key.casefold()
-        has_code = has_code or (
-            normalized_key == "code"
-            and isinstance(nested, str)
-            and bool(nested)
-        )
+        if normalized_key == "code":
+            code = nested
         has_state = has_state or normalized_key == "state"
-    return has_code and has_state
+        has_callback_context = (
+            has_callback_context
+            or normalized_key
+            in _OAUTH_AUTHORIZATION_CALLBACK_CONTEXT_KEYS
+        )
+    if not has_state or not isinstance(code, str) or not code:
+        return False
+    if has_callback_context:
+        return True
+    return (
+        _OAUTH_AUTHORIZATION_CODE_MIN_CHARS
+        <= len(code)
+        <= _OAUTH_AUTHORIZATION_CODE_MAX_CHARS
+        and all("!" <= character <= "~" for character in code)
+        and _PUBLIC_STATUS_CODE_RE.fullmatch(code) is None
+    )
 
 
 def commander_public_mapping_is_cloudfront_signed_cookie(
@@ -5820,9 +5846,11 @@ def _assignment_has_value_token(value: str, start: int) -> bool:
     cursor = start
     while cursor < len(value) and value[cursor] in " \t":
         cursor += 1
+    skipped_whitespace = cursor > start
     if (
         cursor >= len(value)
-        or value[cursor] in "\r\n,;}]#"
+        or value[cursor] in "\r\n,;}]"
+        or (value[cursor] == "#" and skipped_whitespace)
     ):
         return False
     if (

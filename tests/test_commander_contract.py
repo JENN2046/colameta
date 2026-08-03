@@ -2844,6 +2844,13 @@ def test_public_text_redacts_form_encoded_sensitive_key_assignments(
                 )
             }
         ),
+        json.dumps(
+            {
+                "code": "short-code",
+                "state": "synthetic-contextual-oauth-state",
+                "session_state": "synthetic-oauth-session-state",
+            }
+        ),
     ],
 )
 def test_public_text_redacts_oauth_authorization_code_callbacks(
@@ -3319,6 +3326,27 @@ def test_commander_response_omits_structured_oauth_callback() -> None:
     assert authorization_code not in rendered
     assert response["facts"]["status"] == "clean"
     assert "oauth_callback" not in response["facts"]
+    validate_commander_response(response)
+
+
+def test_commander_response_preserves_non_oauth_code_state_mapping() -> None:
+    response = build_commander_response(
+        tool_name="list_registered_projects",
+        raw_result={
+            "ok": True,
+            "status": "clean",
+            "workflow_result": {
+                "code": "SUCCESS",
+                "state": "completed",
+            },
+        },
+        params={},
+    )
+
+    assert response["facts"]["workflow_result"] == {
+        "code": "SUCCESS",
+        "state": "completed",
+    }
     validate_commander_response(response)
 
 
@@ -3930,6 +3958,8 @@ def test_public_text_fails_closed_for_oversized_standalone_sas_query(
         "client_secret: alpha beta gamma",
         "password: correct horse battery staple",
         "token: alpha beta gamma # synthetic YAML comment",
+        "PASSWORD=#synthetic-punctuation-secret",
+        '{"shell":"PASSWORD\\u003d#synthetic-encoded-secret"}',
         "client_secret: >-\n  alpha beta gamma",
         (
             '{"yaml":"client\\u005fsecret\\u003a '
@@ -4942,6 +4972,11 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
             '"second":{"state":"public-separated-state"}}'
         ),
         '{"code":42,"state":"public-non-string-code"}',
+        '{"code":"SUCCESS","state":"completed"}',
+        (
+            "{'code': 'VALIDATION_SUCCEEDED', "
+            "'state': 'completed'}"
+        ),
         (
             "https://distribution.example.invalid/private/report.pdf"
             "?Expires=2147483647"

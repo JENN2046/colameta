@@ -1376,6 +1376,8 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
         ),
         "client_secret: alpha beta gamma",
         "password: correct horse battery staple",
+        "PASSWORD=#synthetic-punctuation-artifact-secret",
+        '{"shell":"PASSWORD\\u003d#synthetic-encoded-artifact-secret"}',
         "_auth=dXNlcjpwYXNz",
         '{"\\u005fauth":"dXNlcjpwYXNz"}',
         json.dumps(
@@ -2186,6 +2188,7 @@ def test_commander_artifact_reads_preserve_safe_xml_closing_tags(
             "password: # supplied locally\n"
             '"client_secret": ""\n'
             "config[password]=\n"
+            '{"code":"SUCCESS","state":"completed"}\n'
             "<password></password>\n"
             "<password> \n\t </password>\n"
             "<password/>\n"
