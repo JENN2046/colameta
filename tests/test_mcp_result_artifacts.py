@@ -81,6 +81,13 @@ SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
 ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
     SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
 )
+SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = "ops_" + ("Ab1_" * 16)
+ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = (
+    SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+        "ops_",
+        "\\u006fps\\u005f",
+    )
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -1197,6 +1204,12 @@ def test_commander_rejects_unsafe_uri_boundaries_across_artifact_reads(
                 )
             }
         ),
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN,
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+            "ops_",
+            "ops%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN}"}}',
         SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
         (
             "https://shop.example.invalid/admin?token="

@@ -1065,6 +1065,7 @@ _STANDALONE_PROVIDER_ACCESS_TOKEN_RE = re.compile(
     r"(?![A-Za-z0-9_-])"
     r"|(?<![A-Za-z0-9_-])hv[sbr]\.[A-Za-z0-9_-]{24,}"
     r"(?![A-Za-z0-9_-])"
+    r"|ops_[A-Za-z0-9_-]{24,4096}(?![A-Za-z0-9_-])"
     r"|shpat_[A-Fa-f0-9]{32}(?![A-Za-z0-9_])"
     r"|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"
     r"|(?<![A-Za-z0-9_-])"

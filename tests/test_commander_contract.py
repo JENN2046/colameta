@@ -94,6 +94,13 @@ SYNTHETIC_VAULT_RECOVERY_TOKEN = "hvr." + ("C3" * 12)
 ESCAPED_SYNTHETIC_VAULT_SERVICE_TOKEN = (
     SYNTHETIC_VAULT_SERVICE_TOKEN.replace("hvs.", "\\u0068vs\\u002e")
 )
+SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = "ops_" + ("Ab1_" * 16)
+ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN = (
+    SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+        "ops_",
+        "\\u006fps\\u005f",
+    )
+)
 SYNTHETIC_SHOPIFY_ACCESS_TOKEN = "shpat_" + ("a1" * 16)
 ESCAPED_SYNTHETIC_SHOPIFY_ACCESS_TOKEN = (
     SYNTHETIC_SHOPIFY_ACCESS_TOKEN.replace(
@@ -2439,6 +2446,23 @@ def test_public_text_redacts_structurally_valid_standalone_jwts(
                 )
             }
         ),
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN,
+        SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN.replace(
+            "ops_",
+            "ops%5F",
+        ),
+        f'{{"access":"{ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN}"}}',
+        json.dumps(
+            {
+                "wrapped": json.dumps(
+                    {
+                        "access": (
+                            ESCAPED_SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN
+                        )
+                    }
+                )
+            }
+        ),
         SYNTHETIC_SHOPIFY_ACCESS_TOKEN,
         (
             "https://shop.example.invalid/admin?token="
@@ -2645,6 +2669,7 @@ def test_public_text_redacts_standalone_provider_access_tokens(
     assert "hvs." not in public
     assert "hvb." not in public
     assert "hvr." not in public
+    assert "ops_" not in public
     assert "dckr_pat_" not in public
     assert "shpat_" not in public
     assert "SG." not in public
@@ -4824,6 +4849,10 @@ def test_public_text_redacts_credentials_in_uri_userinfo(
         "hvr.<redacted>",
         "x" + SYNTHETIC_VAULT_BATCH_TOKEN,
         "HVR." + ("A" * 24),
+        "ops_" + ("A" * 23),
+        "ops_<redacted>",
+        "x" + SYNTHETIC_ONEPASSWORD_SERVICE_ACCOUNT_TOKEN,
+        "ops_" + ("A" * 4097),
         "shpat_" + ("a" * 31),
         "shpat_<redacted>",
         "shpat_" + ("a" * 33),
