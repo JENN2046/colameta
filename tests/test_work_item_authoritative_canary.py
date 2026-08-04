@@ -975,6 +975,8 @@ def test_fresh_bootstrap_preflight_runs_under_isolated_process(tmp_path: Path) -
     source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
         canary_root=root,
         repository_root=Path(__file__).resolve().parents[1],
+        metadata_source_mode="candidate_worktree",
+        candidate_root=Path(__file__).resolve().parents[1],
     )
     script = r'''
 import base64, json, os, sys
@@ -1049,6 +1051,8 @@ def test_failed_single_use_envelope_claim_is_never_reusable(tmp_path: Path) -> N
     source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
         canary_root=root,
         repository_root=Path(__file__).resolve().parents[1],
+        metadata_source_mode="candidate_worktree",
+        candidate_root=Path(__file__).resolve().parents[1],
     )
     script = r'''
 import base64, json, os, sys
@@ -1144,6 +1148,8 @@ def test_loopback_conformance_requires_token_and_exposes_exact_surface(tmp_path:
     source_checkout, wheel_artifact, source_binding = prepare_exact_runtime_artifacts(
         canary_root=root,
         repository_root=Path(__file__).resolve().parents[1],
+        metadata_source_mode="candidate_worktree",
+        candidate_root=Path(__file__).resolve().parents[1],
     )
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))

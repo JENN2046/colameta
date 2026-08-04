@@ -10,15 +10,21 @@ virtual-environment markers are never used as a source of Python code.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import compat32
+import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from typing import Any, Mapping, Sequence
 import venv
+from zipfile import BadZipFile, ZipFile
 
 
 _ENVIRONMENT_BLOCKLIST = frozenset(
@@ -34,6 +40,12 @@ _ENVIRONMENT_BLOCKLIST = frozenset(
         "PYTHONSTARTUP",
         "PIP_CONFIG_FILE",
         "PIP_FIND_LINKS",
+        "PIP_NO_INDEX",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST",
+        "PIP_CONSTRAINT",
+        "PIP_REQUIREMENT",
     }
 )
 _SAFE_PARENT_ENVIRONMENT = frozenset(
@@ -58,11 +70,22 @@ _SAFE_PARENT_ENVIRONMENT = frozenset(
         "CURL_CA_BUNDLE",
     }
 )
-_TOOL_REQUIREMENTS = (
+_CANDIDATE_PIP_WHEEL_ENV = "COLAMETA_CANDIDATE_PIP_WHEEL"
+_VALIDATION_ASSET_DIR_ENV = "COLAMETA_VALIDATION_ASSET_DIR"
+_CANDIDATE_PIP_WHEEL_FILENAME = "pip-26.2-py3-none-any.whl"
+_CANDIDATE_PIP_WHEEL_SHA256 = (
+    "931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+)
+_CANDIDATE_PIP_VERSION = "26.2"
+_OFFICIAL_PYPI_INDEX_URL = "https://pypi.org/simple"
+_VALIDATION_TOOL_REQUIREMENTS = (
     "pytest>=9.0.3,<10",
     "ruff>=0.8,<1",
     "setuptools>=68",
     "wheel>=0.43",
+    "bandit[toml]>=1.7,<2",
+    "pip-audit>=2.7,<3",
+    "pytest-cov>=5,<7",
 )
 _PACKAGE_MODULES = ("runner", "adapters", "schemas", "scripts")
 
@@ -81,6 +104,303 @@ class ValidationEnvironment:
     venv_dir: Path | None
     python_executable: Path | None
     summary: dict[str, Any]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _wheel_primary_metadata(path: Path) -> tuple[str, str, set[object], Any]:
+    """Read the distribution metadata for one wheel, excluding vendored metadata."""
+
+    try:
+        from packaging.utils import parse_wheel_filename
+    except ImportError as exc:
+        raise ValidationEnvironmentError(
+            "candidate wheel metadata is invalid"
+        ) from exc
+    try:
+        filename_name, filename_version, _build, tags = parse_wheel_filename(
+            path.name
+        )
+        with ZipFile(path) as archive:
+            metadata_names = []
+            for name in archive.namelist():
+                if not name.endswith(".dist-info/METADATA"):
+                    continue
+                dist_dir = name.rsplit("/", 1)[-2].removesuffix(".dist-info")
+                if dist_dir.rsplit("-", 1)[0].casefold().replace("_", "-") == (
+                    str(filename_name).casefold().replace("_", "-")
+                ):
+                    metadata_names.append(name)
+            if len(metadata_names) != 1:
+                raise ValidationEnvironmentError(
+                    "candidate wheel metadata is invalid"
+                )
+            metadata = BytesParser(policy=compat32).parsebytes(
+                archive.read(metadata_names[0])
+            )
+    except (OSError, BadZipFile, KeyError, ValueError) as exc:
+        raise ValidationEnvironmentError(
+            "candidate wheel metadata is invalid"
+        ) from exc
+    return str(filename_name), str(filename_version), set(tags), metadata
+
+
+def verify_bound_wheel_asset(
+    path: Path,
+    *,
+    expected_filename: str,
+    expected_sha256: str,
+) -> dict[str, Any]:
+    """Verify one locally supplied wheel before it enters a validation env."""
+
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise ValidationEnvironmentError("bound frozen wheel asset is unavailable")
+    asset = _real_path(candidate)
+    if (
+        not asset.is_file()
+        or asset.is_symlink()
+        or asset.name != expected_filename
+    ):
+        raise ValidationEnvironmentError("bound frozen wheel asset is unavailable")
+    measured_sha256 = _sha256_file(asset)
+    if measured_sha256 != expected_sha256:
+        raise ValidationEnvironmentError("bound frozen wheel asset digest mismatch")
+    return {
+        "filename": asset.name,
+        "sha256": measured_sha256,
+        "source_verified": True,
+    }
+
+
+def _verify_bound_wheel_directory(
+    path: Path,
+    *,
+    expected_filename: str,
+    expected_sha256: str,
+    expected_distribution: str,
+    expected_version: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Verify the dedicated local wheel directory used for frozen installs.
+
+    The wheel is deliberately installed by an exact distribution requirement
+    resolved through ``--find-links``.  Passing the absolute wheel path to pip
+    makes PEP 610 record the temporary asset directory in ``direct_url.json``;
+    that would make an otherwise identical frozen environment path-sensitive.
+    The directory is therefore constrained before pip is invoked: it must be
+    a real directory, contain the bound wheel, and contain no second candidate
+    for the bound distribution.
+    """
+
+    candidate = Path(path).expanduser()
+    parent = candidate.parent
+    if parent.is_symlink():
+        raise ValidationEnvironmentError(
+            "bound frozen wheel asset directory is unavailable"
+        )
+    wheel_dir = _real_path(parent)
+    if not wheel_dir.is_dir() or wheel_dir.is_symlink():
+        raise ValidationEnvironmentError(
+            "bound frozen wheel asset directory is unavailable"
+        )
+
+    bound = verify_bound_wheel_asset(
+        candidate,
+        expected_filename=expected_filename,
+        expected_sha256=expected_sha256,
+    )
+    try:
+        from packaging.tags import sys_tags
+        from packaging.utils import canonicalize_name
+    except ImportError as exc:
+        raise ValidationEnvironmentError(
+            "bound frozen wheel metadata is unavailable"
+        ) from exc
+
+    expected_name = canonicalize_name(expected_distribution)
+    matching_wheels: list[Path] = []
+    for entry in sorted(wheel_dir.iterdir(), key=lambda item: item.name):
+        if entry.suffix.lower() != ".whl":
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            raise ValidationEnvironmentError(
+                "bound frozen wheel directory contains an unsafe wheel entry"
+            )
+        try:
+            filename_name, filename_version, tags, metadata = _wheel_primary_metadata(
+                entry
+            )
+        except ValidationEnvironmentError as exc:
+            raise ValidationEnvironmentError(
+                "bound frozen wheel directory contains invalid wheel metadata"
+            ) from exc
+        if canonicalize_name(filename_name) != expected_name:
+            continue
+        matching_wheels.append(entry)
+        if (
+            filename_version != expected_version
+            or metadata.get("Name") is None
+            or canonicalize_name(str(metadata.get("Name"))) != expected_name
+            or metadata.get("Version") != expected_version
+            or not set(tags).intersection(sys_tags())
+        ):
+            raise ValidationEnvironmentError(
+                "bound frozen wheel metadata does not match the contract"
+            )
+
+    bound_path = _real_path(candidate)
+    if len(matching_wheels) != 1 or matching_wheels[0] != bound_path:
+        raise ValidationEnvironmentError(
+            "bound frozen wheel candidate set is ambiguous"
+        )
+    return wheel_dir, {
+        **bound,
+        "distribution": expected_distribution,
+        "version": expected_version,
+        "wheel_directory_verified": True,
+        "matching_wheel_count": len(matching_wheels),
+    }
+
+
+def verify_candidate_pip_wheel_asset(path: Path) -> dict[str, Any]:
+    """Verify the exact offline pip bootstrap wheel and its wheel metadata."""
+
+    summary = verify_bound_wheel_asset(
+        path,
+        expected_filename=_CANDIDATE_PIP_WHEEL_FILENAME,
+        expected_sha256=_CANDIDATE_PIP_WHEEL_SHA256,
+    )
+    asset = _real_path(Path(path).expanduser())
+    try:
+        with ZipFile(asset) as archive:
+            metadata_names = sorted(
+                name
+                for name in archive.namelist()
+                if name.endswith(".dist-info/METADATA")
+            )
+            if len(metadata_names) != 1:
+                raise ValidationEnvironmentError(
+                    "candidate pip wheel metadata is ambiguous"
+                )
+            metadata = BytesParser(policy=compat32).parsebytes(
+                archive.read(metadata_names[0])
+            )
+    except (OSError, BadZipFile, KeyError, ValueError) as exc:
+        raise ValidationEnvironmentError(
+            "candidate pip wheel metadata is unreadable"
+        ) from exc
+
+    requires_python = metadata.get("Requires-Python")
+    if (
+        metadata.get("Name") != "pip"
+        or metadata.get("Version") != _CANDIDATE_PIP_VERSION
+        or requires_python != ">=3.10"
+        or sys.version_info < (3, 10)
+    ):
+        raise ValidationEnvironmentError(
+            "candidate pip wheel metadata does not match the bound contract"
+        )
+    return {
+        **summary,
+        "distribution": "pip",
+        "version": _CANDIDATE_PIP_VERSION,
+        "requires_python": requires_python,
+        "metadata_verified": True,
+    }
+
+
+def resolve_candidate_pip_asset(
+    parent_environment: Mapping[str, str],
+) -> dict[str, Any] | None:
+    """Resolve an explicitly supplied, locally bound candidate pip wheel."""
+
+    candidates: list[Path] = []
+    explicit = parent_environment.get(_CANDIDATE_PIP_WHEEL_ENV)
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    asset_dir = parent_environment.get(_VALIDATION_ASSET_DIR_ENV)
+    if asset_dir:
+        candidates.append(
+            Path(asset_dir).expanduser() / _CANDIDATE_PIP_WHEEL_FILENAME
+        )
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.path.abspath(os.fspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            verified = verify_candidate_pip_wheel_asset(candidate)
+        except ValidationEnvironmentError:
+            continue
+        return {
+            "path": _real_path(candidate),
+            **verified,
+            "asset_verified": True,
+            "installed_offline": True,
+            "network_used": False,
+            "runtime_dependency": False,
+        }
+    if explicit:
+        raise ValidationEnvironmentError("CANDIDATE_PIP_26_2_ASSET_UNAVAILABLE")
+    return None
+
+
+def download_candidate_pip_asset(
+    *,
+    python_executable: Path,
+    work_root: Path,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Download and verify the exact pip bootstrap wheel from official PyPI."""
+
+    download_dir = _real_path(work_root) / "candidate-pip-download"
+    if download_dir.exists() or download_dir.is_symlink():
+        raise ValidationEnvironmentError("candidate pip download directory collision")
+    download_dir.mkdir(parents=True, exist_ok=True)
+    download_command = [
+        str(python_executable),
+        "-m",
+        "pip",
+        "download",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-cache-dir",
+        "--only-binary",
+        ":all:",
+        "--no-deps",
+        "--index-url",
+        _OFFICIAL_PYPI_INDEX_URL,
+        "--dest",
+        str(download_dir),
+        f"pip=={_CANDIDATE_PIP_VERSION}",
+    ]
+    _run_toolchain_command(
+        download_command,
+        cwd=_real_path(work_root),
+        environment=environment,
+        timeout_seconds=300,
+        label="candidate pip bootstrap download",
+    )
+    wheels = sorted(download_dir.glob("*.whl"))
+    if len(wheels) != 1 or wheels[0].name != _CANDIDATE_PIP_WHEEL_FILENAME:
+        raise ValidationEnvironmentError("CANDIDATE_PIP_26_2_ASSET_UNAVAILABLE")
+    verified = verify_candidate_pip_wheel_asset(wheels[0])
+    return {
+        "path": _real_path(wheels[0]),
+        **verified,
+        "asset_verified": True,
+        "installed_offline": False,
+        "network_used": True,
+        "runtime_dependency": False,
+        "_pip_command": download_command,
+    }
 
 
 def venv_bin_dir(venv_dir: Path) -> Path:
@@ -224,6 +544,10 @@ def build_validation_subprocess_environment(
     environment["PWD"] = str(candidate)
     for key in _ENVIRONMENT_BLOCKLIST - {"VIRTUAL_ENV"}:
         environment.pop(key, None)
+    for key in (_CANDIDATE_PIP_WHEEL_ENV, _VALIDATION_ASSET_DIR_ENV):
+        locator = parent.get(key)
+        if locator:
+            environment[key] = str(locator)
     return environment
 
 
@@ -301,23 +625,32 @@ def _clean_candidate_build_overlays(
     candidate_root: Path,
     environment: Mapping[str, str],
 ) -> None:
-    """Remove only ignored build outputs created while making the candidate wheel."""
+    """Remove bounded setuptools outputs without touching the validation venv.
 
-    try:
-        completed = subprocess.run(
-            ["git", "clean", "-fdX"],
-            cwd=candidate_root,
-            env=dict(environment),
-            capture_output=True,
-            text=True,
-            check=False,
-            shell=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValidationEnvironmentError("candidate build overlay cleanup failed") from exc
-    if completed.returncode != 0:
-        raise ValidationEnvironmentError("candidate build overlay cleanup returned a failure")
+    ``git clean`` cannot express the required safety boundary reliably for an
+    ignored virtualenv: an exclude pattern can still allow the directory to be
+    traversed and removed on some Git versions.  The build performed here has a
+    small, known output surface, so clean only those paths and leave every other
+    candidate-bound or runtime path untouched.
+    """
+
+    del environment  # The bounded cleanup intentionally does not invoke a child process.
+    generated_paths = [candidate_root / "build", candidate_root / "dist"]
+    generated_paths.extend(candidate_root.glob("*.egg-info"))
+    for path in generated_paths:
+        try:
+            if path.is_symlink():
+                raise ValidationEnvironmentError(
+                    "candidate build overlay cleanup encountered a symlink"
+                )
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+        except ValidationEnvironmentError:
+            raise
+        except OSError as exc:
+            raise ValidationEnvironmentError("candidate build overlay cleanup failed") from exc
 
 
 def _remove_bytecode(root: Path) -> None:
@@ -335,6 +668,11 @@ def materialize_frozen_toolchain_environment(
     *,
     source_venv: Path,
     work_root: Path,
+    frozen_asset: Path | None = None,
+    frozen_asset_filename: str | None = None,
+    frozen_asset_sha256: str | None = None,
+    frozen_asset_distribution: str = "cryptography",
+    frozen_asset_version: str = "50.0.0",
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Copy local frozen-toolchain assets into a disposable bytecode-free venv."""
 
@@ -375,6 +713,63 @@ def materialize_frozen_toolchain_environment(
             "frozen toolchain materialization failed"
         ) from exc
 
+    asset_summary: dict[str, Any] | None = None
+    if frozen_asset is not None:
+        if not frozen_asset_filename or not frozen_asset_sha256:
+            raise ValidationEnvironmentError("frozen wheel asset binding is incomplete")
+        wheel_dir, asset_summary = _verify_bound_wheel_directory(
+            frozen_asset,
+            expected_filename=frozen_asset_filename,
+            expected_sha256=frozen_asset_sha256,
+            expected_distribution=frozen_asset_distribution,
+            expected_version=frozen_asset_version,
+        )
+        environment = build_validation_subprocess_environment(
+            candidate_root=project_root,
+            validation_venv=venv_root,
+            parent_environment=os.environ,
+            temp_root=work,
+        )
+        environment["PIP_NO_INDEX"] = "1"
+        environment["PIP_FIND_LINKS"] = str(wheel_dir)
+        _run_toolchain_command(
+            [
+                str(venv_python(venv_root)),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheel_dir),
+                "--only-binary",
+                ":all:",
+                "--no-deps",
+                "--force-reinstall",
+                f"{frozen_asset_distribution}=={frozen_asset_version}",
+            ],
+            cwd=project_root,
+            environment=environment,
+            timeout_seconds=300,
+            label="bound frozen wheel installation",
+        )
+        _remove_bytecode(venv_root)
+        installed_version = subprocess.check_output(
+            [
+                str(venv_python(venv_root)),
+                "-c",
+                "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))",
+                frozen_asset_distribution,
+            ],
+            cwd=project_root,
+            env=environment,
+            text=True,
+            shell=False,
+        ).strip()
+        if installed_version != frozen_asset_version:
+            raise ValidationEnvironmentError("bound frozen wheel version mismatch")
+        if installed_version != asset_summary["version"]:
+            raise ValidationEnvironmentError("bound frozen wheel metadata mismatch")
+
     materialized_bytecode_count = sum(
         1
         for path in venv_root.rglob("*")
@@ -389,6 +784,7 @@ def materialize_frozen_toolchain_environment(
         "materialized_bytecode_count": materialized_bytecode_count,
         "local_assets_only": True,
         "network_used": False,
+        "frozen_asset": asset_summary,
     }
 
 
@@ -595,6 +991,47 @@ print(json.dumps(result, sort_keys=True))
     }
 
 
+def _read_distribution_version(
+    python_executable: Path,
+    *,
+    environment: Mapping[str, str] | None,
+    cwd: Path,
+    distribution: str,
+) -> str:
+    """Read one installed distribution version without trusting command output."""
+
+    try:
+        completed = subprocess.run(
+            [
+                str(python_executable),
+                "-c",
+                "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))",
+                distribution,
+            ],
+            cwd=cwd,
+            env=dict(environment) if environment is not None else None,
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValidationEnvironmentError(
+            "validation distribution version probe failed"
+        ) from exc
+    if completed.returncode != 0:
+        raise ValidationEnvironmentError(
+            "validation distribution version probe failed"
+        )
+    version = completed.stdout.strip()
+    if not version:
+        raise ValidationEnvironmentError(
+            "validation distribution version probe was empty"
+        )
+    return version
+
+
 def prepare_validation_environment(
     *,
     candidate_root: Path,
@@ -602,6 +1039,11 @@ def prepare_validation_environment(
     parent_environment: Mapping[str, str],
     forbidden_roots: Sequence[Path] = (),
     needs_python: bool,
+    frozen_asset: Path | None = None,
+    frozen_asset_filename: str | None = None,
+    frozen_asset_sha256: str | None = None,
+    frozen_asset_distribution: str = "cryptography",
+    frozen_asset_version: str = "50.0.0",
 ) -> ValidationEnvironment:
     """Create a clean child environment and install the exact candidate wheel."""
 
@@ -610,6 +1052,7 @@ def prepare_validation_environment(
     work.mkdir(parents=True, exist_ok=True)
     venv_dir: Path | None = None
     python_executable: Path | None = None
+    initial_pip_version: str | None = None
     if needs_python:
         venv_dir = candidate / ".venv"
         if venv_dir.exists() or venv_dir.is_symlink():
@@ -633,76 +1076,179 @@ def prepare_validation_environment(
     if needs_python and venv_dir is not None and python_executable is not None:
         wheelhouse = work / "wheelhouse"
         wheelhouse.mkdir(parents=True, exist_ok=True)
-        environment["PIP_FIND_LINKS"] = str(wheelhouse)
         builder_environment = build_validation_subprocess_environment(
             candidate_root=candidate,
+            validation_venv=venv_dir,
             parent_environment=parent_environment,
             temp_root=work,
             forbidden_roots=forbidden_roots,
         )
-        builder_environment["PIP_FIND_LINKS"] = str(wheelhouse)
-        builder = Path(sys.executable)
-        if distribution_name:
+        for command_environment in (environment, builder_environment):
+            command_environment["PIP_CONFIG_FILE"] = os.devnull
+            command_environment["PIP_INDEX_URL"] = _OFFICIAL_PYPI_INDEX_URL
+            for key in (
+                "PIP_EXTRA_INDEX_URL",
+                "PIP_TRUSTED_HOST",
+                "PIP_CONSTRAINT",
+                "PIP_REQUIREMENT",
+                "PIP_FIND_LINKS",
+                "PIP_NO_INDEX",
+            ):
+                command_environment.pop(key, None)
+
+        initial_pip_version = _read_distribution_version(
+            python_executable,
+            environment=environment,
+            cwd=candidate,
+            distribution="pip",
+        )
+        pip_commands: list[list[str]] = []
+
+        def run_candidate_pip(
+            arguments: Sequence[str],
+            *,
+            label: str,
+            command_environment: Mapping[str, str],
+        ) -> None:
+            command = [str(python_executable), "-m", "pip", *arguments]
+            pip_commands.append(command)
             _run_toolchain_command(
+                command,
+                cwd=candidate,
+                environment=command_environment,
+                timeout_seconds=300,
+                label=label,
+            )
+
+        candidate_pip_asset = resolve_candidate_pip_asset(parent_environment)
+        if candidate_pip_asset is None:
+            candidate_pip_asset = download_candidate_pip_asset(
+                python_executable=python_executable,
+                work_root=work,
+                environment=environment,
+            )
+            download_command = candidate_pip_asset.pop("_pip_command", None)
+            if isinstance(download_command, list):
+                pip_commands.append(download_command)
+
+        frozen_asset_summary: dict[str, Any] | None = None
+        if frozen_asset is not None:
+            if not frozen_asset_filename or not frozen_asset_sha256:
+                raise ValidationEnvironmentError("frozen wheel asset binding is incomplete")
+            frozen_asset_summary = verify_bound_wheel_asset(
+                frozen_asset,
+                expected_filename=frozen_asset_filename,
+                expected_sha256=frozen_asset_sha256,
+            )
+        run_candidate_pip(
+            [
+                "install",
+                "--index-url",
+                _OFFICIAL_PYPI_INDEX_URL,
+                "--no-index",
+                "--no-deps",
+                "--force-reinstall",
+                "--no-cache-dir",
+                str(candidate_pip_asset["path"]),
+            ],
+            label="candidate pip bootstrap upgrade",
+            command_environment=environment,
+        )
+        selected_pip_version = _read_distribution_version(
+            python_executable,
+            environment=environment,
+            cwd=candidate,
+            distribution="pip",
+        )
+        if selected_pip_version != _CANDIDATE_PIP_VERSION:
+            raise ValidationEnvironmentError(
+                "candidate pip bootstrap version mismatch"
+            )
+        run_candidate_pip(
+            [
+                "install",
+                "--index-url",
+                _OFFICIAL_PYPI_INDEX_URL,
+                "--no-input",
+                "--no-cache-dir",
+                *_VALIDATION_TOOL_REQUIREMENTS,
+            ],
+            label="candidate validation tool installation",
+            command_environment=environment,
+        )
+        candidate_wheel: Path | None = None
+        if distribution_name:
+            run_candidate_pip(
                 [
-                    str(builder),
-                    "-m",
-                    "pip",
                     "wheel",
+                    "--index-url",
+                    _OFFICIAL_PYPI_INDEX_URL,
+                    "--no-deps",
+                    "--no-build-isolation",
+                    "--no-cache-dir",
                     "--wheel-dir",
                     str(wheelhouse),
                     str(candidate),
                 ],
-                cwd=candidate,
-                environment=builder_environment,
-                timeout_seconds=300,
                 label="candidate wheel build",
+                command_environment=builder_environment,
             )
             _clean_candidate_build_overlays(
                 candidate_root=candidate,
                 environment=builder_environment,
             )
             try:
-                create_validation_venv(venv_dir)
-            except (OSError, RuntimeError) as exc:
+                from packaging.utils import canonicalize_name
+            except ImportError as exc:
                 raise ValidationEnvironmentError(
-                    "validation virtualenv recreation failed"
+                    "candidate wheel metadata is invalid"
                 ) from exc
-            python_executable = venv_python(venv_dir)
-        _run_toolchain_command(
-            [
-                str(builder),
-                "-m",
-                "pip",
-                "wheel",
-                "--wheel-dir",
-                str(wheelhouse),
-                *_TOOL_REQUIREMENTS,
-            ],
-            cwd=candidate,
-            environment=builder_environment,
-            timeout_seconds=300,
-            label="validation tool wheel build",
-        )
-        install_names = list(_TOOL_REQUIREMENTS[-4:])
-        if distribution_name:
-            install_names.insert(0, distribution_name)
-        _run_toolchain_command(
-            [
-                str(python_executable),
-                "-m",
-                "pip",
-                "install",
-                "--no-index",
-                "--find-links",
-                str(wheelhouse),
-                *install_names,
-            ],
-            cwd=candidate,
-            environment=environment,
-            timeout_seconds=300,
-            label="candidate/tool installation",
-        )
+            candidate_wheels = []
+            for path in wheelhouse.glob("*.whl"):
+                wheel_name, _version, _tags, _metadata = _wheel_primary_metadata(path)
+                if canonicalize_name(wheel_name) == canonicalize_name(distribution_name):
+                    candidate_wheels.append(path)
+            if len(candidate_wheels) != 1:
+                raise ValidationEnvironmentError("candidate wheel build output is ambiguous")
+            candidate_wheel = candidate_wheels[0]
+            run_candidate_pip(
+                [
+                    "install",
+                    "--index-url",
+                    _OFFICIAL_PYPI_INDEX_URL,
+                    "--no-input",
+                    "--no-cache-dir",
+                    "--force-reinstall",
+                    str(candidate_wheel),
+                ],
+                label="candidate wheel installation",
+                command_environment=environment,
+            )
+        if frozen_asset is not None:
+            run_candidate_pip(
+                [
+                    "install",
+                    "--index-url",
+                    _OFFICIAL_PYPI_INDEX_URL,
+                    "--no-index",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    str(frozen_asset),
+                ],
+                label="bound frozen cryptography installation",
+                command_environment=environment,
+            )
+            installed_frozen_version = _read_distribution_version(
+                python_executable,
+                environment=environment,
+                cwd=candidate,
+                distribution=frozen_asset_distribution,
+            )
+            if installed_frozen_version != frozen_asset_version:
+                raise ValidationEnvironmentError(
+                    "bound frozen distribution version mismatch"
+                )
         provenance = _verify_candidate_install(
             candidate_root=candidate,
             validation_venv=venv_dir,
@@ -716,6 +1262,60 @@ def prepare_validation_environment(
                 "candidate validation environment provenance could not be verified"
             )
         _remove_bytecode(venv_dir)
+        if frozen_asset_summary is not None:
+            provenance["frozen_asset"] = {
+                **frozen_asset_summary,
+                "distribution": frozen_asset_distribution,
+                "version": frozen_asset_version,
+            }
+        provenance["candidate_bootstrap"] = {
+            "initial_pip_version": initial_pip_version,
+            "selected_pip_version": selected_pip_version,
+            "wheel_filename": candidate_pip_asset["filename"],
+            "wheel_sha256": candidate_pip_asset["sha256"],
+            "asset_verified": candidate_pip_asset["asset_verified"],
+            "installed_offline": candidate_pip_asset["installed_offline"],
+            "asset_source": (
+                "local_bound"
+                if candidate_pip_asset["installed_offline"]
+                else "official_pypi"
+            ),
+            "network_used": candidate_pip_asset["network_used"],
+            "runtime_dependency": candidate_pip_asset["runtime_dependency"],
+        }
+        provenance["candidate_pip_authority"] = {
+            "sole_pip_executable": str(python_executable),
+            "sole_pip_version": selected_pip_version,
+            "bootstrap_pip_invocation_count": 1,
+            "post_upgrade_parent_pip_invocation_count": 0,
+            "pip_command_count": len(pip_commands),
+            "all_commands_candidate_python": all(
+                command[0] == str(python_executable) for command in pip_commands
+            ),
+            "all_online_index_urls_official": all(
+                command[command.index("--index-url") + 1]
+                == _OFFICIAL_PYPI_INDEX_URL
+                for command in pip_commands
+                if "--index-url" in command
+            ),
+            "extra_index_present": any(
+                "--extra-index-url" in command for command in pip_commands
+            ),
+            "trusted_host_present": any(
+                "--trusted-host" in command for command in pip_commands
+            ),
+            "build_isolation_disabled": any(
+                "--no-build-isolation" in command for command in pip_commands
+            ),
+            "local_commands_no_index": all(
+                "--no-index" in command for command in pip_commands
+                if "--no-index" in command
+            ),
+            "network_used": any(
+                "--index-url" in command and "--no-index" not in command
+                for command in pip_commands
+            ),
+        }
     else:
         provenance = {
             "candidate_package_expected": False,
@@ -735,7 +1335,11 @@ def prepare_validation_environment(
     blocked_keys_removed = all(
         key not in environment
         for key in _ENVIRONMENT_BLOCKLIST
-        if key not in {"VIRTUAL_ENV", "PIP_FIND_LINKS"}
+        if key not in {
+            "VIRTUAL_ENV",
+            "PIP_CONFIG_FILE",
+            "PIP_INDEX_URL",
+        }
     )
     venv_path_first = (
         venv_dir is None

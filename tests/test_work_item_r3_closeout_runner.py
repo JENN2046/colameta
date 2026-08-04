@@ -75,8 +75,8 @@ def _frozen_toolchain_project() -> Path:
 
 
 def _frozen_source_project() -> Path:
-    configured = os.environ.get("COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT") or os.environ.get(
-        "COLAMETA_FROZEN_SOURCE_ROOT"
+    configured = os.environ.get("COLAMETA_FROZEN_SOURCE_ROOT") or os.environ.get(
+        "COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT"
     )
     return (
         Path(configured).expanduser().resolve()
@@ -87,10 +87,20 @@ def _frozen_source_project() -> Path:
 
 def _materialize_test_frozen_toolchain(tmp_path: Path) -> tuple[Path, Path]:
     source_project = _frozen_toolchain_project()
+    asset_path = os.environ.get("COLAMETA_FROZEN_CRYPTOGRAPHY_WHEEL")
+    assets = toolchain_binding.load_verified_frozen_toolchain_record()["required_assets"]
+    asset = assets["cryptography"]
+    if not asset_path:
+        raise AssertionError("the bound cryptography wheel asset is required")
     materialized_project, materialized_venv, _summary = (
         materialize_frozen_toolchain_environment(
             source_venv=source_project / ".venv",
             work_root=tmp_path / "frozen-toolchain",
+            frozen_asset=Path(asset_path),
+            frozen_asset_filename=asset["filename"],
+            frozen_asset_sha256=asset["sha256"],
+            frozen_asset_distribution=asset["distribution"],
+            frozen_asset_version=asset["version"],
         )
     )
     return materialized_project, materialized_venv
@@ -182,6 +192,191 @@ def _initialize_clean_repository(
     subprocess.run(["git", "-C", repository, "add", "tracked.txt"], check=True)
     subprocess.run(["git", "-C", repository, "commit", "-q", "-m", "fixture"], check=True)
     return repository
+
+
+def _initialize_governed_candidate(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    """Build a small HEAD-plus-delta checkout and its governed receipt."""
+
+    repository = root / "candidate"
+    repository.mkdir()
+    for directory in ("runner", "adapters", "schemas", "scripts", "tests"):
+        package = repository / directory
+        package.mkdir()
+        (package / ".keep").write_text("fixture\n", encoding="utf-8")
+    launcher = repository / "scripts" / "work_item_r3_trusted_launcher.py"
+    launcher.write_bytes(
+        (Path(__file__).resolve().parents[1] / "scripts" / launcher.name).read_bytes()
+    )
+    tracked = repository / "runner" / "dependency.py"
+    tracked.write_text("MARKER = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", repository], check=True)
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.email", "r3-runner@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.name", "R3 Runner"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", repository, "add", "."], check=True)
+    subprocess.run(["git", "-C", repository, "commit", "-q", "-m", "fixture"], check=True)
+
+    tracked.write_text("MARKER = 'delta'\n", encoding="utf-8")
+    overlay = repository / "scripts" / "candidate_overlay.py"
+    overlay.write_text("MARKER = 'overlay'\n", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "-C", repository, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bindings = [
+        {
+            "path": "runner/dependency.py",
+            "present": True,
+            "sha256": sha256_file(tracked),
+        },
+        {
+            "path": "scripts/candidate_overlay.py",
+            "present": True,
+            "sha256": sha256_file(overlay),
+        },
+    ]
+    toolchain_project = root / "frozen-toolchain-project"
+    toolchain_environment = toolchain_project / ".venv"
+    toolchain_environment.mkdir(parents=True)
+    (toolchain_environment / "pyvenv.cfg").write_text(
+        "home = /usr/bin\nversion = 3.12.3\n", encoding="utf-8"
+    )
+    receipt = {
+        "schema_version": "colameta.trusted_launcher_binding.v1",
+        "candidate": {
+            "head": head,
+            "root": repository.resolve().as_posix(),
+            "worktree_delta_sha256": canonical_sha256(bindings),
+            "source_binding_sha256": canonical_sha256(bindings),
+            "source_binding_count": len(bindings),
+            "source_binding_scope": "full_allowed_worktree_delta",
+            "source_bindings": bindings,
+        },
+        "toolchain": {
+            "project_root": toolchain_project.resolve().as_posix(),
+            "environment_root": toolchain_environment.resolve().as_posix(),
+            "environment_root_sha256": "a" * 64,
+            "frozen_record_sha256": "b" * 64,
+            "cryptography_version": "50.0.0",
+        },
+        "launcher": {
+            "path": "scripts/work_item_r3_trusted_launcher.py",
+            "sha256": sha256_file(launcher),
+        },
+        "validation": {
+            "preview_id": "fixture1234",
+            "command_specs_sha256": "c" * 64,
+            "lane": "host_frozen",
+        },
+    }
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
+    receipt_path = repository.parent / "trusted-launcher-binding.json"
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    monkeypatch.setenv(
+        "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE",
+        receipt_path.as_posix(),
+    )
+    return repository, receipt_path
+
+
+def test_governed_receipt_accepts_exact_head_plus_candidate_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+
+    receipt = trusted_launcher._load_binding_receipt(repository)
+    assert receipt is not None
+    measured = trusted_launcher._measure_source_tree(
+        repository,
+        binding_receipt=receipt,
+    )
+    assert measured["candidate_binding"]["exact_match"] is True
+    assert measured["candidate_binding"]["source_binding_count"] == 2
+
+
+def test_governed_receipt_rejects_extra_candidate_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    (repository / "schemas" / "unbound.py").write_text(
+        "MARKER = 'unbound'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="unbound source overlay"):
+        trusted_launcher._measure_source_tree(repository)
+
+
+def test_governed_receipt_rejects_bound_file_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    (repository / "runner" / "dependency.py").write_text(
+        "MARKER = 'raced'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="source differs"):
+        trusted_launcher._measure_source_tree(repository)
+
+
+def test_governed_receipt_rejects_tampering_and_receipt_path_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["candidate"]["head"] = "0" * 40
+    receipt_path.write_text(json.dumps(tampered, sort_keys=True), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        trusted_launcher._load_binding_receipt(repository)
+
+    link = receipt_path.with_name("receipt-link.json")
+    link.symlink_to(receipt_path)
+    monkeypatch.setenv("COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE", link.as_posix())
+    with pytest.raises(RuntimeError, match="path is unsafe"):
+        trusted_launcher._load_binding_receipt(repository)
+
+
+def test_host_nested_launcher_rejects_missing_governed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _initialize_clean_repository(tmp_path)
+    monkeypatch.chdir(repository)
+    monkeypatch.setenv("COLAMETA_VALIDATION_LANE", "host_frozen")
+    monkeypatch.delenv("COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE", raising=False)
+    output = tmp_path / "missing-binding.json"
+
+    result = run_command(
+        name="missing_binding",
+        output=output,
+        command=[
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "-B",
+            "-",
+            ".",
+            "protected-assets-check",
+        ],
+    )
+
+    assert result == 126
+    evidence = json.loads(output.read_text(encoding="utf-8"))
+    assert evidence["passed"] is False
+    assert evidence["trusted_launcher_stdin"] is None
 
 
 def test_run_command_retains_exact_completed_process_record(
@@ -653,6 +848,17 @@ def test_frozen_toolchain_record_and_environment_root_are_verified(
     }
 
 
+def test_rebased_frozen_authority_does_not_accept_historical_root() -> None:
+    historical_root = (
+        "0f80e9f3d3bb3cc4b7aed88acdddf7f87c2fc17e3954c7d2966795fb0dc2515d"
+    )
+    record = toolchain_binding.load_verified_frozen_toolchain_record()
+    assert record["environment_root_sha256"] == (
+        "310dede028aab31843c39b885f73f32e21ecc7199316b0e59aa0279caff3ad53"
+    )
+    assert record["environment_root_sha256"] != historical_root
+
+
 def test_frozen_record_load_is_independent_from_active_bytecode_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -784,10 +990,21 @@ def test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _frozen_source_project()
-    try:
-        trusted_launcher._measure_source_tree(project)
-    except RuntimeError:
-        pytest.skip("nested launcher positive assertion requires the committed candidate")
+    binding_receipt = trusted_launcher._load_binding_receipt(project)
+    if binding_receipt is not None:
+        trusted_launcher._measure_source_tree(
+            project,
+            binding_receipt=binding_receipt,
+        )
+        launcher_python = Path(
+            binding_receipt["toolchain"]["environment_root"]
+        ) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    else:
+        try:
+            trusted_launcher._measure_source_tree(project)
+        except RuntimeError:
+            pytest.skip("nested launcher positive assertion requires the committed candidate")
+        launcher_python = Path("/usr/bin/python3.12")
     monkeypatch.chdir(project)
     output = tmp_path / "nested-launcher.json"
 
@@ -795,7 +1012,7 @@ def test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup(
         name="nested_launcher",
         output=output,
         command=[
-            "/usr/bin/python3.12",
+            launcher_python.as_posix(),
             "-I",
             "-S",
             "-B",

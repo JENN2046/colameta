@@ -221,9 +221,18 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"ok": true, "service": "colameta-web-console"}'
 
-        def fake_urlopen(url: str, timeout: int = 0) -> FakeResponse:
-            requested_urls.append(url)
+        def fake_open_http_url(
+            request_or_url: object,
+            *,
+            timeout: float | int | None,
+            allowed_schemes: object,
+            redirect_policy: object,
+        ) -> FakeResponse:
+            assert isinstance(request_or_url, str)
             assert timeout == 2
+            assert allowed_schemes == {"http"}
+            assert isinstance(redirect_policy, mcp_server.HTTPRedirectPolicy)
+            requested_urls.append(request_or_url)
             return FakeResponse()
 
         cmdline = [
@@ -241,10 +250,12 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "8766",
         ]
 
+        from runner import mcp_server
+
         with (
             patch("runner.mcp_server.os.getpid", return_value=24680),
             patch("runner.mcp_server.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
-            patch("runner.mcp_server.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("runner.mcp_server.open_http_url", side_effect=fake_open_http_url),
         ):
             evidence = server._connector_runtime_local_service_evidence(str(project))
 
@@ -356,9 +367,18 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"ok": true, "service": "colameta-web-console"}'
 
-        def fake_urlopen(url: str, timeout: int = 0) -> FakeResponse:
-            requested_urls.append(url)
+        def fake_open_http_url(
+            request_or_url: object,
+            *,
+            timeout: float | int | None,
+            allowed_schemes: object,
+            redirect_policy: object,
+        ) -> FakeResponse:
+            assert isinstance(request_or_url, str)
             assert timeout == 2
+            assert allowed_schemes == {"http"}
+            assert isinstance(redirect_policy, mcp_server.HTTPRedirectPolicy)
+            requested_urls.append(request_or_url)
             return FakeResponse()
 
         cmdline = [
@@ -376,10 +396,12 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             "8766",
         ]
 
+        from runner import mcp_server
+
         with (
             patch("runner.mcp_server.os.getpid", return_value=24680),
             patch("runner.mcp_server.ServiceLifecycleStore.read_process_cmdline_parts", return_value=cmdline),
-            patch("runner.mcp_server.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("runner.mcp_server.open_http_url", side_effect=fake_open_http_url),
         ):
             result = server.call_tool_for_agent("get_runtime_version_status", {"project_name": "demo-project"})
 

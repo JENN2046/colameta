@@ -4,6 +4,7 @@ import base64
 import csv
 import hashlib
 import io
+import inspect
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ from runner.work_item_governance.bootstrap import (
 from runner.work_item_governance.errors import WorkItemGovernanceError
 from runner.work_item_governance.source_binding import (
     _wheel_artifact_manifest,
+    sha256_file,
     verify_runtime_source_artifacts,
 )
 from runtime_artifact_helpers import prepare_exact_runtime_artifacts
@@ -33,19 +35,112 @@ from runtime_artifact_helpers import prepare_exact_runtime_artifacts
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _prepare_candidate_artifacts(*, canary_root: Path) -> tuple[Path, Path, dict[str, str]]:
+    return prepare_exact_runtime_artifacts(
+        canary_root=canary_root,
+        repository_root=REPOSITORY_ROOT,
+        metadata_source_mode="candidate_worktree",
+        candidate_root=REPOSITORY_ROOT,
+    )
+
+
+def test_candidate_fixture_binds_worktree_metadata_not_committed_head(tmp_path: Path) -> None:
+    checkout, wheel, _binding = _prepare_candidate_artifacts(canary_root=tmp_path)
+    candidate_sha = sha256_file(REPOSITORY_ROOT / "pyproject.toml")
+    head_metadata = subprocess.run(
+        ["git", "show", "HEAD:pyproject.toml"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+
+    assert candidate_sha == "dd3e13b56f986810892d2d764751afc54374ca6397d057778b4fd5acca300fd4"
+    assert sha256_file(checkout / "pyproject.toml") == candidate_sha
+    assert hashlib.sha256(head_metadata).hexdigest() == "da8f368435af12314d62356334733b78f3bc88334a38e8821fa2d2aae61583e2"
+    assert sha256_file(checkout / "pyproject.toml") != hashlib.sha256(head_metadata).hexdigest()
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = archive.read("colameta-0.1.2.dist-info/METADATA")
+    assert b"Requires-Dist: cryptography<51,>=50.0.0\n" in metadata
+
+
+def test_fixture_default_mode_remains_committed_head() -> None:
+    parameter = inspect.signature(prepare_exact_runtime_artifacts).parameters["metadata_source_mode"]
+    assert parameter.default == "committed_head"
+
+
+def test_candidate_fixture_rejects_mixed_source_and_metadata_roots(tmp_path: Path) -> None:
+    foreign_root = tmp_path / "foreign-root"
+    foreign_root.mkdir()
+    with pytest.raises(ValueError, match="identical"):
+        prepare_exact_runtime_artifacts(
+            canary_root=tmp_path / "artifacts",
+            repository_root=REPOSITORY_ROOT,
+            metadata_source_mode="candidate_worktree",
+            candidate_root=foreign_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        ("cryptography>=50.0.0,<51", "cryptography==49.0.0"),
+        ("jsonschema>=4.23,<5", "jsonschema>=4.22,<5"),
+        (
+            "host_frozen_toolchain: requires the verified frozen host toolchain and trusted-launcher environment",
+            "host_frozen_toolchain: changed marker contract",
+        ),
+    ),
+)
+def test_candidate_metadata_drift_is_rejected(
+    tmp_path: Path,
+    replacement: tuple[str, str],
+) -> None:
+    checkout, wheel, _binding = _prepare_candidate_artifacts(canary_root=tmp_path)
+    source = (checkout / "pyproject.toml").read_text(encoding="utf-8")
+    old, new = replacement
+    assert old in source
+    (checkout / "pyproject.toml").write_text(source.replace(old, new, 1), encoding="utf-8")
+    _run(checkout, "git", "add", "pyproject.toml")
+    _run(
+        checkout,
+        "git",
+        "-c",
+        "user.name=R3 Test",
+        "-c",
+        "user.email=r3@example.invalid",
+        "commit",
+        "-qm",
+        "metadata drift",
+    )
+
+    script = r'''
+import json, os
+from runner.work_item_governance import activation as _activation
+from runner.work_item_governance import bootstrap as _bootstrap
+from runner.work_item_governance.errors import WorkItemGovernanceError
+from runner.work_item_governance.source_binding import verify_runtime_source_artifacts
+try:
+ verify_runtime_source_artifacts(checkout_root=os.environ["CHECKOUT"],wheel_artifact=os.environ["WHEEL"])
+except WorkItemGovernanceError as exc:
+ code=exc.code
+print(json.dumps({"code":code},sort_keys=True))
+'''
+    result = _run_checkout_python(checkout, wheel, script)
+    assert result["code"] == "RUNTIME_BUILD_METADATA_POLICY_MISMATCH"
+
+
 @pytest.fixture(scope="module")
 def exact_wheel_artifacts(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path_factory.mktemp("exact-wheel"),
-        repository_root=REPOSITORY_ROOT,
     )
     return checkout, wheel
 
 
 def test_verifier_rejects_identical_modules_loaded_outside_exact_checkout(tmp_path: Path) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
 
     with pytest.raises(WorkItemGovernanceError) as rejected:
@@ -55,9 +150,8 @@ def test_verifier_rejects_identical_modules_loaded_outside_exact_checkout(tmp_pa
 
 
 def test_verifier_requires_accepted_baseline_ancestry(tmp_path: Path) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     _run(checkout, "git", "checkout", "--orphan", "unrelated-history")
     _run(checkout, "git", "reset")
@@ -90,9 +184,8 @@ print(json.dumps({"code":code},sort_keys=True))
 
     assert result["code"] == "RUNTIME_SOURCE_BASELINE_INVALID"
 def test_runtime_source_binding_is_measured_not_caller_asserted(tmp_path: Path) -> None:
-    checkout, wheel, measured = prepare_exact_runtime_artifacts(
+    checkout, wheel, measured = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     assert measured["implementation_commit"] == _git(checkout, "rev-parse", "HEAD")
     assert measured["implementation_tree"] == _git(checkout, "rev-parse", "HEAD^{tree}")
@@ -118,9 +211,8 @@ print(json.dumps({"code":code,"public":measured.public_evidence()},sort_keys=Tru
 
 
 def test_runtime_source_verifier_scrubs_hostile_git_routing_environment(tmp_path: Path) -> None:
-    checkout, wheel, measured = prepare_exact_runtime_artifacts(
+    checkout, wheel, measured = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     script = r'''
 import json, os
@@ -158,9 +250,8 @@ def test_runtime_source_verifier_rejects_suppressed_index_paths(
     flag: str,
     expected_code: str,
 ) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     _run(checkout, "git", "update-index", flag, "runner/work_item_governance/bootstrap.py")
     script = r'''
@@ -189,9 +280,8 @@ def test_runtime_source_verifier_rejects_ignored_top_level_overlay(
     tmp_path: Path,
     relative_path: str,
 ) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     exclude = checkout / ".git" / "info" / "exclude"
     exclude.write_text(
@@ -229,9 +319,8 @@ def test_runtime_source_verifier_rejects_untracked_importable_overlay(
     tmp_path: Path,
     relative_path: str,
 ) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     target = checkout / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -255,9 +344,8 @@ print(json.dumps({"code":code},sort_keys=True))
 
 
 def test_claim_time_reverification_rejects_source_artifact_drift(tmp_path: Path) -> None:
-    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+    checkout, wheel, _binding = _prepare_candidate_artifacts(
         canary_root=tmp_path,
-        repository_root=REPOSITORY_ROOT,
     )
     script = r'''
 import json, os

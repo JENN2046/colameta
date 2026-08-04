@@ -9,7 +9,6 @@ import sys
 import time
 import hashlib
 import hmac
-import urllib.request
 from collections import OrderedDict
 from concurrent.futures import Future
 from contextvars import ContextVar
@@ -20,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from runner.http_server_utils import ReusableThreadingHTTPServer
+from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
 from runner.mcp_oauth import MCPOAuthProvider, default_server_oauth_store_file
 from runner.planning_bridge import PlanningBridge, PlanningBridgeError
@@ -6556,7 +6556,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if port_int <= 0:
             return False
         try:
-            with urllib.request.urlopen(f"http://{host_text}:{port_int}{path_text}", timeout=2) as response:
+            with open_http_url(
+                f"http://{host_text}:{port_int}{path_text}",
+                timeout=2,
+                allowed_schemes={"http"},
+                redirect_policy=HTTPRedirectPolicy(),
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception:
             return False

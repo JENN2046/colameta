@@ -5,6 +5,7 @@ if "_R3_TRUSTED_BOOTSTRAP_CAPABILITY" not in globals():
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -37,6 +38,10 @@ from runner.work_item_governance.source_binding import (
     verify_runtime_source_artifacts,
 )
 from runner.work_item_governance.toolchain_binding import measure_closeout_toolchain
+from scripts.work_item_r3_trusted_launcher import (
+    _HOST_FROZEN_LANE,
+    _load_binding_receipt,
+)
 
 
 COMMAND_EVIDENCE_SCHEMA = "work_item_closeout_command_evidence.v2"
@@ -131,7 +136,12 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _source_snapshot(cwd: Path, *, environment: dict[str, str]) -> dict[str, Any]:
+def _source_snapshot(
+    cwd: Path,
+    *,
+    environment: dict[str, str],
+    binding_receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     errors: list[str] = []
     requested_root = cwd.expanduser().resolve()
     repository_root = requested_root
@@ -220,7 +230,7 @@ def _source_snapshot(cwd: Path, *, environment: dict[str, str]) -> dict[str, Any
             "untracked_execution_overlays",
         )
     )
-    return {
+    snapshot = {
         "repository_root": repository_root.as_posix(),
         "requested_checkout_root": requested_root.as_posix(),
         "commit": _revision("HEAD"),
@@ -246,9 +256,78 @@ def _source_snapshot(cwd: Path, *, environment: dict[str, str]) -> dict[str, Any
         "git_executable": git.public_binding(),
         "inspection_errors": errors,
     }
+    if binding_receipt is None:
+        return snapshot
+
+    candidate = binding_receipt["candidate"]
+    expected_paths = {
+        binding["path"] for binding in candidate["source_bindings"]
+    }
+    actual_paths = (
+        set(candidate_tracked)
+        | set(candidate_staged)
+        | set(candidate_untracked)
+        | set(protected_changes)
+        | set(exact_state["ignored_execution_overlays"])
+        | set(exact_state["untracked_execution_overlays"])
+    )
+    binding_bytes_match = True
+    for binding in candidate["source_bindings"]:
+        relative = binding["path"]
+        source = repository_root / relative
+        resolved_source = source.resolve()
+        try:
+            contained = os.path.commonpath(
+                [str(resolved_source), str(repository_root)]
+            ) == str(repository_root)
+        except ValueError:
+            contained = False
+        if not contained or source.is_symlink():
+            binding_bytes_match = False
+            break
+        if binding["present"]:
+            if not source.is_file() or not hmac.compare_digest(
+                sha256_file(source), binding["sha256"]
+            ):
+                binding_bytes_match = False
+                break
+        elif source.exists() or source.is_symlink():
+            binding_bytes_match = False
+            break
+    object_mismatch_paths = {
+        str(item) for item in exact_state["object_mismatches"]
+    }
+    governed_match = (
+        not errors
+        and snapshot["commit"] == candidate["head"]
+        and repository_root.as_posix() == candidate["root"]
+        and actual_paths == expected_paths
+        and canonical_sha256(candidate["source_bindings"])
+        == candidate["source_binding_sha256"]
+        and candidate["worktree_delta_sha256"]
+        == candidate["source_binding_sha256"]
+        and candidate["source_binding_count"] == len(candidate["source_bindings"])
+        and binding_bytes_match
+        and not snapshot["assume_unchanged_paths"]
+        and not snapshot["skip_worktree_paths"]
+        and object_mismatch_paths.issubset(expected_paths)
+    )
+    snapshot["candidate_clean"] = governed_match
+    snapshot["governed_candidate_binding"] = {
+        "receipt_sha256": binding_receipt["receipt_sha256"],
+        "worktree_delta_sha256": candidate["worktree_delta_sha256"],
+        "source_binding_sha256": candidate["source_binding_sha256"],
+        "source_binding_count": candidate["source_binding_count"],
+        "exact_match": governed_match,
+    }
+    return snapshot
 
 
-def _command_environment(cwd: Path) -> tuple[dict[str, str], dict[str, Any]]:
+def _command_environment(
+    cwd: Path,
+    *,
+    toolchain_project_root: Path | None = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
     environment = dict(os.environ)
     removed_keys = {key: key in environment for key in _COMMAND_ENVIRONMENT_REMOVALS}
     for key in _COMMAND_ENVIRONMENT_REMOVALS:
@@ -264,9 +343,15 @@ def _command_environment(cwd: Path) -> tuple[dict[str, str], dict[str, Any]]:
         environment.pop(key, None)
     environment, authority_removed = _authority_sanitized_environment(environment)
     environment.update(_COMMAND_ENVIRONMENT_FORCED)
+    executable_root = (
+        (toolchain_project_root / ".venv").resolve()
+        if toolchain_project_root is not None
+        else (cwd / ".venv").resolve()
+    )
+    executable_dir = executable_root / ("Scripts" if os.name == "nt" else "bin")
     environment.update(
         {
-            "PATH": f"{(cwd / '.venv' / 'bin').resolve().as_posix()}:{os.defpath}",
+            "PATH": os.pathsep.join((executable_dir.as_posix(), os.defpath)),
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         }
@@ -320,13 +405,38 @@ def run_command(
     ):
         raise ValueError("A trusted R3 pre-import attestation is required.")
     cwd = Path.cwd().resolve()
-    environment, environment_policy = _command_environment(cwd)
     trusted_launcher_child = (
         len(command) >= 6
-        and Path(command[0]).absolute() == Path("/usr/bin/python3.12")
         and command[1:5]
         == ["-I", "-S", "-B", "-"]
         and command[5] == "."
+        and (
+            Path(command[0]).absolute() == Path("/usr/bin/python3.12")
+            or os.environ.get("COLAMETA_VALIDATION_LANE") == _HOST_FROZEN_LANE
+        )
+    )
+    binding_receipt: dict[str, Any] | None = None
+    trusted_launcher_error: str | None = None
+    if trusted_launcher_child:
+        try:
+            binding_receipt = _load_binding_receipt(cwd)
+            if (
+                os.environ.get("COLAMETA_VALIDATION_LANE") == _HOST_FROZEN_LANE
+                and binding_receipt is None
+            ):
+                raise RuntimeError(
+                    "host-frozen trusted launcher requires a governed binding receipt"
+                )
+        except Exception as exc:
+            trusted_launcher_error = type(exc).__name__
+    toolchain_project_root = (
+        Path(binding_receipt["toolchain"]["project_root"]).resolve()
+        if binding_receipt is not None
+        else None
+    )
+    environment, environment_policy = _command_environment(
+        cwd,
+        toolchain_project_root=toolchain_project_root,
     )
     process_environment = dict(environment)
     trusted_launcher_removed_keys: list[str] = []
@@ -342,35 +452,58 @@ def run_command(
     environment_policy["trusted_launcher_removed_keys"] = trusted_launcher_removed_keys
     trusted_launcher_stdin: dict[str, Any] | None = None
     trusted_launcher_source: str | None = None
-    trusted_launcher_error: str | None = None
     if trusted_launcher_child:
-        try:
-            git = _trusted_git_for_checkout(cwd, environment=environment)
-            launcher_relative = "scripts/work_item_r3_trusted_launcher.py"
-            trusted_launcher_source = git.run(
-                cwd,
-                "show",
-                f"HEAD:{launcher_relative}",
-            )
-            trusted_launcher_stdin = {
-                "execution_source": "trusted_git_blob_stdin",
-                "relative_path": launcher_relative,
-                "commit": git.run(cwd, "rev-parse", "HEAD").strip(),
-                "tree": git.run(cwd, "rev-parse", "HEAD^{tree}").strip(),
-                "blob_oid": git.run(
+        if binding_receipt is not None:
+            launcher_relative = binding_receipt["launcher"]["path"]
+            launcher_path = cwd / launcher_relative
+            try:
+                launcher_bytes = launcher_path.read_bytes()
+                launcher_sha256 = hashlib.sha256(launcher_bytes).hexdigest()
+                if launcher_sha256 != binding_receipt["launcher"]["sha256"]:
+                    raise RuntimeError("governed launcher bytes differ from receipt")
+                trusted_launcher_source = launcher_bytes.decode("utf-8")
+                trusted_launcher_stdin = {
+                    "execution_source": "governed_candidate_worktree",
+                    "relative_path": launcher_relative,
+                    "receipt_sha256": binding_receipt["receipt_sha256"],
+                    "sha256": launcher_sha256,
+                }
+            except Exception as exc:
+                trusted_launcher_error = type(exc).__name__
+        elif trusted_launcher_error is None:
+            try:
+                git = _trusted_git_for_checkout(cwd, environment=environment)
+                launcher_relative = "scripts/work_item_r3_trusted_launcher.py"
+                trusted_launcher_source = git.run(
                     cwd,
-                    "rev-parse",
+                    "show",
                     f"HEAD:{launcher_relative}",
-                ).strip(),
-                "sha256": hashlib.sha256(
-                    trusted_launcher_source.encode("utf-8")
-                ).hexdigest(),
-            }
-        except Exception as exc:
-            trusted_launcher_error = getattr(exc, "code", type(exc).__name__)
-    source_before = _source_snapshot(cwd, environment=environment)
+                )
+                trusted_launcher_stdin = {
+                    "execution_source": "trusted_git_blob_stdin",
+                    "relative_path": launcher_relative,
+                    "commit": git.run(cwd, "rev-parse", "HEAD").strip(),
+                    "tree": git.run(cwd, "rev-parse", "HEAD^{tree}").strip(),
+                    "blob_oid": git.run(
+                        cwd,
+                        "rev-parse",
+                        f"HEAD:{launcher_relative}",
+                    ).strip(),
+                    "sha256": hashlib.sha256(
+                        trusted_launcher_source.encode("utf-8")
+                    ).hexdigest(),
+                }
+            except Exception as exc:
+                trusted_launcher_error = getattr(exc, "code", type(exc).__name__)
+    source_before = _source_snapshot(
+        cwd,
+        environment=environment,
+        binding_receipt=binding_receipt,
+    )
     try:
-        toolchain_before: dict[str, Any] = measure_closeout_toolchain(cwd)
+        toolchain_before: dict[str, Any] = measure_closeout_toolchain(
+            toolchain_project_root or cwd
+        )
         toolchain_error_before: str | None = None
     except Exception as exc:  # fail closed while retaining the provenance record
         toolchain_before = {}
@@ -431,9 +564,15 @@ def run_command(
     ) < parse_timestamp(started_at, "command.started_at")
     ended_at = started_at if wall_clock_rollback_clamped else ended_observed_at
     monotonic_duration_ns = max(0, ended_monotonic_ns - started_monotonic_ns)
-    source_after = _source_snapshot(cwd, environment=environment)
+    source_after = _source_snapshot(
+        cwd,
+        environment=environment,
+        binding_receipt=binding_receipt,
+    )
     try:
-        toolchain_after: dict[str, Any] = measure_closeout_toolchain(cwd)
+        toolchain_after: dict[str, Any] = measure_closeout_toolchain(
+            toolchain_project_root or cwd
+        )
         toolchain_error_after: str | None = None
     except Exception as exc:  # fail closed while retaining the provenance record
         toolchain_after = {}
@@ -454,10 +593,19 @@ def run_command(
         else None
     )
     source_binding_match = (
-        source_before["commit"] is not None
-        and source_before["commit"] == source_after["commit"]
-        and source_before["tree"] is not None
-        and source_before["tree"] == source_after["tree"]
+        (
+            source_before.get("governed_candidate_binding", {}).get("exact_match") is True
+            and source_after.get("governed_candidate_binding", {}).get("exact_match") is True
+            and source_before.get("governed_candidate_binding", {}).get("receipt_sha256")
+            == source_after.get("governed_candidate_binding", {}).get("receipt_sha256")
+        )
+        if binding_receipt is not None
+        else (
+            source_before["commit"] is not None
+            and source_before["commit"] == source_after["commit"]
+            and source_before["tree"] is not None
+            and source_before["tree"] == source_after["tree"]
+        )
     )
     executable_unchanged = (
         launcher_sha256 is not None
@@ -525,6 +673,24 @@ def run_command(
         "environment_policy": environment_policy,
         "preimport_attestation": startup_attestation,
         "trusted_launcher_stdin": trusted_launcher_stdin,
+        "trusted_launcher_binding": (
+            {
+                "receipt_sha256": binding_receipt["receipt_sha256"],
+                "candidate_head": binding_receipt["candidate"]["head"],
+                "worktree_delta_sha256": binding_receipt["candidate"][
+                    "worktree_delta_sha256"
+                ],
+                "source_binding_sha256": binding_receipt["candidate"][
+                    "source_binding_sha256"
+                ],
+                "source_binding_count": binding_receipt["candidate"][
+                    "source_binding_count"
+                ],
+                "exact_match": source_binding_match,
+            }
+            if binding_receipt is not None
+            else None
+        ),
     }
     _write_json(output, evidence)
     return evidence_exit_code

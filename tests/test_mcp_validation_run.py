@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -56,6 +57,13 @@ def _terminal_status(manager: MCPValidationRunManager, run_id: str) -> dict:
     pytest.fail("validation run did not reach a terminal status")
 
 
+def _candidate_with_current_pyproject(tmp_path: Path) -> Path:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    shutil.copy2(Path("pyproject.toml"), candidate / "pyproject.toml")
+    return candidate
+
+
 def test_validation_environment_removes_parent_python_contamination(
     tmp_path: Path,
 ) -> None:
@@ -79,6 +87,12 @@ def test_validation_environment_removes_parent_python_contamination(
         "PYTHONUSERBASE": str(serving / "user"),
         "PYTHONSTARTUP": str(serving / "startup.py"),
         "PIP_CONFIG_FILE": str(serving / "pip.conf"),
+        "PIP_INDEX_URL": "https://malicious.invalid/simple",
+        "PIP_EXTRA_INDEX_URL": "https://malicious.invalid/extra",
+        "PIP_TRUSTED_HOST": "malicious.invalid",
+        "PIP_CONSTRAINT": str(serving / "constraints.txt"),
+        "PIP_REQUIREMENT": str(serving / "requirements.txt"),
+        "PIP_NO_INDEX": "0",
         "LANG": "C.UTF-8",
     }
 
@@ -107,6 +121,12 @@ def test_validation_environment_removes_parent_python_contamination(
         "PYTHONUSERBASE",
         "PYTHONSTARTUP",
         "PIP_CONFIG_FILE",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST",
+        "PIP_CONSTRAINT",
+        "PIP_REQUIREMENT",
+        "PIP_NO_INDEX",
     ):
         assert key not in environment
 
@@ -166,6 +186,454 @@ def test_validation_venv_creation_uses_one_cross_platform_policy(
     monkeypatch.setattr(toolchain_environment.os, "name", "posix")
     create_validation_venv(tmp_path / "posix")
     assert calls[-1]["symlinks"] is True
+
+
+def test_candidate_pip_asset_is_hash_and_metadata_bound(
+    tmp_path: Path,
+) -> None:
+    assert toolchain_environment.resolve_candidate_pip_asset({"PATH": os.defpath}) is None
+    assert toolchain_environment._CANDIDATE_PIP_WHEEL_FILENAME == "pip-26.2-py3-none-any.whl"
+    assert toolchain_environment._CANDIDATE_PIP_WHEEL_SHA256 == (
+        "931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+    )
+    wrong = tmp_path / toolchain_environment._CANDIDATE_PIP_WHEEL_FILENAME
+    wrong.write_bytes(b"not a wheel")
+    with pytest.raises(
+        toolchain_environment.ValidationEnvironmentError,
+        match="CANDIDATE_PIP_26_2_ASSET_UNAVAILABLE|digest mismatch",
+    ):
+        toolchain_environment.resolve_candidate_pip_asset(
+            {toolchain_environment._CANDIDATE_PIP_WHEEL_ENV: str(wrong)}
+        )
+
+
+def test_frozen_wheel_directory_rejects_an_extra_matching_distribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packaging.tags import sys_tags
+
+    asset_dir = tmp_path / "wheel-assets"
+    asset_dir.mkdir()
+    bound = asset_dir / "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl"
+    extra = asset_dir / "cryptography-50.0.0-1-cp311-abi3-manylinux_2_34_x86_64.whl"
+    bound.write_bytes(b"bound")
+    extra.write_bytes(b"extra")
+    monkeypatch.setattr(
+        toolchain_environment,
+        "verify_bound_wheel_asset",
+        lambda *_args, **_kwargs: {
+            "filename": bound.name,
+            "sha256": "a" * 64,
+            "source_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_wheel_primary_metadata",
+        lambda _path: (
+            "cryptography",
+            "50.0.0",
+            set(sys_tags()),
+            {"Name": "cryptography", "Version": "50.0.0"},
+        ),
+    )
+
+    with pytest.raises(
+        toolchain_environment.ValidationEnvironmentError,
+        match="candidate set is ambiguous",
+    ):
+        toolchain_environment._verify_bound_wheel_directory(
+            bound,
+            expected_filename=bound.name,
+            expected_sha256="a" * 64,
+            expected_distribution="cryptography",
+            expected_version="50.0.0",
+        )
+
+
+def test_frozen_bound_wheel_digest_is_checked_before_installation(
+    tmp_path: Path,
+) -> None:
+    asset_dir = tmp_path / "wheel-assets"
+    asset_dir.mkdir()
+    bound = asset_dir / "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl"
+    bound.write_bytes(b"bound")
+
+    with pytest.raises(
+        toolchain_environment.ValidationEnvironmentError,
+        match="digest mismatch",
+    ):
+        toolchain_environment._verify_bound_wheel_directory(
+            bound,
+            expected_filename=bound.name,
+            expected_sha256="b" * 64,
+            expected_distribution="cryptography",
+            expected_version="50.0.0",
+        )
+
+
+def test_frozen_materialization_uses_find_links_requirement_not_absolute_wheel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_venv = tmp_path / "source-venv"
+    source_venv.mkdir()
+    (source_venv / "pyvenv.cfg").write_text("home = local\n", encoding="utf-8")
+    asset_dir = tmp_path / "wheel-assets"
+    asset_dir.mkdir()
+    bound = asset_dir / "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl"
+    bound.write_bytes(b"bound")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_verify_bound_wheel_directory",
+        lambda *_args, **_kwargs: (
+            asset_dir,
+            {
+                "filename": bound.name,
+                "sha256": "a" * 64,
+                "source_verified": True,
+                "distribution": "cryptography",
+                "version": "50.0.0",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "venv_python",
+        lambda venv: venv / "bin" / "python",
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_run_toolchain_command",
+        lambda command, **_kwargs: commands.append(list(command)),
+    )
+    monkeypatch.setattr(
+        toolchain_environment.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: "50.0.0\n",
+    )
+
+    toolchain_environment.materialize_frozen_toolchain_environment(
+        source_venv=source_venv,
+        work_root=tmp_path / "work",
+        frozen_asset=bound,
+        frozen_asset_filename=bound.name,
+        frozen_asset_sha256="a" * 64,
+        frozen_asset_distribution="cryptography",
+        frozen_asset_version="50.0.0",
+    )
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[0].endswith("/bin/python")
+    assert command[1:4] == ["-m", "pip", "install"]
+    assert command[command.index("--find-links") + 1] == str(asset_dir)
+    assert "--only-binary" in command
+    assert command[command.index("--only-binary") + 1] == ":all:"
+    assert command[-1] == "cryptography==50.0.0"
+    assert str(bound) not in command
+
+
+def test_candidate_validation_uses_online_tools_without_validation_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    shutil.copy2(Path("pyproject.toml"), candidate / "pyproject.toml")
+    commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
+    download_environments: list[dict[str, str]] = []
+
+    class FakeBuilder:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def create(self, path: Path) -> None:
+            path.mkdir(parents=True, exist_ok=True)
+            python = toolchain_environment.venv_python(path)
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("validation-python\n", encoding="utf-8")
+
+    monkeypatch.setattr(toolchain_environment.venv, "EnvBuilder", FakeBuilder)
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_run_toolchain_command",
+        lambda command, **kwargs: (
+            commands.append(list(command)),
+            environments.append(dict(kwargs["environment"])),
+        ),
+    )
+    pip_wheel = tmp_path / "pip-26.2-py3-none-any.whl"
+    pip_wheel.write_bytes(b"bound pip wheel fixture")
+
+    def fake_download_candidate_pip_asset(**kwargs: object) -> dict[str, object]:
+        python = Path(str(kwargs["python_executable"]))
+        environment = dict(kwargs["environment"])  # type: ignore[arg-type]
+        download_environments.append(environment)
+        return {
+            "path": pip_wheel,
+            "filename": "pip-26.2-py3-none-any.whl",
+            "sha256": toolchain_environment._CANDIDATE_PIP_WHEEL_SHA256,
+            "asset_verified": True,
+            "installed_offline": False,
+            "network_used": True,
+            "runtime_dependency": False,
+            "_pip_command": [
+                str(python),
+                "-m",
+                "pip",
+                "download",
+                "--index-url",
+                toolchain_environment._OFFICIAL_PYPI_INDEX_URL,
+                "pip==26.2",
+            ],
+        }
+
+    monkeypatch.setattr(
+        toolchain_environment,
+        "download_candidate_pip_asset",
+        fake_download_candidate_pip_asset,
+    )
+    versions = iter(("24.0", "26.2"))
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_read_distribution_version",
+        lambda *_args, **_kwargs: next(versions),
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_verify_candidate_install",
+        lambda **_kwargs: {
+            "candidate_module_provenance_verified": True,
+            "validation_environment_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_project_metadata",
+        lambda _candidate: (None, []),
+    )
+
+    environment = toolchain_environment.prepare_validation_environment(
+        candidate_root=candidate,
+        work_root=tmp_path / "work",
+        parent_environment={
+            "PATH": os.defpath,
+            toolchain_environment._VALIDATION_ASSET_DIR_ENV: str(
+                tmp_path / "removed-external-closure"
+            ),
+            "PIP_INDEX_URL": "https://malicious.invalid/simple",
+            "PIP_EXTRA_INDEX_URL": "https://malicious.invalid/extra",
+            "PIP_TRUSTED_HOST": "malicious.invalid",
+            "PIP_CONSTRAINT": str(tmp_path / "constraints.txt"),
+            "PIP_REQUIREMENT": str(tmp_path / "requirements.txt"),
+        },
+        needs_python=True,
+    )
+
+    bootstrap = environment.summary["candidate_bootstrap"]
+    assert bootstrap == {
+        "initial_pip_version": "24.0",
+        "selected_pip_version": "26.2",
+        "wheel_filename": "pip-26.2-py3-none-any.whl",
+        "wheel_sha256": (
+            "931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+        ),
+        "asset_verified": True,
+        "installed_offline": False,
+        "asset_source": "official_pypi",
+        "network_used": True,
+        "runtime_dependency": False,
+    }
+    assert "validation_asset_closure" not in environment.summary
+    assert len(commands) == 2
+    assert all(command[0] == str(environment.python_executable) for command in commands)
+    assert all(
+        command[command.index("--index-url") + 1]
+        == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
+        for command in commands
+    )
+    assert "--no-index" in commands[0]
+    assert all("--find-links" not in command for command in commands)
+    assert all("--require-hashes" not in command for command in commands)
+    assert all(
+        value.get("PIP_CONFIG_FILE") == os.devnull
+        and value.get("PIP_INDEX_URL") == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
+        and "PIP_EXTRA_INDEX_URL" not in value
+        and "PIP_TRUSTED_HOST" not in value
+        and "PIP_CONSTRAINT" not in value
+        and "PIP_REQUIREMENT" not in value
+        and "PIP_FIND_LINKS" not in value
+        and "PIP_NO_INDEX" not in value
+        for value in [*environments, *download_environments]
+    )
+    authority = environment.summary["candidate_pip_authority"]
+    assert authority["sole_pip_executable"] == str(environment.python_executable)
+    assert authority["post_upgrade_parent_pip_invocation_count"] == 0
+    assert authority["all_commands_candidate_python"] is True
+    assert authority["all_online_index_urls_official"] is True
+    assert authority["extra_index_present"] is False
+    assert authority["trusted_host_present"] is False
+    assert authority["build_isolation_disabled"] is False
+    assert authority["network_used"] is True
+
+
+def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _candidate_with_current_pyproject(tmp_path)
+    commands: list[list[str]] = []
+
+    class FakeBuilder:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def create(self, path: Path) -> None:
+            path.mkdir(parents=True, exist_ok=True)
+            python = toolchain_environment.venv_python(path)
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("validation-python\n", encoding="utf-8")
+
+    monkeypatch.setattr(toolchain_environment.venv, "EnvBuilder", FakeBuilder)
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_run_toolchain_command",
+        lambda command, **kwargs: (
+            commands.append(list(command)),
+            (
+                Path(command[command.index("--wheel-dir") + 1])
+                / "colameta-0.1.2-py3-none-any.whl"
+            ).write_bytes(b"candidate-wheel")
+            if kwargs["label"] == "candidate wheel build"
+            else None,
+        ),
+    )
+    pip_wheel = tmp_path / "pip-26.2-py3-none-any.whl"
+    pip_wheel.write_bytes(b"bound pip wheel fixture")
+    monkeypatch.setattr(
+        toolchain_environment,
+        "download_candidate_pip_asset",
+        lambda **kwargs: {
+            "path": pip_wheel,
+            "filename": "pip-26.2-py3-none-any.whl",
+            "sha256": toolchain_environment._CANDIDATE_PIP_WHEEL_SHA256,
+            "asset_verified": True,
+            "installed_offline": False,
+            "network_used": True,
+            "runtime_dependency": False,
+            "_pip_command": [
+                str(kwargs["python_executable"]),
+                "-m",
+                "pip",
+                "download",
+                "--index-url",
+                toolchain_environment._OFFICIAL_PYPI_INDEX_URL,
+            ],
+        },
+    )
+    versions = iter(("24.0", "26.2"))
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_read_distribution_version",
+        lambda *_args, **_kwargs: next(versions),
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_verify_candidate_install",
+        lambda **_kwargs: {
+            "candidate_module_provenance_verified": True,
+            "validation_environment_verified": True,
+        },
+    )
+    monkeypatch.setattr(toolchain_environment, "_clean_candidate_build_overlays", lambda **_kwargs: None)
+    def fake_wheel_primary_metadata(path: Path):
+        del path
+        return ("colameta", "0.1.2", set(), object())
+
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_wheel_primary_metadata",
+        fake_wheel_primary_metadata,
+    )
+
+    environment = toolchain_environment.prepare_validation_environment(
+        candidate_root=candidate,
+        work_root=tmp_path / "work",
+        parent_environment={
+            "PATH": os.defpath,
+        },
+        needs_python=True,
+    )
+
+    assert len(commands) == 4
+    assert all(command[0] == str(environment.python_executable) for command in commands)
+    assert all(
+        command[command.index("--index-url") + 1]
+        == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
+        for command in commands
+    )
+    build = next(command for command in commands if "wheel" in command)
+    assert "--no-build-isolation" in build
+    assert "--no-index" in commands[0]
+    assert all("--find-links" not in command for command in commands)
+    assert environment.summary["candidate_pip_authority"]["post_upgrade_parent_pip_invocation_count"] == 0
+    assert environment.summary["candidate_pip_authority"]["build_isolation_disabled"] is True
+    assert environment.summary["candidate_pip_authority"]["network_used"] is True
+    assert "validation_asset_closure" not in environment.summary
+
+
+def test_candidate_build_cleanup_preserves_validation_venv(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    venv_marker = candidate / ".venv" / "bin" / "python"
+    venv_marker.parent.mkdir(parents=True)
+    venv_marker.write_text("validation python\n", encoding="utf-8")
+    (candidate / "build").mkdir()
+    (candidate / "build" / "artifact.txt").write_text("build\n", encoding="utf-8")
+    (candidate / "dist").mkdir()
+    (candidate / "dist" / "artifact.whl").write_text("wheel\n", encoding="utf-8")
+    (candidate / "colameta.egg-info").mkdir()
+    (candidate / "colameta.egg-info" / "PKG-INFO").write_text(
+        "metadata\n",
+        encoding="utf-8",
+    )
+
+    toolchain_environment._clean_candidate_build_overlays(
+        candidate_root=candidate,
+        environment={},
+    )
+
+    assert venv_marker.is_file()
+    assert not (candidate / "build").exists()
+    assert not (candidate / "dist").exists()
+    assert not (candidate / "colameta.egg-info").exists()
+
+
+def test_candidate_and_host_checkouts_are_distinct_and_mutually_invisible(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+    head = _git(project, "rev-parse", "HEAD")
+    for order in (("candidate", "host"), ("host", "candidate")):
+        candidate = manager._prepare_isolated_checkout(head, f"s4-{order[0]}-candidate")
+        host = manager._prepare_isolated_checkout(head, f"s4-{order[1]}-host")
+        try:
+            assert candidate["root"] != host["root"]
+            checkouts = {"candidate": Path(candidate["root"]), "host": Path(host["root"])}
+            for lane in order:
+                other = "host" if lane == "candidate" else "candidate"
+                side_effect = checkouts[lane] / f"{lane}-only.txt"
+                side_effect.write_text(f"{lane} lane\n", encoding="utf-8")
+                assert not (checkouts[other] / side_effect.name).exists()
+        finally:
+            assert manager._cleanup_isolated_checkout(candidate) is True
+            assert manager._cleanup_isolated_checkout(host) is True
 
 
 def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> None:

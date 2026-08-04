@@ -31,18 +31,23 @@ from runner.review_manifest_validation import (
 from runner.runner_paths import resolve_project_runner_path
 from runner.toolchain_environment import (
     ValidationEnvironment,
+    ValidationEnvironmentError,
     build_validation_subprocess_environment,
     command_uses_python,
     materialize_frozen_toolchain_environment,
     materialize_trusted_source_venv,
     prepare_validation_environment,
     rewrite_command_for_validation_environment,
+    verify_bound_wheel_asset,
     venv_bin_dir,
     venv_python,
 )
 from runner.work_item_governance.source_binding import (
     _inspect_git_checkout,
     _trusted_git_for_checkout,
+)
+from runner.work_item_governance.toolchain_binding import (
+    load_verified_frozen_toolchain_record,
 )
 
 
@@ -212,11 +217,18 @@ _HOST_FROZEN_MARKER = "host_frozen_toolchain"
 _CANDIDATE_MARKER_EXPRESSION = f"not {_HOST_FROZEN_MARKER}"
 _HOST_MARKER_EXPRESSION = _HOST_FROZEN_MARKER
 _HOST_FROZEN_TEST_FILE = "tests/test_work_item_r3_closeout_runner.py"
+_FROZEN_CRYPTOGRAPHY_WHEEL_ENV = "COLAMETA_FROZEN_CRYPTOGRAPHY_WHEEL"
+_FROZEN_TOOLCHAIN_ASSET_DIR_ENV = "COLAMETA_FROZEN_TOOLCHAIN_ASSET_DIR"
+_TRUSTED_LAUNCHER_BINDING_ENV = "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE"
+_TRUSTED_LAUNCHER_BINDING_FILENAME = "trusted-launcher-binding.json"
+_TRUSTED_LAUNCHER_RELATIVE_PATH = "scripts/work_item_r3_trusted_launcher.py"
 _HOST_FROZEN_TRIGGER_PATHS = frozenset(
     {
         "runner/mcp_validation_run.py",
         "runner/toolchain_environment.py",
         "runner/work_item_governance/toolchain_binding.py",
+        "scripts/work_item_r3_closeout.py",
+        "scripts/work_item_r3_trusted_launcher.py",
         _HOST_FROZEN_TEST_FILE,
     }
 )
@@ -767,14 +779,183 @@ class MCPValidationRunManager:
             result["manifest_validation"] = dict(manifest_validation)
         return result
 
+    def _resolve_frozen_toolchain_asset(self) -> dict[str, Any]:
+        """Resolve and verify the locally bound cryptography wheel asset."""
+
+        try:
+            record = load_verified_frozen_toolchain_record()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error_code": getattr(exc, "code", "FROZEN_TOOLCHAIN_RECORD_INVALID"),
+            }
+        assets = record.get("required_assets")
+        cryptography = assets.get("cryptography") if isinstance(assets, dict) else None
+        if not isinstance(cryptography, dict):
+            return {
+                "ok": False,
+                "error_code": "FROZEN_TOOLCHAIN_ASSET_BINDING_INVALID",
+            }
+        filename = cryptography.get("filename")
+        expected_sha256 = cryptography.get("sha256")
+        distribution = cryptography.get("distribution", "cryptography")
+        version = cryptography.get("version")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (filename, expected_sha256, distribution, version)
+        ):
+            return {
+                "ok": False,
+                "error_code": "FROZEN_TOOLCHAIN_ASSET_BINDING_INVALID",
+            }
+        candidates: list[Path] = []
+        explicit = os.environ.get(_FROZEN_CRYPTOGRAPHY_WHEEL_ENV)
+        if explicit:
+            candidates.append(Path(explicit).expanduser())
+        asset_dir = os.environ.get(_FROZEN_TOOLCHAIN_ASSET_DIR_ENV)
+        if asset_dir:
+            candidates.append(Path(asset_dir).expanduser() / filename)
+        for candidate in candidates:
+            try:
+                verified = verify_bound_wheel_asset(
+                    candidate,
+                    expected_filename=filename,
+                    expected_sha256=expected_sha256,
+                )
+            except Exception:
+                continue
+            return {
+                "ok": True,
+                "path": Path(candidate).resolve(),
+                "filename": filename,
+                "sha256": expected_sha256,
+                "distribution": distribution,
+                "version": version,
+                "asset": verified,
+            }
+        return {
+            "ok": False,
+            "error_code": "FROZEN_TOOLCHAIN_LOCAL_ASSETS_UNAVAILABLE",
+        }
+
+    def _write_trusted_launcher_binding_receipt(
+        self,
+        *,
+        artifact: dict[str, Any],
+        preview_id: str,
+        candidate_root: Path,
+        run_parent: Path,
+        host_preflight: dict[str, Any],
+    ) -> tuple[Path, dict[str, Any]]:
+        """Create one temporary, hash-bound contract for the trusted launcher."""
+
+        identity = artifact.get("candidate_identity")
+        selection = artifact.get("validation_selection")
+        bindings = self._source_bindings_for_artifact(artifact)
+        if not isinstance(identity, dict) or not isinstance(selection, dict):
+            raise ValidationEnvironmentError("trusted launcher candidate binding is unavailable")
+        if identity.get("source_binding_scope") != "full_allowed_worktree_delta":
+            raise ValidationEnvironmentError("trusted launcher requires a full candidate delta")
+        binding_digest = canonical_manifest_validation_sha256(bindings)
+        if (
+            identity.get("source_binding_sha256") != binding_digest
+            or identity.get("worktree_delta_sha256") != binding_digest
+            or identity.get("source_binding_count") != len(bindings)
+        ):
+            raise ValidationEnvironmentError("trusted launcher candidate digest binding mismatch")
+        launcher = candidate_root / _TRUSTED_LAUNCHER_RELATIVE_PATH
+        if launcher.is_symlink() or not launcher.is_file():
+            raise ValidationEnvironmentError("trusted launcher candidate bytes are unavailable")
+        toolchain_project_root = host_preflight.get("toolchain_project_root")
+        environment_root = host_preflight.get("environment_root")
+        environment_root_sha256 = host_preflight.get("environment_root_sha256")
+        frozen_record_sha256 = host_preflight.get("frozen_toolchain_record_sha256")
+        cryptography_version = host_preflight.get("cryptography_version")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                toolchain_project_root,
+                environment_root,
+                environment_root_sha256,
+                frozen_record_sha256,
+                cryptography_version,
+            )
+        ):
+            raise ValidationEnvironmentError("trusted launcher toolchain binding is incomplete")
+        if cryptography_version != "50.0.0":
+            raise ValidationEnvironmentError("trusted launcher cryptography binding mismatch")
+        receipt = {
+            "schema_version": "colameta.trusted_launcher_binding.v1",
+            "candidate": {
+                "head": identity.get("head"),
+                "root": candidate_root.resolve().as_posix(),
+                "worktree_delta_sha256": identity["worktree_delta_sha256"],
+                "source_binding_sha256": identity["source_binding_sha256"],
+                "source_binding_count": identity["source_binding_count"],
+                "source_binding_scope": identity["source_binding_scope"],
+                "source_bindings": bindings,
+            },
+            "toolchain": {
+                "project_root": Path(toolchain_project_root).resolve().as_posix(),
+                "environment_root": Path(environment_root).resolve().as_posix(),
+                "environment_root_sha256": environment_root_sha256,
+                "frozen_record_sha256": frozen_record_sha256,
+                "cryptography_version": cryptography_version,
+            },
+            "launcher": {
+                "path": _TRUSTED_LAUNCHER_RELATIVE_PATH,
+                "sha256": self._sha256_file(launcher),
+            },
+            "validation": {
+                "preview_id": preview_id,
+                "command_specs_sha256": selection.get("command_specs_sha256"),
+                "lane": _HOST_FROZEN_LANE,
+            },
+        }
+        receipt["receipt_sha256"] = canonical_manifest_validation_sha256(receipt)
+        run_parent = run_parent.resolve()
+        run_parent.mkdir(parents=True, exist_ok=True)
+        receipt_path = run_parent / _TRUSTED_LAUNCHER_BINDING_FILENAME
+        if receipt_path.exists() or receipt_path.is_symlink():
+            raise ValidationEnvironmentError("trusted launcher receipt path collision")
+        temporary_path: Path | None = None
+        descriptor: int | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{_TRUSTED_LAUNCHER_BINDING_FILENAME}.",
+                dir=run_parent,
+            )
+            temporary_path = Path(temporary_name)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                descriptor = None
+                json.dump(receipt, handle, ensure_ascii=False, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, receipt_path)
+            temporary_path = None
+            os.chmod(receipt_path, 0o600)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+        return receipt_path, receipt
+
     def _host_frozen_environment(
         self,
         *,
         candidate_root: Path,
         work_root: Path,
         host_venv: Path,
+        frozen_asset: dict[str, Any] | None = None,
         toolchain_project_root: Path | None = None,
         trusted_source_root: Path | None = None,
+        binding_receipt_path: Path | None = None,
     ) -> dict[str, str]:
         """Build the host-lane environment without importing serving source."""
 
@@ -797,6 +978,14 @@ class MCPValidationRunManager:
             environment["COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT"] = str(
                 trusted_source_root.resolve()
             )
+        if isinstance(frozen_asset, dict) and isinstance(frozen_asset.get("path"), Path):
+            environment[_FROZEN_CRYPTOGRAPHY_WHEEL_ENV] = str(
+                frozen_asset["path"].resolve()
+            )
+        if binding_receipt_path is not None:
+            environment[_TRUSTED_LAUNCHER_BINDING_ENV] = str(
+                binding_receipt_path.resolve()
+            )
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return environment
 
@@ -806,6 +995,7 @@ class MCPValidationRunManager:
         candidate_root: Path,
         work_root: Path,
         trusted_source_root: Path | None = None,
+        frozen_asset: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Select an actually verified frozen host environment."""
 
@@ -828,7 +1018,11 @@ class MCPValidationRunManager:
             "module_provenance": False,
             "serving_checkout_source_loaded": None,
             "frozen_toolchain_record_sha256": None,
+            "environment_root_sha256": None,
             "environment_root_binding_sha256": None,
+            "toolchain_project_root": None,
+            "environment_root": None,
+            "python_executable": None,
             "environment_kind": None,
             "strict_measure_passed": False,
             "active_venv_status": "unverified",
@@ -838,6 +1032,17 @@ class MCPValidationRunManager:
             "network_used": False,
             "bytecode_deleted": False,
             "trusted_source_checkout_verified": False,
+            "frozen_asset_verified": False,
+            "frozen_asset_sha256": (
+                frozen_asset.get("sha256")
+                if isinstance(frozen_asset, dict)
+                else None
+            ),
+            "cryptography_version": (
+                frozen_asset.get("version")
+                if isinstance(frozen_asset, dict)
+                else None
+            ),
             "error_code": None,
         }
         if not active_root.is_dir() or not host_python.is_file():
@@ -910,6 +1115,7 @@ print(json.dumps(payload, sort_keys=True))
                 candidate_root=candidate_root,
                 work_root=probe_work_root,
                 host_venv=host_venv,
+                frozen_asset=frozen_asset,
                 toolchain_project_root=toolchain_project_root,
                 trusted_source_root=trusted_source_root,
             )
@@ -987,10 +1193,19 @@ print(json.dumps(payload, sort_keys=True))
         materialized = False
         if not ready(active_payload):
             try:
+                if not isinstance(frozen_asset, dict) or not isinstance(
+                    frozen_asset.get("path"), Path
+                ):
+                    raise RuntimeError("frozen toolchain asset is unavailable")
                 _selected_project, _selected_root, materialization = (
                     materialize_frozen_toolchain_environment(
                         source_venv=active_root,
                         work_root=work_root / "ephemeral-host",
+                        frozen_asset=frozen_asset["path"],
+                        frozen_asset_filename=str(frozen_asset["filename"]),
+                        frozen_asset_sha256=str(frozen_asset["sha256"]),
+                        frozen_asset_distribution=str(frozen_asset["distribution"]),
+                        frozen_asset_version=str(frozen_asset["version"]),
                     )
                 )
                 selected_payload = run_probe(
@@ -1004,6 +1219,7 @@ print(json.dumps(payload, sort_keys=True))
                     "local_assets_only"
                 ) is True
                 base["network_used"] = materialization.get("network_used") is True
+                base["frozen_asset_verified"] = materialization.get("frozen_asset") is not None
             except Exception:
                 base["error_code"] = "FROZEN_TOOLCHAIN_MATERIALIZATION_CONTRACT_UNAVAILABLE"
         if not materialized and not ready(active_payload):
@@ -1044,11 +1260,25 @@ print(json.dumps(payload, sort_keys=True))
         ) is True
         base["environment_kind"] = "ephemeral_verified" if materialized else "active_verified"
         base["active_venv_mutated"] = False
+        selected_project_root = (
+            _selected_project if materialized else active_project
+        )
+        selected_environment_root = (
+            _selected_root if materialized else active_root
+        )
+        base["toolchain_project_root"] = selected_project_root.resolve().as_posix()
+        base["environment_root"] = selected_environment_root.resolve().as_posix()
+        # Keep the venv launcher path rather than collapsing it to the system
+        # interpreter.  Invoking ``/usr/bin/python3.12`` directly bypasses the
+        # venv's site-packages, which would make the host lane appear frozen
+        # while silently losing pytest and the other frozen wrappers.
+        base["python_executable"] = venv_python(selected_environment_root).absolute().as_posix()
         record_sha256 = selected_payload.get("record_sha256")
         if isinstance(record_sha256, str) and _SHA256_RE.fullmatch(record_sha256):
             base["frozen_toolchain_record_sha256"] = record_sha256
         root_digest = selected_payload.get("environment_root_sha256")
         if isinstance(root_digest, str) and _SHA256_RE.fullmatch(root_digest):
+            base["environment_root_sha256"] = root_digest
             base["environment_root_binding_sha256"] = canonical_manifest_validation_sha256(
                 {"environment_root_sha256": root_digest}
             )
@@ -1350,9 +1580,10 @@ print(json.dumps(payload, sort_keys=True))
         lane_assignments = artifact.get("validation_lanes")
         if not isinstance(lane_assignments, list) or len(lane_assignments) != len(command_specs):
             lane_assignments = [_CANDIDATE_LANE] * len(command_specs)
+        lane_checkouts: dict[str, dict[str, Any]] = {}
         isolated_checkout: dict[str, Any] | None = None
-        execution_root = self.project_root
         source_after: dict[str, Any] | None = None
+        source_after_by_lane: dict[str, dict[str, Any] | None] = {}
         cleanup_complete = True
         manifest_candidate_head: str | None = None
         validation_environment: ValidationEnvironment | None = None
@@ -1360,54 +1591,139 @@ print(json.dumps(payload, sort_keys=True))
         host_environment: dict[str, str] | None = None
         host_preflight: dict[str, Any] | None = None
         trusted_source_checkout: dict[str, Any] | None = None
-        execution_overlays_removed = False
+        frozen_asset: dict[str, Any] | None = None
+        trusted_launcher_binding_receipt: dict[str, Any] | None = None
+        trusted_launcher_binding_path: Path | None = None
+        execution_overlays_removed: dict[str, bool] = {}
         try:
             manifest_candidate_head = self._bound_candidate_head(artifact)
             if manifest_candidate_head is not None:
-                isolated_checkout = self._prepare_isolated_checkout(
-                    manifest_candidate_head,
-                    run_id,
+                source_bindings = self._source_bindings_for_artifact(artifact)
+                binding_kind = str(
+                    artifact.get("candidate_delta_mode") or "source_files"
                 )
-                execution_root = str(isolated_checkout["root"])
-                isolated_checkout["source_overlay_summary"] = (
-                    self._apply_candidate_source_overlays(
-                        isolated_checkout,
-                        self._source_bindings_for_artifact(artifact),
-                        binding_kind=(
-                            str(
-                                artifact.get("candidate_delta_mode")
-                                or "source_files"
-                            )
-                        ),
+                required_lanes = {
+                    lane
+                    for lane in lane_assignments
+                    if lane in _VALIDATION_LANES
+                }
+                for lane in sorted(required_lanes):
+                    checkout = self._prepare_isolated_checkout(
+                        manifest_candidate_head,
+                        f"{run_id}-{lane}",
                     )
-                )
-                validation_environment = prepare_validation_environment(
-                    candidate_root=Path(execution_root),
-                    work_root=Path(isolated_checkout["parent"]) / "toolchain",
-                    parent_environment=dict(os.environ),
-                    forbidden_roots=(Path(self.project_root).resolve(),),
-                    needs_python=any(
-                        command_uses_python(spec.get("argv", []))
-                        for spec in command_specs
-                        if isinstance(spec, dict)
-                    ),
-                )
-                isolated_checkout["validation_venv"] = (
-                    validation_environment.venv_dir
-                )
-                validation_context_token = _VALIDATION_ENVIRONMENT_CONTEXT.set(
-                    validation_environment
+                    lane_checkouts[lane] = checkout
+                    execution_overlays_removed[lane] = False
+                    checkout["source_overlay_summary"] = (
+                        self._apply_candidate_source_overlays(
+                            checkout,
+                            source_bindings,
+                            binding_kind=binding_kind,
+                        )
+                    )
+                isolated_checkout = lane_checkouts.get(_CANDIDATE_LANE) or lane_checkouts.get(
+                    _HOST_FROZEN_LANE
                 )
 
+                candidate_specs = [
+                    spec
+                    for index, spec in enumerate(command_specs)
+                    if lane_assignments[index] == _CANDIDATE_LANE
+                    and isinstance(spec, dict)
+                ]
+                needs_candidate_python = any(
+                    command_uses_python(spec.get("argv", []))
+                    for spec in candidate_specs
+                )
+                needs_host_python = any(
+                    lane_assignments[index] == _HOST_FROZEN_LANE
+                    and isinstance(spec, dict)
+                    and command_uses_python(spec.get("argv", []))
+                    for index, spec in enumerate(command_specs)
+                )
+                needs_python = needs_candidate_python or needs_host_python
+                if needs_python:
+                    frozen_asset = self._resolve_frozen_toolchain_asset()
+                    if frozen_asset.get("ok") is not True:
+                        raise ValidationEnvironmentError(
+                            str(
+                                frozen_asset.get("error_code")
+                                or "FROZEN_TOOLCHAIN_LOCAL_ASSETS_UNAVAILABLE"
+                            )
+                        )
+                if _CANDIDATE_LANE in required_lanes:
+                    candidate_checkout = lane_checkouts.get(_CANDIDATE_LANE)
+                    if candidate_checkout is None:
+                        raise ValidationEnvironmentError(
+                            "candidate checkout is unavailable"
+                        )
+                    validation_environment = prepare_validation_environment(
+                        candidate_root=Path(candidate_checkout["root"]),
+                        work_root=Path(candidate_checkout["parent"])
+                        / "toolchain",
+                        parent_environment=dict(os.environ),
+                        forbidden_roots=(Path(self.project_root).resolve(),),
+                        needs_python=needs_candidate_python,
+                        frozen_asset=(
+                            frozen_asset.get("path")
+                            if isinstance(frozen_asset, dict)
+                            else None
+                        ),
+                        frozen_asset_filename=(
+                            str(frozen_asset["filename"])
+                            if isinstance(frozen_asset, dict)
+                            else None
+                        ),
+                        frozen_asset_sha256=(
+                            str(frozen_asset["sha256"])
+                            if isinstance(frozen_asset, dict)
+                            else None
+                        ),
+                        frozen_asset_distribution=(
+                            str(frozen_asset["distribution"])
+                            if isinstance(frozen_asset, dict)
+                            else "cryptography"
+                        ),
+                        frozen_asset_version=(
+                            str(frozen_asset["version"])
+                            if isinstance(frozen_asset, dict)
+                            else "50.0.0"
+                        ),
+                    )
+                    candidate_checkout["validation_venv"] = (
+                        validation_environment.venv_dir
+                    )
+                    validation_context_token = _VALIDATION_ENVIRONMENT_CONTEXT.set(
+                        validation_environment
+                    )
+
                 if _HOST_FROZEN_LANE in lane_assignments:
+                    host_checkout = lane_checkouts.get(_HOST_FROZEN_LANE)
+                    if host_checkout is None:
+                        raise ValidationEnvironmentError(
+                            "host frozen checkout is unavailable"
+                        )
                     trusted_source_checkout = self._prepare_isolated_checkout(
                         manifest_candidate_head,
                         f"{run_id}-trusted-source",
                     )
+                    trusted_source_checkout["source_overlay_summary"] = (
+                        self._apply_candidate_source_overlays(
+                            trusted_source_checkout,
+                            self._source_bindings_for_artifact(artifact),
+                            binding_kind=(
+                                str(
+                                    artifact.get("candidate_delta_mode")
+                                    or "source_files"
+                                )
+                            ),
+                        )
+                    )
                     host_preflight = self._host_frozen_preflight(
-                        candidate_root=Path(execution_root),
-                        work_root=Path(isolated_checkout["parent"]) / "host-toolchain",
+                        candidate_root=Path(host_checkout["root"]),
+                        work_root=Path(host_checkout["parent"]) / "host-toolchain",
                         trusted_source_root=Path(trusted_source_checkout["root"]),
+                        frozen_asset=frozen_asset,
                     )
                     if (
                         host_preflight.get("error_code") is None
@@ -1419,7 +1735,7 @@ print(json.dumps(payload, sort_keys=True))
                     ):
                         if host_preflight.get("environment_kind") == "ephemeral_verified":
                             selected_toolchain_project = (
-                                Path(isolated_checkout["parent"])
+                                Path(host_checkout["parent"])
                                 / "host-toolchain"
                                 / "ephemeral-host"
                                 / "frozen-toolchain-project"
@@ -1439,15 +1755,38 @@ print(json.dumps(payload, sort_keys=True))
                             )
                         else:
                             host_preflight["trusted_source_checkout_verified"] = True
+                            try:
+                                (
+                                    trusted_launcher_binding_path,
+                                    trusted_launcher_binding_receipt,
+                                ) = self._write_trusted_launcher_binding_receipt(
+                                    artifact=artifact,
+                                    preview_id=preview_id,
+                                    candidate_root=Path(host_checkout["root"]),
+                                    run_parent=Path(host_checkout["parent"]),
+                                    host_preflight=host_preflight,
+                                )
+                            except Exception:
+                                host_preflight["error_code"] = (
+                                    "TRUSTED_LAUNCHER_BINDING_RECEIPT_UNAVAILABLE"
+                                )
+                            else:
+                                host_preflight[
+                                    "trusted_launcher_binding_receipt_sha256"
+                                ] = trusted_launcher_binding_receipt[
+                                    "receipt_sha256"
+                                ]
                             host_environment = self._host_frozen_environment(
-                                candidate_root=Path(execution_root),
-                                work_root=Path(isolated_checkout["parent"])
+                                candidate_root=Path(host_checkout["root"]),
+                                work_root=Path(host_checkout["parent"])
                                 / "host-toolchain",
                                 host_venv=selected_host_venv,
+                                frozen_asset=frozen_asset,
                                 toolchain_project_root=selected_toolchain_project,
                                 trusted_source_root=Path(
                                     trusted_source_checkout["root"]
                                 ),
+                                binding_receipt_path=trusted_launcher_binding_path,
                             )
 
             for index, spec in enumerate(command_specs):
@@ -1517,11 +1856,60 @@ print(json.dumps(payload, sort_keys=True))
                         effective_command,
                         manifest_candidate_head,
                     )
+                if lane == _HOST_FROZEN_LANE and command_uses_python(effective_command):
+                    selected_python = (
+                        host_preflight.get("python_executable")
+                        if isinstance(host_preflight, dict)
+                        else None
+                    )
+                    if not isinstance(selected_python, str) or not selected_python:
+                        failed_indexes.append(index)
+                        command_results.append({
+                            "index": index,
+                            "lane": lane,
+                            "ok": False,
+                            "returncode": 126,
+                            "error_code": "FROZEN_TOOLCHAIN_AUTHORITY_UNAVAILABLE",
+                            "timeout_seconds": timeout_seconds,
+                            "continue_on_failure": continue_on_failure,
+                            "command": self._display_command(command),
+                            "executed_command": self._display_command(command),
+                            "stdout": "",
+                            "stderr": "frozen host Python binding unavailable",
+                            "stdout_truncated": False,
+                            "stderr_truncated": False,
+                        })
+                        continue
+                    effective_command[0] = selected_python
+                lane_checkout = lane_checkouts.get(lane)
+                if lane_checkout is None and manifest_candidate_head is not None:
+                    failed_indexes.append(index)
+                    command_results.append({
+                        "index": index,
+                        "lane": lane,
+                        "ok": False,
+                        "returncode": 126,
+                        "error_code": "VALIDATION_CHECKOUT_UNAVAILABLE",
+                        "timeout_seconds": timeout_seconds,
+                        "continue_on_failure": continue_on_failure,
+                        "command": self._display_command(command),
+                        "executed_command": self._display_command(command),
+                        "stdout": "",
+                        "stderr": "validation lane checkout unavailable",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    })
+                    continue
+                lane_execution_root = (
+                    str(lane_checkout["root"])
+                    if lane_checkout is not None
+                    else self.project_root
+                )
                 if lane == _HOST_FROZEN_LANE:
                     result = self._run_command(
                         effective_command,
                         timeout_seconds=timeout_seconds,
-                        cwd=execution_root,
+                        cwd=lane_execution_root,
                         lane=lane,
                         host_environment=host_environment,
                     )
@@ -1531,7 +1919,7 @@ print(json.dumps(payload, sort_keys=True))
                     result = self._run_command(
                         effective_command,
                         timeout_seconds=timeout_seconds,
-                        cwd=execution_root,
+                        cwd=lane_execution_root,
                     )
                 stdout = result["stdout"]
                 stderr = result["stderr"]
@@ -1618,67 +2006,106 @@ print(json.dumps(payload, sort_keys=True))
                 if not ok and not continue_on_failure:
                     break
 
-            if isolated_checkout is not None:
-                self._remove_isolated_execution_overlays(
-                    isolated_checkout
+            for lane, checkout in lane_checkouts.items():
+                self._remove_isolated_execution_overlays(checkout)
+                execution_overlays_removed[lane] = True
+                source_after_by_lane[lane] = self._capture_checkout_snapshot(
+                    Path(checkout["root"])
                 )
-                execution_overlays_removed = True
-                source_after = self._capture_checkout_snapshot(
-                    Path(execution_root)
-                )
+                if checkout is isolated_checkout:
+                    source_after = source_after_by_lane[lane]
         finally:
             if validation_context_token is not None:
                 _VALIDATION_ENVIRONMENT_CONTEXT.reset(validation_context_token)
-            if isolated_checkout is not None:
-                if not execution_overlays_removed:
+            for lane, checkout in lane_checkouts.items():
+                if not execution_overlays_removed.get(lane, False):
                     try:
                         self._remove_isolated_execution_overlays(
-                            isolated_checkout
+                            checkout
                         )
-                        execution_overlays_removed = True
-                        if source_after is None:
-                            source_after = self._capture_checkout_snapshot(
-                                Path(execution_root)
+                        execution_overlays_removed[lane] = True
+                        if lane not in source_after_by_lane:
+                            source_after_by_lane[lane] = (
+                                self._capture_checkout_snapshot(
+                                    Path(checkout["root"])
+                                )
                             )
+                        if checkout is isolated_checkout:
+                            source_after = source_after_by_lane[lane]
                     except Exception:
                         cleanup_complete = False
-                cleanup_complete = self._cleanup_isolated_checkout(
-                    isolated_checkout
-                ) and cleanup_complete and isolated_checkout.get(
-                    "source_overlay_cleanup_complete",
-                    True,
-                ) is True
+                cleanup_complete = (
+                    self._cleanup_isolated_checkout(checkout)
+                    and cleanup_complete
+                    and checkout.get(
+                        "source_overlay_cleanup_complete",
+                        True,
+                    ) is True
+                )
             if trusted_source_checkout is not None:
+                try:
+                    self._remove_isolated_execution_overlays(
+                        trusted_source_checkout
+                    )
+                except Exception:
+                    cleanup_complete = False
                 cleanup_complete = (
                     self._cleanup_isolated_checkout(trusted_source_checkout)
                     and cleanup_complete
                 )
 
+        lane_checkout_provenance: dict[str, dict[str, Any]] = {}
+        for lane, checkout in lane_checkouts.items():
+            lane_source_before = checkout["source_before"]
+            lane_source_after = source_after_by_lane.get(lane)
+            lane_checkout_provenance[lane] = {
+                "candidate_head": checkout["candidate_head"],
+                "candidate_tree": checkout["candidate_tree"],
+                "source_before": lane_source_before,
+                "source_after": lane_source_after,
+                "source_binding_match": (
+                    isinstance(lane_source_after, dict)
+                    and lane_source_before == lane_source_after
+                ),
+                "isolated_from_project_worktree": checkout[
+                    "isolated_from_project_worktree"
+                ],
+                "cleanup_complete": (
+                    execution_overlays_removed.get(lane, False)
+                    and checkout.get("source_overlay_cleanup_complete", True)
+                    and cleanup_complete
+                ),
+            }
+
         checkout_provenance: dict[str, Any] | None = None
         if isolated_checkout is not None:
-            source_before = isolated_checkout["source_before"]
-            source_binding_match = (
-                isinstance(source_after, dict)
-                and source_before == source_after
+            isolated_lane = (
+                _CANDIDATE_LANE
+                if _CANDIDATE_LANE in lane_checkouts
+                else _HOST_FROZEN_LANE
             )
+            isolated_provenance = lane_checkout_provenance[isolated_lane]
+            source_before = isolated_provenance["source_before"]
             checkout_provenance = {
                 "mode": _ISOLATED_CHECKOUT_MODE,
                 "candidate_head": isolated_checkout["candidate_head"],
                 "candidate_tree": isolated_checkout["candidate_tree"],
                 "source_before": source_before,
-                "source_after": source_after,
-                "source_binding_match": source_binding_match,
+                "source_after": isolated_provenance["source_after"],
+                "source_binding_match": isolated_provenance[
+                    "source_binding_match"
+                ],
                 "isolated_from_project_worktree": isolated_checkout[
                     "isolated_from_project_worktree"
                 ],
-                "cleanup_complete": cleanup_complete,
+                "cleanup_complete": isolated_provenance["cleanup_complete"],
             }
-            provenance_valid = (
-                source_binding_match
-                and source_before.get("candidate_clean") is True
-                and checkout_provenance["isolated_from_project_worktree"]
-                is True
-                and cleanup_complete
+            provenance_valid = all(
+                item.get("source_binding_match") is True
+                and item.get("source_before", {}).get("candidate_clean") is True
+                and item.get("isolated_from_project_worktree") is True
+                and item.get("cleanup_complete") is True
+                for item in lane_checkout_provenance.values()
             )
             if not provenance_valid:
                 failed_index = max(0, len(command_results) - 1)
@@ -1729,6 +2156,77 @@ print(json.dumps(payload, sort_keys=True))
         }
         if checkout_provenance is not None:
             output_summary["checkout_provenance"] = checkout_provenance
+        candidate_identity_payload = artifact.get("candidate_identity")
+        lane_identity: dict[str, Any] = {}
+        if isinstance(candidate_identity_payload, dict):
+            lane_identity = {
+                key: candidate_identity_payload.get(key)
+                for key in (
+                    "head",
+                    "worktree_delta_sha256",
+                    "source_binding_sha256",
+                    "source_binding_count",
+                )
+            }
+        lane_checkout_summary: dict[str, Any] = {}
+        for lane, provenance in lane_checkout_provenance.items():
+            lane_checkout_summary[lane] = {
+                "candidate_identity": dict(lane_identity),
+                "source_binding_match": provenance.get(
+                    "source_binding_match"
+                ),
+                "cleanup_complete": provenance.get("cleanup_complete"),
+            }
+        if lane_checkout_summary:
+            output_summary["lane_checkouts"] = {
+                **lane_checkout_summary,
+                "distinct_checkout_roots": (
+                    len(lane_checkouts) == 2
+                    and len(
+                        {
+                            str(checkout["root"].resolve())
+                            for checkout in lane_checkouts.values()
+                        }
+                    )
+                    == 2
+                ),
+            }
+            output_summary["lane_cleanup"] = {
+                "candidate_checkout_cleanup": (
+                    execution_overlays_removed.get(_CANDIDATE_LANE) is True
+                    and (
+                        _CANDIDATE_LANE not in lane_checkouts
+                        or lane_checkouts[_CANDIDATE_LANE].get(
+                            "source_overlay_cleanup_complete", True
+                        )
+                        is True
+                    )
+                ),
+                "host_checkout_cleanup": (
+                    execution_overlays_removed.get(_HOST_FROZEN_LANE) is True
+                    and (
+                        _HOST_FROZEN_LANE not in lane_checkouts
+                        or lane_checkouts[_HOST_FROZEN_LANE].get(
+                            "source_overlay_cleanup_complete", True
+                        )
+                        is True
+                    )
+                ),
+                "candidate_venv_cleanup": (
+                    _CANDIDATE_LANE not in lane_checkouts
+                    or lane_checkouts[_CANDIDATE_LANE].get("validation_venv")
+                    is None
+                    or not Path(
+                        lane_checkouts[_CANDIDATE_LANE]["validation_venv"]
+                    ).exists()
+                ),
+                "host_trusted_source_cleanup": trusted_source_checkout is None
+                or not Path(trusted_source_checkout["root"]).exists(),
+                "host_frozen_environment_cleanup": (
+                    _HOST_FROZEN_LANE not in lane_checkouts
+                    or not Path(lane_checkouts[_HOST_FROZEN_LANE]["parent"]).exists()
+                ),
+            }
         if validation_environment is not None:
             output_summary["validation_environment"] = {
                 **validation_environment.summary,
