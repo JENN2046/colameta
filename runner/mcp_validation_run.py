@@ -5,10 +5,12 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,6 +29,17 @@ from runner.review_manifest_validation import (
     normalize_review_manifest_validation_source,
 )
 from runner.runner_paths import resolve_project_runner_path
+from runner.toolchain_environment import (
+    ValidationEnvironment,
+    build_validation_subprocess_environment,
+    command_uses_python,
+    materialize_frozen_toolchain_environment,
+    materialize_trusted_source_venv,
+    prepare_validation_environment,
+    rewrite_command_for_validation_environment,
+    venv_bin_dir,
+    venv_python,
+)
 from runner.work_item_governance.source_binding import (
     _inspect_git_checkout,
     _trusted_git_for_checkout,
@@ -88,9 +101,28 @@ _RUN_RESULT_FIELDS = frozenset(
         "completed_at",
         "duration_seconds",
         "manifest_validation",
+        "candidate_identity",
+        "validation_selection",
+        "validation_lanes",
+        "aggregate",
     }
 )
 _TERMINAL_RUN_RESULT_FIELDS = _RUN_RESULT_FIELDS | {"validation_result_sha256"}
+_LEGACY_TERMINAL_FIELDS = (
+    _TERMINAL_RUN_RESULT_FIELDS
+    - {
+        "candidate_identity",
+        "validation_selection",
+        "validation_lanes",
+        "aggregate",
+    }
+)
+_LEGACY_RUNNING_FIELDS = _RUN_RESULT_FIELDS - {
+    "candidate_identity",
+    "validation_selection",
+    "validation_lanes",
+    "aggregate",
+}
 _LEGACY_TERMINAL_REQUIRED_FIELDS = frozenset(
     {
         "run_id",
@@ -112,7 +144,15 @@ _LEGACY_TERMINAL_REQUIRED_FIELDS = frozenset(
     }
 )
 _LEGACY_TERMINAL_OPTIONAL_FIELDS = frozenset(
-    {"command_summary", "command_count", "manifest_validation"}
+    {
+        "command_summary",
+        "command_count",
+        "manifest_validation",
+        "candidate_identity",
+        "validation_selection",
+        "validation_lanes",
+        "aggregate",
+    }
 )
 _P1_COMMAND_CONTRACT = (
     (
@@ -165,6 +205,34 @@ _P1_COMMAND_FAMILIES = tuple(
     family for family, _argv, _timeout in _P1_COMMAND_CONTRACT
 )
 _ISOLATED_CHECKOUT_MODE = "isolated_detached_worktree"
+_CANDIDATE_LANE = "candidate"
+_HOST_FROZEN_LANE = "host_frozen"
+_VALIDATION_LANES = {_CANDIDATE_LANE, _HOST_FROZEN_LANE}
+_HOST_FROZEN_MARKER = "host_frozen_toolchain"
+_CANDIDATE_MARKER_EXPRESSION = f"not {_HOST_FROZEN_MARKER}"
+_HOST_MARKER_EXPRESSION = _HOST_FROZEN_MARKER
+_HOST_FROZEN_TEST_FILE = "tests/test_work_item_r3_closeout_runner.py"
+_HOST_FROZEN_TRIGGER_PATHS = frozenset(
+    {
+        "runner/mcp_validation_run.py",
+        "runner/toolchain_environment.py",
+        "runner/work_item_governance/toolchain_binding.py",
+        _HOST_FROZEN_TEST_FILE,
+    }
+)
+
+# This is an execution skip policy, not a lane classification list.  The
+# exact skip is an existing dirty-checkout protection in the ordinary
+# candidate suite.  Any other candidate skip is unexpected and fails closed.
+_ALLOWED_CANDIDATE_SKIP_SIGNATURES = frozenset(
+    {
+        "tests/test_work_item_r3_closeout.py:546: positive exact-attestation assertion requires the committed candidate",
+    }
+)
+_VALIDATION_ENVIRONMENT_CONTEXT: ContextVar[ValidationEnvironment | None] = ContextVar(
+    "colameta_validation_environment",
+    default=None,
+)
 _CHECKOUT_PROVENANCE_FIELDS = frozenset(
     {
         "mode",
@@ -317,7 +385,24 @@ class MCPValidationRunManager:
                 "message": "scope=target_files 时必须提供 target_files。",
             }
 
-        commands, command_specs, strategy, warnings, validation_groups = self._select_commands(scope, resolved_files)
+        (
+            candidate_source_bindings,
+            candidate_delta_paths,
+            candidate_delta_error,
+        ) = self._build_full_worktree_candidate_bindings()
+        if candidate_delta_error is not None:
+            return candidate_delta_error
+        if scope == "changed_files":
+            resolved_files = candidate_delta_paths[:MAX_TARGET_FILES]
+
+        (
+            commands,
+            command_specs,
+            strategy,
+            warnings,
+            validation_groups,
+            lane_assignments,
+        ) = self._select_commands(scope, resolved_files)
         blockers: list[str] = []
         if not commands:
             blockers.append("NO_VALIDATION_COMMANDS")
@@ -325,6 +410,17 @@ class MCPValidationRunManager:
         now = _utc_now()
         preview_id = uuid.uuid4().hex[:12]
         current_head = self._git_stdout(["rev-parse", "HEAD"]).strip()
+        candidate_identity = self._candidate_identity(
+            current_head,
+            candidate_source_bindings,
+            binding_scope="full_allowed_worktree_delta",
+        )
+        validation_selection = self._validation_selection(
+            scope,
+            resolved_files,
+            command_specs,
+            lane_assignments=lane_assignments,
+        )
         artifact = {
             "preview_id": preview_id,
             "artifact_kind": "validation_run",
@@ -335,6 +431,11 @@ class MCPValidationRunManager:
             "validation_groups": validation_groups,
             "commands": commands,
             "command_specs": command_specs,
+            "candidate_source_bindings": candidate_source_bindings,
+            "candidate_delta_mode": "full_allowed_worktree_delta",
+            "candidate_identity": candidate_identity,
+            "validation_selection": validation_selection,
+            "validation_lanes": lane_assignments,
             "current_head": current_head,
             "created_at": _iso(now),
             "expires_at": _iso(now + timedelta(seconds=PREVIEW_TTL_SECONDS)),
@@ -354,6 +455,9 @@ class MCPValidationRunManager:
             "validation_groups": validation_groups,
             "command_summary": self._command_summary(commands),
             "command_count": len(commands),
+            "candidate_identity": candidate_identity,
+            "validation_selection": validation_selection,
+            "validation_lanes": lane_assignments,
             "can_run": can_run,
             "blockers": blockers,
             "warnings": warnings,
@@ -414,6 +518,21 @@ class MCPValidationRunManager:
             command_specs,
         )
         target_files = [subject["path"] for subject in source["subjects"]]
+        current_head = self._git_stdout(["rev-parse", "HEAD"]).strip()
+        candidate_source_bindings = self._manifest_source_bindings(
+            manifest_validation
+        )
+        candidate_identity = self._candidate_identity(
+            current_head,
+            candidate_source_bindings,
+            binding_scope="manifest_subjects",
+        )
+        validation_selection = self._validation_selection(
+            "manifest_bound",
+            target_files,
+            command_specs,
+            lane_assignments=[_CANDIDATE_LANE] * len(command_specs),
+        )
         now = _utc_now()
         preview_id = uuid.uuid4().hex[:12]
         artifact = {
@@ -433,7 +552,12 @@ class MCPValidationRunManager:
             "commands": commands,
             "command_specs": command_specs,
             "manifest_validation": manifest_validation,
-            "current_head": self._git_stdout(["rev-parse", "HEAD"]).strip(),
+            "candidate_source_bindings": candidate_source_bindings,
+            "candidate_delta_mode": "manifest_subjects",
+            "candidate_identity": candidate_identity,
+            "validation_selection": validation_selection,
+            "validation_lanes": [_CANDIDATE_LANE] * len(command_specs),
+            "current_head": current_head,
             "created_at": _iso(now),
             "expires_at": _iso(now + timedelta(seconds=PREVIEW_TTL_SECONDS)),
             "blockers": blockers,
@@ -453,6 +577,9 @@ class MCPValidationRunManager:
             "command_summary": self._command_summary(commands),
             "command_count": len(commands),
             "manifest_validation": manifest_validation,
+            "candidate_identity": candidate_identity,
+            "validation_selection": validation_selection,
+            "validation_lanes": [_CANDIDATE_LANE] * len(command_specs),
             "manifest_validation_rejections": rejection_details,
             "can_run": can_run,
             "blockers": blockers,
@@ -558,6 +685,51 @@ class MCPValidationRunManager:
                 "error_code": "TOO_MANY_COMMANDS",
                 "message": "preview 命令数量超过限制。",
             }
+        lane_assignments = artifact.get("validation_lanes")
+        if lane_assignments is None:
+            lane_assignments = [_CANDIDATE_LANE] * len(command_specs)
+        if (
+            not isinstance(lane_assignments, list)
+            or len(lane_assignments) != len(command_specs)
+            or any(lane not in _VALIDATION_LANES for lane in lane_assignments)
+        ):
+            return {
+                "ok": False,
+                "action": "run",
+                "error_code": "VALIDATION_LANE_ASSIGNMENT_INVALID",
+                "message": "preview 的验证通道绑定无效，拒绝启动。",
+            }
+
+        candidate_head = self._bound_candidate_head(artifact)
+        if candidate_head is not None:
+            current_head = self._git_stdout(["rev-parse", "HEAD"]).strip().lower()
+            if current_head != candidate_head:
+                return {
+                    "ok": False,
+                    "action": "run",
+                    "error_code": "VALIDATION_CANDIDATE_HEAD_MISMATCH",
+                    "message": "preview 绑定的候选 HEAD 已发生变化，请重新生成 validation preview。",
+                }
+
+        if not self._verify_candidate_source_bindings(artifact):
+            delta_incomplete = (
+                artifact.get("candidate_delta_mode")
+                == "full_allowed_worktree_delta"
+            )
+            return {
+                "ok": False,
+                "action": "run",
+                "error_code": (
+                    "VALIDATION_CANDIDATE_DELTA_INCOMPLETE"
+                    if delta_incomplete
+                    else "VALIDATION_SOURCE_BINDING_MISMATCH"
+                ),
+                "message": (
+                    "preview 绑定的完整候选工作树差异已发生变化，请重新生成 validation preview。"
+                    if delta_incomplete
+                    else "preview 绑定的候选文件已发生变化，请重新生成 validation preview。"
+                ),
+            }
 
         started_at = _utc_now()
         run_id = f"validation_run_{started_at.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -584,6 +756,9 @@ class MCPValidationRunManager:
             "validation_groups": artifact.get("validation_groups", []),
             "command_summary": self._command_summary(commands),
             "command_count": len(commands),
+            "candidate_identity": artifact.get("candidate_identity"),
+            "validation_selection": artifact.get("validation_selection"),
+            "validation_lanes": list(lane_assignments),
             "run_file": run_file,
             "message": "验证已启动，请用 status 轮询结果。",
         }
@@ -591,6 +766,535 @@ class MCPValidationRunManager:
         if isinstance(manifest_validation, dict):
             result["manifest_validation"] = dict(manifest_validation)
         return result
+
+    def _host_frozen_environment(
+        self,
+        *,
+        candidate_root: Path,
+        work_root: Path,
+        host_venv: Path,
+        toolchain_project_root: Path | None = None,
+        trusted_source_root: Path | None = None,
+    ) -> dict[str, str]:
+        """Build the host-lane environment without importing serving source."""
+
+        environment = build_validation_subprocess_environment(
+            candidate_root=candidate_root,
+            parent_environment=dict(os.environ),
+            temp_root=work_root,
+            forbidden_roots=(Path(self.project_root).resolve(),),
+        )
+        environment["PATH"] = os.pathsep.join(
+            [str(venv_bin_dir(host_venv)), os.defpath]
+        )
+        environment["VIRTUAL_ENV"] = str(host_venv)
+        environment["COLAMETA_VALIDATION_LANE"] = _HOST_FROZEN_LANE
+        environment["COLAMETA_FROZEN_TOOLCHAIN_PROJECT_ROOT"] = str(
+            (toolchain_project_root or Path(self.project_root)).resolve()
+        )
+        environment["COLAMETA_FROZEN_SOURCE_ROOT"] = str(candidate_root.resolve())
+        if trusted_source_root is not None:
+            environment["COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT"] = str(
+                trusted_source_root.resolve()
+            )
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return environment
+
+    def _host_frozen_preflight(
+        self,
+        *,
+        candidate_root: Path,
+        work_root: Path,
+        trusted_source_root: Path | None = None,
+    ) -> dict[str, Any]:
+        """Select an actually verified frozen host environment."""
+
+        active_project = Path(self.project_root).resolve()
+        active_root = (active_project / ".venv").resolve()
+        host_python = venv_python(active_root)
+        base: dict[str, Any] = {
+            "frozen_record_valid": False,
+            "environment_root_matches": False,
+            "bytecode_policy_satisfied": False,
+            "total_host_venv_bytecode_count": 0,
+            "record_owned_preimport_bytecode_count": 0,
+            "unrelated_bytecode_count": 0,
+            "unknown_owner_bytecode_count": 0,
+            "active_total_host_venv_bytecode_count": 0,
+            "active_record_owned_preimport_bytecode_count": 0,
+            "active_unrelated_bytecode_count": 0,
+            "active_unknown_owner_bytecode_count": 0,
+            "selected_environment_bytecode_count": 0,
+            "module_provenance": False,
+            "serving_checkout_source_loaded": None,
+            "frozen_toolchain_record_sha256": None,
+            "environment_root_binding_sha256": None,
+            "environment_kind": None,
+            "strict_measure_passed": False,
+            "active_venv_status": "unverified",
+            "active_venv_disposition": None,
+            "active_venv_mutated": False,
+            "local_assets_only": False,
+            "network_used": False,
+            "bytecode_deleted": False,
+            "trusted_source_checkout_verified": False,
+            "error_code": None,
+        }
+        if not active_root.is_dir() or not host_python.is_file():
+            base["error_code"] = "FROZEN_TOOLCHAIN_AUTHORITY_UNAVAILABLE"
+            return base
+
+        probe = r'''
+import importlib
+import json
+import os
+import sys
+
+candidate = os.path.realpath(sys.argv[2])
+serving = os.path.realpath(sys.argv[3])
+module = importlib.import_module("runner.work_item_governance.toolchain_binding")
+module_file = os.path.realpath(getattr(module, "__file__", ""))
+def within(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+payload = {
+    "module_from_candidate": within(module_file, candidate),
+    "serving_checkout_source_loaded": within(module_file, serving),
+    "record_sha256": None,
+    "record_hashes_verified": False,
+    "environment_root_sha256": None,
+    "environment_root_matches": False,
+    "inspection_status": None,
+    "bytecode_inventory": {},
+    "bytecode_policy_satisfied": False,
+    "strict_measure_passed": False,
+    "strict_measure_error_code": None,
+    "error_code": None,
+}
+try:
+    record = module.load_verified_frozen_toolchain_record()
+    inspection = module.inspect_frozen_toolchain_environment(sys.argv[1])
+    payload["record_sha256"] = record.get("record_sha256")
+    payload["record_hashes_verified"] = inspection.get("record_hashes_verified") is True
+    payload["environment_root_sha256"] = inspection.get("environment_root_sha256")
+    payload["environment_root_matches"] = inspection.get("environment_root_matches") is True
+    payload["inspection_status"] = inspection.get("status")
+    payload["bytecode_inventory"] = inspection.get("bytecode_inventory", {})
+    payload["bytecode_policy_satisfied"] = inspection.get("bytecode_policy_satisfied") is True
+    payload["error_code"] = (inspection.get("blocking_reasons") or [None])[0]
+except Exception as exc:
+    payload["error_code"] = getattr(exc, "code", type(exc).__name__)
+try:
+    measured = module.measure_closeout_toolchain(sys.argv[1])
+    payload["strict_measure_passed"] = True
+    payload["record_sha256"] = measured.get("frozen_toolchain_record_sha256", payload["record_sha256"])
+    payload["record_hashes_verified"] = measured.get("record_hashes_verified") is True
+    payload["environment_root_sha256"] = measured.get("environment_root_sha256")
+    payload["environment_root_matches"] = True
+    payload["bytecode_policy_satisfied"] = measured.get("bytecode_policy_satisfied") is True
+except Exception as exc:
+    payload["strict_measure_error_code"] = getattr(exc, "code", type(exc).__name__)
+print(json.dumps(payload, sort_keys=True))
+'''
+
+        def run_probe(
+            *,
+            python: Path,
+            toolchain_project_root: Path,
+            probe_work_root: Path,
+            host_venv: Path,
+        ) -> dict[str, Any]:
+            environment = self._host_frozen_environment(
+                candidate_root=candidate_root,
+                work_root=probe_work_root,
+                host_venv=host_venv,
+                toolchain_project_root=toolchain_project_root,
+                trusted_source_root=trusted_source_root,
+            )
+            try:
+                completed = subprocess.run(
+                    [
+                        str(python),
+                        "-c",
+                        probe,
+                        str(toolchain_project_root),
+                        str(candidate_root.resolve()),
+                        str(active_project),
+                    ],
+                    cwd=candidate_root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    shell=False,
+                    timeout=120,
+                )
+                payload = (
+                    json.loads(completed.stdout)
+                    if completed.returncode == 0
+                    else {}
+                )
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+                payload = {}
+            return payload if isinstance(payload, dict) else {}
+
+        def ready(payload: dict[str, Any]) -> bool:
+            return (
+                payload.get("strict_measure_passed") is True
+                and payload.get("record_hashes_verified") is True
+                and payload.get("environment_root_matches") is True
+                and payload.get("bytecode_policy_satisfied") is True
+                and payload.get("module_from_candidate") is True
+                and payload.get("serving_checkout_source_loaded") is not True
+            )
+
+        def inventory_value(payload: dict[str, Any], key: str) -> int:
+            inventory = payload.get("bytecode_inventory")
+            value = inventory.get(key) if isinstance(inventory, dict) else None
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        active_payload = run_probe(
+            python=host_python,
+            toolchain_project_root=active_project,
+            probe_work_root=work_root / "active-probe",
+            host_venv=active_root,
+        )
+        base["active_total_host_venv_bytecode_count"] = inventory_value(
+            active_payload, "total_count"
+        )
+        base["active_record_owned_preimport_bytecode_count"] = inventory_value(
+            active_payload, "record_listed_count"
+        )
+        base["active_unrelated_bytecode_count"] = inventory_value(
+            active_payload, "non_record_listed_count"
+        )
+        base["active_unknown_owner_bytecode_count"] = inventory_value(
+            active_payload, "unknown_owner_count"
+        )
+        base["total_host_venv_bytecode_count"] = base[
+            "active_total_host_venv_bytecode_count"
+        ]
+        base["active_venv_status"] = (
+            "matched" if active_payload.get("inspection_status") == "matched" else "drifted"
+        )
+        base["active_venv_disposition"] = (
+            "active_verified" if ready(active_payload) else "not_frozen"
+        )
+
+        selected_payload = active_payload
+        materialized = False
+        if not ready(active_payload):
+            try:
+                _selected_project, _selected_root, materialization = (
+                    materialize_frozen_toolchain_environment(
+                        source_venv=active_root,
+                        work_root=work_root / "ephemeral-host",
+                    )
+                )
+                selected_payload = run_probe(
+                    python=venv_python(_selected_root),
+                    toolchain_project_root=_selected_project,
+                    probe_work_root=work_root / "ephemeral-host-probe",
+                    host_venv=_selected_root,
+                )
+                materialized = ready(selected_payload)
+                base["local_assets_only"] = materialization.get(
+                    "local_assets_only"
+                ) is True
+                base["network_used"] = materialization.get("network_used") is True
+            except Exception:
+                base["error_code"] = "FROZEN_TOOLCHAIN_MATERIALIZATION_CONTRACT_UNAVAILABLE"
+        if not materialized and not ready(active_payload):
+            if base["error_code"] is None:
+                base["error_code"] = (
+                    selected_payload.get("strict_measure_error_code")
+                    or selected_payload.get("error_code")
+                    or "FROZEN_TOOLCHAIN_MATERIALIZATION_CONTRACT_UNAVAILABLE"
+                )
+            return base
+
+        base["frozen_record_valid"] = selected_payload.get(
+            "record_hashes_verified"
+        ) is True
+        base["environment_root_matches"] = selected_payload.get(
+            "environment_root_matches"
+        ) is True
+        base["bytecode_policy_satisfied"] = selected_payload.get(
+            "bytecode_policy_satisfied"
+        ) is True
+        base["strict_measure_passed"] = selected_payload.get(
+            "strict_measure_passed"
+        ) is True
+        base["record_owned_preimport_bytecode_count"] = inventory_value(
+            selected_payload, "record_listed_count"
+        )
+        base["unrelated_bytecode_count"] = inventory_value(
+            selected_payload, "non_record_listed_count"
+        )
+        base["selected_environment_bytecode_count"] = inventory_value(
+            selected_payload, "total_count"
+        )
+        base["module_provenance"] = selected_payload.get(
+            "module_from_candidate"
+        ) is True
+        base["serving_checkout_source_loaded"] = selected_payload.get(
+            "serving_checkout_source_loaded"
+        ) is True
+        base["environment_kind"] = "ephemeral_verified" if materialized else "active_verified"
+        base["active_venv_mutated"] = False
+        record_sha256 = selected_payload.get("record_sha256")
+        if isinstance(record_sha256, str) and _SHA256_RE.fullmatch(record_sha256):
+            base["frozen_toolchain_record_sha256"] = record_sha256
+        root_digest = selected_payload.get("environment_root_sha256")
+        if isinstance(root_digest, str) and _SHA256_RE.fullmatch(root_digest):
+            base["environment_root_binding_sha256"] = canonical_manifest_validation_sha256(
+                {"environment_root_sha256": root_digest}
+            )
+        if base["serving_checkout_source_loaded"] is True:
+            base["error_code"] = "HOST_TOOLCHAIN_SERVING_SOURCE_LEAK"
+        elif not base["module_provenance"]:
+            base["error_code"] = "HOST_TOOLCHAIN_CANDIDATE_SOURCE_UNPROVEN"
+        elif not ready(selected_payload):
+            base["error_code"] = (
+                selected_payload.get("strict_measure_error_code")
+                or selected_payload.get("error_code")
+                or "FROZEN_TOOLCHAIN_STRICT_MEASURE_FAILED"
+            )
+        else:
+            base["error_code"] = None
+        return base
+
+    @staticmethod
+    def _pytest_command_metrics(
+        command: Any,
+        stdout: str,
+        stderr: str,
+    ) -> dict[str, Any]:
+        """Extract measurable pytest coverage evidence from one command."""
+
+        if not (
+            isinstance(command, list)
+            and len(command) >= 3
+            and command[1:3] == ["-m", "pytest"]
+        ):
+            return {
+                "selected_test_count": 0,
+                "skipped_count": 0,
+                "xfailed_count": 0,
+                "xpassed_count": 0,
+                "skipped_nodes": [],
+            }
+
+        output = f"{stdout}\n{stderr}"
+        summary_lines = [
+            line.strip()
+            for line in output.splitlines()
+            if re.search(r"\bin\s+\d+(?:\.\d+)?s\b", line)
+            and re.search(
+                r"\b(?:passed|failed|skipped|error|errors|xfailed|xpassed)\b",
+                line,
+            )
+        ]
+        counts = {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "error": 0,
+            "errors": 0,
+            "xfailed": 0,
+            "xpassed": 0,
+        }
+        if summary_lines:
+            for match in re.finditer(
+                r"(?P<count>\d+)\s+(?P<outcome>passed|failed|skipped|error|errors|xfailed|xpassed)\b",
+                summary_lines[-1],
+            ):
+                counts[match.group("outcome")] += int(match.group("count"))
+
+        skipped_nodes: list[str] = []
+        for line in output.splitlines():
+            match = re.match(r"\s*SKIPPED\s+\[(\d+)\]\s+(.+?)\s*$", line)
+            if match:
+                skipped_nodes.extend([match.group(2)] * int(match.group(1)))
+
+        return {
+            "selected_test_count": sum(counts.values()),
+            "skipped_count": counts["skipped"],
+            "xfailed_count": counts["xfailed"],
+            "xpassed_count": counts["xpassed"],
+            "skipped_nodes": skipped_nodes,
+        }
+
+    @staticmethod
+    def _validation_lane_evidence(
+        *,
+        command_specs: list[dict[str, Any]],
+        command_results: list[dict[str, Any]],
+        lane_assignments: list[str],
+        candidate_delta_sha256: str | None,
+        candidate_module_provenance: bool | None,
+        host_preflight: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        lane_payloads: dict[str, dict[str, Any]] = {}
+        for lane in (_CANDIDATE_LANE, _HOST_FROZEN_LANE):
+            expected_indexes = [
+                index for index, assigned in enumerate(lane_assignments) if assigned == lane
+            ]
+            lane_specs = [command_specs[index] for index in expected_indexes]
+            lane_results = [
+                result
+                for result in command_results
+                if isinstance(result, dict) and result.get("lane") == lane
+            ]
+            required = bool(expected_indexes)
+            if not required:
+                status = "not_required"
+                result_digest = None
+            elif lane == _HOST_FROZEN_LANE and isinstance(host_preflight, dict) and host_preflight.get("error_code"):
+                status = "blocked"
+                result_digest = canonical_manifest_validation_sha256(
+                    {"lane": lane, "preflight": host_preflight, "results": lane_results}
+                )
+            elif len(lane_results) != len(expected_indexes):
+                status = "incomplete"
+                result_digest = canonical_manifest_validation_sha256(
+                    {"lane": lane, "results": lane_results}
+                )
+            elif all(result.get("ok") is True for result in lane_results):
+                status = "passed"
+                result_digest = canonical_manifest_validation_sha256(
+                    {"lane": lane, "results": lane_results}
+                )
+            else:
+                status = "failed"
+                result_digest = canonical_manifest_validation_sha256(
+                    {"lane": lane, "results": lane_results}
+                )
+
+            selected_test_count = sum(
+                int(result.get("selected_test_count", 0))
+                for result in lane_results
+                if isinstance(result.get("selected_test_count", 0), int)
+                and not isinstance(result.get("selected_test_count", 0), bool)
+            )
+            skipped_count = sum(
+                int(result.get("skipped_count", 0))
+                for result in lane_results
+                if isinstance(result.get("skipped_count", 0), int)
+                and not isinstance(result.get("skipped_count", 0), bool)
+            )
+            allowed_skip_count = sum(
+                int(result.get("allowed_skip_count", 0))
+                for result in lane_results
+                if isinstance(result.get("allowed_skip_count", 0), int)
+                and not isinstance(result.get("allowed_skip_count", 0), bool)
+            )
+            unexpected_skip_count = sum(
+                int(result.get("unexpected_skip_count", 0))
+                for result in lane_results
+                if isinstance(result.get("unexpected_skip_count", 0), int)
+                and not isinstance(result.get("unexpected_skip_count", 0), bool)
+            )
+            required_skipped_count = (
+                sum(
+                    int(result.get("required_skipped_count", 0))
+                    for result in lane_results
+                    if isinstance(result.get("required_skipped_count", 0), int)
+                    and not isinstance(result.get("required_skipped_count", 0), bool)
+                )
+                if lane == _HOST_FROZEN_LANE
+                else 0
+            )
+            if unexpected_skip_count > 0 or required_skipped_count > 0:
+                status = "failed"
+
+            payload: dict[str, Any] = {
+                "status": status,
+                "result_sha256": result_digest,
+                "command_specs_sha256": canonical_manifest_validation_sha256(lane_specs),
+                "candidate_delta_sha256": candidate_delta_sha256,
+                "selected_test_count": selected_test_count,
+                "skipped_count": skipped_count,
+                "allowed_skip_count": allowed_skip_count,
+                "unexpected_skip_count": unexpected_skip_count,
+                "required_skipped_count": required_skipped_count,
+                "module_provenance": (
+                    candidate_module_provenance
+                    if lane == _CANDIDATE_LANE
+                    else (
+                        host_preflight.get("module_provenance")
+                        if isinstance(host_preflight, dict)
+                        else None
+                    )
+                ),
+            }
+            if lane == _HOST_FROZEN_LANE:
+                payload.update(
+                    {
+                        "frozen_toolchain_record_sha256": (
+                            host_preflight.get("frozen_toolchain_record_sha256")
+                            if isinstance(host_preflight, dict)
+                            else None
+                        ),
+                        "environment_root_binding_sha256": (
+                            host_preflight.get("environment_root_binding_sha256")
+                            if isinstance(host_preflight, dict)
+                            else None
+                        ),
+                        "total_host_venv_bytecode_count": (
+                            host_preflight.get("total_host_venv_bytecode_count", 0)
+                            if isinstance(host_preflight, dict)
+                            else 0
+                        ),
+                        "record_owned_preimport_bytecode_count": (
+                            host_preflight.get("record_owned_preimport_bytecode_count", 0)
+                            if isinstance(host_preflight, dict)
+                            else 0
+                        ),
+                        "unrelated_bytecode_count": (
+                            host_preflight.get("unrelated_bytecode_count", 0)
+                            if isinstance(host_preflight, dict)
+                            else 0
+                        ),
+                        "bytecode_deleted": (
+                            host_preflight.get("bytecode_deleted") is True
+                            if isinstance(host_preflight, dict)
+                            else False
+                        ),
+                        "environment_kind": (
+                            host_preflight.get("environment_kind")
+                            if isinstance(host_preflight, dict)
+                            else None
+                        ),
+                        "strict_measure_passed": (
+                            host_preflight.get("strict_measure_passed") is True
+                            if isinstance(host_preflight, dict)
+                            else False
+                        ),
+                    }
+                )
+            lane_payloads[lane] = payload
+
+        candidate_status = lane_payloads[_CANDIDATE_LANE]["status"]
+        host_status = lane_payloads[_HOST_FROZEN_LANE]["status"]
+        if host_status in {"blocked", "incomplete"} or candidate_status == "incomplete":
+            aggregate_status = "incomplete"
+        elif candidate_status == "passed" and host_status in {"passed", "not_required"}:
+            aggregate_status = "passed"
+        elif candidate_status == "not_required" and host_status == "not_required":
+            aggregate_status = "incomplete"
+        else:
+            aggregate_status = "failed"
+        aggregate = {
+            "status": aggregate_status,
+            "lane_result_digest": canonical_manifest_validation_sha256(lane_payloads),
+            "both_lanes_required": host_status != "not_required",
+            "classification_exhaustive": True,
+            "classification_basis": "complementary_marker_expressions",
+        }
+        return lane_payloads, aggregate
 
     def _execute_run_worker_safe(
         self,
@@ -626,6 +1330,8 @@ class MCPValidationRunManager:
                 "output_summary": {"total_output_chars": len(stderr), "redacted": True, "truncated": False},
                 "completed_at": _iso(completed_at),
                 "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
+                "validation_lanes": None,
+                "aggregate": None,
             }
             self._write_terminal_run_result(run_id, run_record)
 
@@ -641,28 +1347,112 @@ class MCPValidationRunManager:
         command_results: list[dict[str, Any]] = []
         total_output_chars = 0
         failed_indexes: list[int] = []
+        lane_assignments = artifact.get("validation_lanes")
+        if not isinstance(lane_assignments, list) or len(lane_assignments) != len(command_specs):
+            lane_assignments = [_CANDIDATE_LANE] * len(command_specs)
         isolated_checkout: dict[str, Any] | None = None
         execution_root = self.project_root
         source_after: dict[str, Any] | None = None
         cleanup_complete = True
         manifest_candidate_head: str | None = None
+        validation_environment: ValidationEnvironment | None = None
+        validation_context_token = None
+        host_environment: dict[str, str] | None = None
+        host_preflight: dict[str, Any] | None = None
+        trusted_source_checkout: dict[str, Any] | None = None
+        execution_overlays_removed = False
         try:
-            if artifact.get("scope") == "manifest_bound":
-                manifest_candidate_head = self._manifest_candidate_head(
-                    artifact
-                )
-                if manifest_candidate_head is None:
-                    raise RuntimeError(
-                        "manifest-bound validation has no candidate checkout"
-                    )
+            manifest_candidate_head = self._bound_candidate_head(artifact)
+            if manifest_candidate_head is not None:
                 isolated_checkout = self._prepare_isolated_checkout(
                     manifest_candidate_head,
                     run_id,
                 )
                 execution_root = str(isolated_checkout["root"])
+                isolated_checkout["source_overlay_summary"] = (
+                    self._apply_candidate_source_overlays(
+                        isolated_checkout,
+                        self._source_bindings_for_artifact(artifact),
+                        binding_kind=(
+                            str(
+                                artifact.get("candidate_delta_mode")
+                                or "source_files"
+                            )
+                        ),
+                    )
+                )
+                validation_environment = prepare_validation_environment(
+                    candidate_root=Path(execution_root),
+                    work_root=Path(isolated_checkout["parent"]) / "toolchain",
+                    parent_environment=dict(os.environ),
+                    forbidden_roots=(Path(self.project_root).resolve(),),
+                    needs_python=any(
+                        command_uses_python(spec.get("argv", []))
+                        for spec in command_specs
+                        if isinstance(spec, dict)
+                    ),
+                )
+                isolated_checkout["validation_venv"] = (
+                    validation_environment.venv_dir
+                )
+                validation_context_token = _VALIDATION_ENVIRONMENT_CONTEXT.set(
+                    validation_environment
+                )
+
+                if _HOST_FROZEN_LANE in lane_assignments:
+                    trusted_source_checkout = self._prepare_isolated_checkout(
+                        manifest_candidate_head,
+                        f"{run_id}-trusted-source",
+                    )
+                    host_preflight = self._host_frozen_preflight(
+                        candidate_root=Path(execution_root),
+                        work_root=Path(isolated_checkout["parent"]) / "host-toolchain",
+                        trusted_source_root=Path(trusted_source_checkout["root"]),
+                    )
+                    if (
+                        host_preflight.get("error_code") is None
+                        and host_preflight.get("frozen_record_valid") is True
+                        and host_preflight.get("environment_root_matches") is True
+                        and host_preflight.get("bytecode_policy_satisfied") is True
+                        and host_preflight.get("module_provenance") is True
+                        and host_preflight.get("serving_checkout_source_loaded") is not True
+                    ):
+                        if host_preflight.get("environment_kind") == "ephemeral_verified":
+                            selected_toolchain_project = (
+                                Path(isolated_checkout["parent"])
+                                / "host-toolchain"
+                                / "ephemeral-host"
+                                / "frozen-toolchain-project"
+                            ).resolve()
+                            selected_host_venv = selected_toolchain_project / ".venv"
+                        else:
+                            selected_toolchain_project = Path(self.project_root).resolve()
+                            selected_host_venv = selected_toolchain_project / ".venv"
+                        try:
+                            materialize_trusted_source_venv(
+                                source_venv=selected_host_venv,
+                                source_checkout=Path(trusted_source_checkout["root"]),
+                            )
+                        except Exception:
+                            host_preflight["error_code"] = (
+                                "FROZEN_TOOLCHAIN_MATERIALIZATION_CONTRACT_UNAVAILABLE"
+                            )
+                        else:
+                            host_preflight["trusted_source_checkout_verified"] = True
+                            host_environment = self._host_frozen_environment(
+                                candidate_root=Path(execution_root),
+                                work_root=Path(isolated_checkout["parent"])
+                                / "host-toolchain",
+                                host_venv=selected_host_venv,
+                                toolchain_project_root=selected_toolchain_project,
+                                trusted_source_root=Path(
+                                    trusted_source_checkout["root"]
+                                ),
+                            )
 
             for index, spec in enumerate(command_specs):
                 command = spec.get("argv") if isinstance(spec, dict) else None
+                lane = lane_assignments[index]
                 timeout_seconds = self._normalize_timeout_seconds(
                     spec.get("timeout_seconds")
                     if isinstance(spec, dict)
@@ -684,6 +1474,7 @@ class MCPValidationRunManager:
                     failed_indexes.append(index)
                     command_results.append({
                         "index": index,
+                        "lane": lane,
                         "ok": False,
                         "returncode": 127,
                         "command": self._display_command(command),
@@ -693,17 +1484,55 @@ class MCPValidationRunManager:
                         "stderr_truncated": False,
                     })
                     break
+                if lane == _HOST_FROZEN_LANE and (
+                    not isinstance(host_preflight, dict)
+                    or host_preflight.get("error_code") is not None
+                    or host_environment is None
+                ):
+                    error_code = (
+                        host_preflight.get("error_code")
+                        if isinstance(host_preflight, dict)
+                        else "FROZEN_TOOLCHAIN_AUTHORITY_UNAVAILABLE"
+                    )
+                    failed_indexes.append(index)
+                    command_results.append({
+                        "index": index,
+                        "lane": lane,
+                        "ok": False,
+                        "returncode": 126,
+                        "error_code": error_code,
+                        "timeout_seconds": timeout_seconds,
+                        "continue_on_failure": continue_on_failure,
+                        "command": self._display_command(command),
+                        "executed_command": self._display_command(command),
+                        "stdout": "",
+                        "stderr": "frozen host toolchain preflight rejected execution",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    })
+                    continue
                 effective_command = list(command)
                 if manifest_candidate_head is not None:
                     effective_command = self._manifest_execution_command(
                         effective_command,
                         manifest_candidate_head,
                     )
-                result = self._run_command(
-                    effective_command,
-                    timeout_seconds=timeout_seconds,
-                    cwd=execution_root,
-                )
+                if lane == _HOST_FROZEN_LANE:
+                    result = self._run_command(
+                        effective_command,
+                        timeout_seconds=timeout_seconds,
+                        cwd=execution_root,
+                        lane=lane,
+                        host_environment=host_environment,
+                    )
+                else:
+                    # Keep the established candidate-lane call shape so
+                    # existing adapters and test doubles remain compatible.
+                    result = self._run_command(
+                        effective_command,
+                        timeout_seconds=timeout_seconds,
+                        cwd=execution_root,
+                    )
                 stdout = result["stdout"]
                 stderr = result["stderr"]
                 remaining = max(
@@ -721,13 +1550,52 @@ class MCPValidationRunManager:
                 stderr, stderr_truncated = _truncate(stderr, per_stream_limit)
                 total_output_chars += len(stderr)
                 ok = result["returncode"] == 0
+                error_code = result.get("error_code")
+                pytest_metrics = self._pytest_command_metrics(
+                    command,
+                    stdout,
+                    stderr,
+                )
+                allowed_skip_count = sum(
+                    1
+                    for signature in pytest_metrics["skipped_nodes"]
+                    if signature in _ALLOWED_CANDIDATE_SKIP_SIGNATURES
+                )
+                skipped_count = int(pytest_metrics["skipped_count"])
+                unexpected_skip_count = (
+                    max(0, skipped_count - allowed_skip_count)
+                    + int(pytest_metrics["xfailed_count"])
+                    + int(pytest_metrics["xpassed_count"])
+                    if lane == _CANDIDATE_LANE
+                    else 0
+                )
+                required_skipped_count = (
+                    skipped_count
+                    + int(pytest_metrics["xfailed_count"])
+                    + int(pytest_metrics["xpassed_count"])
+                    if lane == _HOST_FROZEN_LANE
+                    else 0
+                )
+                if ok and required_skipped_count > 0:
+                    ok = False
+                    error_code = "REQUIRED_TEST_SKIPPED"
+                    stderr = (stderr + "\n" if stderr else "") + (
+                        "host-bound tests may not be skipped"
+                    )
+                elif ok and unexpected_skip_count > 0:
+                    ok = False
+                    error_code = "UNEXPECTED_TEST_SKIPPED"
+                    stderr = (stderr + "\n" if stderr else "") + (
+                        "candidate tests produced an unexpected skip"
+                    )
                 if not ok:
                     failed_indexes.append(index)
                 command_results.append({
                     "index": index,
+                    "lane": lane,
                     "ok": ok,
                     "returncode": result["returncode"],
-                    "error_code": result.get("error_code"),
+                    "error_code": error_code,
                     "timeout_seconds": timeout_seconds,
                     "continue_on_failure": continue_on_failure,
                     "command": self._display_command(command),
@@ -738,6 +1606,14 @@ class MCPValidationRunManager:
                     "stderr": stderr,
                     "stdout_truncated": stdout_truncated,
                     "stderr_truncated": stderr_truncated,
+                    "selected_test_count": int(
+                        pytest_metrics["selected_test_count"]
+                    ),
+                    "skipped_count": skipped_count,
+                    "allowed_skip_count": allowed_skip_count,
+                    "unexpected_skip_count": unexpected_skip_count,
+                    "required_skipped_count": required_skipped_count,
+                    "skipped_nodes": list(pytest_metrics["skipped_nodes"]),
                 })
                 if not ok and not continue_on_failure:
                     break
@@ -746,13 +1622,36 @@ class MCPValidationRunManager:
                 self._remove_isolated_execution_overlays(
                     isolated_checkout
                 )
+                execution_overlays_removed = True
                 source_after = self._capture_checkout_snapshot(
                     Path(execution_root)
                 )
         finally:
+            if validation_context_token is not None:
+                _VALIDATION_ENVIRONMENT_CONTEXT.reset(validation_context_token)
             if isolated_checkout is not None:
+                if not execution_overlays_removed:
+                    try:
+                        self._remove_isolated_execution_overlays(
+                            isolated_checkout
+                        )
+                        execution_overlays_removed = True
+                        if source_after is None:
+                            source_after = self._capture_checkout_snapshot(
+                                Path(execution_root)
+                            )
+                    except Exception:
+                        cleanup_complete = False
                 cleanup_complete = self._cleanup_isolated_checkout(
                     isolated_checkout
+                ) and cleanup_complete and isolated_checkout.get(
+                    "source_overlay_cleanup_complete",
+                    True,
+                ) is True
+            if trusted_source_checkout is not None:
+                cleanup_complete = (
+                    self._cleanup_isolated_checkout(trusted_source_checkout)
+                    and cleanup_complete
                 )
 
         checkout_provenance: dict[str, Any] | None = None
@@ -801,8 +1700,27 @@ class MCPValidationRunManager:
                     command_result["stderr_truncated"] = False
                     total_output_chars += len(message)
 
+        candidate_identity = artifact.get("candidate_identity")
+        candidate_delta_sha256 = (
+            candidate_identity.get("worktree_delta_sha256")
+            if isinstance(candidate_identity, dict)
+            else None
+        )
+        candidate_module_provenance = (
+            validation_environment.summary.get("candidate_module_provenance_verified")
+            if validation_environment is not None
+            else None
+        )
+        validation_lanes, aggregate = self._validation_lane_evidence(
+            command_specs=command_specs,
+            command_results=command_results,
+            lane_assignments=lane_assignments,
+            candidate_delta_sha256=candidate_delta_sha256,
+            candidate_module_provenance=candidate_module_provenance,
+            host_preflight=host_preflight,
+        )
         failed_indexes.sort()
-        status = "passed" if not failed_indexes else "failed"
+        status = "passed" if not failed_indexes and aggregate["status"] == "passed" else "failed"
         completed_at = _utc_now()
         output_summary: dict[str, Any] = {
             "total_output_chars": total_output_chars,
@@ -811,6 +1729,21 @@ class MCPValidationRunManager:
         }
         if checkout_provenance is not None:
             output_summary["checkout_provenance"] = checkout_provenance
+        if validation_environment is not None:
+            output_summary["validation_environment"] = {
+                **validation_environment.summary,
+                "candidate_code_authority": True,
+                "shell_false": True,
+                "fixed_argv_preserved": True,
+            }
+        if host_preflight is not None:
+            output_summary["host_frozen_preflight"] = dict(host_preflight)
+        if isolated_checkout is not None:
+            overlay_summary = isolated_checkout.get("source_overlay_summary")
+            if isinstance(overlay_summary, dict):
+                output_summary["candidate_source_overlay"] = dict(
+                    overlay_summary
+                )
         run_record = {
             "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -836,6 +1769,18 @@ class MCPValidationRunManager:
                 if isinstance(artifact.get("manifest_validation"), dict)
                 else None
             ),
+            "candidate_identity": dict(
+                artifact.get("candidate_identity")
+                if isinstance(artifact.get("candidate_identity"), dict)
+                else {}
+            ),
+            "validation_selection": dict(
+                artifact.get("validation_selection")
+                if isinstance(artifact.get("validation_selection"), dict)
+                else {}
+            ),
+            "validation_lanes": validation_lanes,
+            "aggregate": aggregate,
         }
         self._write_terminal_run_result(run_id, run_record)
 
@@ -872,6 +1817,18 @@ class MCPValidationRunManager:
                 if isinstance(artifact.get("manifest_validation"), dict)
                 else None
             ),
+            "candidate_identity": dict(
+                artifact.get("candidate_identity")
+                if isinstance(artifact.get("candidate_identity"), dict)
+                else {}
+            ),
+            "validation_selection": dict(
+                artifact.get("validation_selection")
+                if isinstance(artifact.get("validation_selection"), dict)
+                else {}
+            ),
+            "validation_lanes": None,
+            "aggregate": None,
         }
         return result
 
@@ -1306,12 +2263,125 @@ class MCPValidationRunManager:
             return None
         return str(pure)
 
-    def _collect_changed_files(self) -> tuple[list[str], dict[str, Any] | None]:
+    @staticmethod
+    def _is_runtime_delta_path(normalized: str) -> bool:
+        parts = PurePosixPath(normalized).parts
+        if not parts:
+            return False
+        if parts[0] == ".colameta" and len(parts) > 1:
+            return parts[1] in {
+                "runtime",
+                "logs",
+                "reports",
+                "audits",
+                "plan-patches",
+                "tmp",
+                "local",
+                "executor-sessions",
+            }
+        return (
+            parts[0] in {".venv", "build", "dist", ".pytest_cache", "__pycache__"}
+            or normalized == ".coverage"
+            or normalized.endswith(".egg-info")
+            or ".egg-info/" in normalized
+        )
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _candidate_identity(
+        candidate_head: str,
+        bindings: list[dict[str, Any]],
+        *,
+        binding_scope: str,
+    ) -> dict[str, Any]:
+        binding_sha256 = canonical_manifest_validation_sha256(bindings)
+        return {
+            "head": candidate_head,
+            "worktree_delta_sha256": binding_sha256,
+            "source_binding_count": len(bindings),
+            "source_binding_sha256": binding_sha256,
+            "source_binding_scope": binding_scope,
+        }
+
+    @staticmethod
+    def _validation_selection(
+        scope: str,
+        target_files: list[str],
+        command_specs: list[dict[str, Any]],
+        *,
+        lane_assignments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        assignments = list(lane_assignments or [_CANDIDATE_LANE] * len(command_specs))
+        if len(assignments) != len(command_specs) or any(
+            lane not in _VALIDATION_LANES for lane in assignments
+        ):
+            raise ValueError("validation lane assignments do not match command specs")
+        return {
+            "scope": scope,
+            "target_files": list(target_files),
+            "command_specs_sha256": canonical_manifest_validation_sha256(
+                command_specs
+            ),
+            "lane_assignments": assignments,
+            "lane_assignments_sha256": canonical_manifest_validation_sha256(
+                assignments
+            ),
+            "classification_mechanism": "pytest_marker_partition",
+            "marker": _HOST_FROZEN_MARKER,
+            "candidate_expression": _CANDIDATE_MARKER_EXPRESSION,
+            "host_expression": _HOST_MARKER_EXPRESSION,
+            "fixed_node_list_used": False,
+            "classification_exhaustive": {
+                "value": True,
+                "basis": "complementary_marker_expressions",
+            },
+        }
+
+    @staticmethod
+    def _manifest_source_bindings(
+        manifest_validation: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        subjects = manifest_validation.get("subjects")
+        if not isinstance(subjects, list):
+            return []
+        return [
+            {
+                "path": subject.get("path"),
+                "present": True,
+                "sha256": subject.get("sha256"),
+            }
+            for subject in subjects
+            if isinstance(subject, dict)
+        ]
+
+    def _collect_worktree_delta_paths(
+        self,
+    ) -> tuple[list[str], dict[str, Any] | None]:
+        """Return every non-ignored, source-eligible path in the worktree delta.
+
+        Porcelain ``-z`` is used so spaces and rename pairs cannot be
+        misparsed.  A rename contributes both its current path and its deleted
+        predecessor; the binding builder below determines their present state
+        from the actual worktree.
+        """
+
         proc = subprocess.run(
-            ["git", "status", "--short"],
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ],
             cwd=self.project_root,
             capture_output=True,
-            text=True,
             check=False,
             shell=False,
         )
@@ -1320,25 +2390,255 @@ class MCPValidationRunManager:
                 "ok": False,
                 "action": "preview",
                 "error_code": "GIT_STATUS_FAILED",
-                "message": _redact_sensitive_text(proc.stderr)[:500],
+                "message": "无法读取当前工作树差异。",
             }
-        files: list[str] = []
-        for line in proc.stdout.splitlines():
-            if not line.strip() or len(line) < 4:
-                continue
-            path_text = line[3:].strip()
-            if " -> " in path_text:
-                path_text = path_text.split(" -> ", 1)[1].strip()
-            normalized = self._normalize_repo_relative_path(path_text)
-            if normalized and not self._path_policy.is_denied_source_path(normalized) and normalized not in files:
-                files.append(normalized)
-        return files[:MAX_TARGET_FILES], None
 
-    def _select_commands(self, scope: str, target_files: list[str]) -> tuple[list[list[str]], list[dict[str, Any]], str, list[str], list[dict[str, Any]]]:
+        paths: set[str] = set()
+        records = proc.stdout.split(b"\0")
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            if len(record) < 4:
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                    "message": "工作树差异记录无法完整解析，已拒绝候选验证。",
+                }
+            status = record[:2].decode("ascii", errors="replace")
+            path_bytes = record[3:]
+            path_text = os.fsdecode(path_bytes)
+            normalized = self._normalize_repo_relative_path(path_text)
+            if normalized is None:
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                    "message": "工作树存在无法安全绑定的候选路径。",
+                }
+            if self._path_policy.is_denied_source_path(normalized):
+                if self._is_runtime_delta_path(normalized):
+                    continue
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                    "message": "工作树存在未纳入候选绑定的非 runtime 改动。",
+                }
+            if not self._path_policy.is_allowed_source_path(normalized):
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                    "message": "工作树存在不在 source path policy 内的改动。",
+                }
+            paths.add(normalized)
+            if "R" in status or "C" in status:
+                if index >= len(records) or not records[index]:
+                    return [], {
+                        "ok": False,
+                        "action": "preview",
+                        "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                        "message": "rename/copy 差异缺少完整路径对。",
+                    }
+                old_text = os.fsdecode(records[index])
+                index += 1
+                old_normalized = self._normalize_repo_relative_path(old_text)
+                if (
+                    old_normalized is None
+                    or self._is_runtime_delta_path(old_normalized)
+                    or self._path_policy.is_denied_source_path(old_normalized)
+                    or not self._path_policy.is_allowed_source_path(old_normalized)
+                ):
+                    if old_normalized and self._is_runtime_delta_path(old_normalized):
+                        continue
+                    return [], {
+                        "ok": False,
+                        "action": "preview",
+                        "error_code": "VALIDATION_CANDIDATE_DELTA_INCOMPLETE",
+                        "message": "rename/copy 差异包含无法纳入候选的路径。",
+                    }
+                paths.add(old_normalized)
+
+        return sorted(paths), None
+
+    def _build_full_worktree_candidate_bindings(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+        paths, path_error = self._collect_worktree_delta_paths()
+        if path_error is not None:
+            return [], [], path_error
+        bindings, binding_error = self._build_candidate_source_bindings(paths)
+        if binding_error is not None:
+            return [], [], binding_error
+        return bindings, paths, None
+
+    def _build_candidate_source_bindings(
+        self,
+        paths: list[str],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Bind target files to the current worktree bytes at preview time."""
+
+        project_root = Path(self.project_root).resolve()
+        bindings: list[dict[str, Any]] = []
+        for relative in paths:
+            normalized = self._normalize_repo_relative_path(relative)
+            if (
+                normalized is None
+                or self._path_policy.is_denied_source_path(normalized)
+            ):
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "CANDIDATE_SOURCE_BINDING_INVALID",
+                    "message": "候选验证文件路径不符合安全约束。",
+                }
+            source = project_root / normalized
+            resolved_source = Path(os.path.realpath(source))
+            try:
+                contained = os.path.commonpath(
+                    [str(resolved_source), str(project_root)]
+                ) == str(project_root)
+            except ValueError:
+                contained = False
+            if not contained or source.is_symlink():
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "CANDIDATE_SOURCE_BINDING_INVALID",
+                    "message": "候选验证文件不能通过符号链接逃逸项目目录。",
+                }
+            if source.exists() and not source.is_file():
+                return [], {
+                    "ok": False,
+                    "action": "preview",
+                    "error_code": "CANDIDATE_SOURCE_BINDING_INVALID",
+                    "message": "候选验证目标必须是普通文件。",
+                }
+            present = source.is_file()
+            bindings.append(
+                {
+                    "path": normalized,
+                    "present": present,
+                    "sha256": self._sha256_file(source) if present else None,
+                }
+            )
+        return bindings, None
+
+    def _source_bindings_for_artifact(
+        self,
+        artifact: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Return source bindings for a manifest or target-files artifact."""
+
+        contract = artifact.get("manifest_validation")
+        if isinstance(contract, dict):
+            subjects = contract.get("subjects")
+            if not isinstance(subjects, list):
+                return []
+            return [
+                {
+                    "path": subject.get("path"),
+                    "present": True,
+                    "sha256": subject.get("sha256"),
+                }
+                for subject in subjects
+                if isinstance(subject, dict)
+            ]
+        bindings = artifact.get("candidate_source_bindings")
+        return list(bindings) if isinstance(bindings, list) else []
+
+    def _verify_candidate_source_bindings(
+        self,
+        artifact: dict[str, Any],
+    ) -> bool:
+        """Re-read bound worktree bytes before starting asynchronous execution."""
+
+        bindings = self._source_bindings_for_artifact(artifact)
+        binding_scope = artifact.get("candidate_delta_mode")
+        identity = artifact.get("candidate_identity")
+        if binding_scope in {"manifest_subjects", "full_allowed_worktree_delta"}:
+            if not isinstance(identity, dict):
+                return False
+            binding_digest = canonical_manifest_validation_sha256(bindings)
+            if (
+                identity.get("source_binding_scope") != binding_scope
+                or identity.get("source_binding_sha256") != binding_digest
+                or identity.get("worktree_delta_sha256") != binding_digest
+                or identity.get("source_binding_count") != len(bindings)
+            ):
+                return False
+        if binding_scope == "full_allowed_worktree_delta":
+            current_bindings, _paths, error = self._build_full_worktree_candidate_bindings()
+            if error is not None or current_bindings != bindings:
+                return False
+        if not bindings:
+            return True
+        project_root = Path(self.project_root).resolve()
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                return False
+            relative = binding.get("path")
+            expected_present = binding.get("present")
+            expected_sha256 = binding.get("sha256")
+            if (
+                not isinstance(relative, str)
+                or not isinstance(expected_present, bool)
+                or (expected_present and not isinstance(expected_sha256, str))
+            ):
+                return False
+            normalized = self._normalize_repo_relative_path(relative)
+            if (
+                normalized is None
+                or self._path_policy.is_denied_source_path(normalized)
+            ):
+                return False
+            source = project_root / normalized
+            resolved_source = Path(os.path.realpath(source))
+            try:
+                contained = os.path.commonpath(
+                    [str(resolved_source), str(project_root)]
+                ) == str(project_root)
+            except ValueError:
+                contained = False
+            if not contained or source.is_symlink():
+                return False
+            present = source.is_file()
+            if present != expected_present:
+                return False
+            if present and not hmac.compare_digest(
+                self._sha256_file(source),
+                expected_sha256,
+            ):
+                return False
+            if not present and source.exists():
+                return False
+        return True
+
+    def _collect_changed_files(self) -> tuple[list[str], dict[str, Any] | None]:
+        files, error = self._collect_worktree_delta_paths()
+        return files[:MAX_TARGET_FILES], error
+
+    def _select_commands(
+        self,
+        scope: str,
+        target_files: list[str],
+    ) -> tuple[
+        list[list[str]],
+        list[dict[str, Any]],
+        str,
+        list[str],
+        list[dict[str, Any]],
+        list[str],
+    ]:
         warnings: list[str] = []
         commands: list[list[str]] = []
         command_specs: list[dict[str, Any]] = []
         validation_groups: list[dict[str, Any]] = []
+        lane_assignments: list[str] = []
 
         if scope == "current_version":
             acceptance, acceptance_warnings = self._current_acceptance_commands()
@@ -1346,10 +2646,11 @@ class MCPValidationRunManager:
             if acceptance:
                 command_specs.extend(acceptance[:MAX_COMMANDS])
                 commands.extend([item["argv"] for item in command_specs])
-                validation_groups.append({"strategy": "plan_acceptance", "files": [], "command_count": len(command_specs)})
-                return commands, command_specs, "plan_acceptance", warnings, validation_groups
+                lane_assignments.extend([_CANDIDATE_LANE] * len(command_specs))
+                validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": [], "command_count": len(command_specs)})
+                return commands, command_specs, "plan_acceptance", warnings, validation_groups, lane_assignments
             warnings.append("当前版本没有可用 acceptance_commands。")
-            return [], [], "unsupported_strategy", warnings, validation_groups
+            return [], [], "unsupported_strategy", warnings, validation_groups, lane_assignments
 
         if scope == "full":
             acceptance, acceptance_warnings = self._current_acceptance_commands()
@@ -1358,52 +2659,83 @@ class MCPValidationRunManager:
                 for spec in acceptance[:MAX_COMMANDS]:
                     command_specs.append(spec)
                     commands.append(spec["argv"])
-                validation_groups.append({"strategy": "plan_acceptance", "files": [], "command_count": len(acceptance)})
+                    lane_assignments.append(_CANDIDATE_LANE)
+                validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": [], "command_count": len(acceptance)})
 
             full_strategies = self._full_validation_strategies()
             for strategy in full_strategies:
                 argv = strategy["argv"]
-                spec = {"argv": argv, "timeout_seconds": DEFAULT_TIMEOUT_SECONDS, "continue_on_failure": True}
+                spec = {
+                    "argv": argv,
+                    "timeout_seconds": self._normalize_timeout_seconds(
+                        strategy.get("timeout_seconds", MAX_TIMEOUT_SECONDS)
+                    ),
+                    "continue_on_failure": True,
+                }
+                lane = strategy.get("lane", _CANDIDATE_LANE)
+                if lane not in _VALIDATION_LANES:
+                    raise ValueError("validation strategy has an unknown lane")
                 command_specs.append(spec)
                 commands.append(argv)
-                validation_groups.append({"strategy": strategy["strategy"], "files": [], "command_count": 1})
+                lane_assignments.append(lane)
+                validation_groups.append({"strategy": strategy["strategy"], "lane": lane, "files": [], "command_count": 1})
 
             if len(full_strategies) > 1:
                 git_check = ["git", "diff", "--check"]
                 spec = {"argv": git_check, "timeout_seconds": DEFAULT_TIMEOUT_SECONDS, "continue_on_failure": True}
                 command_specs.append(spec)
                 commands.append(git_check)
-                validation_groups.append({"strategy": "git_diff_check", "files": [], "command_count": 1})
+                lane_assignments.append(_CANDIDATE_LANE)
+                validation_groups.append({"strategy": "git_diff_check", "lane": _CANDIDATE_LANE, "files": [], "command_count": 1})
 
             if not full_strategies:
                 if acceptance:
                     warnings.append("full scope 不能仅依赖 plan acceptance_commands；未检测到 project-level 验证策略。")
                 elif not acceptance_warnings:
                     warnings.append("未检测到受支持的 project 类型，无法确定 full 验证策略。")
-                return [], [], "unsupported_strategy", warnings, []
+                return [], [], "unsupported_strategy", warnings, [], []
 
             strategy_names = [g["strategy"] for g in validation_groups]
             overall_strategy = "+".join(strategy_names)
 
-            return commands[:MAX_COMMANDS], command_specs[:MAX_COMMANDS], overall_strategy, warnings, validation_groups
+            return (
+                commands[:MAX_COMMANDS],
+                command_specs[:MAX_COMMANDS],
+                overall_strategy,
+                warnings,
+                validation_groups,
+                lane_assignments[:MAX_COMMANDS],
+            )
 
         file_set = set(target_files)
         py_files = sorted([path for path in file_set if path.endswith(".py")])
         test_files = sorted([path for path in py_files if path.startswith("tests/test_")])
+        host_lane_requested = (
+            _HOST_FROZEN_TEST_FILE in test_files
+            or bool(file_set & _HOST_FROZEN_TRIGGER_PATHS)
+        )
+        candidate_test_files = [
+            path for path in test_files
+            if path != _HOST_FROZEN_TEST_FILE
+        ]
         detected = self._detect_project_types()
-        if test_files:
-            command = [self._python_executable(), "-m", "pytest", *test_files[:20], "-q"]
+        if candidate_test_files:
+            command = [self._python_executable(), "-m", "pytest", *candidate_test_files[:20], "-q"]
             commands.append(command)
             command_specs.extend(self._command_specs_for_commands([command]))
-            validation_groups.append({"strategy": "python_targeted", "files": test_files[:20], "command_count": 1})
+            lane_assignments.append(_CANDIDATE_LANE)
+            validation_groups.append({"strategy": "python_targeted", "lane": _CANDIDATE_LANE, "files": candidate_test_files[:20], "command_count": 1})
             strategy = "python_targeted"
+        elif host_lane_requested:
+            strategy = "python_marker_partition"
         elif any(kind in detected for kind in ("node", "php", "go", "rust")):
             acceptance, acceptance_warnings = self._current_acceptance_commands()
             warnings.extend(acceptance_warnings)
             if acceptance:
                 command_specs.extend(acceptance[:MAX_COMMANDS])
                 commands.extend([item["argv"] for item in command_specs])
-                validation_groups.append({"strategy": "plan_acceptance", "files": target_files, "command_count": len(command_specs)})
+                lane_assignments.extend([_CANDIDATE_LANE] * len(acceptance))
+                validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": target_files, "command_count": len(command_specs)})
                 strategy = "plan_acceptance"
             else:
                 warnings.append("检测到非 Python 项目线索；请将验证命令写入 acceptance_commands。")
@@ -1411,12 +2743,65 @@ class MCPValidationRunManager:
         else:
             strategy = "quick_static"
 
+        if host_lane_requested:
+            candidate_command = [
+                self._python_executable(),
+                "-m",
+                "pytest",
+                _HOST_FROZEN_TEST_FILE,
+                "-q",
+                "-m",
+                _CANDIDATE_MARKER_EXPRESSION,
+                "-rs",
+            ]
+            commands.append(candidate_command)
+            command_specs.extend(self._command_specs_for_commands([candidate_command]))
+            lane_assignments.append(_CANDIDATE_LANE)
+            validation_groups.append({
+                "strategy": "python_candidate_marker_partition",
+                "lane": _CANDIDATE_LANE,
+                "files": [_HOST_FROZEN_TEST_FILE],
+                "marker": _HOST_FROZEN_MARKER,
+                "marker_expression": _CANDIDATE_MARKER_EXPRESSION,
+                "command_count": 1,
+            })
+
+            host_command = [
+                self._python_executable(),
+                "-m",
+                "pytest",
+                _HOST_FROZEN_TEST_FILE,
+                "-q",
+                "-m",
+                _HOST_MARKER_EXPRESSION,
+                "-rs",
+            ]
+            commands.append(host_command)
+            command_specs.extend(self._command_specs_for_commands([host_command]))
+            lane_assignments.append(_HOST_FROZEN_LANE)
+            validation_groups.append({
+                "strategy": "python_host_frozen_marker_partition",
+                "lane": _HOST_FROZEN_LANE,
+                "files": [_HOST_FROZEN_TEST_FILE],
+                "marker": _HOST_FROZEN_MARKER,
+                "marker_expression": _HOST_MARKER_EXPRESSION,
+                "command_count": 1,
+            })
+
         commands.append(["git", "diff", "--check"])
         command_specs.extend(self._command_specs_for_commands([["git", "diff", "--check"]]))
-        validation_groups.append({"strategy": "quick_static", "files": [], "command_count": 1})
+        lane_assignments.append(_CANDIDATE_LANE)
+        validation_groups.append({"strategy": "quick_static", "lane": _CANDIDATE_LANE, "files": [], "command_count": 1})
         if not target_files and scope == "changed_files":
             warnings.append("没有检测到 changed files，执行通用 diff 检查。")
-        return commands[:MAX_COMMANDS], command_specs[:MAX_COMMANDS], strategy, warnings, validation_groups
+        return (
+            commands[:MAX_COMMANDS],
+            command_specs[:MAX_COMMANDS],
+            strategy,
+            warnings,
+            validation_groups,
+            lane_assignments[:MAX_COMMANDS],
+        )
 
     def _current_acceptance_commands(self) -> tuple[list[dict[str, Any]], list[str]]:
         warnings: list[str] = []
@@ -1549,8 +2934,32 @@ class MCPValidationRunManager:
 
         if "python" in detected:
             strategies.append({
-                "strategy": "python_full",
-                "argv": [self._python_executable(), "-m", "pytest", "tests", "-q"],
+                "strategy": "python_candidate_full",
+                "lane": _CANDIDATE_LANE,
+                "argv": [
+                    self._python_executable(),
+                    "-m",
+                    "pytest",
+                    "tests",
+                    "-q",
+                    "-m",
+                    _CANDIDATE_MARKER_EXPRESSION,
+                    "-rs",
+                ],
+            })
+            strategies.append({
+                "strategy": "python_host_frozen",
+                "lane": _HOST_FROZEN_LANE,
+                "argv": [
+                    self._python_executable(),
+                    "-m",
+                    "pytest",
+                    _HOST_FROZEN_TEST_FILE,
+                    "-q",
+                    "-m",
+                    _HOST_MARKER_EXPRESSION,
+                    "-rs",
+                ],
             })
 
         if "node" in detected:
@@ -1624,7 +3033,24 @@ class MCPValidationRunManager:
             if normalized is None:
                 return False
         if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
-            return all(self._normalize_repo_relative_path(part) is not None for part in command[3:] if not part.startswith("-"))
+            marker_expression_pending = False
+            for part in command[3:]:
+                if marker_expression_pending:
+                    if part not in {
+                        _CANDIDATE_MARKER_EXPRESSION,
+                        _HOST_MARKER_EXPRESSION,
+                    }:
+                        return False
+                    marker_expression_pending = False
+                    continue
+                if part == "-m":
+                    marker_expression_pending = True
+                    continue
+                if part.startswith("-"):
+                    continue
+                if self._normalize_repo_relative_path(part.split("::", 1)[0]) is None:
+                    return False
+            return not marker_expression_pending
         if command[:3] == [first, "-m", "compileall"]:
             args = command[3:]
             while args and args[0] == "-q":
@@ -1657,8 +3083,20 @@ class MCPValidationRunManager:
         if command == [first, "scripts/self_hosting_smoke.py"]:
             return True
         if command[1:3] == ["-m", "pytest"]:
+            marker_expression_pending = False
             for part in command[3:]:
-                if part == "-q":
+                if marker_expression_pending:
+                    if part not in {
+                        _CANDIDATE_MARKER_EXPRESSION,
+                        _HOST_MARKER_EXPRESSION,
+                    }:
+                        return False
+                    marker_expression_pending = False
+                    continue
+                if part == "-m":
+                    marker_expression_pending = True
+                    continue
+                if part in {"-q", "-rs"}:
                     continue
                 if part.startswith("-"):
                     return False
@@ -1669,7 +3107,7 @@ class MCPValidationRunManager:
                     or self._path_policy.is_denied_source_path(normalized)
                 ):
                     return False
-            return True
+            return not marker_expression_pending
         if command[1:3] == ["-m", "compileall"]:
             paths = list(command[3:])
             if paths and paths[0] == "-q":
@@ -1742,6 +3180,34 @@ class MCPValidationRunManager:
         if not isinstance(head, str):
             return None
         normalized = head.strip().lower()
+        return (
+            normalized
+            if _FULL_GIT_OBJECT_ID_RE.fullmatch(normalized)
+            else None
+        )
+
+    def _bound_candidate_head(
+        self,
+        artifact: dict[str, Any],
+    ) -> str | None:
+        """Return the candidate HEAD for a canonical preview.
+
+        Older private operator fixtures may contain an intentionally minimal
+        target-files artifact with no command-spec binding.  Those records are
+        kept on their legacy execution path for compatibility.  Every preview
+        produced by this manager has command specs and is therefore required
+        to execute from a clean detached candidate checkout.
+        """
+
+        command_specs = artifact.get("command_specs")
+        if not isinstance(command_specs, list) or not command_specs:
+            return None
+        if artifact.get("scope") == "manifest_bound":
+            return self._manifest_candidate_head(artifact)
+        current_head = artifact.get("current_head")
+        if not isinstance(current_head, str):
+            return None
+        normalized = current_head.strip().lower()
         return (
             normalized
             if _FULL_GIT_OBJECT_ID_RE.fullmatch(normalized)
@@ -1878,22 +3344,16 @@ class MCPValidationRunManager:
                 raise RuntimeError(
                     "isolated validation checkout did not match candidate"
                 )
-            project_venv = project_root / ".venv"
-            checkout_venv = checkout / ".venv"
-            if project_venv.is_dir():
-                checkout_venv.symlink_to(
-                    project_venv,
-                    target_is_directory=True,
-                )
             return {
                 "root": checkout,
                 "parent": parent,
                 "git": git,
-                "checkout_venv": checkout_venv,
                 "candidate_head": candidate_head,
                 "candidate_tree": candidate_tree,
                 "source_before": source_before,
                 "isolated_from_project_worktree": isolated,
+                "source_overlays": [],
+                "source_overlay_cleanup_complete": True,
             }
         except Exception as exc:
             if added:
@@ -1912,27 +3372,284 @@ class MCPValidationRunManager:
                 "isolated validation checkout preparation failed"
             ) from exc
 
+    @staticmethod
+    def _remove_overlay_path(path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+
+    @staticmethod
+    def _read_bound_source_bytes(source: Path) -> bytes:
+        """Read one source binding through a no-follow descriptor when available."""
+
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(source, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError("candidate source overlay is not a file")
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                return handle.read()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _materialize_bound_file(
+        self,
+        *,
+        source: Path,
+        destination: Path,
+        expected_sha256: str,
+    ) -> None:
+        """Atomically materialize exactly the bytes bound by the preview."""
+
+        if _SHA256_RE.fullmatch(expected_sha256) is None:
+            raise RuntimeError("candidate source binding digest is invalid")
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError("candidate source binding changed")
+        source_mode = source.stat().st_mode
+        source_bytes = self._read_bound_source_bytes(source)
+        source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+        if not hmac.compare_digest(source_sha256, expected_sha256):
+            raise RuntimeError("candidate source binding changed")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        descriptor: int | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{destination.name}.",
+                dir=str(destination.parent),
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(source_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary_path, stat.S_IMODE(source_mode))
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            if destination.is_symlink() or not destination.is_file():
+                raise RuntimeError("candidate checkout target is not a file")
+            destination_sha256 = self._sha256_file(destination)
+            if not hmac.compare_digest(destination_sha256, expected_sha256):
+                raise RuntimeError("candidate destination digest mismatch")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _apply_candidate_source_overlays(
+        self,
+        isolated_checkout: dict[str, Any],
+        bindings: list[dict[str, Any]],
+        *,
+        binding_kind: str = "source_files",
+    ) -> dict[str, Any]:
+        """Overlay the preview-bound worktree bytes onto the detached checkout."""
+
+        checkout = isolated_checkout.get("root")
+        parent = isolated_checkout.get("parent")
+        if not isinstance(checkout, Path) or not isinstance(parent, Path):
+            raise RuntimeError("candidate source overlay root is unavailable")
+        project_root = Path(self.project_root).resolve()
+        candidate_root = checkout.resolve()
+        backup_root = parent / "source-overlay-backups"
+        entries: list[dict[str, Any]] = []
+        isolated_checkout["source_overlays"] = entries
+        isolated_checkout["source_overlay_cleanup_complete"] = not bool(bindings)
+        summary = {
+            "binding_kind": binding_kind,
+            "file_count": len(bindings),
+            "binding_sha256": canonical_manifest_validation_sha256(bindings),
+            "source_hashes_verified": False,
+            "cleanup_complete": not bool(bindings),
+        }
+        isolated_checkout["source_overlay_summary"] = summary
+        try:
+            for index, binding in enumerate(bindings):
+                if not isinstance(binding, dict):
+                    raise RuntimeError("candidate source binding is invalid")
+                relative = binding.get("path")
+                present = binding.get("present")
+                expected_sha256 = binding.get("sha256")
+                normalized = (
+                    self._normalize_repo_relative_path(relative)
+                    if isinstance(relative, str)
+                    else None
+                )
+                if (
+                    normalized is None
+                    or self._path_policy.is_denied_source_path(normalized)
+                    or not isinstance(present, bool)
+                    or (present and not isinstance(expected_sha256, str))
+                ):
+                    raise RuntimeError("candidate source binding is invalid")
+                source = project_root / normalized
+                destination = candidate_root / normalized
+                source_resolved = Path(os.path.realpath(source))
+                destination_resolved = Path(os.path.realpath(destination))
+                try:
+                    source_contained = os.path.commonpath(
+                        [str(source_resolved), str(project_root)]
+                    ) == str(project_root)
+                    destination_contained = os.path.commonpath(
+                        [str(destination_resolved), str(candidate_root)]
+                    ) == str(candidate_root)
+                except ValueError:
+                    source_contained = False
+                    destination_contained = False
+                if (
+                    not source_contained
+                    or not destination_contained
+                    or source.is_symlink()
+                    or destination.is_symlink()
+                ):
+                    raise RuntimeError("candidate source overlay escaped its checkout")
+                source_present = source.is_file()
+                if source_present != present:
+                    raise RuntimeError("candidate source binding changed")
+                if source.exists() and not source.is_file():
+                    raise RuntimeError("candidate source overlay is not a file")
+                if destination.exists() and not destination.is_file():
+                    raise RuntimeError("candidate checkout target is not a file")
+
+                existed = destination.is_file()
+                backup: Path | None = None
+                if existed:
+                    backup_root.mkdir(parents=True, exist_ok=True)
+                    backup = backup_root / f"{index:04d}.backup"
+                    shutil.copy2(destination, backup)
+                entries.append(
+                    {
+                        "path": normalized,
+                        "existed": existed,
+                        "backup": backup,
+                    }
+                )
+                if source_present:
+                    self._materialize_bound_file(
+                        source=source,
+                        destination=destination,
+                        expected_sha256=expected_sha256,
+                    )
+                else:
+                    if existed:
+                        self._remove_overlay_path(destination)
+                    if destination.exists() or destination.is_symlink():
+                        raise RuntimeError(
+                            "candidate deletion binding was not materialized"
+                        )
+            summary["source_hashes_verified"] = True
+            summary["cleanup_complete"] = False
+            isolated_checkout["source_overlay_cleanup_complete"] = False
+            return summary
+        except Exception as exc:
+            try:
+                self._restore_candidate_source_overlays(isolated_checkout)
+            except Exception:
+                pass
+            raise RuntimeError("candidate source overlay preparation failed") from exc
+
+    def _restore_candidate_source_overlays(
+        self,
+        isolated_checkout: dict[str, Any],
+    ) -> None:
+        if isolated_checkout.get("source_overlay_cleanup_complete") is True:
+            return
+        checkout = isolated_checkout.get("root")
+        if not isinstance(checkout, Path):
+            raise RuntimeError("candidate source overlay root is unavailable")
+        candidate_root = checkout.resolve()
+        entries = isolated_checkout.get("source_overlays")
+        if not isinstance(entries, list):
+            raise RuntimeError("candidate source overlay state is invalid")
+        try:
+            for entry in reversed(entries):
+                if not isinstance(entry, dict):
+                    raise RuntimeError("candidate source overlay state is invalid")
+                relative = entry.get("path")
+                if not isinstance(relative, str):
+                    raise RuntimeError("candidate source overlay path is invalid")
+                normalized = self._normalize_repo_relative_path(relative)
+                if normalized is None:
+                    raise RuntimeError("candidate source overlay path is invalid")
+                destination = candidate_root / normalized
+                resolved_destination = Path(os.path.realpath(destination))
+                try:
+                    contained = os.path.commonpath(
+                        [str(resolved_destination), str(candidate_root)]
+                    ) == str(candidate_root)
+                except ValueError:
+                    contained = False
+                if not contained:
+                    raise RuntimeError("candidate source overlay escaped its checkout")
+                if destination.exists() or destination.is_symlink():
+                    self._remove_overlay_path(destination)
+                if entry.get("existed") is True:
+                    backup = entry.get("backup")
+                    if not isinstance(backup, Path) or not backup.is_file():
+                        raise RuntimeError("candidate source overlay backup is missing")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(backup, destination)
+                current = destination.parent
+                while current != candidate_root and current != current.parent:
+                    try:
+                        current.rmdir()
+                    except OSError:
+                        break
+                    current = current.parent
+        except Exception:
+            raise
+        isolated_checkout["source_overlay_cleanup_complete"] = True
+        summary = isolated_checkout.get("source_overlay_summary")
+        if isinstance(summary, dict):
+            summary["cleanup_complete"] = True
+
     def _remove_isolated_execution_overlays(
         self,
         isolated_checkout: dict[str, Any],
     ) -> None:
         checkout = isolated_checkout.get("root")
-        checkout_venv = isolated_checkout.get("checkout_venv")
         git = isolated_checkout.get("git")
         if (
             not isinstance(checkout, Path)
-            or not isinstance(checkout_venv, Path)
             or git is None
         ):
             raise RuntimeError(
                 "isolated validation overlay cleanup is unavailable"
             )
-        if checkout_venv.is_symlink():
-            checkout_venv.unlink()
-        elif checkout_venv.exists():
-            raise RuntimeError(
-                "isolated validation virtualenv overlay was rebound"
-            )
+        validation_venv = isolated_checkout.get("validation_venv")
+        if validation_venv is not None:
+            if not isinstance(validation_venv, Path):
+                raise RuntimeError(
+                    "isolated validation virtualenv overlay is invalid"
+                )
+            overlay = checkout / ".venv"
+            if overlay.resolve() != validation_venv.resolve():
+                raise RuntimeError(
+                    "isolated validation virtualenv overlay escaped the checkout"
+                )
+            if overlay.is_symlink():
+                overlay.unlink()
+            elif overlay.is_dir():
+                shutil.rmtree(overlay)
+            elif overlay.exists():
+                overlay.unlink()
+        self._restore_candidate_source_overlays(isolated_checkout)
         git.run(
             checkout,
             "clean",
@@ -1972,27 +3689,38 @@ class MCPValidationRunManager:
         *,
         timeout_seconds: int,
         cwd: str | None = None,
+        lane: str = _CANDIDATE_LANE,
+        host_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         execution_root = os.path.abspath(cwd or self.project_root)
         effective_command = list(command)
-        if effective_command[0] == ".venv/bin/python":
-            effective_command[0] = self._python_executable()
-        environment = dict(os.environ)
-        for key in list(environment):
-            if key.startswith("GIT_") or key in {
-                "PYTHONHOME",
-                "PYTHONSTARTUP",
-                "PYTHONUSERBASE",
-            }:
-                environment.pop(key, None)
-        if os.path.realpath(execution_root) != os.path.realpath(
-            self.project_root
-        ):
-            environment["PYTHONPATH"] = execution_root
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        validation_environment = _VALIDATION_ENVIRONMENT_CONTEXT.get()
+        if lane == _HOST_FROZEN_LANE:
+            process_command = list(effective_command)
+            environment = dict(host_environment or {})
+            if not environment:
+                return {
+                    "returncode": 126,
+                    "stdout": "",
+                    "stderr": "frozen host toolchain environment unavailable",
+                    "error_code": "FROZEN_TOOLCHAIN_AUTHORITY_UNAVAILABLE",
+                }
+        elif validation_environment is not None:
+            process_command = rewrite_command_for_validation_environment(
+                effective_command,
+                validation_environment.venv_dir,
+            )
+            environment = dict(validation_environment.env)
+        else:
+            process_command = list(effective_command)
+            environment = build_validation_subprocess_environment(
+                candidate_root=Path(execution_root),
+                parent_environment=dict(os.environ),
+                forbidden_roots=(Path(self.project_root).resolve(),),
+            )
         try:
             proc = subprocess.run(
-                effective_command,
+                process_command,
                 cwd=execution_root,
                 capture_output=True,
                 text=True,
@@ -2104,6 +3832,169 @@ class MCPValidationRunManager:
         os.replace(tmp_path, path)
         return os.path.relpath(path, self.project_root)
 
+    @staticmethod
+    def _candidate_evidence_is_valid(data: dict[str, Any]) -> bool:
+        identity = data.get("candidate_identity")
+        selection = data.get("validation_selection")
+        if not isinstance(identity, dict) or not isinstance(selection, dict):
+            return False
+        head = identity.get("head")
+        source_scope = identity.get("source_binding_scope")
+        source_binding_sha256 = identity.get("source_binding_sha256")
+        worktree_delta_sha256 = identity.get("worktree_delta_sha256")
+        source_binding_count = identity.get("source_binding_count")
+        if (
+            not isinstance(head, str)
+            or _FULL_GIT_OBJECT_ID_RE.fullmatch(head) is None
+            or source_scope not in {"manifest_subjects", "full_allowed_worktree_delta"}
+            or not isinstance(source_binding_sha256, str)
+            or _SHA256_RE.fullmatch(source_binding_sha256) is None
+            or not isinstance(worktree_delta_sha256, str)
+            or _SHA256_RE.fullmatch(worktree_delta_sha256) is None
+            or source_binding_sha256 != worktree_delta_sha256
+            or isinstance(source_binding_count, bool)
+            or not isinstance(source_binding_count, int)
+            or source_binding_count < 0
+        ):
+            return False
+        scope = selection.get("scope")
+        target_files = selection.get("target_files")
+        command_specs_sha256 = selection.get("command_specs_sha256")
+        classification_exhaustive = selection.get("classification_exhaustive")
+        return (
+            scope in VALID_SCOPES | {"manifest_bound"}
+            and isinstance(target_files, list)
+            and all(isinstance(item, str) for item in target_files)
+            and isinstance(command_specs_sha256, str)
+            and _SHA256_RE.fullmatch(command_specs_sha256) is not None
+            and selection.get("classification_mechanism")
+            == "pytest_marker_partition"
+            and selection.get("marker") == _HOST_FROZEN_MARKER
+            and selection.get("candidate_expression")
+            == _CANDIDATE_MARKER_EXPRESSION
+            and selection.get("host_expression") == _HOST_MARKER_EXPRESSION
+            and selection.get("fixed_node_list_used") is False
+            and isinstance(classification_exhaustive, dict)
+            and classification_exhaustive.get("value") is True
+            and classification_exhaustive.get("basis")
+            == "complementary_marker_expressions"
+        )
+
+    @staticmethod
+    def _dual_lane_evidence_is_valid(data: dict[str, Any]) -> bool:
+        lanes = data.get("validation_lanes")
+        aggregate = data.get("aggregate")
+        if not isinstance(lanes, dict) or set(lanes) != {
+            _CANDIDATE_LANE,
+            _HOST_FROZEN_LANE,
+        }:
+            return False
+        if not isinstance(aggregate, dict) or set(aggregate) != {
+            "status",
+            "lane_result_digest",
+            "both_lanes_required",
+            "classification_exhaustive",
+            "classification_basis",
+        }:
+            return False
+        if aggregate.get("status") not in {"passed", "failed", "incomplete"}:
+            return False
+        if not isinstance(aggregate.get("lane_result_digest"), str) or _SHA256_RE.fullmatch(
+            aggregate["lane_result_digest"]
+        ) is None:
+            return False
+        if (
+            not isinstance(aggregate.get("both_lanes_required"), bool)
+            or aggregate.get("classification_exhaustive") is not True
+            or aggregate.get("classification_basis")
+            != "complementary_marker_expressions"
+        ):
+            return False
+        for lane, payload in lanes.items():
+            if not isinstance(payload, dict):
+                return False
+            required = {
+                "status",
+                "result_sha256",
+                "command_specs_sha256",
+                "candidate_delta_sha256",
+                "selected_test_count",
+                "skipped_count",
+                "allowed_skip_count",
+                "unexpected_skip_count",
+                "required_skipped_count",
+                "module_provenance",
+            }
+            if lane == _HOST_FROZEN_LANE:
+                required |= {
+                    "frozen_toolchain_record_sha256",
+                    "environment_root_binding_sha256",
+                    "total_host_venv_bytecode_count",
+                    "record_owned_preimport_bytecode_count",
+                    "unrelated_bytecode_count",
+                    "bytecode_deleted",
+                    "environment_kind",
+                    "strict_measure_passed",
+                }
+            if set(payload) != required:
+                return False
+            if payload.get("status") not in {"passed", "failed", "blocked", "incomplete", "not_required"}:
+                return False
+            for key in ("result_sha256", "command_specs_sha256"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+                ):
+                    return False
+            delta = payload.get("candidate_delta_sha256")
+            if delta is not None and (
+                not isinstance(delta, str) or _SHA256_RE.fullmatch(delta) is None
+            ):
+                return False
+            if payload.get("module_provenance") is not None and not isinstance(
+                payload.get("module_provenance"), bool
+            ):
+                return False
+            for count_key in (
+                "selected_test_count",
+                "skipped_count",
+                "allowed_skip_count",
+                "unexpected_skip_count",
+                "required_skipped_count",
+            ):
+                count = payload.get(count_key)
+                if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                    return False
+            if lane == _HOST_FROZEN_LANE:
+                for key in (
+                    "frozen_toolchain_record_sha256",
+                    "environment_root_binding_sha256",
+                ):
+                    value = payload.get(key)
+                    if value is not None and (
+                        not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+                    ):
+                        return False
+                for count_key in (
+                    "total_host_venv_bytecode_count",
+                    "record_owned_preimport_bytecode_count",
+                    "unrelated_bytecode_count",
+                ):
+                    count = payload.get(count_key)
+                    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                        return False
+                if not isinstance(payload.get("bytecode_deleted"), bool):
+                    return False
+                if payload.get("environment_kind") not in {
+                    None,
+                    "active_verified",
+                    "ephemeral_verified",
+                }:
+                    return False
+                if not isinstance(payload.get("strict_measure_passed"), bool):
+                    return False
+        return True
+
     def _read_verified_run_result(
         self,
         run_id: str,
@@ -2147,7 +4038,13 @@ class MCPValidationRunManager:
         status = data.get("status")
         if status == "running":
             if (
-                set(data) != _RUN_RESULT_FIELDS
+                set(data)
+                not in {
+                    _RUN_RESULT_FIELDS,
+                    _RUN_RESULT_FIELDS
+                    - {"candidate_identity", "validation_selection"},
+                    _LEGACY_RUNNING_FIELDS,
+                }
                 or data.get("schema_version")
                 != VALIDATION_RUN_RESULT_SCHEMA_VERSION
                 or "validation_result_sha256" in data
@@ -2165,6 +4062,11 @@ class MCPValidationRunManager:
                     {"manifest_validation": manifest_validation}
                 )
                 is None
+            ):
+                return None, "RUN_RESULT_INVALID"
+            if (
+                set(data) == _RUN_RESULT_FIELDS
+                and not self._candidate_evidence_is_valid(data)
             ):
                 return None, "RUN_RESULT_INVALID"
             return data, None
@@ -2189,7 +4091,11 @@ class MCPValidationRunManager:
                 return None, "RUN_RESULT_UNVERIFIED_LEGACY"
             return None, "RUN_RESULT_INVALID"
         if (
-            set(data) != _TERMINAL_RUN_RESULT_FIELDS
+            set(data)
+            not in {
+                _TERMINAL_RUN_RESULT_FIELDS,
+                _LEGACY_TERMINAL_FIELDS,
+            }
             or data.get("schema_version") != VALIDATION_RUN_RESULT_SCHEMA_VERSION
             or not isinstance(digest, str)
             or _SHA256_RE.fullmatch(digest) is None
@@ -2205,6 +4111,14 @@ class MCPValidationRunManager:
             return None, "RUN_RESULT_INVALID"
         if not hmac.compare_digest(digest, expected):
             return None, "RUN_RESULT_DIGEST_MISMATCH"
+        if (
+            set(data) == _TERMINAL_RUN_RESULT_FIELDS
+            and (
+                not self._candidate_evidence_is_valid(data)
+                or not self._dual_lane_evidence_is_valid(data)
+            )
+        ):
+            return None, "RUN_RESULT_INVALID"
         manifest_validation = data.get("manifest_validation")
         if (
             validate_manifest_contract

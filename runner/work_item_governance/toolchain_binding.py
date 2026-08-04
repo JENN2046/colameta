@@ -23,6 +23,7 @@ _EXPECTED_DISTRIBUTION_VERSIONS = {
     "ruff": "0.15.20",
     "setuptools": "83.0.0",
 }
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED_TOOL_WRAPPERS = ("bandit", "pip-audit", "pytest", "ruff")
 _EXPECTED_BIN_ENTRIES = (
     "Activate.ps1",
@@ -55,20 +56,57 @@ _EXPECTED_BIN_ENTRIES = (
     "wheel",
 )
 _EXPECTED_ENVIRONMENT_ROOT_SHA256 = (
-    "72b70a68133de9ad900c4c06f697b92d0409d2d85c4fa32cda3ee8bd87e38c72"
+    "3ea5e67e3e3ca0509d4e0d1fe7d2aa009104ba535df0b5cc0e23d6e9b40b0c57"
+)
+_FROZEN_TOOLCHAIN_RECORD_SCHEMA_VERSION = "work_item_r3_closeout_toolchain_record.v1"
+_FROZEN_TOOLCHAIN_RECORD_BYTECODE_POLICY = {
+    "record_listed": "forbidden",
+    "non_record_listed": "forbidden",
+    "unknown_owner": "fail_closed",
+}
+_EXPECTED_FROZEN_TOOLCHAIN_RECORD_SHA256 = (
+    "4b83224946b61804754fe5d0ff5887dfe5def419dd55f724f8d4a7bd4b73cf99"
 )
 
 
-def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str, Any]:
-    """Measure the exact local verification environment and fail on drift.
+def load_verified_frozen_toolchain_record() -> dict[str, Any]:
+    """Load the immutable contract without inspecting the active environment."""
 
-    The R3 Closeout is intentionally a local exact-candidate review, not a claim
-    that PyPI or the host OS is independently trusted.  Within that boundary we
-    still bind every installed distribution file, executable wrapper and
-    executable version used by the retained commands.  RECORD hashes are
-    checked when present, and unowned importable files are rejected.
-    """
+    record = {
+        "schema_version": _FROZEN_TOOLCHAIN_RECORD_SCHEMA_VERSION,
+        "required_versions": dict(_EXPECTED_DISTRIBUTION_VERSIONS),
+        "required_bin_entries": list(_EXPECTED_BIN_ENTRIES),
+        "required_tool_wrappers": list(_REQUIRED_TOOL_WRAPPERS),
+        "environment_root_sha256": _EXPECTED_ENVIRONMENT_ROOT_SHA256,
+        "bytecode_policy": dict(_FROZEN_TOOLCHAIN_RECORD_BYTECODE_POLICY),
+    }
+    if (
+        record["schema_version"] != _FROZEN_TOOLCHAIN_RECORD_SCHEMA_VERSION
+        or not _SHA256_RE.fullmatch(str(record["environment_root_sha256"]))
+        or not record["required_versions"]
+        or not record["required_bin_entries"]
+        or tuple(record["required_tool_wrappers"]) != _REQUIRED_TOOL_WRAPPERS
+        or record["bytecode_policy"] != _FROZEN_TOOLCHAIN_RECORD_BYTECODE_POLICY
+    ):
+        raise WorkItemGovernanceError(
+            "CLOSEOUT_TOOLCHAIN_RECORD_INVALID",
+            "The embedded frozen toolchain record failed schema validation.",
+        )
+    record_sha256 = canonical_sha256(record)
+    if (
+        _EXPECTED_FROZEN_TOOLCHAIN_RECORD_SHA256
+        and record_sha256 != _EXPECTED_FROZEN_TOOLCHAIN_RECORD_SHA256
+    ):
+        raise WorkItemGovernanceError(
+            "CLOSEOUT_TOOLCHAIN_RECORD_INVALID",
+            "The embedded frozen toolchain record digest does not match.",
+        )
+    return {**record, "record_sha256": record_sha256}
 
+
+def _toolchain_context(
+    project_root: str | os.PathLike[str],
+) -> tuple[Path, Path, Path]:
     project = Path(project_root).expanduser().resolve()
     venv = (project / ".venv").resolve()
     site_packages = Path(sysconfig.get_paths()["purelib"]).resolve()
@@ -81,6 +119,151 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
             "CLOSEOUT_TOOLCHAIN_ENVIRONMENT_INVALID",
             "Closeout verification must run from the project-local virtual environment.",
         )
+    return project, venv, site_packages
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _canonical_environment_path(path: Path, venv: Path) -> str:
+    resolved = path.resolve()
+    if _is_relative_to(resolved, venv):
+        return resolved.relative_to(venv).as_posix()
+    return resolved.as_posix()
+
+
+def _bytecode_inventory(
+    *,
+    venv: Path,
+    site_packages: Path,
+    distributions: list[metadata.Distribution],
+) -> dict[str, Any]:
+    record_owners: dict[str, set[str]] = {}
+    for distribution in distributions:
+        name = _normalized_name(distribution.metadata.get("Name", ""))
+        for package_path in distribution.files or ():
+            lexical = Path(
+                os.path.abspath(os.fspath(distribution.locate_file(package_path)))
+            )
+            if lexical.suffix.lower() not in {".pyc", ".pyo"}:
+                continue
+            if lexical.is_file() and not lexical.is_symlink():
+                record_owners.setdefault(_path_key(lexical), set()).add(name)
+
+    stdlib_roots = {
+        Path(sysconfig.get_paths().get("stdlib", "")).resolve(),
+        (venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}").resolve(),
+    }
+    counts = {
+        "total_count": 0,
+        "record_listed_count": 0,
+        "non_record_listed_count": 0,
+        "project_distribution_count": 0,
+        "third_party_distribution_count": 0,
+        "standard_library_count": 0,
+        "unknown_owner_count": 0,
+    }
+    owner_names: set[str] = set()
+    for path in venv.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".pyc", ".pyo"}:
+            continue
+        counts["total_count"] += 1
+        owners = record_owners.get(_path_key(path))
+        if owners:
+            counts["record_listed_count"] += 1
+            owner_names.update(owners)
+            if "colameta" in owners:
+                counts["project_distribution_count"] += 1
+            else:
+                counts["third_party_distribution_count"] += 1
+            continue
+        counts["non_record_listed_count"] += 1
+        resolved = path.resolve()
+        if (
+            any(_is_relative_to(resolved, root) for root in stdlib_roots)
+            and not _is_relative_to(resolved, site_packages)
+        ):
+            counts["standard_library_count"] += 1
+        else:
+            counts["unknown_owner_count"] += 1
+    return {
+        **counts,
+        "record_owner_count": len(owner_names),
+        "bytecode_policy_satisfied": counts["total_count"] == 0,
+    }
+
+
+def inspect_frozen_toolchain_environment(
+    project_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Inspect a toolchain without confusing diagnostics with strict acceptance."""
+
+    record = load_verified_frozen_toolchain_record()
+    project, venv, site_packages = _toolchain_context(project_root)
+    distributions = sorted(
+        metadata.distributions(path=[site_packages.as_posix()]),
+        key=lambda item: _normalized_name(item.metadata.get("Name", "")),
+    )
+    inventory = _bytecode_inventory(
+        venv=venv,
+        site_packages=site_packages,
+        distributions=distributions,
+    )
+    strict_error_code = None
+    measured: dict[str, Any] | None = None
+    try:
+        measured = _measure_closeout_toolchain(
+            project,
+            allow_preimport_bytecode=True,
+        )
+    except WorkItemGovernanceError as exc:
+        strict_error_code = exc.code
+    blocking_reasons: list[str] = []
+    if inventory["record_listed_count"]:
+        blocking_reasons.append("CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE")
+    if inventory["unknown_owner_count"]:
+        blocking_reasons.append("CLOSEOUT_TOOLCHAIN_UNOWNED_IMPORT_FILE")
+    if strict_error_code and strict_error_code not in blocking_reasons:
+        blocking_reasons.append(strict_error_code)
+    environment_root = measured.get("environment_root_sha256") if measured else None
+    environment_root_matches = environment_root == record["environment_root_sha256"]
+    return {
+        "status": "matched" if not blocking_reasons and environment_root_matches else "drifted",
+        "record_sha256": record["record_sha256"],
+        "record_hashes_verified": measured is not None
+        and measured.get("record_hashes_verified") is True,
+        "environment_root_sha256": environment_root,
+        "environment_root_matches": environment_root_matches,
+        "bytecode_inventory": inventory,
+        "bytecode_policy_satisfied": inventory["bytecode_policy_satisfied"],
+        "blocking_reasons": blocking_reasons,
+        "strict_measure_error_code": strict_error_code,
+    }
+
+
+def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Perform the strict frozen-toolchain measurement."""
+
+    return _measure_closeout_toolchain(project_root)
+
+
+def _measure_closeout_toolchain(
+    project_root: str | os.PathLike[str],
+    *,
+    allow_preimport_bytecode: bool = False,
+) -> dict[str, Any]:
+    """Measure the exact local verification environment and fail on drift.
+
+    The R3 Closeout is intentionally a local exact-candidate review, not a claim
+    that PyPI or the host OS is independently trusted.  Within that boundary we
+    still bind every installed distribution file, executable wrapper and
+    executable version used by the retained commands.  RECORD hashes are
+    checked when present, and unowned importable files are rejected.
+    """
+
+    record = load_verified_frozen_toolchain_record()
+    project, venv, site_packages = _toolchain_context(project_root)
 
     owned_paths: set[Path] = set()
     file_entries: dict[str, dict[str, Any]] = {}
@@ -102,12 +285,17 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
             lexical = Path(
                 os.path.abspath(os.fspath(distribution.locate_file(package_path)))
             )
-            if lexical.suffix.lower() in {".pyc", ".pyo"} and lexical.exists():
-                raise WorkItemGovernanceError(
-                    "CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE",
-                    "The exact verification environment must not contain pre-import bytecode.",
-                    details={"distribution": name, "path": relative_text},
-                )
+            if (
+                lexical.suffix.lower() in {".pyc", ".pyo"}
+                and lexical.exists()
+            ):
+                if not allow_preimport_bytecode:
+                    raise WorkItemGovernanceError(
+                        "CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE",
+                        "The exact verification environment must not contain pre-import bytecode.",
+                        details={"distribution": name, "path": relative_text},
+                    )
+                continue
             if not lexical.exists() and "__pycache__" in PurePosixPath(relative_text).parts:
                 continue
             resolved = lexical.resolve()
@@ -169,21 +357,27 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
     measured_versions = {item["name"]: item["version"] for item in distributions}
     if any(
         measured_versions.get(name) != expected
-        for name, expected in _EXPECTED_DISTRIBUTION_VERSIONS.items()
+        for name, expected in record["required_versions"].items()
     ):
         raise WorkItemGovernanceError(
             "CLOSEOUT_TOOLCHAIN_VERSION_MISMATCH",
             "The local verification tool versions differ from the frozen R3 environment.",
             details={
-                "expected": _EXPECTED_DISTRIBUTION_VERSIONS,
+                "expected": record["required_versions"],
                 "measured": {
                     name: measured_versions.get(name)
-                    for name in _EXPECTED_DISTRIBUTION_VERSIONS
+                    for name in record["required_versions"]
                 },
             },
         )
 
     unowned = _unowned_site_package_entries(site_packages, owned_paths)
+    if allow_preimport_bytecode:
+        unowned = [
+            path
+            for path in unowned
+            if Path(path).suffix.lower() not in {".pyc", ".pyo"}
+        ]
     if unowned:
         raise WorkItemGovernanceError(
             "CLOSEOUT_TOOLCHAIN_UNOWNED_IMPORT_FILE",
@@ -192,7 +386,7 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
         )
 
     wrappers: list[dict[str, Any]] = []
-    for name in _REQUIRED_TOOL_WRAPPERS:
+    for name in record["required_tool_wrappers"]:
         lexical = venv / "bin" / name
         resolved = lexical.resolve()
         if not lexical.is_file() or not resolved.is_file():
@@ -204,7 +398,7 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
         wrapper = {
             "name": name,
             "path": lexical.relative_to(venv).as_posix(),
-            "resolved_path": resolved.as_posix(),
+            "resolved_path": _canonical_environment_path(lexical, venv),
             "mode": stat.S_IMODE(lexical.stat().st_mode),
             "size_bytes": lexical.stat().st_size,
             "sha256": sha256_file(lexical),
@@ -238,7 +432,10 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
             "symlink_target": None,
         },
     ]
-    bin_inventory = _measure_bin_inventory(venv)
+    bin_inventory = _measure_bin_inventory(
+        venv,
+        expected_entries=record["required_bin_entries"],
+    )
     environment_files = sorted(file_entries.values(), key=lambda item: item["path"])
     environment_root = canonical_sha256(
         {
@@ -249,7 +446,7 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
             "wrappers": wrappers,
         }
     )
-    if environment_root != _EXPECTED_ENVIRONMENT_ROOT_SHA256:
+    if environment_root != record["environment_root_sha256"]:
         raise WorkItemGovernanceError(
             "CLOSEOUT_TOOLCHAIN_ROOT_MISMATCH",
             "The local verification environment differs from the frozen R3 toolchain.",
@@ -271,10 +468,12 @@ def measure_closeout_toolchain(project_root: str | os.PathLike[str]) -> dict[str
         "bin_inventory": bin_inventory,
         "bin_inventory_sha256": canonical_sha256(bin_inventory),
         "fixed_files": fixed_files,
-        "required_versions": dict(_EXPECTED_DISTRIBUTION_VERSIONS),
+        "required_versions": dict(record["required_versions"]),
         "wrappers": wrappers,
         "record_hashes_verified": True,
         "unowned_import_files": [],
+        "frozen_toolchain_record_sha256": record["record_sha256"],
+        "bytecode_policy_satisfied": not allow_preimport_bytecode,
     }
 
 
@@ -308,10 +507,15 @@ def _unowned_site_package_entries(
     return sorted(unowned)
 
 
-def _measure_bin_inventory(venv: Path) -> list[dict[str, Any]]:
+def _measure_bin_inventory(
+    venv: Path,
+    *,
+    expected_entries: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
     bin_root = venv / "bin"
     entries = sorted(bin_root.iterdir(), key=lambda item: item.name.encode("utf-8"))
-    if tuple(item.name for item in entries) != _EXPECTED_BIN_ENTRIES:
+    expected = tuple(expected_entries or _EXPECTED_BIN_ENTRIES)
+    if tuple(item.name for item in entries) != expected:
         raise WorkItemGovernanceError(
             "CLOSEOUT_TOOLCHAIN_BIN_INVENTORY_MISMATCH",
             "The virtualenv bin directory differs from the frozen exact inventory.",
@@ -365,4 +569,8 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-__all__ = ["measure_closeout_toolchain"]
+__all__ = [
+    "inspect_frozen_toolchain_environment",
+    "load_verified_frozen_toolchain_record",
+    "measure_closeout_toolchain",
+]

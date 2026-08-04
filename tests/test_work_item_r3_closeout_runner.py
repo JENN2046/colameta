@@ -5,6 +5,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -14,13 +15,16 @@ import scripts.work_item_r3_closeout as closeout_script
 import scripts.work_item_r3_trusted_launcher as trusted_launcher
 from runner.work_item_governance.canonical import canonical_sha256, sha256_file
 from runner.work_item_governance.errors import WorkItemGovernanceError
-from runner.work_item_governance.toolchain_binding import measure_closeout_toolchain
 from scripts.work_item_r3_closeout import (
     bundle_access_check,
     bundle_manifest,
     protected_assets_check,
     run_command as _run_command,
     verify_receipt,
+)
+from runner.toolchain_environment import (
+    materialize_frozen_toolchain_environment,
+    venv_python,
 )
 
 
@@ -59,6 +63,94 @@ def run_command(*, name: str, output: Path, command: list[str]) -> int:
         command=command,
         startup_attestation=_test_startup_attestation(Path.cwd()),
     )
+
+
+def _frozen_toolchain_project() -> Path:
+    configured = os.environ.get("COLAMETA_FROZEN_TOOLCHAIN_PROJECT_ROOT")
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parents[1]
+    )
+
+
+def _frozen_source_project() -> Path:
+    configured = os.environ.get("COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT") or os.environ.get(
+        "COLAMETA_FROZEN_SOURCE_ROOT"
+    )
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parents[1]
+    )
+
+
+def _materialize_test_frozen_toolchain(tmp_path: Path) -> tuple[Path, Path]:
+    source_project = _frozen_toolchain_project()
+    materialized_project, materialized_venv, _summary = (
+        materialize_frozen_toolchain_environment(
+            source_venv=source_project / ".venv",
+            work_root=tmp_path / "frozen-toolchain",
+        )
+    )
+    return materialized_project, materialized_venv
+
+
+def _measure_in_frozen_venv(
+    project: Path,
+    venv: Path,
+    *,
+    tamper_wrapper: bool = False,
+) -> dict[str, object]:
+    probe = r'''
+import json
+import sys
+from pathlib import Path
+import runner.work_item_governance.toolchain_binding as binding
+
+if sys.argv[2] == "tamper":
+    original = binding.sha256_file
+    def tampered(path):
+        target = Path(path)
+        if target.name == "ruff" and ".venv/bin" in target.as_posix():
+            return "0" * 64
+        return original(path)
+    binding.sha256_file = tampered
+try:
+    measured = binding.measure_closeout_toolchain(sys.argv[1])
+except Exception as exc:
+    print(json.dumps({"ok": False, "error_code": getattr(exc, "code", type(exc).__name__)}))
+else:
+    print(json.dumps({
+        "ok": True,
+        "record_hashes_verified": measured.get("record_hashes_verified"),
+        "unowned_import_files": measured.get("unowned_import_files"),
+        "environment_root_sha256": measured.get("environment_root_sha256"),
+    }, sort_keys=True))
+'''
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+    }
+    environment.update(
+        {
+            "PATH": f"{venv / 'bin'}:{os.defpath}",
+            "VIRTUAL_ENV": str(venv),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    completed = subprocess.run(
+        [str(venv_python(venv)), "-c", probe, str(project), "tamper" if tamper_wrapper else "clean"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        shell=False,
+    )
+    return json.loads(completed.stdout)
 
 
 @pytest.fixture(autouse=True)
@@ -543,29 +635,76 @@ def test_bundle_manifest_excludes_itself_and_binds_file_list(
     assert manifest["files"][0]["path"] == "one.txt"
 
 
+@pytest.mark.host_frozen_toolchain
 def test_frozen_toolchain_record_and_environment_root_are_verified(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    project = Path(__file__).resolve().parents[1]
-    measured = measure_closeout_toolchain(project)
+    project, venv = _materialize_test_frozen_toolchain(tmp_path)
+    measured = _measure_in_frozen_venv(project, venv)
+    assert measured["ok"] is True
     assert measured["record_hashes_verified"] is True
     assert measured["unowned_import_files"] == []
 
-    original = toolchain_binding.sha256_file
-
-    def tampered(path: str | Path) -> str:
-        target = Path(path)
-        if target.name == "ruff" and ".venv/bin" in target.as_posix():
-            return "0" * 64
-        return original(path)
-
-    monkeypatch.setattr(toolchain_binding, "sha256_file", tampered)
-    with pytest.raises(WorkItemGovernanceError) as rejected:
-        measure_closeout_toolchain(project)
-    assert rejected.value.code in {
+    tampered = _measure_in_frozen_venv(project, venv, tamper_wrapper=True)
+    assert tampered["ok"] is False
+    assert tampered["error_code"] in {
         "CLOSEOUT_TOOLCHAIN_RECORD_MISMATCH",
         "CLOSEOUT_TOOLCHAIN_ROOT_MISMATCH",
     }
+
+
+def test_frozen_record_load_is_independent_from_active_bytecode_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = toolchain_binding.load_verified_frozen_toolchain_record()
+    venv = tmp_path / "venv"
+    site_packages = venv / "lib" / "python3.12" / "site-packages"
+    unknown = site_packages / "unknown" / "__pycache__" / "module.cpython-312.pyc"
+    unknown.parent.mkdir(parents=True)
+    unknown.write_bytes(b"unknown")
+    monkeypatch.setattr(
+        toolchain_binding,
+        "_toolchain_context",
+        lambda project_root: (Path(project_root), venv, site_packages),
+    )
+    monkeypatch.setattr(
+        toolchain_binding,
+        "_measure_closeout_toolchain",
+        lambda _project_root, allow_preimport_bytecode=False: {
+            "environment_root_sha256": record["environment_root_sha256"],
+            "record_hashes_verified": True,
+        },
+    )
+    inspection = toolchain_binding.inspect_frozen_toolchain_environment(
+        tmp_path,
+    )
+    inventory = inspection["bytecode_inventory"]
+    assert record["record_sha256"]
+    assert inspection["status"] == "drifted"
+    assert inspection["record_hashes_verified"] is True
+    assert inspection["bytecode_policy_satisfied"] is False
+    assert inventory["total_count"] == 1
+    assert inventory["unknown_owner_count"] == 1
+    assert inspection["blocking_reasons"]
+
+
+def test_unknown_bytecode_owner_is_not_silently_allowed(tmp_path: Path) -> None:
+    site_packages = tmp_path / "lib" / "python3.12" / "site-packages"
+    site_packages.mkdir(parents=True)
+    unknown = site_packages / "unknown" / "__pycache__" / "module.cpython-312.pyc"
+    unknown.parent.mkdir(parents=True)
+    unknown.write_bytes(b"unknown")
+
+    inventory = toolchain_binding._bytecode_inventory(
+        venv=tmp_path,
+        site_packages=site_packages,
+        distributions=[],
+    )
+    assert inventory["total_count"] == 1
+    assert inventory["record_listed_count"] == 0
+    assert inventory["unknown_owner_count"] == 1
+    assert inventory["bytecode_policy_satisfied"] is False
 
 
 def test_toolchain_inventory_rejects_symlink_special_and_sourceless_overlays(
@@ -615,16 +754,19 @@ def test_toolchain_bin_inventory_rejects_import_shadow_directory(
     assert rejected.value.code == "CLOSEOUT_TOOLCHAIN_BIN_INVENTORY_MISMATCH"
 
 
-def test_toolchain_rejects_record_owned_preimport_bytecode() -> None:
-    project = Path(__file__).resolve().parents[1]
-    source = project / ".venv/lib/python3.12/site-packages/_distutils_hack/__init__.py"
+@pytest.mark.host_frozen_toolchain
+def test_toolchain_rejects_record_owned_preimport_bytecode(tmp_path: Path) -> None:
+    project, venv = _materialize_test_frozen_toolchain(tmp_path)
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    relative_purelib = purelib.relative_to(Path(sys.prefix))
+    source = project / ".venv" / relative_purelib / "_distutils_hack" / "__init__.py"
     cache = Path(importlib.util.cache_from_source(source.as_posix()))
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(b"pre-import bytecode")
     try:
-        with pytest.raises(WorkItemGovernanceError) as rejected:
-            measure_closeout_toolchain(project)
-        assert rejected.value.code in {
+        rejected = _measure_in_frozen_venv(project, venv)
+        assert rejected["ok"] is False
+        assert rejected["error_code"] in {
             "CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE",
             "CLOSEOUT_TOOLCHAIN_UNOWNED_IMPORT_FILE",
         }
@@ -636,11 +778,12 @@ def test_toolchain_rejects_record_owned_preimport_bytecode() -> None:
             pass
 
 
+@pytest.mark.host_frozen_toolchain
 def test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = Path(__file__).resolve().parents[1]
+    project = _frozen_source_project()
     try:
         trusted_launcher._measure_source_tree(project)
     except RuntimeError:
