@@ -245,6 +245,10 @@ _VALIDATION_ENVIRONMENT_CONTEXT: ContextVar[ValidationEnvironment | None] = Cont
     "colameta_validation_environment",
     default=None,
 )
+_COMMAND_ARTIFACT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "colameta_validation_command_artifact",
+    default=None,
+)
 _CHECKOUT_PROVENANCE_FIELDS = frozenset(
     {
         "mode",
@@ -1540,28 +1544,79 @@ print(json.dumps(payload, sort_keys=True))
         except Exception as exc:
             completed_at = _utc_now()
             stderr = f"VALIDATION_RUN_FAILED: {_redact_sensitive_text(str(exc))}"
+            lane_assignments = artifact.get("validation_lanes")
+            if (
+                not isinstance(lane_assignments, list)
+                or len(lane_assignments) != len(command_specs)
+                or any(lane not in _VALIDATION_LANES for lane in lane_assignments)
+            ):
+                lane_assignments = [_CANDIDATE_LANE] * len(command_specs)
+            failed_lane = (
+                lane_assignments[0]
+                if lane_assignments
+                else _CANDIDATE_LANE
+            )
+            failed_result = {
+                "index": 0,
+                "lane": failed_lane,
+                "ok": False,
+                "returncode": 125,
+                "error_code": "VALIDATION_RUN_FAILED",
+                "timeout_seconds": (
+                    self._normalize_timeout_seconds(
+                        command_specs[0].get("timeout_seconds")
+                    )
+                    if command_specs and isinstance(command_specs[0], dict)
+                    else DEFAULT_TIMEOUT_SECONDS
+                ),
+                "continue_on_failure": (
+                    bool(command_specs[0].get("continue_on_failure", False))
+                    if command_specs and isinstance(command_specs[0], dict)
+                    else False
+                ),
+                "command": (
+                    self._display_command(command_specs[0].get("argv"))
+                    if command_specs and isinstance(command_specs[0], dict)
+                    else ""
+                ),
+                "executed_command": "",
+                "stdout": "",
+                "stderr": stderr,
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "selected_test_count": 0,
+                "skipped_count": 0,
+                "allowed_skip_count": 0,
+                "unexpected_skip_count": 0,
+                "required_skipped_count": 0,
+                "skipped_nodes": [],
+            }
+            validation_lanes, aggregate = self._validation_lane_evidence(
+                command_specs=command_specs,
+                command_results=[failed_result],
+                lane_assignments=lane_assignments,
+                candidate_delta_sha256=(
+                    artifact.get("candidate_identity", {}).get(
+                        "worktree_delta_sha256"
+                    )
+                    if isinstance(artifact.get("candidate_identity"), dict)
+                    else None
+                ),
+                candidate_module_provenance=None,
+                host_preflight=None,
+            )
             run_record = {
                 **self._initial_run_record(run_id, preview_id, artifact, commands, started_at),
                 "status": "failed",
                 "passed": False,
-                "command_results": [{
-                    "index": 0,
-                    "ok": False,
-                    "returncode": 125,
-                    "error_code": "VALIDATION_RUN_FAILED",
-                    "command": "",
-                    "stdout": "",
-                    "stderr": stderr,
-                    "stdout_truncated": False,
-                    "stderr_truncated": False,
-                }],
+                "command_results": [failed_result],
                 "failed_command_indexes": [0],
                 "failed_command_index": 0,
                 "output_summary": {"total_output_chars": len(stderr), "redacted": True, "truncated": False},
                 "completed_at": _iso(completed_at),
                 "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
-                "validation_lanes": None,
-                "aggregate": None,
+                "validation_lanes": validation_lanes,
+                "aggregate": aggregate,
             }
             self._write_terminal_run_result(run_id, run_record)
 
@@ -1914,12 +1969,19 @@ print(json.dumps(payload, sort_keys=True))
                         host_environment=host_environment,
                     )
                 else:
-                    # Keep the established candidate-lane call shape so
-                    # existing adapters and test doubles remain compatible.
-                    result = self._run_command(
+                    command_artifacts_root = (
+                        Path(lane_checkout["parent"]) / "command-artifacts"
+                        if lane_checkout is not None
+                        else Path(tempfile.gettempdir())
+                        / f"colameta-validation-{run_id}"
+                        / "command-artifacts"
+                    )
+                    result = self._run_candidate_command(
                         effective_command,
                         timeout_seconds=timeout_seconds,
                         cwd=lane_execution_root,
+                        command_index=index,
+                        command_artifacts_root=command_artifacts_root,
                     )
                 stdout = result["stdout"]
                 stderr = result["stderr"]
@@ -1978,7 +2040,7 @@ print(json.dumps(payload, sort_keys=True))
                     )
                 if not ok:
                     failed_indexes.append(index)
-                command_results.append({
+                command_result = {
                     "index": index,
                     "lane": lane,
                     "ok": ok,
@@ -2002,7 +2064,13 @@ print(json.dumps(payload, sort_keys=True))
                     "unexpected_skip_count": unexpected_skip_count,
                     "required_skipped_count": required_skipped_count,
                     "skipped_nodes": list(pytest_metrics["skipped_nodes"]),
-                })
+                }
+                compileall_artifact = result.get("compileall_artifact")
+                if isinstance(compileall_artifact, dict):
+                    command_result["compileall_artifact"] = dict(
+                        compileall_artifact
+                    )
+                command_results.append(command_result)
                 if not ok and not continue_on_failure:
                     break
 
@@ -4181,6 +4249,99 @@ print(json.dumps(payload, sort_keys=True))
         shutil.rmtree(parent, ignore_errors=True)
         return not checkout.exists()
 
+    def _run_candidate_command(
+        self,
+        command: list[str],
+        *,
+        timeout_seconds: int,
+        cwd: str,
+        command_index: int,
+        command_artifacts_root: Path,
+    ) -> dict[str, Any]:
+        """Run one candidate command with a command-local artifact authority."""
+
+        artifact_root = command_artifacts_root.resolve()
+        command_root = artifact_root / str(command_index)
+        if command_root.exists() or command_root.is_symlink():
+            return {
+                "returncode": 125,
+                "stdout": "",
+                "stderr": "VALIDATION_COMMAND_ARTIFACT_COLLISION",
+                "error_code": "VALIDATION_COMMAND_ARTIFACT_COLLISION",
+            }
+        context = {
+            "command_index": command_index,
+            "command_root": command_root,
+            "candidate_root": Path(cwd).resolve(),
+        }
+        token = _COMMAND_ARTIFACT_CONTEXT.set(context)
+        try:
+            # Preserve the established _run_command call shape for adapters
+            # and test doubles.  The context is local to this command/thread.
+            return self._run_command(
+                command,
+                timeout_seconds=timeout_seconds,
+                cwd=cwd,
+            )
+        finally:
+            _COMMAND_ARTIFACT_CONTEXT.reset(token)
+
+    @staticmethod
+    def _is_governed_candidate_compileall(
+        process_command: list[str],
+        validation_environment: ValidationEnvironment | None,
+    ) -> bool:
+        if validation_environment is None or len(process_command) < 3:
+            return False
+        if process_command[1:3] != ["-m", "compileall"]:
+            return False
+        try:
+            executable = Path(process_command[0]).resolve()
+            governed_python = venv_python(
+                validation_environment.venv_dir
+            ).resolve()
+        except (OSError, RuntimeError):
+            return False
+        return executable == governed_python
+
+    @staticmethod
+    def _compileall_artifact_digest(root: Path) -> tuple[int, str]:
+        files: list[dict[str, str]] = []
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            files.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        return len(files), canonical_manifest_validation_sha256(files)
+
+    @staticmethod
+    def _candidate_bytecode_contamination_count(candidate_root: Path) -> int:
+        count = 0
+        for directory, directory_names, file_names in os.walk(
+            candidate_root,
+            followlinks=False,
+        ):
+            root = Path(directory)
+            retained_directories: list[str] = []
+            for name in directory_names:
+                path = root / name
+                if path.is_symlink():
+                    continue
+                if root == candidate_root and name == ".venv":
+                    # The validation venv is a governed execution overlay,
+                    # not part of the candidate source projection.
+                    continue
+                if name == "__pycache__":
+                    count += 1
+                retained_directories.append(name)
+            directory_names[:] = retained_directories
+            count += sum(1 for name in file_names if name.endswith(".pyc"))
+        return count
+
     def _run_command(
         self,
         command: list[str],
@@ -4216,6 +4377,57 @@ print(json.dumps(payload, sort_keys=True))
                 parent_environment=dict(os.environ),
                 forbidden_roots=(Path(self.project_root).resolve(),),
             )
+        environment.pop("PYTHONPYCACHEPREFIX", None)
+        artifact_context = _COMMAND_ARTIFACT_CONTEXT.get()
+        compileall_artifact: dict[str, Any] | None = None
+        compileall_root: Path | None = None
+        candidate_root: Path | None = None
+        is_isolated_compileall = (
+            isinstance(artifact_context, dict)
+            and self._is_governed_candidate_compileall(
+                process_command,
+                validation_environment,
+            )
+        )
+        if is_isolated_compileall:
+            command_root = artifact_context.get("command_root")
+            candidate_root_value = artifact_context.get("candidate_root")
+            if not isinstance(command_root, Path) or not isinstance(
+                candidate_root_value, Path
+            ):
+                return {
+                    "returncode": 125,
+                    "stdout": "",
+                    "stderr": "VALIDATION_COMMAND_ARTIFACT_INVALID",
+                    "error_code": "VALIDATION_COMMAND_ARTIFACT_INVALID",
+                }
+            candidate_root = candidate_root_value.resolve()
+            compileall_root = (command_root / "pycache").resolve()
+            validation_venv_root = validation_environment.venv_dir.resolve()
+            protected_roots = (
+                candidate_root,
+                validation_venv_root,
+                Path(self.project_root).resolve(),
+            )
+            try:
+                overlaps_protected_root = any(
+                    os.path.commonpath(
+                        [str(compileall_root), str(protected)]
+                    )
+                    == str(protected)
+                    for protected in protected_roots
+                )
+            except ValueError:
+                overlaps_protected_root = True
+            if overlaps_protected_root or compileall_root.exists():
+                return {
+                    "returncode": 125,
+                    "stdout": "",
+                    "stderr": "VALIDATION_COMMAND_ARTIFACT_INVALID",
+                    "error_code": "VALIDATION_COMMAND_ARTIFACT_INVALID",
+                }
+            compileall_root.parent.mkdir(parents=True, exist_ok=False)
+            environment["PYTHONPYCACHEPREFIX"] = str(compileall_root)
         try:
             proc = subprocess.run(
                 process_command,
@@ -4227,26 +4439,69 @@ print(json.dumps(payload, sort_keys=True))
                 timeout=timeout_seconds,
                 env=environment,
             )
-            return {
+            command_result = {
                 "returncode": proc.returncode,
                 "stdout": _redact_sensitive_text(proc.stdout),
                 "stderr": _redact_sensitive_text(proc.stderr),
                 "error_code": None,
             }
         except subprocess.TimeoutExpired as exc:
-            return {
+            command_result = {
                 "returncode": 124,
                 "stdout": _redact_sensitive_text(exc.stdout or ""),
                 "stderr": f"VALIDATION_RUN_TIMEOUT: command exceeded {timeout_seconds}s",
                 "error_code": "VALIDATION_RUN_TIMEOUT",
             }
         except Exception as exc:
-            return {
+            command_result = {
                 "returncode": 125,
                 "stdout": "",
                 "stderr": f"VALIDATION_RUN_FAILED: {_redact_sensitive_text(str(exc))}",
                 "error_code": "VALIDATION_RUN_FAILED",
             }
+        if compileall_root is not None and candidate_root is not None:
+            pyc_count = sum(
+                1
+                for path in compileall_root.rglob("*.pyc")
+                if path.is_file() and not path.is_symlink()
+            )
+            file_count, artifact_sha256 = self._compileall_artifact_digest(
+                compileall_root
+            )
+            contamination_count = self._candidate_bytecode_contamination_count(
+                candidate_root
+            )
+            command_root = compileall_root.parent
+            shutil.rmtree(command_root, ignore_errors=True)
+            cleanup_complete = not command_root.exists()
+            compileall_artifact = {
+                "command_index": int(artifact_context["command_index"]),
+                "pycache_root_sanitized": (
+                    f"command-artifacts/{artifact_context['command_index']}/pycache"
+                ),
+                "file_count": file_count,
+                "pyc_count": pyc_count,
+                "artifact_sha256": artifact_sha256,
+                "candidate_contamination_count": contamination_count,
+                "cleanup_complete": cleanup_complete,
+            }
+            command_result["compileall_artifact"] = compileall_artifact
+            if (
+                command_result["returncode"] == 0
+                and (
+                    pyc_count == 0
+                    or contamination_count != 0
+                    or not cleanup_complete
+                )
+            ):
+                command_result["returncode"] = 125
+                command_result["error_code"] = (
+                    "COMPILEALL_BYTECODE_ISOLATION_FAILED"
+                )
+                command_result["stderr"] = (
+                    "compileall bytecode isolation evidence did not close"
+                )
+        return command_result
 
     def _git_stdout(self, args: list[str]) -> str:
         proc = subprocess.run(

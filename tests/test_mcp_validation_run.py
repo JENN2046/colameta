@@ -11,11 +11,13 @@ import time
 
 import pytest
 
+import runner.mcp_validation_run as validation_run
 import runner.toolchain_environment as toolchain_environment
 from runner.mcp_validation_run import (
     MCPValidationRunManager,
 )
 from runner.toolchain_environment import (
+    ValidationEnvironment,
     build_validation_subprocess_environment,
     create_validation_venv,
     materialize_trusted_source_venv,
@@ -1391,3 +1393,299 @@ def test_validation_result_writes_never_replace_an_older_run(tmp_path: Path) -> 
     assert first_path.read_bytes() == original
     assert Path(manager._run_result_path(second["run_id"])).is_file()
     assert json.loads(first_path.read_text(encoding="utf-8"))["run_id"] == first["run_id"]
+
+
+def _minimal_validation_environment(
+    tmp_path: Path,
+    candidate: Path,
+) -> ValidationEnvironment:
+    del tmp_path
+    venv_dir = candidate / ".venv"
+    bin_dir = venv_dir / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(Path(sys.executable).resolve())
+    environment = dict(os.environ)
+    environment["PATH"] = os.pathsep.join([str(bin_dir), os.defpath])
+    environment["VIRTUAL_ENV"] = str(venv_dir)
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+    return ValidationEnvironment(
+        candidate_root=candidate,
+        cwd=candidate,
+        env=environment,
+        venv_dir=venv_dir,
+        python_executable=bin_dir / "python",
+        summary={"candidate_module_provenance_verified": True},
+    )
+
+
+def test_candidate_compileall_uses_unique_external_pycache_without_leakage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    module = project / "fixture_module.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    (project / ".gitignore").write_text(".venv\n", encoding="utf-8")
+    _git(project, "add", "fixture_module.py", ".gitignore")
+    _git(project, "commit", "-qm", "add compile fixture")
+    manager = MCPValidationRunManager(str(project))
+    environment = _minimal_validation_environment(tmp_path, project)
+    external_venv_bytecode = (
+        environment.venv_dir
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "external.cpython-312.pyc"
+    )
+    external_venv_bytecode.parent.mkdir(parents=True)
+    external_venv_bytecode.write_bytes(b"external validation bytecode")
+    observed: list[tuple[list[str], dict[str, str]]] = []
+    original_run = validation_run.subprocess.run
+
+    def recording_run(command, *args, **kwargs):
+        observed.append((list(command), dict(kwargs.get("env") or {})))
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(validation_run.subprocess, "run", recording_run)
+    token = validation_run._VALIDATION_ENVIRONMENT_CONTEXT.set(environment)
+    try:
+        first = manager._run_candidate_command(
+            [".venv/bin/python", "-m", "compileall", "fixture_module.py"],
+            timeout_seconds=30,
+            cwd=str(project),
+            command_index=3,
+            command_artifacts_root=tmp_path / "command-artifacts",
+        )
+        second = manager._run_candidate_command(
+            [".venv/bin/python", "-m", "compileall", "fixture_module.py"],
+            timeout_seconds=30,
+            cwd=str(project),
+            command_index=4,
+            command_artifacts_root=tmp_path / "command-artifacts",
+        )
+        following = manager._run_candidate_command(
+            [
+                ".venv/bin/python",
+                "-c",
+                "import os; print(os.environ.get('PYTHONPYCACHEPREFIX'))",
+            ],
+            timeout_seconds=30,
+            cwd=str(project),
+            command_index=5,
+            command_artifacts_root=tmp_path / "command-artifacts",
+        )
+    finally:
+        validation_run._VALIDATION_ENVIRONMENT_CONTEXT.reset(token)
+
+    assert first["returncode"] == second["returncode"] == 0
+    first_artifact = first["compileall_artifact"]
+    second_artifact = second["compileall_artifact"]
+    assert first_artifact["pycache_root_sanitized"] == (
+        "command-artifacts/3/pycache"
+    )
+    assert second_artifact["pycache_root_sanitized"] == (
+        "command-artifacts/4/pycache"
+    )
+    assert first_artifact["pyc_count"] > 0
+    assert second_artifact["pyc_count"] > 0
+    assert first_artifact["candidate_contamination_count"] == 0
+    assert second_artifact["candidate_contamination_count"] == 0
+    assert first_artifact["cleanup_complete"] is True
+    assert second_artifact["cleanup_complete"] is True
+    assert manager._candidate_bytecode_contamination_count(project) == 0
+    assert external_venv_bytecode.is_file()
+    assert _git(project, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert observed[0][0][1:3] == ["-m", "compileall"]
+    assert observed[1][0][1:3] == ["-m", "compileall"]
+    assert observed[0][1]["PYTHONPYCACHEPREFIX"].endswith(
+        "command-artifacts/3/pycache"
+    )
+    assert observed[1][1]["PYTHONPYCACHEPREFIX"].endswith(
+        "command-artifacts/4/pycache"
+    )
+    assert following["returncode"] == 0
+    assert following["stdout"].strip() == "None"
+    assert "PYTHONPYCACHEPREFIX" not in observed[2][1]
+
+
+def test_candidate_compileall_fails_closed_without_cleaning_seeded_bytecode(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    module = project / "fixture_module.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    (project / ".gitignore").write_text(
+        ".venv\n__pycache__/\n*.pyc\n",
+        encoding="utf-8",
+    )
+    _git(project, "add", "fixture_module.py", ".gitignore")
+    _git(project, "commit", "-qm", "add contamination fixture")
+    seeded = project / "__pycache__" / "seeded.cpython-312.pyc"
+    seeded.parent.mkdir()
+    seeded.write_bytes(b"manually seeded candidate bytecode")
+    manager = MCPValidationRunManager(str(project))
+    environment = _minimal_validation_environment(tmp_path, project)
+    token = validation_run._VALIDATION_ENVIRONMENT_CONTEXT.set(environment)
+    try:
+        result = manager._run_candidate_command(
+            [".venv/bin/python", "-m", "compileall", "fixture_module.py"],
+            timeout_seconds=30,
+            cwd=str(project),
+            command_index=9,
+            command_artifacts_root=tmp_path / "command-artifacts",
+        )
+    finally:
+        validation_run._VALIDATION_ENVIRONMENT_CONTEXT.reset(token)
+
+    assert result["returncode"] == 125
+    assert result["error_code"] == "COMPILEALL_BYTECODE_ISOLATION_FAILED"
+    assert result["compileall_artifact"]["candidate_contamination_count"] > 0
+    assert result["compileall_artifact"]["cleanup_complete"] is True
+    assert seeded.read_bytes() == b"manually seeded candidate bytecode"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        [".venv/bin/python", "some_script_named_compileall.py"],
+        [".venv/bin/python", "-c", "print('compileall')"],
+        ["echo", "-m", "compileall"],
+    ],
+)
+def test_compileall_artifact_privilege_requires_exact_module_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+    environment = _minimal_validation_environment(tmp_path, project)
+    observed_environment: dict[str, str] = {}
+
+    def fake_run(_command, **kwargs):
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(_command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(validation_run.subprocess, "run", fake_run)
+    token = validation_run._VALIDATION_ENVIRONMENT_CONTEXT.set(environment)
+    try:
+        result = manager._run_candidate_command(
+            command,
+            timeout_seconds=30,
+            cwd=str(project),
+            command_index=7,
+            command_artifacts_root=tmp_path / "command-artifacts",
+        )
+    finally:
+        validation_run._VALIDATION_ENVIRONMENT_CONTEXT.reset(token)
+
+    assert result["returncode"] == 0
+    assert "compileall_artifact" not in result
+    assert "PYTHONPYCACHEPREFIX" not in observed_environment
+    assert not (tmp_path / "command-artifacts").exists()
+
+
+def test_worker_exception_writes_digest_verified_failure_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+    preview = manager.preview(
+        {"scope": "target_files", "target_files": ["README.md"]}
+    )
+    artifact = manager._read_preview(preview["preview_id"])
+    assert artifact is not None
+    command_specs = artifact["command_specs"]
+    commands = artifact["commands"]
+    started_at = validation_run._utc_now()
+    run_id = "validation_run_worker_failure"
+
+    def fail_worker(*_args, **_kwargs):
+        raise RuntimeError("bounded worker failure")
+
+    monkeypatch.setattr(manager, "_execute_run_worker", fail_worker)
+    manager._execute_run_worker_safe(
+        run_id,
+        preview["preview_id"],
+        artifact,
+        command_specs,
+        commands,
+        started_at,
+    )
+
+    status = manager.status({"run_id": run_id})
+    assert status["ok"] is True
+    assert status["status"] == "failed"
+    assert status["passed"] is False
+    assert status["integrity_classification"] == "verified"
+    assert status["command_results"][0]["error_code"] == (
+        "VALIDATION_RUN_FAILED"
+    )
+    persisted, read_error = manager._read_verified_run_result(run_id)
+    assert read_error is None
+    assert persisted is not None
+    assert persisted["validation_result_sha256"] == (
+        validation_run.canonical_validation_result_sha256(persisted)
+    )
+
+
+@pytest.mark.parametrize(
+    ("error_code", "stderr"),
+    [
+        ("VALIDATION_COMMAND_FAILED", "bounded command failure"),
+        (
+            "COMMAND_PREIMPORT_ATTESTATION_FAILED",
+            "command_preimport_attestation:full_pytest",
+        ),
+    ],
+)
+def test_command_failures_write_digest_verified_terminal_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+    stderr: str,
+) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+
+    def failed_command(*_args, **_kwargs):
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": stderr,
+            "error_code": error_code,
+        }
+
+    monkeypatch.setattr(manager, "_run_command", failed_command)
+    preview = manager.preview(
+        {"scope": "target_files", "target_files": ["README.md"]}
+    )
+    started = manager.run({"preview_id": preview["preview_id"]})
+    final = _terminal_status(manager, started["run_id"])
+
+    assert final["ok"] is True
+    assert final["status"] == "failed"
+    assert final["passed"] is False
+    assert final["integrity_classification"] == "verified"
+    assert final["command_results"][0]["error_code"] == error_code
+    assert stderr in final["command_results"][0]["stderr"]
+
+
+def test_terminal_result_tampering_remains_fail_closed(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+    preview = manager.preview(
+        {"scope": "target_files", "target_files": ["README.md"]}
+    )
+    started = manager.run({"preview_id": preview["preview_id"]})
+    final = _terminal_status(manager, started["run_id"])
+    assert final["ok"] is True
+    path = Path(manager._run_result_path(started["run_id"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["passed"] = not payload["passed"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    rejected = manager.status({"run_id": started["run_id"]})
+    assert rejected["ok"] is False
+    assert rejected["error_code"] == "RUN_RESULT_INVALID"
