@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import runner.work_item_governance.closeout as governance_closeout
 import runner.work_item_governance.toolchain_binding as toolchain_binding
 import scripts.work_item_r3_closeout as closeout_script
 import scripts.work_item_r3_trusted_launcher as trusted_launcher
@@ -795,6 +796,88 @@ def test_protected_asset_and_bundle_access_checks_fail_closed(
     result = json.loads(capsys.readouterr().out)
     assert result["pass"] is False
     assert result["sanitization_findings"]
+
+
+def test_only_exact_obsolete_zone_metadata_paths_may_be_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    expected = governance_closeout.OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256
+    monkeypatch.chdir(tmp_path)
+
+    for path, digest in expected.items():
+        assert protected_assets_check([f"{path}={digest}"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["assets"] == [
+            {
+                "path": path,
+                "expected_sha256": digest,
+                "present": False,
+                "absence_allowed": True,
+                "actual_sha256": None,
+                "match": True,
+            }
+        ]
+
+    arbitrary = "other:Zone.Identifier"
+    assert protected_assets_check([f"{arbitrary}={'a' * 64}"]) == 1
+    assert json.loads(capsys.readouterr().out)["assets"][0]["absence_allowed"] is False
+
+    exact_name_at_wrong_root = tmp_path / next(iter(expected))
+    assert protected_assets_check(
+        [f"{exact_name_at_wrong_root}={expected[exact_name_at_wrong_root.name]}"]
+    ) == 1
+    assert json.loads(capsys.readouterr().out)["assets"][0]["absence_allowed"] is False
+
+    exact_path = next(iter(expected))
+    Path(exact_path).write_text("wrong bytes", encoding="utf-8")
+    assert protected_assets_check([f"{exact_path}={expected[exact_path]}"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["assets"][0]["present"] is True
+    assert result["assets"][0]["match"] is False
+
+
+def test_receipt_verifier_accepts_only_exact_absent_zone_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CleanGit:
+        def run(self, _root: Path, *_arguments: str) -> str:
+            return ""
+
+    monkeypatch.setattr(
+        governance_closeout,
+        "_trusted_git_for_checkout",
+        lambda _root: _CleanGit(),
+    )
+    expected = governance_closeout.OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256
+    receipt = {
+        "protected_user_assets": {
+            "assets": [
+                {"path": path, "sha256": digest}
+                for path, digest in expected.items()
+            ],
+            "staged": False,
+            "committed": False,
+        }
+    }
+
+    violations: list[str] = []
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations)
+    assert violations == []
+
+    receipt["protected_user_assets"]["assets"][0]["sha256"] = "a" * 64
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations := [])
+    assert violations == [
+        "protected_asset_digest:AGENTS - 副本.md:Zone.Identifier"
+    ]
+
+    receipt["protected_user_assets"]["assets"] = [
+        {"path": "other:Zone.Identifier", "sha256": "a" * 64}
+    ]
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations := [])
+    assert violations == ["protected_asset_missing:other:Zone.Identifier"]
 
 
 def test_protected_asset_receipt_order_matches_frozen_schema() -> None:

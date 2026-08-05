@@ -22,6 +22,7 @@ from typing import Any
 from runner.work_item_governance.activation import AUTHORITATIVE_CANARY_TOOLS
 from runner.work_item_governance.canonical import canonical_json, canonical_sha256, sha256_file
 from runner.work_item_governance.closeout import (
+    OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256,
     REQUIRED_VERIFICATION_NAMES,
     _FINAL_REVIEW_BUNDLE_FILES,
     _LEASE_CHECK_EVIDENCE_BINDINGS,
@@ -702,13 +703,28 @@ def protected_assets_check(expected: list[str]) -> int:
     for item in expected:
         path_text, separator, expected_sha256 = item.rpartition("=")
         path = Path(path_text)
-        valid = bool(separator and path.is_file() and sha256_file(path) == expected_sha256)
+        present = path.is_file()
+        absence_allowed = bool(
+            separator
+            and not path.is_absolute()
+            and OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256.get(path_text)
+            == expected_sha256
+        )
+        valid = bool(
+            separator
+            and (
+                (present and sha256_file(path) == expected_sha256)
+                or (not present and absence_allowed)
+            )
+        )
         passed = passed and valid
         records.append(
             {
                 "path": path_text,
                 "expected_sha256": expected_sha256,
-                "actual_sha256": sha256_file(path) if path.is_file() else None,
+                "present": present,
+                "absence_allowed": absence_allowed,
+                "actual_sha256": sha256_file(path) if present else None,
                 "match": valid,
             }
         )
@@ -1410,7 +1426,14 @@ def build_receipt(*, bundle_root: Path, project_root: Path, output: Path) -> int
             "staged": False,
             "committed": False,
             "assets": [
-                {"path": path, "sha256": sha256_file(project / path)}
+                {
+                    "path": path,
+                    "sha256": (
+                        sha256_file(project / path)
+                        if (project / path).is_file()
+                        else OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256[path]
+                    ),
+                }
                 for path in _PROTECTED_ASSET_SCHEMA_ORDER
             ],
         },

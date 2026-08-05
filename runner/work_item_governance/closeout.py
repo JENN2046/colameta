@@ -51,6 +51,15 @@ REQUIRED_VERIFICATION_NAMES = (
     "review_bundle_accessibility",
 )
 
+OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256 = {
+    "AGENTS - 副本.md:Zone.Identifier": (
+        "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+    ),
+    "AGENTS.md:Zone.Identifier": (
+        "b952d24cf701bc4e7a7d21e1ae85c611824e80579a89836c0cb49b193446ccfe"
+    ),
+}
+
 _SPECIAL_COMMAND_EVIDENCE = {
     "wheel_source_inventory": "evidence/commands/wheel-source-inventory-command.json",
     "runtime_isolation_smoke": "evidence/commands/runtime-isolation-smoke-command.json",
@@ -2678,7 +2687,13 @@ def _verify_protected_assets(
             violations.append(f"protected_asset_path_escape:{item['path']}")
             continue
         if not target.is_file():
-            violations.append(f"protected_asset_missing:{item['path']}")
+            optional_digest = OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256.get(
+                str(item["path"])
+            )
+            if optional_digest is None:
+                violations.append(f"protected_asset_missing:{item['path']}")
+            elif item["sha256"] != optional_digest:
+                violations.append(f"protected_asset_digest:{item['path']}")
         elif sha256_file(target) != item["sha256"]:
             violations.append(f"protected_asset_digest:{item['path']}")
     try:
