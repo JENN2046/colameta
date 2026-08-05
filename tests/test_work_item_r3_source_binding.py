@@ -45,11 +45,48 @@ def _prepare_candidate_artifacts(*, canary_root: Path) -> tuple[Path, Path, dict
 
 
 def test_candidate_fixture_binds_worktree_metadata_not_committed_head(tmp_path: Path) -> None:
-    checkout, wheel, _binding = _prepare_candidate_artifacts(canary_root=tmp_path)
-    candidate_sha = sha256_file(REPOSITORY_ROOT / "pyproject.toml")
+    candidate_root = tmp_path / "candidate-root"
+    _run(
+        tmp_path,
+        "git",
+        "clone",
+        "-q",
+        "--no-hardlinks",
+        str(REPOSITORY_ROOT),
+        str(candidate_root),
+    )
+    current_metadata = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    old_metadata = current_metadata.replace(
+        "cryptography>=50.0.0,<51",
+        "cryptography==49.0.0",
+        1,
+    )
+    assert old_metadata != current_metadata
+    (candidate_root / "pyproject.toml").write_text(old_metadata, encoding="utf-8")
+    _run(candidate_root, "git", "add", "pyproject.toml")
+    _run(
+        candidate_root,
+        "git",
+        "-c",
+        "user.name=R3 Test",
+        "-c",
+        "user.email=r3@example.invalid",
+        "commit",
+        "-qm",
+        "committed metadata fixture",
+    )
+    (candidate_root / "pyproject.toml").write_text(current_metadata, encoding="utf-8")
+
+    checkout, wheel, _binding = prepare_exact_runtime_artifacts(
+        canary_root=tmp_path / "artifacts",
+        repository_root=candidate_root,
+        metadata_source_mode="candidate_worktree",
+        candidate_root=candidate_root,
+    )
+    candidate_sha = sha256_file(candidate_root / "pyproject.toml")
     head_metadata = subprocess.run(
         ["git", "show", "HEAD:pyproject.toml"],
-        cwd=REPOSITORY_ROOT,
+        cwd=candidate_root,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -57,7 +94,6 @@ def test_candidate_fixture_binds_worktree_metadata_not_committed_head(tmp_path: 
 
     assert candidate_sha == "dd3e13b56f986810892d2d764751afc54374ca6397d057778b4fd5acca300fd4"
     assert sha256_file(checkout / "pyproject.toml") == candidate_sha
-    assert hashlib.sha256(head_metadata).hexdigest() == "da8f368435af12314d62356334733b78f3bc88334a38e8821fa2d2aae61583e2"
     assert sha256_file(checkout / "pyproject.toml") != hashlib.sha256(head_metadata).hexdigest()
     with zipfile.ZipFile(wheel) as archive:
         metadata = archive.read("colameta-0.1.2.dist-info/METADATA")
