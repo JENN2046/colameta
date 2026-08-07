@@ -87,6 +87,7 @@ _VALIDATION_TOOL_REQUIREMENTS = (
     "pip-audit>=2.7,<3",
     "pytest-cov>=5,<7",
 )
+_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS = 1200
 _PACKAGE_MODULES = ("runner", "adapters", "schemas", "scripts")
 
 
@@ -577,7 +578,10 @@ def _project_metadata(candidate_root: Path) -> tuple[str | None, list[str]]:
     if not pyproject.is_file():
         return None, []
     try:
-        import tomllib
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib
 
         with pyproject.open("rb") as handle:
             project = tomllib.load(handle).get("project", {})
@@ -1032,6 +1036,195 @@ def _read_distribution_version(
     return version
 
 
+def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_installed_distribution_set(
+    distributions: Sequence[Mapping[str, str]],
+) -> tuple[dict[str, Any], str]:
+    """Normalize one installed distribution set and return its canonical digest."""
+
+    try:
+        from packaging.utils import canonicalize_name
+    except ImportError as exc:
+        raise ValidationEnvironmentError(
+            "candidate environment package-name authority is unavailable"
+        ) from exc
+    observed: dict[str, str] = {}
+    for distribution in distributions:
+        raw_name = distribution.get("canonical_name") or distribution.get("name")
+        raw_version = distribution.get("version")
+        if (
+            not isinstance(raw_name, str)
+            or not raw_name.strip()
+            or not isinstance(raw_version, str)
+            or not raw_version.strip()
+        ):
+            raise ValidationEnvironmentError(
+                "candidate environment distribution identity is invalid"
+            )
+        name = canonicalize_name(raw_name.strip())
+        version = raw_version.strip()
+        previous = observed.get(name)
+        if previous is not None and previous != version:
+            raise ValidationEnvironmentError(
+                "candidate environment contains conflicting distribution versions"
+            )
+        observed[name] = version
+    payload = {
+        "schema_version": "colameta.installed_distribution_set.v1",
+        "distributions": [
+            {"name": name, "version": observed[name]}
+            for name in sorted(observed)
+        ],
+    }
+    return payload, _canonical_json_sha256(payload)
+
+
+def canonical_environment_identity(
+    *,
+    executable_sha256: str,
+    python_implementation: str,
+    python_version: str,
+    python_cache_tag: str,
+    package_set_sha256: str,
+) -> tuple[dict[str, str], str]:
+    """Return the closed identity for one materialized Candidate environment."""
+
+    fields = {
+        "executable_sha256": executable_sha256,
+        "python_implementation": python_implementation,
+        "python_version": python_version,
+        "python_cache_tag": python_cache_tag,
+        "package_set_sha256": package_set_sha256,
+    }
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in fields.values()
+    ):
+        raise ValidationEnvironmentError(
+            "candidate environment identity is incomplete"
+        )
+    return fields, _canonical_json_sha256(fields)
+
+
+def _probe_installed_environment_identity(
+    *,
+    python_executable: Path,
+    validation_venv: Path,
+    candidate_root: Path,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Measure Python and installed distributions using the target venv itself."""
+
+    probe = r'''
+import importlib.metadata
+import json
+import os
+import platform
+import sys
+
+from packaging.utils import canonicalize_name
+
+venv_root = os.path.realpath(sys.argv[1])
+
+def within(path, root):
+    try:
+        return os.path.commonpath([os.path.realpath(path), root]) == root
+    except (TypeError, ValueError):
+        return False
+
+distributions = []
+for distribution in importlib.metadata.distributions():
+    metadata_path = getattr(distribution, "_path", None)
+    if metadata_path is None or not within(metadata_path, venv_root):
+        raise RuntimeError("distribution metadata escaped validation venv")
+    name = distribution.metadata.get("Name")
+    version = distribution.version
+    if not isinstance(name, str) or not name.strip() or not isinstance(version, str) or not version.strip():
+        raise RuntimeError("distribution metadata identity is incomplete")
+    distributions.append({
+        "canonical_name": canonicalize_name(name),
+        "version": version,
+    })
+
+print(json.dumps({
+    "python": {
+        "implementation": platform.python_implementation(),
+        "version": platform.python_version(),
+        "cache_tag": sys.implementation.cache_tag,
+        "executable": sys.executable,
+    },
+    "packages": {"distributions": distributions},
+}, sort_keys=True))
+'''
+    try:
+        completed = subprocess.run(
+            [str(python_executable), "-I", "-B", "-c", probe, str(validation_venv)],
+            cwd=candidate_root,
+            env=dict(environment),
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+            timeout=60,
+        )
+        payload = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationEnvironmentError(
+            "candidate environment identity probe failed"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValidationEnvironmentError(
+            "candidate environment identity probe failed"
+        )
+    python_payload = payload.get("python")
+    packages_payload = payload.get("packages")
+    if not isinstance(python_payload, dict) or not isinstance(packages_payload, dict):
+        raise ValidationEnvironmentError(
+            "candidate environment identity probe is incomplete"
+        )
+    executable = python_payload.get("executable")
+    if (
+        not isinstance(executable, str)
+        or _real_path(Path(executable)) != _real_path(python_executable)
+    ):
+        raise ValidationEnvironmentError(
+            "candidate environment executable identity mismatch"
+        )
+    distributions = packages_payload.get("distributions")
+    if not isinstance(distributions, list) or not all(
+        isinstance(item, dict) for item in distributions
+    ):
+        raise ValidationEnvironmentError(
+            "candidate environment distribution set is invalid"
+        )
+    package_set, package_set_sha256 = canonical_installed_distribution_set(
+        distributions
+    )
+    environment_identity, environment_identity_sha256 = canonical_environment_identity(
+        executable_sha256=_sha256_file(python_executable),
+        python_implementation=python_payload.get("implementation"),
+        python_version=python_payload.get("version"),
+        python_cache_tag=python_payload.get("cache_tag"),
+        package_set_sha256=package_set_sha256,
+    )
+    return {
+        **environment_identity,
+        "package_set": package_set,
+        "distribution_count": len(package_set["distributions"]),
+        "environment_identity_sha256": environment_identity_sha256,
+    }
+
+
 def prepare_validation_environment(
     *,
     candidate_root: Path,
@@ -1109,6 +1302,7 @@ def prepare_validation_environment(
             *,
             label: str,
             command_environment: Mapping[str, str],
+            timeout_seconds: int = 300,
         ) -> None:
             command = [str(python_executable), "-m", "pip", *arguments]
             pip_commands.append(command)
@@ -1116,7 +1310,7 @@ def prepare_validation_environment(
                 command,
                 cwd=candidate,
                 environment=command_environment,
-                timeout_seconds=300,
+                timeout_seconds=timeout_seconds,
                 label=label,
             )
 
@@ -1175,6 +1369,7 @@ def prepare_validation_environment(
             ],
             label="candidate validation tool installation",
             command_environment=environment,
+            timeout_seconds=_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS,
         )
         candidate_wheel: Path | None = None
         if distribution_name:
@@ -1316,6 +1511,40 @@ def prepare_validation_environment(
                 for command in pip_commands
             ),
         }
+        environment_identity = _probe_installed_environment_identity(
+            python_executable=python_executable,
+            validation_venv=venv_dir,
+            candidate_root=candidate,
+            environment=environment,
+        )
+        provenance.update(
+            {
+                "python_implementation": environment_identity[
+                    "python_implementation"
+                ],
+                "python_version": environment_identity["python_version"],
+                "python_cache_tag": environment_identity["python_cache_tag"],
+                "package_set_sha256": environment_identity[
+                    "package_set_sha256"
+                ],
+                "distribution_count": environment_identity[
+                    "distribution_count"
+                ],
+                "environment_identity_sha256": environment_identity[
+                    "environment_identity_sha256"
+                ],
+                "environment_identity": {
+                    key: environment_identity[key]
+                    for key in (
+                        "executable_sha256",
+                        "python_implementation",
+                        "python_version",
+                        "python_cache_tag",
+                        "package_set_sha256",
+                    )
+                },
+            }
+        )
     else:
         provenance = {
             "candidate_package_expected": False,

@@ -35,6 +35,29 @@ from runtime_artifact_helpers import prepare_exact_runtime_artifacts
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _overlay_candidate_source_binding_policy(
+    source_repo: Path,
+    candidate_clone: Path,
+) -> tuple[str, str]:
+    """Overlay only the current Source Binding policy into a candidate fixture."""
+
+    relative_path = Path("runner/work_item_governance/source_binding.py")
+    source = source_repo / relative_path
+    destination = candidate_clone / relative_path
+    source_stat = source.lstat()
+    destination_stat = destination.lstat()
+    assert source.is_file() and not source.is_symlink()
+    assert destination.is_file() and not destination.is_symlink()
+    assert source_stat.st_size > 0
+    assert destination_stat.st_size > 0
+
+    source_sha256 = sha256_file(source)
+    shutil.copyfile(source, destination)
+    destination_sha256 = sha256_file(destination)
+    assert source_sha256 == destination_sha256
+    return source_sha256, destination_sha256
+
+
 def _prepare_candidate_artifacts(*, canary_root: Path) -> tuple[Path, Path, dict[str, str]]:
     return prepare_exact_runtime_artifacts(
         canary_root=canary_root,
@@ -76,6 +99,11 @@ def test_candidate_fixture_binds_worktree_metadata_not_committed_head(tmp_path: 
         "committed metadata fixture",
     )
     (candidate_root / "pyproject.toml").write_text(current_metadata, encoding="utf-8")
+    source_binding_sha256, overlaid_source_binding_sha256 = _overlay_candidate_source_binding_policy(
+        REPOSITORY_ROOT,
+        candidate_root,
+    )
+    assert source_binding_sha256 == overlaid_source_binding_sha256
 
     checkout, wheel, _binding = prepare_exact_runtime_artifacts(
         canary_root=tmp_path / "artifacts",
@@ -92,9 +120,10 @@ def test_candidate_fixture_binds_worktree_metadata_not_committed_head(tmp_path: 
         stderr=subprocess.PIPE,
     ).stdout
 
-    assert candidate_sha == "dd3e13b56f986810892d2d764751afc54374ca6397d057778b4fd5acca300fd4"
+    assert candidate_sha == "fa6ecb1afe688fa1c3253fe29297ea34123f92d64f565d5923c933f8ee682cb3"
     assert sha256_file(checkout / "pyproject.toml") == candidate_sha
     assert sha256_file(checkout / "pyproject.toml") != hashlib.sha256(head_metadata).hexdigest()
+    assert sha256_file(checkout / "runner/work_item_governance/source_binding.py") == source_binding_sha256
     with zipfile.ZipFile(wheel) as archive:
         metadata = archive.read("colameta-0.1.2.dist-info/METADATA")
     assert b"Requires-Dist: cryptography<51,>=50.0.0\n" in metadata

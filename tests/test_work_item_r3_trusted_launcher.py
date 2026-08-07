@@ -3,10 +3,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import sys
+import sysconfig
 
 import pytest
 
 from scripts import work_item_r3_trusted_launcher as launcher
+
+
+def _venv_purelib(venv: Path) -> Path:
+    if os.name == "nt":
+        return venv / "Lib" / "site-packages"
+    return Path(
+        sysconfig.get_path(
+            "purelib",
+            vars={"base": str(venv), "platbase": str(venv)},
+        )
+    )
 
 
 def _clean_checkout(root: Path) -> Path:
@@ -80,7 +93,7 @@ def test_preimport_environment_measure_rejects_bytecode_and_special_entries(
     tmp_path: Path,
 ) -> None:
     venv = tmp_path / ".venv"
-    site_packages = venv / "lib" / "python3.12" / "site-packages"
+    site_packages = _venv_purelib(venv)
     site_packages.mkdir(parents=True)
     (venv / "bin").mkdir()
     (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
@@ -103,7 +116,7 @@ def test_worktree_launcher_path_is_never_a_trusted_entrypoint(tmp_path: Path) ->
     project = Path(__file__).resolve().parents[1]
     completed = subprocess.run(
         [
-            "/usr/bin/python3.12",
+            sys.executable,
             "-I",
             "-S",
             "-B",

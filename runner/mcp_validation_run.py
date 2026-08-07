@@ -33,6 +33,7 @@ from runner.toolchain_environment import (
     ValidationEnvironment,
     ValidationEnvironmentError,
     build_validation_subprocess_environment,
+    canonical_environment_identity,
     command_uses_python,
     materialize_frozen_toolchain_environment,
     materialize_trusted_source_venv,
@@ -54,6 +55,7 @@ from runner.work_item_governance.toolchain_binding import (
 PREVIEW_TTL_SECONDS = 3600
 PREVIEWS_DIR = os.path.join("runtime", "validation-run-previews")
 RUNS_DIR = os.path.join("runtime", "validation-runs")
+RUN_ARTIFACTS_DIR = os.path.join("runtime", "validation-run-artifacts")
 MAX_TARGET_FILES = 50
 MAX_COMMANDS = 50
 MAX_STDOUT_CHARS = 8000
@@ -64,6 +66,16 @@ MIN_TIMEOUT_SECONDS = 10
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_TIMEOUT_SECONDS = 300
 VALIDATION_RUN_RESULT_SCHEMA_VERSION = "colameta.validation_run_result.v1"
+VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION = (
+    "colameta.validation_candidate_identity.v1"
+)
+VALIDATION_CANDIDATE_PROJECTION_SCHEMA_VERSION = (
+    "colameta.validation_candidate_projection.v1"
+)
+VALIDATION_EXTERNAL_EVIDENCE_SCHEMA_VERSION = (
+    "colameta.validation_external_evidence.v1"
+)
+VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION = 2
 P1_VALIDATION_MAX_AGE_SECONDS = 24 * 60 * 60
 SHELL_META_PATTERNS = ("&&", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
 DANGEROUS_EXECUTABLES = {"rm", "sudo", "su", "chmod", "chown", "curl", "wget", "ssh", "scp", "rsync", "docker", "podman", "kubectl", "terraform"}
@@ -107,16 +119,23 @@ _RUN_RESULT_FIELDS = frozenset(
         "duration_seconds",
         "manifest_validation",
         "candidate_identity",
+        "candidate_projection",
+        "external_evidence_binding",
         "validation_selection",
         "validation_lanes",
         "aggregate",
     }
 )
 _TERMINAL_RUN_RESULT_FIELDS = _RUN_RESULT_FIELDS | {"validation_result_sha256"}
+_INTERNAL_EVIDENCE_TERMINAL_FIELDS = _TERMINAL_RUN_RESULT_FIELDS - {
+    "external_evidence_binding"
+}
 _LEGACY_TERMINAL_FIELDS = (
     _TERMINAL_RUN_RESULT_FIELDS
     - {
         "candidate_identity",
+        "candidate_projection",
+        "external_evidence_binding",
         "validation_selection",
         "validation_lanes",
         "aggregate",
@@ -124,6 +143,8 @@ _LEGACY_TERMINAL_FIELDS = (
 )
 _LEGACY_RUNNING_FIELDS = _RUN_RESULT_FIELDS - {
     "candidate_identity",
+    "candidate_projection",
+    "external_evidence_binding",
     "validation_selection",
     "validation_lanes",
     "aggregate",
@@ -154,6 +175,8 @@ _LEGACY_TERMINAL_OPTIONAL_FIELDS = frozenset(
         "command_count",
         "manifest_validation",
         "candidate_identity",
+        "candidate_projection",
+        "external_evidence_binding",
         "validation_selection",
         "validation_lanes",
         "aggregate",
@@ -343,6 +366,10 @@ class MCPValidationRunManager:
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self._previews_root = resolve_project_runner_path(self.project_root, PREVIEWS_DIR)
         self._runs_root = resolve_project_runner_path(self.project_root, RUNS_DIR)
+        self._run_artifacts_root = resolve_project_runner_path(
+            self.project_root,
+            RUN_ARTIFACTS_DIR,
+        )
         self._path_policy = RunnerPathPolicy()
 
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -426,10 +453,15 @@ class MCPValidationRunManager:
         now = _utc_now()
         preview_id = uuid.uuid4().hex[:12]
         current_head = self._git_stdout(["rev-parse", "HEAD"]).strip()
+        candidate_snapshot = self._create_candidate_source_snapshot(
+            preview_id,
+            candidate_source_bindings,
+        )
         candidate_identity = self._candidate_identity(
             current_head,
             candidate_source_bindings,
-            binding_scope="full_allowed_worktree_delta",
+            binding_scope="exact_worktree_overlay",
+            candidate_delta_mode="exact_worktree_overlay",
         )
         validation_selection = self._validation_selection(
             scope,
@@ -448,8 +480,9 @@ class MCPValidationRunManager:
             "commands": commands,
             "command_specs": command_specs,
             "candidate_source_bindings": candidate_source_bindings,
-            "candidate_delta_mode": "full_allowed_worktree_delta",
+            "candidate_delta_mode": "exact_worktree_overlay",
             "candidate_identity": candidate_identity,
+            "candidate_snapshot": candidate_snapshot,
             "validation_selection": validation_selection,
             "validation_lanes": lane_assignments,
             "current_head": current_head,
@@ -472,6 +505,9 @@ class MCPValidationRunManager:
             "command_summary": self._command_summary(commands),
             "command_count": len(commands),
             "candidate_identity": candidate_identity,
+            "candidate_projection": self._candidate_projection_preview(
+                artifact
+            ),
             "validation_selection": validation_selection,
             "validation_lanes": lane_assignments,
             "can_run": can_run,
@@ -730,7 +766,7 @@ class MCPValidationRunManager:
         if not self._verify_candidate_source_bindings(artifact):
             delta_incomplete = (
                 artifact.get("candidate_delta_mode")
-                == "full_allowed_worktree_delta"
+                in {"exact_worktree_overlay", "full_allowed_worktree_delta"}
             )
             return {
                 "ok": False,
@@ -749,11 +785,37 @@ class MCPValidationRunManager:
 
         started_at = _utc_now()
         run_id = f"validation_run_{started_at.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        run_record = self._initial_run_record(run_id, preview_id, artifact, commands, started_at)
+        try:
+            evidence_root = self._prepare_run_evidence(
+                run_id,
+                preview_id,
+                artifact,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return {
+                "ok": False,
+                "action": "run",
+                "error_code": "VALIDATION_CANDIDATE_ARTIFACT_PREPARATION_FAILED",
+                "message": "候选验证证据目录无法安全封印，拒绝启动。",
+            }
+        run_record = self._initial_run_record(
+            run_id,
+            preview_id,
+            artifact,
+            commands,
+            started_at,
+        )
         run_file = self._write_run_result(run_id, run_record)
         worker = threading.Thread(
             target=self._execute_run_worker_safe,
-            args=(run_id, preview_id, artifact, command_specs, commands, started_at),
+            args=(
+                run_id,
+                preview_id,
+                artifact,
+                command_specs,
+                commands,
+                started_at,
+            ),
             name=f"validation-run-{run_id}",
             daemon=True,
         )
@@ -773,6 +835,8 @@ class MCPValidationRunManager:
             "command_summary": self._command_summary(commands),
             "command_count": len(commands),
             "candidate_identity": artifact.get("candidate_identity"),
+            "candidate_projection": self._candidate_projection_preview(artifact),
+            "external_evidence_binding": None,
             "validation_selection": artifact.get("validation_selection"),
             "validation_lanes": list(lane_assignments),
             "run_file": run_file,
@@ -856,15 +920,30 @@ class MCPValidationRunManager:
         identity = artifact.get("candidate_identity")
         selection = artifact.get("validation_selection")
         bindings = self._source_bindings_for_artifact(artifact)
+        trusted_bindings = [
+            {
+                "path": binding.get("path"),
+                "present": binding.get("present"),
+                "sha256": binding.get("sha256"),
+            }
+            for binding in bindings
+            if isinstance(binding, dict)
+        ]
         if not isinstance(identity, dict) or not isinstance(selection, dict):
             raise ValidationEnvironmentError("trusted launcher candidate binding is unavailable")
-        if identity.get("source_binding_scope") != "full_allowed_worktree_delta":
+        if identity.get("source_binding_scope") not in {
+            "exact_worktree_overlay",
+            "full_allowed_worktree_delta",
+        }:
             raise ValidationEnvironmentError("trusted launcher requires a full candidate delta")
-        binding_digest = canonical_manifest_validation_sha256(bindings)
+        binding_digest = canonical_manifest_validation_sha256(trusted_bindings)
         if (
-            identity.get("source_binding_sha256") != binding_digest
-            or identity.get("worktree_delta_sha256") != binding_digest
+            not trusted_bindings
             or identity.get("source_binding_count") != len(bindings)
+            or canonical_manifest_validation_sha256(bindings)
+            != identity.get("source_binding_sha256")
+            or identity.get("worktree_delta_sha256")
+            != identity.get("source_binding_sha256")
         ):
             raise ValidationEnvironmentError("trusted launcher candidate digest binding mismatch")
         launcher = candidate_root / _TRUSTED_LAUNCHER_RELATIVE_PATH
@@ -888,16 +967,20 @@ class MCPValidationRunManager:
             raise ValidationEnvironmentError("trusted launcher toolchain binding is incomplete")
         if cryptography_version != "50.0.0":
             raise ValidationEnvironmentError("trusted launcher cryptography binding mismatch")
+        # The trusted-launcher receipt is an existing Host Frozen interface.
+        # Keep its historical scope label stable while the enclosing Candidate
+        # identity uses the stricter exact_worktree_overlay contract.
+        trusted_launcher_scope = "full_allowed_worktree_delta"
         receipt = {
             "schema_version": "colameta.trusted_launcher_binding.v1",
             "candidate": {
                 "head": identity.get("head"),
                 "root": candidate_root.resolve().as_posix(),
-                "worktree_delta_sha256": identity["worktree_delta_sha256"],
-                "source_binding_sha256": identity["source_binding_sha256"],
-                "source_binding_count": identity["source_binding_count"],
-                "source_binding_scope": identity["source_binding_scope"],
-                "source_bindings": bindings,
+                "worktree_delta_sha256": binding_digest,
+                "source_binding_sha256": binding_digest,
+                "source_binding_count": len(trusted_bindings),
+                "source_binding_scope": trusted_launcher_scope,
+                "source_bindings": trusted_bindings,
             },
             "toolchain": {
                 "project_root": Path(toolchain_project_root).resolve().as_posix(),
@@ -1539,6 +1622,10 @@ print(json.dumps(payload, sort_keys=True))
         commands: list[list[str]],
         started_at: datetime,
     ) -> None:
+        artifact = dict(artifact)
+        evidence_root = self._run_evidence_root(run_id)
+        if not self._governed_evidence_root_is_valid(run_id, evidence_root):
+            return
         try:
             self._execute_run_worker(run_id, preview_id, artifact, command_specs, commands, started_at)
         except Exception as exc:
@@ -1605,6 +1692,18 @@ print(json.dumps(payload, sort_keys=True))
                 candidate_module_provenance=None,
                 host_preflight=None,
             )
+            projection = self._candidate_projection_for_execution(
+                artifact,
+                candidate_root=None,
+                validation_environment=None,
+                evidence_root=evidence_root,
+                command_artifact_count=1,
+                phase="failed_before_candidate_execution",
+            )
+            command_artifacts = self._write_command_artifacts(
+                evidence_root,
+                [failed_result],
+            )
             run_record = {
                 **self._initial_run_record(run_id, preview_id, artifact, commands, started_at),
                 "status": "failed",
@@ -1613,12 +1712,19 @@ print(json.dumps(payload, sort_keys=True))
                 "failed_command_indexes": [0],
                 "failed_command_index": 0,
                 "output_summary": {"total_output_chars": len(stderr), "redacted": True, "truncated": False},
+                "candidate_projection": projection,
                 "completed_at": _iso(completed_at),
                 "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
                 "validation_lanes": validation_lanes,
                 "aggregate": aggregate,
             }
-            self._write_terminal_run_result(run_id, run_record)
+            self._finalize_terminal_evidence(
+                run_id=run_id,
+                evidence_root=evidence_root,
+                artifact=artifact,
+                run_record=run_record,
+                command_artifacts=command_artifacts,
+            )
 
     def _execute_run_worker(
         self,
@@ -1641,6 +1747,7 @@ print(json.dumps(payload, sort_keys=True))
         source_after_by_lane: dict[str, dict[str, Any] | None] = {}
         cleanup_complete = True
         manifest_candidate_head: str | None = None
+        manifest_execution_head: str | None = None
         validation_environment: ValidationEnvironment | None = None
         validation_context_token = None
         host_environment: dict[str, str] | None = None
@@ -1650,13 +1757,31 @@ print(json.dumps(payload, sort_keys=True))
         trusted_launcher_binding_receipt: dict[str, Any] | None = None
         trusted_launcher_binding_path: Path | None = None
         execution_overlays_removed: dict[str, bool] = {}
+        evidence_root = self._run_evidence_root(run_id)
+        if not self._governed_evidence_root_is_valid(run_id, evidence_root):
+            raise RuntimeError("governed validation evidence root is invalid")
+        snapshot_bytes: dict[str, bytes | None] | None = None
+        candidate_projection = self._candidate_projection_preview(artifact)
         try:
             manifest_candidate_head = self._bound_candidate_head(artifact)
+            if artifact.get("scope") == "manifest_bound":
+                manifest_execution_head = self._manifest_candidate_head(artifact)
             if manifest_candidate_head is not None:
                 source_bindings = self._source_bindings_for_artifact(artifact)
                 binding_kind = str(
                     artifact.get("candidate_delta_mode") or "source_files"
                 )
+                if binding_kind == "exact_worktree_overlay":
+                    snapshot = artifact.get("candidate_snapshot")
+                    if not isinstance(snapshot, dict):
+                        raise ValidationEnvironmentError(
+                            "candidate source snapshot is unavailable"
+                        )
+                    snapshot_bytes = self._read_candidate_source_snapshot(
+                        preview_id,
+                        snapshot,
+                        source_bindings,
+                    )
                 required_lanes = {
                     lane
                     for lane in lane_assignments
@@ -1674,6 +1799,7 @@ print(json.dumps(payload, sort_keys=True))
                             checkout,
                             source_bindings,
                             binding_kind=binding_kind,
+                            snapshot_bytes=snapshot_bytes,
                         )
                     )
                 isolated_checkout = lane_checkouts.get(_CANDIDATE_LANE) or lane_checkouts.get(
@@ -1772,6 +1898,7 @@ print(json.dumps(payload, sort_keys=True))
                                     or "source_files"
                                 )
                             ),
+                            snapshot_bytes=snapshot_bytes,
                         )
                     )
                     host_preflight = self._host_frozen_preflight(
@@ -1844,6 +1971,18 @@ print(json.dumps(payload, sort_keys=True))
                                 binding_receipt_path=trusted_launcher_binding_path,
                             )
 
+            projection = self._candidate_projection_for_execution(
+                artifact,
+                candidate_root=(
+                    Path(isolated_checkout["root"])
+                    if isolated_checkout is not None
+                    else None
+                ),
+                validation_environment=validation_environment,
+                evidence_root=evidence_root,
+                command_artifact_count=0,
+            )
+
             for index, spec in enumerate(command_specs):
                 command = spec.get("argv") if isinstance(spec, dict) else None
                 lane = lane_assignments[index]
@@ -1906,10 +2045,10 @@ print(json.dumps(payload, sort_keys=True))
                     })
                     continue
                 effective_command = list(command)
-                if manifest_candidate_head is not None:
+                if manifest_execution_head is not None:
                     effective_command = self._manifest_execution_command(
                         effective_command,
-                        manifest_candidate_head,
+                        manifest_execution_head,
                     )
                 if lane == _HOST_FROZEN_LANE and command_uses_python(effective_command):
                     selected_python = (
@@ -1970,11 +2109,7 @@ print(json.dumps(payload, sort_keys=True))
                     )
                 else:
                     command_artifacts_root = (
-                        Path(lane_checkout["parent"]) / "command-artifacts"
-                        if lane_checkout is not None
-                        else Path(tempfile.gettempdir())
-                        / f"colameta-validation-{run_id}"
-                        / "command-artifacts"
+                        evidence_root / "command-artifacts"
                     )
                     result = self._run_candidate_command(
                         effective_command,
@@ -2310,6 +2445,24 @@ print(json.dumps(payload, sort_keys=True))
                 output_summary["candidate_source_overlay"] = dict(
                     overlay_summary
                 )
+        command_artifacts = self._write_command_artifacts(
+            evidence_root,
+            command_results,
+        )
+        command_artifact_count = len(command_artifacts)
+        projection["artifacts"]["command_artifact_count"] = command_artifact_count
+        projection["artifacts"]["retention_verified"] = (
+            evidence_root.is_dir()
+            and (evidence_root / "candidate-source-snapshot").is_dir()
+            and (evidence_root / "command-artifacts").is_dir()
+        )
+        projection["projection_payload_sha256"] = canonical_manifest_validation_sha256(
+            {
+                key: value
+                for key, value in projection.items()
+                if key != "projection_payload_sha256"
+            }
+        )
         run_record = {
             "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -2330,17 +2483,18 @@ print(json.dumps(payload, sort_keys=True))
             "started_at": _iso(started_at),
             "completed_at": _iso(completed_at),
             "duration_seconds": max(0.0, (completed_at - started_at).total_seconds()),
-            "manifest_validation": (
+                "manifest_validation": (
                 dict(artifact["manifest_validation"])
                 if isinstance(artifact.get("manifest_validation"), dict)
                 else None
-            ),
-            "candidate_identity": dict(
+                ),
+                "candidate_identity": dict(
                 artifact.get("candidate_identity")
                 if isinstance(artifact.get("candidate_identity"), dict)
                 else {}
-            ),
-            "validation_selection": dict(
+                ),
+                "candidate_projection": projection,
+                "validation_selection": dict(
                 artifact.get("validation_selection")
                 if isinstance(artifact.get("validation_selection"), dict)
                 else {}
@@ -2348,7 +2502,13 @@ print(json.dumps(payload, sort_keys=True))
             "validation_lanes": validation_lanes,
             "aggregate": aggregate,
         }
-        self._write_terminal_run_result(run_id, run_record)
+        self._finalize_terminal_evidence(
+            run_id=run_id,
+            evidence_root=evidence_root,
+            artifact=artifact,
+            run_record=run_record,
+            command_artifacts=command_artifacts,
+        )
 
     def _initial_run_record(
         self,
@@ -2388,6 +2548,8 @@ print(json.dumps(payload, sort_keys=True))
                 if isinstance(artifact.get("candidate_identity"), dict)
                 else {}
             ),
+            "candidate_projection": self._candidate_projection_preview(artifact),
+            "external_evidence_binding": None,
             "validation_selection": dict(
                 artifact.get("validation_selection")
                 if isinstance(artifact.get("validation_selection"), dict)
@@ -2425,6 +2587,36 @@ print(json.dumps(payload, sort_keys=True))
         response["integrity_classification"] = (
             "non_terminal" if data["status"] == "running" else "verified"
         )
+        external_binding = data.get("external_evidence_binding")
+        if data["status"] != "running" and isinstance(external_binding, dict):
+            response["external_evidence"] = {
+                "evidence_contract_version": 2,
+                "manifest_verified": True,
+                "projection_receipt_verified": True,
+                "source_snapshot_verified": True,
+                "terminal_result_verified": True,
+                "command_artifacts_verified": True,
+            }
+            execution_environment = data.get("candidate_projection", {}).get(
+                "execution_environment",
+                {},
+            )
+            response["execution_environment_identity"] = {
+                "python_version_present": bool(
+                    execution_environment.get("python_version")
+                ),
+                "package_set_sha256_present": bool(
+                    execution_environment.get("package_set_sha256")
+                ),
+                "environment_identity_sha256_present": bool(
+                    execution_environment.get("environment_identity_sha256")
+                ),
+            }
+        elif data["status"] != "running":
+            response["external_evidence"] = {
+                "evidence_contract_version": 1,
+                "verified": False,
+            }
         return response
 
     def verify_p1_result(
@@ -2860,20 +3052,844 @@ print(json.dumps(payload, sort_keys=True))
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def _candidate_snapshot_root(self, preview_id: str) -> Path:
+        return Path(self._previews_root) / preview_id / "candidate-source-snapshot"
+
+    @staticmethod
+    def _write_restricted_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary: Path | None = None
+        descriptor: int | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                dir=str(path.parent),
+            )
+            temporary = Path(temporary_name)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                descriptor = None
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _create_candidate_source_snapshot(
+        self,
+        preview_id: str,
+        bindings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist exact preview bytes before the asynchronous run begins."""
+
+        root = self._candidate_snapshot_root(preview_id)
+        if root.exists() or root.is_symlink():
+            raise RuntimeError("candidate preview snapshot path collision")
+        root.mkdir(parents=True, mode=0o700)
+        files_root = root / "files"
+        files_root.mkdir(mode=0o700)
+        snapshot_bindings: list[dict[str, Any]] = []
+        try:
+            project_root = Path(self.project_root).resolve()
+            for index, original in enumerate(bindings):
+                if not isinstance(original, dict):
+                    raise RuntimeError("candidate source binding is invalid")
+                relative = original.get("path")
+                normalized = (
+                    self._normalize_repo_relative_path(relative)
+                    if isinstance(relative, str)
+                    else None
+                )
+                present = original.get("present")
+                expected_sha256 = original.get("sha256")
+                if (
+                    normalized is None
+                    or not isinstance(present, bool)
+                    or (present and not isinstance(expected_sha256, str))
+                ):
+                    raise RuntimeError("candidate source binding is invalid")
+                source = project_root / normalized
+                if source.is_symlink() or (source.exists() and not source.is_file()):
+                    raise RuntimeError("candidate source binding escaped")
+                if source.is_file() != present:
+                    raise RuntimeError("candidate source binding changed")
+                entry = dict(original)
+                entry["path"] = normalized
+                if present:
+                    content = self._read_bound_source_bytes(source)
+                    measured = hashlib.sha256(content).hexdigest()
+                    if not hmac.compare_digest(measured, str(expected_sha256)):
+                        raise RuntimeError("candidate source binding changed")
+                    entry["size"] = len(content)
+                    entry["mode"] = stat.S_IMODE(source.stat().st_mode)
+                    entry["snapshot_file"] = f"files/{index:04d}.bin"
+                    destination = root / entry["snapshot_file"]
+                    descriptor: int | None = None
+                    temporary: Path | None = None
+                    try:
+                        descriptor, temporary_name = tempfile.mkstemp(
+                            prefix=f".{index:04d}.",
+                            dir=str(files_root),
+                        )
+                        temporary = Path(temporary_name)
+                        os.fchmod(descriptor, 0o600)
+                        with os.fdopen(descriptor, "wb") as handle:
+                            descriptor = None
+                            handle.write(content)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(temporary, destination)
+                        temporary = None
+                    finally:
+                        if descriptor is not None:
+                            os.close(descriptor)
+                        if temporary is not None:
+                            try:
+                                temporary.unlink()
+                            except FileNotFoundError:
+                                pass
+                else:
+                    entry["size"] = None
+                    entry["mode"] = None
+                    entry["snapshot_file"] = None
+                snapshot_bindings.append(entry)
+            manifest = {
+                "schema_version": VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION,
+                "bindings": snapshot_bindings,
+                "file_count": len(snapshot_bindings),
+            }
+            snapshot_sha256 = canonical_manifest_validation_sha256(manifest)
+            self._write_restricted_json(
+                root / "snapshot.json",
+                {**manifest, "snapshot_sha256": snapshot_sha256},
+            )
+            return {
+                "schema_version": VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION,
+                "relative_path": f"{preview_id}/candidate-source-snapshot",
+                "source_binding_count": len(snapshot_bindings),
+                "snapshot_sha256": snapshot_sha256,
+            }
+        except Exception:
+            shutil.rmtree(root.parent, ignore_errors=True)
+            raise
+
+    def _read_candidate_source_snapshot(
+        self,
+        preview_id: str,
+        snapshot: dict[str, Any],
+        bindings: list[dict[str, Any]],
+    ) -> dict[str, bytes | None]:
+        root = self._candidate_snapshot_root(preview_id)
+        manifest_path = root / "snapshot.json"
+        if (
+            not root.is_dir()
+            or root.is_symlink()
+            or manifest_path.is_symlink()
+            or not manifest_path.is_file()
+        ):
+            raise RuntimeError("candidate source snapshot is unavailable")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("candidate source snapshot is invalid") from exc
+        if not isinstance(manifest, dict):
+            raise RuntimeError("candidate source snapshot is invalid")
+        stored_digest = manifest.get("snapshot_sha256")
+        unsigned = {
+            key: value for key, value in manifest.items() if key != "snapshot_sha256"
+        }
+        snapshot_bindings = unsigned.get("bindings")
+        comparable_snapshot_bindings = (
+            [
+                {
+                    key: value
+                    for key, value in entry.items()
+                    if key != "snapshot_file"
+                }
+                for entry in snapshot_bindings
+                if isinstance(entry, dict)
+            ]
+            if isinstance(snapshot_bindings, list)
+            else None
+        )
+        if (
+            not isinstance(stored_digest, str)
+            or not hmac.compare_digest(
+                stored_digest,
+                canonical_manifest_validation_sha256(unsigned),
+            )
+            or snapshot.get("snapshot_sha256") != stored_digest
+            or comparable_snapshot_bindings != bindings
+            or unsigned.get("file_count") != len(bindings)
+        ):
+            raise RuntimeError("candidate source snapshot binding mismatch")
+        result: dict[str, bytes | None] = {}
+        if not isinstance(snapshot_bindings, list):
+            raise RuntimeError("candidate source snapshot bindings are invalid")
+        for entry in snapshot_bindings:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                raise RuntimeError("candidate source snapshot binding is invalid")
+            relative = entry["path"]
+            snapshot_file = entry.get("snapshot_file")
+            if entry.get("present") is False:
+                result[relative] = None
+                continue
+            if not isinstance(snapshot_file, str):
+                raise RuntimeError("candidate source snapshot file is invalid")
+            file_path = root / snapshot_file
+            resolved = Path(os.path.realpath(file_path))
+            if (
+                file_path.is_symlink()
+                or not file_path.is_file()
+                or os.path.commonpath([str(resolved), str(root)]) != str(root)
+            ):
+                raise RuntimeError("candidate source snapshot file escaped")
+            content = self._read_bound_source_bytes(file_path)
+            if hashlib.sha256(content).hexdigest() != entry.get("sha256"):
+                raise RuntimeError("candidate source snapshot bytes changed")
+            if entry.get("size") != len(content):
+                raise RuntimeError("candidate source snapshot size changed")
+            result[relative] = content
+        if set(result) != {item.get("path") for item in bindings}:
+            raise RuntimeError("candidate source snapshot file map changed")
+        return result
+
+    @staticmethod
+    def _candidate_projection_preview(artifact: dict[str, Any]) -> dict[str, Any]:
+        identity = artifact.get("candidate_identity")
+        snapshot = artifact.get("candidate_snapshot")
+        identity = identity if isinstance(identity, dict) else {}
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        snapshot_count = snapshot.get(
+            "source_binding_count", identity.get("source_binding_count")
+        )
+        projection = {
+            "schema_version": VALIDATION_CANDIDATE_PROJECTION_SCHEMA_VERSION,
+            "phase": "preview_bound",
+            "candidate_identity": {
+                "head": identity.get("head"),
+                "candidate_delta_mode": artifact.get("candidate_delta_mode"),
+                "candidate_delta_sha256": identity.get("candidate_delta_sha256"),
+                "source_binding_count": identity.get("source_binding_count"),
+                "pyproject_sha256": identity.get("pyproject_sha256"),
+            },
+            "source_snapshot": {
+                "source_binding_count": snapshot_count,
+                "snapshot_sha256": snapshot.get("snapshot_sha256"),
+            },
+            "candidate": {
+                "root_class": "not_started",
+                "file_map_sha256": None,
+                "status_sha256": None,
+                "overlay_file_count": identity.get("source_binding_count"),
+                "pyproject_sha256": identity.get("pyproject_sha256"),
+            },
+            "execution": {
+                "cwd_class": "exact_candidate_root",
+                "executable_path_class": None,
+                "executable_sha256": None,
+                "sys_prefix_class": None,
+            },
+            "execution_environment": {
+                "state": "pending_materialization",
+            },
+            "environment": {
+                "PYTHONPATH_present": False,
+                "PYTHONHOME_present": False,
+                "VIRTUAL_ENV_present": None,
+                "PYTHONUSERBASE_present": False,
+                "PYTHONPYCACHEPREFIX_present": False,
+                "user_site_enabled": None,
+                "candidate_pyproject_sha256": identity.get("pyproject_sha256"),
+                "materialized_after_candidate_overlay": False,
+                "stale_environment_reuse": None,
+            },
+            "artifacts": {
+                "root_class": "external_validation_artifact_root",
+                "source_snapshot_sha256": snapshot.get("snapshot_sha256"),
+                "command_artifact_count": 0,
+                "retention_verified": False,
+            },
+            "projection_payload_sha256": None,
+        }
+        projection["projection_payload_sha256"] = (
+            canonical_manifest_validation_sha256(
+                {
+                    key: value
+                    for key, value in projection.items()
+                    if key != "projection_payload_sha256"
+                }
+            )
+        )
+        return projection
+
+    def _run_evidence_root(self, run_id: str) -> Path:
+        normalized = self._validate_run_id(run_id)
+        if normalized is None or normalized != run_id:
+            raise ValueError("validation evidence bundle id is invalid")
+        return Path(self._run_artifacts_root) / normalized
+
+    def _governed_evidence_root_is_valid(
+        self,
+        run_id: str,
+        evidence_root: Path,
+    ) -> bool:
+        try:
+            governed_root = Path(self._run_artifacts_root)
+            expected = governed_root / run_id
+            return (
+                self._validate_run_id(run_id) == run_id
+                and not governed_root.is_symlink()
+                and governed_root.is_dir()
+                and evidence_root == expected
+                and not evidence_root.is_symlink()
+                and evidence_root.is_dir()
+                and os.path.commonpath(
+                    [os.path.realpath(evidence_root), os.path.realpath(governed_root)]
+                )
+                == os.path.realpath(governed_root)
+            )
+        except (OSError, ValueError):
+            return False
+
+    def _prepare_run_evidence(
+        self,
+        run_id: str,
+        preview_id: str,
+        artifact: dict[str, Any],
+    ) -> Path:
+        """Create the external, retained evidence root before execution."""
+
+        artifacts_root = Path(self._run_artifacts_root)
+        artifacts_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if artifacts_root.is_symlink():
+            raise RuntimeError("validation artifact root cannot be a symlink")
+        os.chmod(artifacts_root, 0o700)
+        root = self._run_evidence_root(run_id)
+        if root.exists() or root.is_symlink():
+            raise RuntimeError("validation evidence bundle already exists")
+        root.mkdir(mode=0o700)
+        os.chmod(root, 0o700)
+        (root / "command-artifacts").mkdir(mode=0o700)
+        source_snapshot = self._candidate_snapshot_root(preview_id)
+        retained_snapshot = root / "candidate-source-snapshot"
+        if source_snapshot.is_dir() and not source_snapshot.is_symlink():
+            shutil.copytree(
+                source_snapshot,
+                retained_snapshot,
+                symlinks=False,
+                copy_function=shutil.copy2,
+            )
+            for path in retained_snapshot.rglob("*"):
+                if path.is_symlink():
+                    raise RuntimeError("candidate snapshot contains a symlink")
+                if path.is_file():
+                    os.chmod(path, 0o600)
+                elif path.is_dir():
+                    os.chmod(path, 0o700)
+        else:
+            retained_snapshot.mkdir(mode=0o700)
+            files_root = retained_snapshot / "files"
+            files_root.mkdir(mode=0o700)
+            snapshot_bindings: list[dict[str, Any]] = []
+            project_root = Path(self.project_root).resolve()
+            for index, binding in enumerate(
+                self._source_bindings_for_artifact(artifact)
+            ):
+                if not isinstance(binding, dict):
+                    raise RuntimeError("manifest source binding is invalid")
+                relative = binding.get("path")
+                normalized = (
+                    self._normalize_repo_relative_path(relative)
+                    if isinstance(relative, str)
+                    else None
+                )
+                present = binding.get("present")
+                expected_sha256 = binding.get("sha256")
+                if (
+                    normalized is None
+                    or not isinstance(present, bool)
+                    or (present and not isinstance(expected_sha256, str))
+                ):
+                    raise RuntimeError("manifest source binding is invalid")
+                entry = dict(binding)
+                entry["path"] = normalized
+                source = project_root / normalized
+                if present:
+                    if source.is_symlink() or not source.is_file():
+                        raise RuntimeError("manifest source binding is unavailable")
+                    content = self._read_bound_source_bytes(source)
+                    if hashlib.sha256(content).hexdigest() != expected_sha256:
+                        raise RuntimeError("manifest source binding changed")
+                    entry["size"] = len(content)
+                    entry["mode"] = stat.S_IMODE(source.stat().st_mode)
+                    entry["snapshot_file"] = f"files/{index:04d}.bin"
+                    destination = retained_snapshot / entry["snapshot_file"]
+                    descriptor = os.open(
+                        destination,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    with os.fdopen(descriptor, "wb") as handle:
+                        handle.write(content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                else:
+                    entry["size"] = None
+                    entry["mode"] = None
+                    entry["snapshot_file"] = None
+                snapshot_bindings.append(entry)
+            unsigned_snapshot = {
+                "schema_version": VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION,
+                "bindings": snapshot_bindings,
+                "file_count": len(snapshot_bindings),
+            }
+            self._write_restricted_json(
+                retained_snapshot / "snapshot.json",
+                {
+                    **unsigned_snapshot,
+                    "snapshot_sha256": canonical_manifest_validation_sha256(
+                        unsigned_snapshot
+                    ),
+                },
+            )
+        return root
+
+    @staticmethod
+    def _candidate_file_map(
+        candidate_root: Path,
+        bindings: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], str]:
+        file_map: list[dict[str, Any]] = []
+        root = candidate_root.resolve()
+        for binding in bindings:
+            relative = binding.get("path") if isinstance(binding, dict) else None
+            present = binding.get("present") if isinstance(binding, dict) else None
+            if not isinstance(relative, str) or not isinstance(present, bool):
+                raise RuntimeError("candidate file map binding is invalid")
+            destination = root / relative
+            resolved = Path(os.path.realpath(destination))
+            if os.path.commonpath([str(resolved), str(root)]) != str(root):
+                raise RuntimeError("candidate file map escaped")
+            actual_present = destination.is_file() and not destination.is_symlink()
+            if actual_present != present:
+                raise RuntimeError("candidate file map presence mismatch")
+            if actual_present:
+                content = MCPValidationRunManager._read_bound_source_bytes(destination)
+                mode = stat.S_IMODE(destination.stat().st_mode)
+                file_map.append(
+                    {
+                        "path": relative,
+                        "present": True,
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "size": len(content),
+                        "mode": mode,
+                    }
+                )
+            else:
+                file_map.append(
+                    {
+                        "path": relative,
+                        "present": False,
+                        "sha256": None,
+                        "size": None,
+                        "mode": None,
+                    }
+                )
+        return file_map, canonical_manifest_validation_sha256(file_map)
+
+    def _candidate_projection_for_execution(
+        self,
+        artifact: dict[str, Any],
+        *,
+        candidate_root: Path | None,
+        validation_environment: ValidationEnvironment | None,
+        evidence_root: Path,
+        command_artifact_count: int,
+        phase: str = "executed",
+    ) -> dict[str, Any]:
+        projection = self._candidate_projection_preview(artifact)
+        identity = artifact.get("candidate_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        bindings = self._source_bindings_for_artifact(artifact)
+        candidate_payload = projection["candidate"]
+        if candidate_root is not None:
+            file_map, file_map_sha256 = self._candidate_file_map(
+                candidate_root,
+                bindings,
+            )
+            candidate_payload.update(
+                {
+                    "root_class": "isolated_detached_worktree",
+                    "file_map_sha256": file_map_sha256,
+                    "status_sha256": canonical_manifest_validation_sha256(
+                        self._capture_checkout_snapshot(candidate_root)
+                    ),
+                    "overlay_file_count": len(file_map),
+                    "pyproject_sha256": next(
+                        (
+                            item.get("sha256")
+                            for item in file_map
+                            if item.get("path") == "pyproject.toml"
+                            and item.get("present") is True
+                        ),
+                        identity.get("pyproject_sha256"),
+                    ),
+                }
+            )
+        execution = projection["execution"]
+        environment = projection["environment"]
+        if validation_environment is not None:
+            python_path = validation_environment.python_executable
+            execution.update(
+                {
+                    "executable_path_class": "candidate_validation_venv_python",
+                    "executable_sha256": (
+                        self._sha256_file(python_path)
+                        if isinstance(python_path, Path) and python_path.is_file()
+                        else None
+                    ),
+                    "sys_prefix_class": "candidate_validation_venv",
+                }
+            )
+            environment_identity = validation_environment.summary.get(
+                "environment_identity"
+            )
+            environment_identity = (
+                dict(environment_identity)
+                if isinstance(environment_identity, dict)
+                else {}
+            )
+            projection["execution_environment"] = {
+                "state": "materialized",
+                "python_implementation": validation_environment.summary.get(
+                    "python_implementation"
+                ),
+                "python_version": validation_environment.summary.get(
+                    "python_version"
+                ),
+                "python_cache_tag": validation_environment.summary.get(
+                    "python_cache_tag"
+                ),
+                "package_set_sha256": validation_environment.summary.get(
+                    "package_set_sha256"
+                ),
+                "environment_identity_sha256": (
+                    validation_environment.summary.get(
+                        "environment_identity_sha256"
+                    )
+                ),
+                "executable_sha256": environment_identity.get(
+                    "executable_sha256"
+                ),
+            }
+            if not isinstance(python_path, Path):
+                projection["execution_environment"] = {
+                    "state": "not_required_non_python_commands"
+                }
+            child_environment = validation_environment.env
+            for key in (
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "VIRTUAL_ENV",
+                "PYTHONUSERBASE",
+                "PYTHONPYCACHEPREFIX",
+            ):
+                environment[f"{key}_present"] = key in child_environment
+            environment["user_site_enabled"] = (
+                child_environment.get("PYTHONNOUSERSITE") != "1"
+            )
+            environment["candidate_pyproject_sha256"] = identity.get(
+                "pyproject_sha256"
+            )
+            environment["materialized_after_candidate_overlay"] = True
+            environment["stale_environment_reuse"] = False
+        artifacts = projection["artifacts"]
+        snapshot = artifact.get("candidate_snapshot")
+        artifacts.update(
+            {
+                "root_class": "external_validation_artifact_root",
+                "source_snapshot_sha256": (
+                    snapshot.get("snapshot_sha256")
+                    if isinstance(snapshot, dict)
+                    else None
+                ),
+                "command_artifact_count": command_artifact_count,
+                "retention_verified": evidence_root.is_dir(),
+            }
+        )
+        projection["phase"] = phase
+        if validation_environment is None:
+            projection["execution_environment"] = {
+                "state": (
+                    "not_materialized_due_to_failure"
+                    if phase == "failed_before_candidate_execution"
+                    else "not_required_non_python_commands"
+                )
+            }
+        projection["projection_payload_sha256"] = canonical_manifest_validation_sha256(
+            {key: value for key, value in projection.items() if key != "projection_payload_sha256"}
+        )
+        return projection
+
+    def _write_projection_receipt(
+        self,
+        evidence_root: Path,
+        projection: dict[str, Any],
+        artifact: dict[str, Any],
+        command_artifacts: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str]:
+        receipt = {
+            "schema_version": VALIDATION_CANDIDATE_PROJECTION_SCHEMA_VERSION,
+            "preview_id": artifact.get("preview_id"),
+            "preview": {
+                "preview_id": artifact.get("preview_id"),
+                "HEAD": (
+                    artifact.get("candidate_identity", {}).get("head")
+                    if isinstance(artifact.get("candidate_identity"), dict)
+                    else None
+                ),
+                "candidate_delta_mode": artifact.get("candidate_delta_mode"),
+                "candidate_delta_sha256": (
+                    artifact.get("candidate_identity", {}).get(
+                        "candidate_delta_sha256"
+                    )
+                    if isinstance(artifact.get("candidate_identity"), dict)
+                    else None
+                ),
+                "source_bindings": (
+                    artifact.get("candidate_identity", {}).get("source_bindings", [])
+                    if isinstance(artifact.get("candidate_identity"), dict)
+                    else []
+                ),
+                "source_snapshot_sha256": (
+                    artifact.get("candidate_snapshot", {}).get("snapshot_sha256")
+                    if isinstance(artifact.get("candidate_snapshot"), dict)
+                    else None
+                ),
+            },
+            "candidate_projection": projection,
+            "candidate": projection.get("candidate", {}),
+            "execution": projection.get("execution", {}),
+            "environment": projection.get("environment", {}),
+            "commands": [dict(item) for item in command_artifacts],
+            "artifacts": projection.get("artifacts", {}),
+        }
+        receipt["receipt_sha256"] = canonical_manifest_validation_sha256(receipt)
+        path = evidence_root / "candidate-projection-receipt.json"
+        self._write_restricted_json(path, receipt)
+        return receipt, self._sha256_file(path)
+
+    def _write_command_artifacts(
+        self,
+        evidence_root: Path,
+        command_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        artifacts_root = evidence_root / "command-artifacts"
+        if artifacts_root.is_symlink() or not artifacts_root.is_dir():
+            raise RuntimeError("command artifact root is invalid")
+        entries: list[dict[str, Any]] = []
+        indexes: set[int] = set()
+        for command_result in command_results:
+            index = command_result.get("index") if isinstance(command_result, dict) else None
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index in indexes
+            ):
+                raise RuntimeError("command artifact index is invalid")
+            indexes.add(index)
+            relative_path = f"command-artifacts/{index:04d}.json"
+            path = evidence_root / relative_path
+            self._write_restricted_json(path, command_result)
+            file_sha256 = self._sha256_file(path)
+            entries.append(
+                {
+                    "index": index,
+                    "argv_sha256": canonical_manifest_validation_sha256(
+                        [command_result.get("command", "")]
+                    ),
+                    "relative_path": relative_path,
+                    "file_sha256": file_sha256,
+                    "command_artifact_sha256": file_sha256,
+                    "cwd_class": "exact_candidate_root",
+                    "exit_code": command_result.get("returncode"),
+                }
+            )
+        actual_names = {
+            path.name
+            for path in artifacts_root.iterdir()
+            if path.is_file() and not path.is_symlink()
+        }
+        expected_names = {f"{index:04d}.json" for index in indexes}
+        if actual_names != expected_names:
+            raise RuntimeError("command artifact inventory is inconsistent")
+        return sorted(entries, key=lambda item: item["index"])
+
+    def _source_snapshot_evidence(self, evidence_root: Path) -> dict[str, Any]:
+        manifest_path = evidence_root / "candidate-source-snapshot" / "snapshot.json"
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise RuntimeError("source snapshot manifest is unavailable")
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("source snapshot manifest is invalid") from exc
+        bindings = payload.get("bindings") if isinstance(payload, dict) else None
+        if not isinstance(bindings, list):
+            raise RuntimeError("source snapshot bindings are invalid")
+        path_hash_map = [
+            {"path": item.get("path"), "sha256": item.get("sha256")}
+            for item in bindings
+            if isinstance(item, dict)
+        ]
+        if len(path_hash_map) != len(bindings):
+            raise RuntimeError("source snapshot bindings are invalid")
+        path_hash_map.sort(key=lambda item: str(item.get("path")))
+        return {
+            "manifest_relative_path": "candidate-source-snapshot/snapshot.json",
+            "manifest_sha256": self._sha256_file(manifest_path),
+            "source_binding_count": len(bindings),
+            "path_hash_map_sha256": canonical_manifest_validation_sha256(
+                path_hash_map
+            ),
+        }
+
+    @staticmethod
+    def _terminal_core(run_record: dict[str, Any]) -> dict[str, Any]:
+        projection = run_record.get("candidate_projection")
+        projection = projection if isinstance(projection, dict) else {}
+        return {
+            "run_id": run_record.get("run_id"),
+            "scope": run_record.get("scope"),
+            "terminal_status": run_record.get("status"),
+            "command_results": run_record.get("command_results"),
+            "candidate_identity": run_record.get("candidate_identity"),
+            "execution_environment_identity": projection.get(
+                "execution_environment"
+            ),
+            "projection_payload_sha256": projection.get(
+                "projection_payload_sha256"
+            ),
+        }
+
+    def _finalize_terminal_evidence(
+        self,
+        *,
+        run_id: str,
+        evidence_root: Path,
+        artifact: dict[str, Any],
+        run_record: dict[str, Any],
+        command_artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        projection = run_record.get("candidate_projection")
+        if not isinstance(projection, dict):
+            raise RuntimeError("candidate projection is unavailable")
+        _receipt, projection_receipt_file_sha256 = self._write_projection_receipt(
+            evidence_root,
+            projection,
+            artifact,
+            command_artifacts,
+        )
+        terminal_core_sha256 = canonical_manifest_validation_sha256(
+            self._terminal_core(run_record)
+        )
+        manifest_core = {
+            "schema_version": VALIDATION_EXTERNAL_EVIDENCE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "evidence_contract_version": VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION,
+            "terminal_core_sha256": terminal_core_sha256,
+            "projection_receipt": {
+                "relative_path": "candidate-projection-receipt.json",
+                "file_sha256": projection_receipt_file_sha256,
+            },
+            "source_snapshot": self._source_snapshot_evidence(evidence_root),
+            "command_artifacts": [dict(item) for item in command_artifacts],
+            "command_artifact_count": len(command_artifacts),
+            "created_at": run_record.get("completed_at"),
+        }
+        evidence_manifest_core_sha256 = canonical_manifest_validation_sha256(
+            manifest_core
+        )
+        external_evidence_binding = {
+            "evidence_contract_version": VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION,
+            "evidence_bundle_id": run_id,
+            "root_authority": "validation_run_artifact_root",
+            "evidence_manifest_relative_path": "external-evidence-manifest.json",
+            "evidence_manifest_core_sha256": evidence_manifest_core_sha256,
+            "terminal_core_sha256": terminal_core_sha256,
+        }
+        terminal = {
+            **run_record,
+            "schema_version": VALIDATION_RUN_RESULT_SCHEMA_VERSION,
+            "external_evidence_binding": external_evidence_binding,
+        }
+        terminal["validation_result_sha256"] = canonical_validation_result_sha256(
+            terminal
+        )
+        terminal_path = evidence_root / "terminal-result.json"
+        self._write_restricted_json(terminal_path, terminal)
+        manifest = {
+            **manifest_core,
+            "evidence_manifest_core_sha256": evidence_manifest_core_sha256,
+            "terminal_result": {
+                "relative_path": "terminal-result.json",
+                "validation_result_sha256": terminal[
+                    "validation_result_sha256"
+                ],
+            },
+        }
+        manifest["manifest_receipt_sha256"] = (
+            canonical_manifest_validation_sha256(manifest)
+        )
+        self._write_restricted_json(
+            evidence_root / "external-evidence-manifest.json",
+            manifest,
+        )
+        self._write_run_result(run_id, terminal)
+        return terminal
+
     @staticmethod
     def _candidate_identity(
         candidate_head: str,
         bindings: list[dict[str, Any]],
         *,
         binding_scope: str,
+        candidate_delta_mode: str | None = None,
     ) -> dict[str, Any]:
         binding_sha256 = canonical_manifest_validation_sha256(bindings)
+        pyproject_sha256 = next(
+            (
+                item.get("sha256")
+                for item in bindings
+                if isinstance(item, dict)
+                and item.get("path") == "pyproject.toml"
+                and item.get("present") is True
+                and isinstance(item.get("sha256"), str)
+            ),
+            None,
+        )
+        mode = candidate_delta_mode or binding_scope
         return {
+            "schema_version": VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION,
             "head": candidate_head,
+            "candidate_delta_mode": mode,
+            "candidate_delta_sha256": binding_sha256,
+            "source_bindings": [dict(item) for item in bindings],
             "worktree_delta_sha256": binding_sha256,
             "source_binding_count": len(bindings),
             "source_binding_sha256": binding_sha256,
             "source_binding_scope": binding_scope,
+            "pyproject_sha256": pyproject_sha256,
         }
 
     @staticmethod
@@ -2910,22 +3926,59 @@ print(json.dumps(payload, sort_keys=True))
             },
         }
 
-    @staticmethod
     def _manifest_source_bindings(
+        self,
         manifest_validation: dict[str, Any],
     ) -> list[dict[str, Any]]:
         subjects = manifest_validation.get("subjects")
         if not isinstance(subjects, list):
             return []
-        return [
-            {
-                "path": subject.get("path"),
-                "present": True,
-                "sha256": subject.get("sha256"),
-            }
-            for subject in subjects
-            if isinstance(subject, dict)
-        ]
+        project_root = Path(self.project_root).resolve()
+        bindings: list[dict[str, Any]] = []
+        observed_paths: set[str] = set()
+        for subject in subjects:
+            if not isinstance(subject, dict):
+                raise RuntimeError("manifest subject binding is invalid")
+            relative = subject.get("path")
+            normalized = (
+                self._normalize_repo_relative_path(relative)
+                if isinstance(relative, str)
+                else None
+            )
+            expected_sha256 = subject.get("sha256")
+            if (
+                normalized is None
+                or normalized != relative
+                or normalized in observed_paths
+                or not isinstance(expected_sha256, str)
+                or _SHA256_RE.fullmatch(expected_sha256) is None
+            ):
+                raise RuntimeError("manifest subject binding is invalid")
+            observed_paths.add(normalized)
+            source = project_root / normalized
+            resolved = Path(os.path.realpath(source))
+            if (
+                source.is_symlink()
+                or not source.is_file()
+                or os.path.commonpath([str(resolved), str(project_root)])
+                != str(project_root)
+            ):
+                raise RuntimeError("manifest subject binding is unavailable")
+            content = self._read_bound_source_bytes(source)
+            if not hmac.compare_digest(
+                hashlib.sha256(content).hexdigest(), expected_sha256
+            ):
+                raise RuntimeError("manifest subject binding changed")
+            bindings.append(
+                {
+                    "path": normalized,
+                    "present": True,
+                    "sha256": expected_sha256,
+                    "size": len(content),
+                    "mode": stat.S_IMODE(source.stat().st_mode),
+                }
+            )
+        return bindings
 
     def _collect_worktree_delta_paths(
         self,
@@ -3037,7 +4090,10 @@ print(json.dumps(payload, sort_keys=True))
         paths, path_error = self._collect_worktree_delta_paths()
         if path_error is not None:
             return [], [], path_error
-        bindings, binding_error = self._build_candidate_source_bindings(paths)
+        bindings, binding_error = self._build_candidate_source_bindings(
+            paths,
+            include_metadata=True,
+        )
         if binding_error is not None:
             return [], [], binding_error
         return bindings, paths, None
@@ -3045,6 +4101,8 @@ print(json.dumps(payload, sort_keys=True))
     def _build_candidate_source_bindings(
         self,
         paths: list[str],
+        *,
+        include_metadata: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """Bind target files to the current worktree bytes at preview time."""
 
@@ -3085,13 +4143,15 @@ print(json.dumps(payload, sort_keys=True))
                     "message": "候选验证目标必须是普通文件。",
                 }
             present = source.is_file()
-            bindings.append(
-                {
-                    "path": normalized,
-                    "present": present,
-                    "sha256": self._sha256_file(source) if present else None,
-                }
-            )
+            binding = {
+                "path": normalized,
+                "present": present,
+                "sha256": self._sha256_file(source) if present else None,
+            }
+            if include_metadata:
+                binding["size"] = source.stat().st_size if present else None
+                binding["mode"] = stat.S_IMODE(source.stat().st_mode) if present else None
+            bindings.append(binding)
         return bindings, None
 
     def _source_bindings_for_artifact(
@@ -3101,21 +4161,29 @@ print(json.dumps(payload, sort_keys=True))
         """Return source bindings for a manifest or target-files artifact."""
 
         contract = artifact.get("manifest_validation")
+        bindings = artifact.get("candidate_source_bindings")
+        bindings = list(bindings) if isinstance(bindings, list) else []
         if isinstance(contract, dict):
             subjects = contract.get("subjects")
             if not isinstance(subjects, list):
                 return []
-            return [
-                {
-                    "path": subject.get("path"),
-                    "present": True,
-                    "sha256": subject.get("sha256"),
-                }
+            subject_map = {
+                subject.get("path"): subject.get("sha256")
                 for subject in subjects
                 if isinstance(subject, dict)
-            ]
-        bindings = artifact.get("candidate_source_bindings")
-        return list(bindings) if isinstance(bindings, list) else []
+                and isinstance(subject.get("path"), str)
+                and isinstance(subject.get("sha256"), str)
+            }
+            binding_map = {
+                binding.get("path"): binding.get("sha256")
+                for binding in bindings
+                if isinstance(binding, dict)
+                and binding.get("present") is True
+                and isinstance(binding.get("path"), str)
+                and isinstance(binding.get("sha256"), str)
+            }
+            return bindings if subject_map == binding_map else []
+        return bindings
 
     def _verify_candidate_source_bindings(
         self,
@@ -3126,21 +4194,44 @@ print(json.dumps(payload, sort_keys=True))
         bindings = self._source_bindings_for_artifact(artifact)
         binding_scope = artifact.get("candidate_delta_mode")
         identity = artifact.get("candidate_identity")
-        if binding_scope in {"manifest_subjects", "full_allowed_worktree_delta"}:
+        if binding_scope in {
+            "manifest_subjects",
+            "exact_worktree_overlay",
+            "full_allowed_worktree_delta",
+        }:
             if not isinstance(identity, dict):
                 return False
             binding_digest = canonical_manifest_validation_sha256(bindings)
             if (
-                identity.get("source_binding_scope") != binding_scope
+                identity.get("source_binding_scope")
+                not in {binding_scope, "full_allowed_worktree_delta"}
                 or identity.get("source_binding_sha256") != binding_digest
                 or identity.get("worktree_delta_sha256") != binding_digest
+                or identity.get("candidate_delta_sha256", binding_digest)
+                != binding_digest
                 or identity.get("source_binding_count") != len(bindings)
             ):
                 return False
-        if binding_scope == "full_allowed_worktree_delta":
+        if binding_scope in {
+            "exact_worktree_overlay",
+            "full_allowed_worktree_delta",
+        }:
             current_bindings, _paths, error = self._build_full_worktree_candidate_bindings()
             if error is not None or current_bindings != bindings:
                 return False
+            if binding_scope == "exact_worktree_overlay":
+                snapshot = artifact.get("candidate_snapshot")
+                preview_id = artifact.get("preview_id")
+                if not isinstance(snapshot, dict) or not isinstance(preview_id, str):
+                    return False
+                try:
+                    self._read_candidate_source_snapshot(
+                        preview_id,
+                        snapshot,
+                        bindings,
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    return False
         if not bindings:
             return True
         project_root = Path(self.project_root).resolve()
@@ -3987,6 +5078,26 @@ print(json.dumps(payload, sort_keys=True))
         if not hmac.compare_digest(source_sha256, expected_sha256):
             raise RuntimeError("candidate source binding changed")
 
+        self._materialize_bound_bytes(
+            destination=destination,
+            source_bytes=source_bytes,
+            expected_sha256=expected_sha256,
+            source_mode=source_mode,
+        )
+
+    def _materialize_bound_bytes(
+        self,
+        *,
+        destination: Path,
+        source_bytes: bytes,
+        expected_sha256: str,
+        source_mode: int,
+    ) -> None:
+        """Materialize bytes from the sealed preview snapshot."""
+
+        if hashlib.sha256(source_bytes).hexdigest() != expected_sha256:
+            raise RuntimeError("candidate snapshot binding changed")
+
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
         descriptor: int | None = None
@@ -4024,6 +5135,7 @@ print(json.dumps(payload, sort_keys=True))
         bindings: list[dict[str, Any]],
         *,
         binding_kind: str = "source_files",
+        snapshot_bytes: dict[str, bytes | None] | None = None,
     ) -> dict[str, Any]:
         """Overlay the preview-bound worktree bytes onto the detached checkout."""
 
@@ -4064,32 +5176,42 @@ print(json.dumps(payload, sort_keys=True))
                     or (present and not isinstance(expected_sha256, str))
                 ):
                     raise RuntimeError("candidate source binding is invalid")
-                source = project_root / normalized
                 destination = candidate_root / normalized
-                source_resolved = Path(os.path.realpath(source))
                 destination_resolved = Path(os.path.realpath(destination))
                 try:
-                    source_contained = os.path.commonpath(
-                        [str(source_resolved), str(project_root)]
-                    ) == str(project_root)
                     destination_contained = os.path.commonpath(
                         [str(destination_resolved), str(candidate_root)]
                     ) == str(candidate_root)
                 except ValueError:
-                    source_contained = False
                     destination_contained = False
                 if (
-                    not source_contained
-                    or not destination_contained
-                    or source.is_symlink()
-                    or destination.is_symlink()
+                    not destination_contained or destination.is_symlink()
                 ):
                     raise RuntimeError("candidate source overlay escaped its checkout")
-                source_present = source.is_file()
-                if source_present != present:
-                    raise RuntimeError("candidate source binding changed")
-                if source.exists() and not source.is_file():
-                    raise RuntimeError("candidate source overlay is not a file")
+                if snapshot_bytes is None:
+                    source = project_root / normalized
+                    source_resolved = Path(os.path.realpath(source))
+                    try:
+                        source_contained = os.path.commonpath(
+                            [str(source_resolved), str(project_root)]
+                        ) == str(project_root)
+                    except ValueError:
+                        source_contained = False
+                    if (
+                        not source_contained
+                        or source.is_symlink()
+                        or (source.exists() and not source.is_file())
+                    ):
+                        raise RuntimeError("candidate source overlay escaped its checkout")
+                    source_present = source.is_file()
+                    if source_present != present:
+                        raise RuntimeError("candidate source binding changed")
+                else:
+                    if normalized not in snapshot_bytes:
+                        raise RuntimeError("candidate source snapshot is incomplete")
+                    source_present = snapshot_bytes[normalized] is not None
+                    if source_present != present:
+                        raise RuntimeError("candidate source snapshot binding changed")
                 if destination.exists() and not destination.is_file():
                     raise RuntimeError("candidate checkout target is not a file")
 
@@ -4107,11 +5229,22 @@ print(json.dumps(payload, sort_keys=True))
                     }
                 )
                 if source_present:
-                    self._materialize_bound_file(
-                        source=source,
-                        destination=destination,
-                        expected_sha256=expected_sha256,
-                    )
+                    if snapshot_bytes is None:
+                        self._materialize_bound_file(
+                            source=project_root / normalized,
+                            destination=destination,
+                            expected_sha256=expected_sha256,
+                        )
+                    else:
+                        mode = binding.get("mode")
+                        if isinstance(mode, bool) or not isinstance(mode, int):
+                            raise RuntimeError("candidate source mode is invalid")
+                        self._materialize_bound_bytes(
+                            destination=destination,
+                            source_bytes=snapshot_bytes[normalized] or b"",
+                            expected_sha256=expected_sha256,
+                            source_mode=mode,
+                        )
                 else:
                     if existed:
                         self._remove_overlay_path(destination)
@@ -4272,6 +5405,8 @@ print(json.dumps(payload, sort_keys=True))
         context = {
             "command_index": command_index,
             "command_root": command_root,
+            "command_artifacts_root": artifact_root,
+            "evidence_root": artifact_root.parent,
             "candidate_root": Path(cwd).resolve(),
         }
         token = _COMMAND_ARTIFACT_CONTEXT.set(context)
@@ -4285,6 +5420,95 @@ print(json.dumps(payload, sort_keys=True))
             )
         finally:
             _COMMAND_ARTIFACT_CONTEXT.reset(token)
+
+    @staticmethod
+    def _compileall_scratch_prefix(
+        evidence_root: Path,
+        command_index: int,
+    ) -> str:
+        run_id_hint = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "-",
+            evidence_root.name,
+        ).strip("-")[:64]
+        if not run_id_hint:
+            run_id_hint = "run"
+        return (
+            "colameta-validation-compileall-"
+            f"{run_id_hint}-{command_index}-"
+        )
+
+    @staticmethod
+    def _create_compileall_scratch_root(prefix: str) -> Path:
+        """Create one owner-private command scratch outside repository state."""
+
+        return Path(tempfile.mkdtemp(prefix=prefix))
+
+    @staticmethod
+    def _paths_overlap(left: Path, right: Path) -> bool:
+        """Reject either path containing the other after realpath resolution."""
+
+        try:
+            left_resolved = left.resolve(strict=False)
+            right_resolved = right.resolve(strict=False)
+            common = Path(
+                os.path.commonpath(
+                    [str(left_resolved), str(right_resolved)]
+                )
+            )
+        except (OSError, RuntimeError, ValueError):
+            return True
+        return common in {left_resolved, right_resolved}
+
+    @classmethod
+    def _validate_compileall_scratch_root(
+        cls,
+        scratch_root: Path,
+        *,
+        expected_prefix: str,
+        protected_roots: tuple[Path, ...],
+    ) -> Path:
+        """Validate an exclusively-created external compileall scratch root."""
+
+        if (
+            not scratch_root.is_absolute()
+            or scratch_root.name.startswith(expected_prefix) is False
+            or scratch_root.is_symlink()
+        ):
+            raise RuntimeError("compileall scratch root is invalid")
+        try:
+            scratch_stat = scratch_root.lstat()
+            if not stat.S_ISDIR(scratch_stat.st_mode):
+                raise RuntimeError("compileall scratch root is invalid")
+            scratch_root.chmod(0o700)
+            scratch_stat = scratch_root.stat()
+            if scratch_stat.st_mode & 0o077:
+                raise RuntimeError("compileall scratch root is not private")
+            resolved = scratch_root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError("compileall scratch root is invalid") from exc
+        if any(cls._paths_overlap(resolved, root) for root in protected_roots):
+            raise RuntimeError("compileall scratch root overlaps protected state")
+        return resolved
+
+    @staticmethod
+    def _cleanup_compileall_scratch_root(
+        scratch_root: Path | None,
+        *,
+        expected_prefix: str,
+    ) -> bool:
+        if scratch_root is None:
+            return True
+        try:
+            if scratch_root.name.startswith(expected_prefix) is False:
+                return False
+            if scratch_root.is_symlink():
+                scratch_root.unlink()
+            else:
+                shutil.rmtree(scratch_root)
+        except OSError:
+            return False
+        return not scratch_root.exists() and not scratch_root.is_symlink()
 
     @staticmethod
     def _is_governed_candidate_compileall(
@@ -4381,6 +5605,8 @@ print(json.dumps(payload, sort_keys=True))
         artifact_context = _COMMAND_ARTIFACT_CONTEXT.get()
         compileall_artifact: dict[str, Any] | None = None
         compileall_root: Path | None = None
+        compileall_scratch_root: Path | None = None
+        compileall_scratch_prefix = ""
         candidate_root: Path | None = None
         is_isolated_compileall = (
             isinstance(artifact_context, dict)
@@ -4390,10 +5616,19 @@ print(json.dumps(payload, sort_keys=True))
             )
         )
         if is_isolated_compileall:
-            command_root = artifact_context.get("command_root")
             candidate_root_value = artifact_context.get("candidate_root")
-            if not isinstance(command_root, Path) or not isinstance(
-                candidate_root_value, Path
+            command_artifacts_root = artifact_context.get(
+                "command_artifacts_root"
+            )
+            evidence_root = artifact_context.get("evidence_root")
+            command_index = artifact_context.get("command_index")
+            if (
+                not isinstance(candidate_root_value, Path)
+                or not isinstance(command_artifacts_root, Path)
+                or not isinstance(evidence_root, Path)
+                or isinstance(command_index, bool)
+                or not isinstance(command_index, int)
+                or command_index < 0
             ):
                 return {
                     "returncode": 125,
@@ -4402,89 +5637,120 @@ print(json.dumps(payload, sort_keys=True))
                     "error_code": "VALIDATION_COMMAND_ARTIFACT_INVALID",
                 }
             candidate_root = candidate_root_value.resolve()
-            compileall_root = (command_root / "pycache").resolve()
             validation_venv_root = validation_environment.venv_dir.resolve()
             protected_roots = (
-                candidate_root,
-                validation_venv_root,
                 Path(self.project_root).resolve(),
+                candidate_root,
+                validation_environment.candidate_root.resolve(),
+                validation_environment.cwd.resolve(),
+                validation_venv_root,
+                evidence_root.resolve(),
+                command_artifacts_root.resolve(),
             )
+            compileall_scratch_prefix = self._compileall_scratch_prefix(
+                evidence_root,
+                command_index,
+            )
+            created_scratch_root: Path | None = None
             try:
-                overlaps_protected_root = any(
-                    os.path.commonpath(
-                        [str(compileall_root), str(protected)]
-                    )
-                    == str(protected)
-                    for protected in protected_roots
+                created_scratch_root = self._create_compileall_scratch_root(
+                    compileall_scratch_prefix
                 )
-            except ValueError:
-                overlaps_protected_root = True
-            if overlaps_protected_root or compileall_root.exists():
+                compileall_scratch_root = (
+                    self._validate_compileall_scratch_root(
+                        created_scratch_root,
+                        expected_prefix=compileall_scratch_prefix,
+                        protected_roots=protected_roots,
+                    )
+                )
+                compileall_root = compileall_scratch_root / "pycache"
+                if compileall_root.exists() or compileall_root.is_symlink():
+                    raise RuntimeError("compileall pycache root is invalid")
+            except (OSError, RuntimeError):
+                self._cleanup_compileall_scratch_root(
+                    created_scratch_root,
+                    expected_prefix=compileall_scratch_prefix,
+                )
                 return {
                     "returncode": 125,
                     "stdout": "",
                     "stderr": "VALIDATION_COMMAND_ARTIFACT_INVALID",
                     "error_code": "VALIDATION_COMMAND_ARTIFACT_INVALID",
                 }
-            compileall_root.parent.mkdir(parents=True, exist_ok=False)
             environment["PYTHONPYCACHEPREFIX"] = str(compileall_root)
+        command_result: dict[str, Any]
         try:
-            proc = subprocess.run(
-                process_command,
-                cwd=execution_root,
-                capture_output=True,
-                text=True,
-                check=False,
-                shell=False,
-                timeout=timeout_seconds,
-                env=environment,
-            )
-            command_result = {
-                "returncode": proc.returncode,
-                "stdout": _redact_sensitive_text(proc.stdout),
-                "stderr": _redact_sensitive_text(proc.stderr),
-                "error_code": None,
-            }
-        except subprocess.TimeoutExpired as exc:
-            command_result = {
-                "returncode": 124,
-                "stdout": _redact_sensitive_text(exc.stdout or ""),
-                "stderr": f"VALIDATION_RUN_TIMEOUT: command exceeded {timeout_seconds}s",
-                "error_code": "VALIDATION_RUN_TIMEOUT",
-            }
-        except Exception as exc:
-            command_result = {
-                "returncode": 125,
-                "stdout": "",
-                "stderr": f"VALIDATION_RUN_FAILED: {_redact_sensitive_text(str(exc))}",
-                "error_code": "VALIDATION_RUN_FAILED",
-            }
+            try:
+                proc = subprocess.run(
+                    process_command,
+                    cwd=execution_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    shell=False,
+                    timeout=timeout_seconds,
+                    env=environment,
+                )
+                command_result = {
+                    "returncode": proc.returncode,
+                    "stdout": _redact_sensitive_text(proc.stdout),
+                    "stderr": _redact_sensitive_text(proc.stderr),
+                    "error_code": None,
+                }
+            except subprocess.TimeoutExpired as exc:
+                command_result = {
+                    "returncode": 124,
+                    "stdout": _redact_sensitive_text(exc.stdout or ""),
+                    "stderr": f"VALIDATION_RUN_TIMEOUT: command exceeded {timeout_seconds}s",
+                    "error_code": "VALIDATION_RUN_TIMEOUT",
+                }
+            except Exception as exc:
+                command_result = {
+                    "returncode": 125,
+                    "stdout": "",
+                    "stderr": f"VALIDATION_RUN_FAILED: {_redact_sensitive_text(str(exc))}",
+                    "error_code": "VALIDATION_RUN_FAILED",
+                }
+        finally:
+            if compileall_root is not None and candidate_root is not None:
+                pyc_count = sum(
+                    1
+                    for path in compileall_root.rglob("*.pyc")
+                    if path.is_file() and not path.is_symlink()
+                )
+                file_count, artifact_sha256 = (
+                    self._compileall_artifact_digest(compileall_root)
+                )
+                contamination_count = (
+                    self._candidate_bytecode_contamination_count(
+                        candidate_root
+                    )
+                )
+                cleanup_complete = self._cleanup_compileall_scratch_root(
+                    compileall_scratch_root,
+                    expected_prefix=compileall_scratch_prefix,
+                )
+            else:
+                pyc_count = 0
+                file_count = 0
+                artifact_sha256 = canonical_manifest_validation_sha256([])
+                contamination_count = 0
+                cleanup_complete = True
         if compileall_root is not None and candidate_root is not None:
-            pyc_count = sum(
-                1
-                for path in compileall_root.rglob("*.pyc")
-                if path.is_file() and not path.is_symlink()
-            )
-            file_count, artifact_sha256 = self._compileall_artifact_digest(
-                compileall_root
-            )
-            contamination_count = self._candidate_bytecode_contamination_count(
-                candidate_root
-            )
-            command_root = compileall_root.parent
-            shutil.rmtree(command_root, ignore_errors=True)
-            cleanup_complete = not command_root.exists()
             compileall_artifact = {
                 "command_index": int(artifact_context["command_index"]),
-                "pycache_root_sanitized": (
-                    f"command-artifacts/{artifact_context['command_index']}/pycache"
-                ),
+                "scratch_root_class": "repository_external_ephemeral",
+                "pycache_root_sanitized": "external-command-scratch/pycache",
                 "file_count": file_count,
                 "pyc_count": pyc_count,
                 "artifact_sha256": artifact_sha256,
                 "candidate_contamination_count": contamination_count,
                 "cleanup_complete": cleanup_complete,
             }
+            if not cleanup_complete:
+                compileall_artifact["cleanup_warning"] = (
+                    "compileall scratch cleanup incomplete"
+                )
             command_result["compileall_artifact"] = compileall_artifact
             if (
                 command_result["returncode"] == 0
@@ -4578,11 +5844,7 @@ print(json.dumps(payload, sort_keys=True))
     def _write_run_result(self, run_id: str, result: dict[str, Any]) -> str:
         os.makedirs(self._runs_root, exist_ok=True)
         path = self._run_result_path(run_id)
-        tmp_path = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp_path, path)
+        self._write_restricted_json(Path(path), result)
         return os.path.relpath(path, self.project_root)
 
     @staticmethod
@@ -4599,7 +5861,12 @@ print(json.dumps(payload, sort_keys=True))
         if (
             not isinstance(head, str)
             or _FULL_GIT_OBJECT_ID_RE.fullmatch(head) is None
-            or source_scope not in {"manifest_subjects", "full_allowed_worktree_delta"}
+            or source_scope
+            not in {
+                "manifest_subjects",
+                "exact_worktree_overlay",
+                "full_allowed_worktree_delta",
+            }
             or not isinstance(source_binding_sha256, str)
             or _SHA256_RE.fullmatch(source_binding_sha256) is None
             or not isinstance(worktree_delta_sha256, str)
@@ -4610,6 +5877,21 @@ print(json.dumps(payload, sort_keys=True))
             or source_binding_count < 0
         ):
             return False
+        candidate_delta_sha256 = identity.get("candidate_delta_sha256")
+        if candidate_delta_sha256 is not None and (
+            not isinstance(candidate_delta_sha256, str)
+            or candidate_delta_sha256 != worktree_delta_sha256
+        ):
+            return False
+        source_bindings = identity.get("source_bindings")
+        if source_bindings is not None:
+            if not isinstance(source_bindings, list):
+                return False
+            try:
+                if canonical_manifest_validation_sha256(source_bindings) != source_binding_sha256:
+                    return False
+            except (TypeError, ValueError):
+                return False
         scope = selection.get("scope")
         target_files = selection.get("target_files")
         command_specs_sha256 = selection.get("command_specs_sha256")
@@ -4632,6 +5914,154 @@ print(json.dumps(payload, sort_keys=True))
             and classification_exhaustive.get("basis")
             == "complementary_marker_expressions"
         )
+
+    @staticmethod
+    def _candidate_projection_is_valid(data: dict[str, Any]) -> bool:
+        projection = data.get("candidate_projection")
+        if not isinstance(projection, dict):
+            return False
+        if projection.get("schema_version") != VALIDATION_CANDIDATE_PROJECTION_SCHEMA_VERSION:
+            return False
+        if projection.get("phase") not in {
+            "preview_bound",
+            "executed",
+            "failed_before_candidate_execution",
+        }:
+            return False
+        identity = projection.get("candidate_identity")
+        snapshot = projection.get("source_snapshot")
+        candidate = projection.get("candidate")
+        execution = projection.get("execution")
+        environment = projection.get("environment")
+        artifacts = projection.get("artifacts")
+        execution_environment = projection.get("execution_environment")
+        if not all(
+            isinstance(value, dict)
+            for value in (identity, snapshot, candidate, execution, environment, artifacts)
+        ):
+            return False
+        if identity.get("candidate_delta_mode") not in {
+            "exact_worktree_overlay",
+            "full_allowed_worktree_delta",
+            "manifest_subjects",
+        }:
+            return False
+        count = identity.get("source_binding_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return False
+        if snapshot.get("source_binding_count") != count:
+            return False
+        for key, value in (
+            ("candidate_delta_sha256", identity.get("candidate_delta_sha256")),
+            ("snapshot_sha256", snapshot.get("snapshot_sha256")),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+            ):
+                return False
+        for key in ("file_map_sha256", "status_sha256"):
+            value = candidate.get(key)
+            if value is not None and (
+                not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+            ):
+                return False
+        for key in (
+            "PYTHONPATH_present",
+            "PYTHONHOME_present",
+            "PYTHONUSERBASE_present",
+            "PYTHONPYCACHEPREFIX_present",
+        ):
+            if not isinstance(environment.get(key), bool):
+                return False
+        if not isinstance(environment.get("materialized_after_candidate_overlay"), bool):
+            return False
+        if environment.get("stale_environment_reuse") is not None and not isinstance(
+            environment.get("stale_environment_reuse"), bool
+        ):
+            return False
+        if not isinstance(artifacts.get("retention_verified"), bool):
+            return False
+        external_binding = data.get("external_evidence_binding")
+        if not isinstance(external_binding, dict):
+            receipt_sha256 = projection.get("projection_receipt_sha256")
+            return receipt_sha256 is None or (
+                isinstance(receipt_sha256, str)
+                and _SHA256_RE.fullmatch(receipt_sha256) is not None
+            )
+        if not isinstance(execution_environment, dict):
+            return False
+        environment_state = execution_environment.get("state")
+        if environment_state == "materialized":
+            for key in (
+                "python_implementation",
+                "python_version",
+                "package_set_sha256",
+                "environment_identity_sha256",
+                "executable_sha256",
+            ):
+                value = execution_environment.get(key)
+                if not isinstance(value, str) or not value:
+                    return False
+            for key in (
+                "package_set_sha256",
+                "environment_identity_sha256",
+                "executable_sha256",
+            ):
+                if _SHA256_RE.fullmatch(execution_environment[key]) is None:
+                    return False
+            try:
+                _identity, expected_environment_identity_sha256 = (
+                    canonical_environment_identity(
+                        executable_sha256=execution_environment[
+                            "executable_sha256"
+                        ],
+                        python_implementation=execution_environment[
+                            "python_implementation"
+                        ],
+                        python_version=execution_environment["python_version"],
+                        python_cache_tag=execution_environment.get(
+                            "python_cache_tag"
+                        )
+                        or "unavailable",
+                        package_set_sha256=execution_environment[
+                            "package_set_sha256"
+                        ],
+                    )
+                )
+            except ValidationEnvironmentError:
+                return False
+            if not hmac.compare_digest(
+                execution_environment["environment_identity_sha256"],
+                expected_environment_identity_sha256,
+            ):
+                return False
+            cache_tag = execution_environment.get("python_cache_tag")
+            if cache_tag is not None and (
+                not isinstance(cache_tag, str) or not cache_tag
+            ):
+                return False
+        elif environment_state not in {
+            "pending_materialization",
+            "not_materialized_due_to_failure",
+            "not_required_non_python_commands",
+        }:
+            return False
+        payload_sha256 = projection.get("projection_payload_sha256")
+        if not isinstance(payload_sha256, str) or _SHA256_RE.fullmatch(
+            payload_sha256
+        ) is None:
+            return False
+        try:
+            expected_payload_sha256 = canonical_manifest_validation_sha256(
+                {
+                    key: value
+                    for key, value in projection.items()
+                    if key != "projection_payload_sha256"
+                }
+            )
+        except (TypeError, ValueError):
+            return False
+        return hmac.compare_digest(payload_sha256, expected_payload_sha256)
 
     @staticmethod
     def _dual_lane_evidence_is_valid(data: dict[str, Any]) -> bool:
@@ -4748,6 +6178,450 @@ print(json.dumps(payload, sort_keys=True))
                     return False
         return True
 
+    @staticmethod
+    def _external_evidence_manifest_core(
+        manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        keys = (
+            "schema_version",
+            "run_id",
+            "evidence_contract_version",
+            "terminal_core_sha256",
+            "projection_receipt",
+            "source_snapshot",
+            "command_artifacts",
+            "command_artifact_count",
+            "created_at",
+        )
+        return {key: manifest.get(key) for key in keys}
+
+    def _read_governed_evidence_json(
+        self,
+        evidence_root: Path,
+        relative_path: str,
+    ) -> tuple[dict[str, Any] | None, Path | None]:
+        normalized = self._normalize_repo_relative_path(relative_path)
+        if normalized is None or normalized != relative_path:
+            return None, None
+        candidate = evidence_root / normalized
+        current = evidence_root
+        for part in PurePosixPath(normalized).parts:
+            current = current / part
+            if current.is_symlink():
+                return None, None
+        try:
+            if (
+                not candidate.is_file()
+                or os.path.commonpath(
+                    [os.path.realpath(candidate), os.path.realpath(evidence_root)]
+                )
+                != os.path.realpath(evidence_root)
+            ):
+                return None, None
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return None, None
+        return (payload, candidate) if isinstance(payload, dict) else (None, None)
+
+    def _verify_external_source_snapshot(
+        self,
+        *,
+        evidence_root: Path,
+        source_binding: dict[str, Any],
+        candidate_identity: dict[str, Any],
+    ) -> bool:
+        if source_binding.get("manifest_relative_path") != (
+            "candidate-source-snapshot/snapshot.json"
+        ):
+            return False
+        manifest, manifest_path = self._read_governed_evidence_json(
+            evidence_root,
+            "candidate-source-snapshot/snapshot.json",
+        )
+        if manifest is None or manifest_path is None:
+            return False
+        manifest_sha256 = source_binding.get("manifest_sha256")
+        if (
+            not isinstance(manifest_sha256, str)
+            or _SHA256_RE.fullmatch(manifest_sha256) is None
+            or not hmac.compare_digest(
+                manifest_sha256,
+                self._sha256_file(manifest_path),
+            )
+        ):
+            return False
+        stored_snapshot_sha256 = manifest.get("snapshot_sha256")
+        unsigned_manifest = {
+            key: value
+            for key, value in manifest.items()
+            if key != "snapshot_sha256"
+        }
+        if (
+            manifest.get("schema_version")
+            != VALIDATION_CANDIDATE_IDENTITY_SCHEMA_VERSION
+            or not isinstance(stored_snapshot_sha256, str)
+            or _SHA256_RE.fullmatch(stored_snapshot_sha256) is None
+            or not hmac.compare_digest(
+                stored_snapshot_sha256,
+                canonical_manifest_validation_sha256(unsigned_manifest),
+            )
+        ):
+            return False
+        bindings = manifest.get("bindings")
+        if (
+            not isinstance(bindings, list)
+            or manifest.get("file_count") != len(bindings)
+            or source_binding.get("source_binding_count") != len(bindings)
+        ):
+            return False
+        identity_bindings = candidate_identity.get("source_bindings")
+        if not isinstance(identity_bindings, list):
+            return False
+        identity_by_path: dict[str, dict[str, Any]] = {}
+        for item in identity_bindings:
+            if not isinstance(item, dict):
+                return False
+            identity_path = item.get("path")
+            normalized_identity_path = (
+                self._normalize_repo_relative_path(identity_path)
+                if isinstance(identity_path, str)
+                else None
+            )
+            if (
+                normalized_identity_path is None
+                or normalized_identity_path != identity_path
+                or normalized_identity_path in identity_by_path
+            ):
+                return False
+            identity_by_path[normalized_identity_path] = item
+        if len(identity_by_path) != len(bindings):
+            return False
+        path_hash_map: list[dict[str, Any]] = []
+        expected_files: set[str] = set()
+        observed_paths: set[str] = set()
+        for index, entry in enumerate(bindings):
+            if not isinstance(entry, dict):
+                return False
+            relative = entry.get("path")
+            normalized = (
+                self._normalize_repo_relative_path(relative)
+                if isinstance(relative, str)
+                else None
+            )
+            present = entry.get("present")
+            sha256 = entry.get("sha256")
+            size = entry.get("size")
+            mode = entry.get("mode")
+            if (
+                normalized is None
+                or normalized != relative
+                or normalized in observed_paths
+                or not isinstance(present, bool)
+            ):
+                return False
+            observed_paths.add(normalized)
+            identity_entry = identity_by_path.get(normalized)
+            if identity_entry is None or any(
+                identity_entry.get(key) != entry.get(key)
+                for key in ("present", "sha256", "size", "mode")
+            ):
+                return False
+            path_hash_map.append({"path": normalized, "sha256": sha256})
+            snapshot_file = entry.get("snapshot_file")
+            if present:
+                expected_snapshot_file = f"files/{index:04d}.bin"
+                if (
+                    snapshot_file != expected_snapshot_file
+                    or not isinstance(sha256, str)
+                    or _SHA256_RE.fullmatch(sha256) is None
+                    or isinstance(size, bool)
+                    or not isinstance(size, int)
+                    or size < 0
+                    or isinstance(mode, bool)
+                    or not isinstance(mode, int)
+                    or mode < 0
+                    or mode > 0o7777
+                ):
+                    return False
+                snapshot_path = evidence_root / "candidate-source-snapshot" / snapshot_file
+                if snapshot_path.is_symlink() or not snapshot_path.is_file():
+                    return False
+                try:
+                    if (
+                        os.path.commonpath(
+                            [
+                                os.path.realpath(snapshot_path),
+                                os.path.realpath(
+                                    evidence_root / "candidate-source-snapshot"
+                                ),
+                            ]
+                        )
+                        != os.path.realpath(
+                            evidence_root / "candidate-source-snapshot"
+                        )
+                        or snapshot_path.stat().st_size != size
+                        or stat.S_IMODE(snapshot_path.stat().st_mode) != 0o600
+                        or not hmac.compare_digest(
+                            self._sha256_file(snapshot_path),
+                            sha256,
+                        )
+                    ):
+                        return False
+                except (OSError, ValueError):
+                    return False
+                expected_files.add(snapshot_path.name)
+            elif any(
+                value is not None for value in (sha256, size, mode, snapshot_file)
+            ):
+                return False
+        files_root = evidence_root / "candidate-source-snapshot" / "files"
+        if files_root.is_symlink() or not files_root.is_dir():
+            return False
+        try:
+            actual_files = {
+                path.name
+                for path in files_root.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            if any(
+                path.is_symlink() or not path.is_file()
+                for path in files_root.iterdir()
+            ):
+                return False
+        except OSError:
+            return False
+        path_hash_map.sort(key=lambda item: item["path"])
+        expected_path_hash_map_sha256 = canonical_manifest_validation_sha256(
+            path_hash_map
+        )
+        return (
+            actual_files == expected_files
+            and observed_paths == set(identity_by_path)
+            and source_binding.get("path_hash_map_sha256")
+            == expected_path_hash_map_sha256
+        )
+
+    def _verify_external_evidence_bundle(
+        self,
+        run_id: str,
+        terminal: dict[str, Any],
+    ) -> bool:
+        binding = terminal.get("external_evidence_binding")
+        if not isinstance(binding, dict) or set(binding) != {
+            "evidence_contract_version",
+            "evidence_bundle_id",
+            "root_authority",
+            "evidence_manifest_relative_path",
+            "evidence_manifest_core_sha256",
+            "terminal_core_sha256",
+        }:
+            return False
+        if (
+            binding.get("evidence_contract_version")
+            != VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION
+            or binding.get("evidence_bundle_id") != run_id
+            or binding.get("root_authority") != "validation_run_artifact_root"
+            or binding.get("evidence_manifest_relative_path")
+            != "external-evidence-manifest.json"
+        ):
+            return False
+        evidence_root = self._run_evidence_root(run_id)
+        if not self._governed_evidence_root_is_valid(run_id, evidence_root):
+            return False
+        manifest, manifest_path = self._read_governed_evidence_json(
+            evidence_root,
+            "external-evidence-manifest.json",
+        )
+        if manifest is None or manifest_path is None or set(manifest) != {
+            "schema_version",
+            "run_id",
+            "evidence_contract_version",
+            "terminal_core_sha256",
+            "projection_receipt",
+            "source_snapshot",
+            "command_artifacts",
+            "command_artifact_count",
+            "created_at",
+            "evidence_manifest_core_sha256",
+            "terminal_result",
+            "manifest_receipt_sha256",
+        }:
+            return False
+        manifest_receipt_sha256 = manifest.get("manifest_receipt_sha256")
+        unsigned_manifest = {
+            key: value
+            for key, value in manifest.items()
+            if key != "manifest_receipt_sha256"
+        }
+        if (
+            manifest.get("schema_version")
+            != VALIDATION_EXTERNAL_EVIDENCE_SCHEMA_VERSION
+            or manifest.get("run_id") != run_id
+            or manifest.get("evidence_contract_version")
+            != VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION
+            or not isinstance(manifest_receipt_sha256, str)
+            or _SHA256_RE.fullmatch(manifest_receipt_sha256) is None
+            or not hmac.compare_digest(
+                manifest_receipt_sha256,
+                canonical_manifest_validation_sha256(unsigned_manifest),
+            )
+        ):
+            return False
+        manifest_core = self._external_evidence_manifest_core(manifest)
+        manifest_core_sha256 = canonical_manifest_validation_sha256(manifest_core)
+        terminal_core_sha256 = canonical_manifest_validation_sha256(
+            self._terminal_core(terminal)
+        )
+        if (
+            manifest.get("evidence_manifest_core_sha256")
+            != manifest_core_sha256
+            or binding.get("evidence_manifest_core_sha256")
+            != manifest_core_sha256
+            or manifest.get("terminal_core_sha256") != terminal_core_sha256
+            or binding.get("terminal_core_sha256") != terminal_core_sha256
+        ):
+            return False
+        terminal_binding = manifest.get("terminal_result")
+        if not isinstance(terminal_binding, dict) or terminal_binding != {
+            "relative_path": "terminal-result.json",
+            "validation_result_sha256": terminal.get(
+                "validation_result_sha256"
+            ),
+        }:
+            return False
+        external_terminal, external_terminal_path = self._read_governed_evidence_json(
+            evidence_root,
+            "terminal-result.json",
+        )
+        if (
+            external_terminal is None
+            or external_terminal_path is None
+            or external_terminal != terminal
+        ):
+            return False
+        projection_binding = manifest.get("projection_receipt")
+        if not isinstance(projection_binding, dict) or projection_binding.get(
+            "relative_path"
+        ) != "candidate-projection-receipt.json":
+            return False
+        projection_receipt, projection_path = self._read_governed_evidence_json(
+            evidence_root,
+            "candidate-projection-receipt.json",
+        )
+        if projection_receipt is None or projection_path is None:
+            return False
+        projection_file_sha256 = projection_binding.get("file_sha256")
+        receipt_sha256 = projection_receipt.get("receipt_sha256")
+        if (
+            not isinstance(projection_file_sha256, str)
+            or not hmac.compare_digest(
+                projection_file_sha256,
+                self._sha256_file(projection_path),
+            )
+            or not isinstance(receipt_sha256, str)
+            or not hmac.compare_digest(
+                receipt_sha256,
+                canonical_manifest_validation_sha256(
+                    {
+                        key: value
+                        for key, value in projection_receipt.items()
+                        if key != "receipt_sha256"
+                    }
+                ),
+            )
+            or projection_receipt.get("candidate_projection")
+            != terminal.get("candidate_projection")
+        ):
+            return False
+        command_artifacts = manifest.get("command_artifacts")
+        command_count = manifest.get("command_artifact_count")
+        if (
+            not isinstance(command_artifacts, list)
+            or isinstance(command_count, bool)
+            or not isinstance(command_count, int)
+            or command_count != len(command_artifacts)
+            or projection_receipt.get("commands") != command_artifacts
+        ):
+            return False
+        command_results = terminal.get("command_results")
+        if not isinstance(command_results, list):
+            return False
+        results_by_index = {
+            item.get("index"): item
+            for item in command_results
+            if isinstance(item, dict) and isinstance(item.get("index"), int)
+        }
+        expected_command_names: set[str] = set()
+        observed_indexes: set[int] = set()
+        for entry in command_artifacts:
+            if not isinstance(entry, dict):
+                return False
+            index = entry.get("index")
+            relative_path = entry.get("relative_path")
+            file_sha256 = entry.get("file_sha256")
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index in observed_indexes
+                or relative_path != f"command-artifacts/{index:04d}.json"
+                or not isinstance(file_sha256, str)
+                or _SHA256_RE.fullmatch(file_sha256) is None
+                or entry.get("command_artifact_sha256") != file_sha256
+            ):
+                return False
+            observed_indexes.add(index)
+            artifact_payload, artifact_path = self._read_governed_evidence_json(
+                evidence_root,
+                relative_path,
+            )
+            if (
+                artifact_payload is None
+                or artifact_path is None
+                or artifact_payload != results_by_index.get(index)
+                or entry.get("argv_sha256")
+                != canonical_manifest_validation_sha256(
+                    [artifact_payload.get("command", "")]
+                )
+                or entry.get("exit_code") != artifact_payload.get("returncode")
+                or entry.get("cwd_class") != "exact_candidate_root"
+                or not hmac.compare_digest(
+                    self._sha256_file(artifact_path),
+                    file_sha256,
+                )
+            ):
+                return False
+            expected_command_names.add(artifact_path.name)
+        command_root = evidence_root / "command-artifacts"
+        if command_root.is_symlink() or not command_root.is_dir():
+            return False
+        try:
+            actual_command_names = {
+                path.name
+                for path in command_root.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            if any(
+                path.is_symlink() or not path.is_file()
+                for path in command_root.iterdir()
+            ):
+                return False
+        except OSError:
+            return False
+        source_binding = manifest.get("source_snapshot")
+        candidate_identity = terminal.get("candidate_identity")
+        return (
+            actual_command_names == expected_command_names
+            and len(results_by_index) == command_count
+            and isinstance(source_binding, dict)
+            and isinstance(candidate_identity, dict)
+            and self._verify_external_source_snapshot(
+                evidence_root=evidence_root,
+                source_binding=source_binding,
+                candidate_identity=candidate_identity,
+            )
+        )
+
     def _read_verified_run_result(
         self,
         run_id: str,
@@ -4819,7 +6693,10 @@ print(json.dumps(payload, sort_keys=True))
                 return None, "RUN_RESULT_INVALID"
             if (
                 set(data) == _RUN_RESULT_FIELDS
-                and not self._candidate_evidence_is_valid(data)
+                and (
+                    not self._candidate_evidence_is_valid(data)
+                    or not self._candidate_projection_is_valid(data)
+                )
             ):
                 return None, "RUN_RESULT_INVALID"
             return data, None
@@ -4847,6 +6724,7 @@ print(json.dumps(payload, sort_keys=True))
             set(data)
             not in {
                 _TERMINAL_RUN_RESULT_FIELDS,
+                _INTERNAL_EVIDENCE_TERMINAL_FIELDS,
                 _LEGACY_TERMINAL_FIELDS,
             }
             or data.get("schema_version") != VALIDATION_RUN_RESULT_SCHEMA_VERSION
@@ -4863,13 +6741,35 @@ print(json.dumps(payload, sort_keys=True))
         except (TypeError, ValueError):
             return None, "RUN_RESULT_INVALID"
         if not hmac.compare_digest(digest, expected):
-            return None, "RUN_RESULT_DIGEST_MISMATCH"
+            projection = data.get("candidate_projection")
+            projection_mode = (
+                projection.get("candidate_identity", {}).get(
+                    "candidate_delta_mode"
+                )
+                if isinstance(projection, dict)
+                and isinstance(projection.get("candidate_identity"), dict)
+                else None
+            )
+            return None, (
+                "RUN_RESULT_INVALID"
+                if projection_mode == "exact_worktree_overlay"
+                else "RUN_RESULT_DIGEST_MISMATCH"
+            )
         if (
-            set(data) == _TERMINAL_RUN_RESULT_FIELDS
+            set(data) in {
+                _TERMINAL_RUN_RESULT_FIELDS,
+                _INTERNAL_EVIDENCE_TERMINAL_FIELDS,
+            }
             and (
                 not self._candidate_evidence_is_valid(data)
                 or not self._dual_lane_evidence_is_valid(data)
+                or not self._candidate_projection_is_valid(data)
             )
+        ):
+            return None, "RUN_RESULT_INVALID"
+        if set(data) == _TERMINAL_RUN_RESULT_FIELDS and (
+            not isinstance(data.get("external_evidence_binding"), dict)
+            or not self._verify_external_evidence_bundle(run_id, data)
         ):
             return None, "RUN_RESULT_INVALID"
         manifest_validation = data.get("manifest_validation")
