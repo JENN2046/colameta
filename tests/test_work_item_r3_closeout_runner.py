@@ -937,7 +937,7 @@ def test_rebased_frozen_authority_does_not_accept_historical_root() -> None:
     )
     record = toolchain_binding.load_verified_frozen_toolchain_record()
     assert record["environment_root_sha256"] == (
-        "310dede028aab31843c39b885f73f32e21ecc7199316b0e59aa0279caff3ad53"
+        "1eb3b914080827525b75bb230b0f2cb41a692995892ba39a71085f70bd141c29"
     )
     assert record["environment_root_sha256"] != historical_root
 

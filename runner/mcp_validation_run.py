@@ -866,12 +866,13 @@ class MCPValidationRunManager:
             }
         filename = cryptography.get("filename")
         expected_sha256 = cryptography.get("sha256")
+        expected_size = cryptography.get("size")
         distribution = cryptography.get("distribution", "cryptography")
         version = cryptography.get("version")
         if not all(
             isinstance(value, str) and value.strip()
             for value in (filename, expected_sha256, distribution, version)
-        ):
+        ) or isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size <= 0:
             return {
                 "ok": False,
                 "error_code": "FROZEN_TOOLCHAIN_ASSET_BINDING_INVALID",
@@ -885,6 +886,8 @@ class MCPValidationRunManager:
             candidates.append(Path(asset_dir).expanduser() / filename)
         for candidate in candidates:
             try:
+                if candidate.stat().st_size != expected_size:
+                    continue
                 verified = verify_bound_wheel_asset(
                     candidate,
                     expected_filename=filename,
@@ -919,6 +922,15 @@ class MCPValidationRunManager:
 
         identity = artifact.get("candidate_identity")
         selection = artifact.get("validation_selection")
+        declared_bindings = artifact.get("candidate_source_bindings")
+        if not isinstance(declared_bindings, list) or any(
+            not isinstance(binding, dict)
+            or not {"path", "present", "sha256"}.issubset(binding)
+            for binding in declared_bindings
+        ):
+            raise ValidationEnvironmentError(
+                "trusted launcher candidate source bindings are unavailable"
+            )
         bindings = self._source_bindings_for_artifact(artifact)
         trusted_bindings = [
             {
@@ -929,6 +941,10 @@ class MCPValidationRunManager:
             for binding in bindings
             if isinstance(binding, dict)
         ]
+        if len(trusted_bindings) != len(bindings):
+            raise ValidationEnvironmentError(
+                "trusted launcher candidate source bindings are malformed"
+            )
         if not isinstance(identity, dict) or not isinstance(selection, dict):
             raise ValidationEnvironmentError("trusted launcher candidate binding is unavailable")
         if identity.get("source_binding_scope") not in {
@@ -938,8 +954,7 @@ class MCPValidationRunManager:
             raise ValidationEnvironmentError("trusted launcher requires a full candidate delta")
         binding_digest = canonical_manifest_validation_sha256(trusted_bindings)
         if (
-            not trusted_bindings
-            or identity.get("source_binding_count") != len(bindings)
+            identity.get("source_binding_count") != len(bindings)
             or canonical_manifest_validation_sha256(bindings)
             != identity.get("source_binding_sha256")
             or identity.get("worktree_delta_sha256")

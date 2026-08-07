@@ -60,12 +60,13 @@ _EXPECTED_FROZEN_TOOLCHAIN_ASSETS = {
     "cryptography": {
         "distribution": "cryptography",
         "version": "50.0.0",
-        "filename": "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl",
-        "sha256": "82148ec5bddac30b51a5b3c1945075f896fa022cb93f8e4a01e9f6ee95292c5f",
+        "filename": "cryptography-50.0.0-cp39-abi3-manylinux_2_34_x86_64.whl",
+        "size": 4762400,
+        "sha256": "37fdb0d0111f1e2ff07139dfb79f1b49531f8e213c46f1163dd7642979b58c47",
     },
 }
 _EXPECTED_ENVIRONMENT_ROOT_SHA256 = (
-    "310dede028aab31843c39b885f73f32e21ecc7199316b0e59aa0279caff3ad53"
+    "1eb3b914080827525b75bb230b0f2cb41a692995892ba39a71085f70bd141c29"
 )
 _FROZEN_TOOLCHAIN_RECORD_SCHEMA_VERSION = "work_item_r3_closeout_toolchain_record.v2"
 _FROZEN_TOOLCHAIN_RECORD_BYTECODE_POLICY = {
@@ -74,7 +75,7 @@ _FROZEN_TOOLCHAIN_RECORD_BYTECODE_POLICY = {
     "unknown_owner": "fail_closed",
 }
 _EXPECTED_FROZEN_TOOLCHAIN_RECORD_SHA256 = (
-    "65b9b06d5fcd3dbe6d65702ba67e65841bfbcf8291ad35e324ce9c5aec08cb5d"
+    "c9ba12106b90e31d3000f1de8f41f3587fc4fbbb56a712fdf44ee482ef6570af"
 )
 
 

@@ -16,6 +16,7 @@ import pytest
 
 import runner.mcp_validation_run as validation_run
 import runner.toolchain_environment as toolchain_environment
+import runner.work_item_governance.toolchain_binding as toolchain_binding
 from runner.mcp_validation_run import (
     MCPValidationRunManager,
 )
@@ -124,6 +125,176 @@ def test_validation_tool_install_timeout_remains_fail_closed(
             timeout_seconds=1200,
             label="candidate validation tool installation",
         )
+
+
+def _trusted_launcher_artifact_for_bindings(
+    tmp_path: Path,
+    bindings: list[dict[str, object]],
+) -> tuple[MCPValidationRunManager, dict[str, object], Path]:
+    project = _git_project(tmp_path)
+    launcher = project / "scripts" / "work_item_r3_trusted_launcher.py"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(
+        Path("scripts/work_item_r3_trusted_launcher.py").read_bytes()
+    )
+    manager = MCPValidationRunManager(str(project))
+    identity = manager._candidate_identity(
+        "a" * 40,
+        bindings,
+        binding_scope="full_allowed_worktree_delta",
+    )
+    artifact = {
+        "candidate_identity": identity,
+        "candidate_source_bindings": list(bindings),
+        "validation_selection": {
+            "command_specs_sha256": "b" * 64,
+        },
+    }
+    host_preflight = {
+        "toolchain_project_root": str(tmp_path / "toolchain-project"),
+        "environment_root": str(tmp_path / "toolchain-project" / ".venv"),
+        "environment_root_sha256": "c" * 64,
+        "frozen_toolchain_record_sha256": "d" * 64,
+        "cryptography_version": "50.0.0",
+    }
+    return manager, {"artifact": artifact, "host_preflight": host_preflight}, project
+
+
+def test_trusted_launcher_receipt_accepts_explicit_empty_candidate_delta(
+    tmp_path: Path,
+) -> None:
+    manager, payload, project = _trusted_launcher_artifact_for_bindings(tmp_path, [])
+    _path, receipt = manager._write_trusted_launcher_binding_receipt(
+        artifact=payload["artifact"],
+        preview_id="preview-empty-delta",
+        candidate_root=project,
+        run_parent=tmp_path / "run",
+        host_preflight=payload["host_preflight"],
+    )
+    candidate = receipt["candidate"]
+    assert candidate["source_binding_count"] == 0
+    assert candidate["source_bindings"] == []
+    assert candidate["source_binding_sha256"] == (
+        validation_run.canonical_manifest_validation_sha256([])
+    )
+    assert candidate["worktree_delta_sha256"] == candidate["source_binding_sha256"]
+
+
+@pytest.mark.parametrize(
+    "identity_update",
+    [
+        {"source_binding_sha256": None},
+        {"worktree_delta_sha256": None},
+        {"source_binding_sha256": "e" * 64},
+    ],
+)
+def test_trusted_launcher_receipt_rejects_missing_null_or_mismatched_empty_delta(
+    tmp_path: Path,
+    identity_update: dict[str, object],
+) -> None:
+    manager, payload, project = _trusted_launcher_artifact_for_bindings(tmp_path, [])
+    payload["artifact"]["candidate_identity"].update(identity_update)
+    with pytest.raises(
+        validation_run.ValidationEnvironmentError,
+        match="trusted launcher candidate digest binding mismatch",
+    ):
+        manager._write_trusted_launcher_binding_receipt(
+            artifact=payload["artifact"],
+            preview_id="preview-invalid-empty-delta",
+            candidate_root=project,
+            run_parent=tmp_path / "run",
+            host_preflight=payload["host_preflight"],
+        )
+
+
+def test_trusted_launcher_receipt_rejects_missing_empty_delta_binding(
+    tmp_path: Path,
+) -> None:
+    manager, payload, project = _trusted_launcher_artifact_for_bindings(tmp_path, [])
+    del payload["artifact"]["candidate_identity"]["worktree_delta_sha256"]
+    with pytest.raises(
+        validation_run.ValidationEnvironmentError,
+        match="trusted launcher candidate digest binding mismatch",
+    ):
+        manager._write_trusted_launcher_binding_receipt(
+            artifact=payload["artifact"],
+            preview_id="preview-missing-empty-delta",
+            candidate_root=project,
+            run_parent=tmp_path / "run",
+            host_preflight=payload["host_preflight"],
+        )
+
+
+@pytest.mark.parametrize("invalid_bindings", ["missing", None, [{"path": "broken"}]])
+def test_trusted_launcher_receipt_rejects_missing_or_malformed_delta_evidence(
+    tmp_path: Path,
+    invalid_bindings: object,
+) -> None:
+    manager, payload, project = _trusted_launcher_artifact_for_bindings(tmp_path, [])
+    if invalid_bindings == "missing":
+        del payload["artifact"]["candidate_source_bindings"]
+    else:
+        payload["artifact"]["candidate_source_bindings"] = invalid_bindings
+    with pytest.raises(
+        validation_run.ValidationEnvironmentError,
+        match="trusted launcher candidate source bindings are unavailable",
+    ):
+        manager._write_trusted_launcher_binding_receipt(
+            artifact=payload["artifact"],
+            preview_id="preview-malformed-empty-delta",
+            candidate_root=project,
+            run_parent=tmp_path / "run",
+            host_preflight=payload["host_preflight"],
+        )
+
+
+def test_frozen_cryptography_record_is_compatible_with_python_310_and_current_host() -> None:
+    from packaging.tags import cpython_tags, sys_tags
+    from packaging.utils import parse_wheel_filename
+
+    asset = toolchain_binding.load_verified_frozen_toolchain_record()["required_assets"][
+        "cryptography"
+    ]
+    _name, _version, _build, compatible_tags = parse_wheel_filename(asset["filename"])
+    compatible_tags = set(compatible_tags)
+    python310_tags = set(
+        cpython_tags(
+            python_version=(3, 10),
+            abis=("cp310",),
+            platforms=("manylinux_2_34_x86_64",),
+        )
+    )
+    cp311_tags = set(
+        parse_wheel_filename(
+            "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl"
+        )[3]
+    )
+    assert compatible_tags & python310_tags
+    assert compatible_tags & set(sys_tags())
+    assert not cp311_tags & python310_tags
+    assert asset["filename"].startswith("cryptography-50.0.0-cp39-abi3-")
+    assert asset["size"] == 4762400
+    assert asset["sha256"] == (
+        "37fdb0d0111f1e2ff07139dfb79f1b49531f8e213c46f1163dd7642979b58c47"
+    )
+
+
+def test_frozen_asset_size_mismatch_is_rejected_before_hash_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset = toolchain_binding.load_verified_frozen_toolchain_record()["required_assets"][
+        "cryptography"
+    ]
+    wrong = tmp_path / asset["filename"]
+    wrong.write_bytes(b"wrong-size")
+    monkeypatch.setenv("COLAMETA_FROZEN_CRYPTOGRAPHY_WHEEL", str(wrong))
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    resolved = manager._resolve_frozen_toolchain_asset()
+    assert resolved == {
+        "ok": False,
+        "error_code": "FROZEN_TOOLCHAIN_LOCAL_ASSETS_UNAVAILABLE",
+    }
 
 
 def test_validation_environment_removes_parent_python_contamination(
