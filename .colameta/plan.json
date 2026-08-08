@@ -1769,6 +1769,11 @@
           "command": "git diff --check",
           "timeout_seconds": 600,
           "continue_on_failure": false
+        },
+        {
+          "command": ".venv/bin/python -m pytest tests/test_work_item_r3_closeout_runner.py -q -m host_frozen_toolchain -rs",
+          "timeout_seconds": 1200,
+          "continue_on_failure": false
         }
       ],
       "manual_acceptance": [

@@ -947,6 +947,117 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
     assert rewritten[0].endswith(os.path.join("validation-venv", "bin", "python"))
 
 
+@pytest.mark.parametrize(
+    ("command", "is_pytest", "marker", "expected_lane"),
+    [
+        (
+            ["python", "-m", "pytest", "x.py", "-m", "host_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "pytest",
+                "x.py",
+                "-m",
+                "not host_frozen_toolchain",
+            ],
+            True,
+            "not host_frozen_toolchain",
+            "candidate",
+        ),
+        (["python", "-m", "pytest", "x.py"], True, None, "candidate"),
+        (
+            ["pytest", "x.py", "-m", "host_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
+            ["python", "-m", "unrelated_module", "-m", "host_frozen_toolchain"],
+            False,
+            None,
+            "candidate",
+        ),
+    ],
+)
+def test_pytest_marker_parser_distinguishes_python_module_flag(
+    command: list[str],
+    is_pytest: bool,
+    marker: str | None,
+    expected_lane: str,
+) -> None:
+    actual_is_pytest, actual_marker = (
+        MCPValidationRunManager._extract_pytest_marker_expression(command)
+    )
+    assert (actual_is_pytest, actual_marker) == (is_pytest, marker)
+    assert MCPValidationRunManager._command_lane(command) == expected_lane
+
+
+def test_full_preserves_declared_host_frozen_acceptance_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    acceptance = [
+        {
+            "argv": ["python", "-m", "pytest", "tests", "-q"],
+            "timeout_seconds": 600,
+            "continue_on_failure": False,
+        },
+        {
+            "argv": ["python", "-m", "compileall", "runner"],
+            "timeout_seconds": 600,
+            "continue_on_failure": False,
+        },
+        {
+            "argv": ["git", "diff", "--check"],
+            "timeout_seconds": 600,
+            "continue_on_failure": False,
+        },
+        {
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "tests/test_work_item_r3_closeout_runner.py",
+                "-q",
+                "-m",
+                "host_frozen_toolchain",
+                "-rs",
+            ],
+            "timeout_seconds": 1200,
+            "continue_on_failure": False,
+        },
+    ]
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: (acceptance, []),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_full_validation_strategies",
+        lambda: [
+            {
+                "strategy": "python_candidate_full",
+                "lane": "candidate",
+                "argv": ["python", "-m", "pytest", "tests", "-q"],
+            }
+        ],
+    )
+
+    _commands, _specs, _strategy, _warnings, groups, lanes = manager._select_commands(
+        "full", []
+    )
+
+    assert lanes[:4] == ["candidate", "candidate", "candidate", "host_frozen"]
+    assert groups[0]["strategy"] == "plan_acceptance"
+
+
 def test_manifest_validation_does_not_allow_deselect_extensions(
     tmp_path: Path,
 ) -> None:

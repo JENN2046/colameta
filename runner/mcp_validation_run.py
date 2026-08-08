@@ -4570,19 +4570,49 @@ print(json.dumps(payload, sort_keys=True))
         ]
 
     @staticmethod
-    def _command_requests_host_frozen(command: Any) -> bool:
-        """Return whether an explicit command selects the Host-Frozen lane."""
+    def _extract_pytest_marker_expression(
+        command: Any,
+    ) -> tuple[bool, str | None]:
+        """Return the pytest invocation and its marker expression, if any.
 
-        if not isinstance(command, list):
-            return False
-        try:
-            marker_index = command.index("-m")
-        except ValueError:
-            return False
-        return (
-            marker_index + 1 < len(command)
-            and command[marker_index + 1] == _HOST_MARKER_EXPRESSION
+        ``python -m pytest`` uses ``-m`` before pytest starts, so only the
+        arguments after the pytest module are eligible for marker parsing.
+        Direct ``pytest`` entry points are handled separately.  This is
+        intentionally narrow and does not attempt to parse arbitrary Python
+        command-line interfaces.
+        """
+
+        if not isinstance(command, list) or not all(
+            isinstance(part, str) for part in command
+        ) or not command:
+            return False, None
+
+        executable = Path(command[0]).name.lower()
+        executable = executable.removesuffix(".exe")
+        if executable == "pytest" or executable.startswith("pytest-"):
+            pytest_args = command[1:]
+        elif (
+            len(command) >= 3
+            and command[1] == "-m"
+            and command[2] == "pytest"
+        ):
+            pytest_args = command[3:]
+        else:
+            return False, None
+
+        for index, argument in enumerate(pytest_args):
+            if argument == "-m" and index + 1 < len(pytest_args):
+                return True, pytest_args[index + 1]
+        return True, None
+
+    @classmethod
+    def _command_requests_host_frozen(cls, command: Any) -> bool:
+        """Return whether an explicit pytest command selects Host-Frozen."""
+
+        is_pytest, marker_expression = cls._extract_pytest_marker_expression(
+            command
         )
+        return is_pytest and marker_expression == _HOST_MARKER_EXPRESSION
 
     @classmethod
     def _command_lane(cls, command: Any) -> str:
