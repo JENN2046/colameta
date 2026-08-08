@@ -306,7 +306,17 @@ class P1ValidationResultError(ValueError):
         self.message = message
 
 
-class AmbiguousHostFrozenMarkerError(ValueError):
+class PytestMarkerAuthorityError(ValueError):
+    """A pytest command cannot be assigned one governed execution lane."""
+
+    code = "PYTEST_MARKER_AUTHORITY_REJECTED"
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(detail)
+
+
+class AmbiguousHostFrozenMarkerError(PytestMarkerAuthorityError):
     """A pytest command mixes Host-Frozen and candidate authority."""
 
     code = "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
@@ -316,6 +326,20 @@ class AmbiguousHostFrozenMarkerError(ValueError):
         super().__init__(
             "pytest marker expression references host_frozen_toolchain "
             "with mixed or unsupported authority semantics; command rejected."
+        )
+
+
+class MultiplePytestMarkerSelectorsError(PytestMarkerAuthorityError):
+    """Governed validation permits at most one pytest ``-m`` selector."""
+
+    code = "MULTIPLE_PYTEST_MARKER_SELECTORS_UNSUPPORTED"
+
+    def __init__(self, selector_count: int) -> None:
+        self.selector_count = selector_count
+        super().__init__(
+            "multiple marker selectors are unsupported; governed validation "
+            "supports at most one pytest marker selector; "
+            f"received {selector_count}; command rejected."
         )
 
 
@@ -385,22 +409,26 @@ class MCPValidationRunManager:
         self._path_policy = RunnerPathPolicy()
 
     @staticmethod
-    def _ambiguous_marker_error_result(
-        error: AmbiguousHostFrozenMarkerError,
+    def _marker_authority_error_result(
+        error: PytestMarkerAuthorityError,
     ) -> dict[str, Any]:
         """Return the fail-closed preview response without creating a preview."""
 
-        return {
+        result: dict[str, Any] = {
             "ok": False,
             "action": "preview",
             "error_code": error.code,
             "message": str(error),
-            "marker_expression": error.expression,
             "command_executed": False,
             "candidate_lane_fallback": False,
             "host_frozen_lane_execution": False,
             "terminal_result": "rejected",
         }
+        if isinstance(error, AmbiguousHostFrozenMarkerError):
+            result["marker_expression"] = error.expression
+        if isinstance(error, MultiplePytestMarkerSelectorsError):
+            result["marker_selector_count"] = error.selector_count
+        return result
 
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         normalized_action = action.strip().lower() if isinstance(action, str) else ""
@@ -477,8 +505,8 @@ class MCPValidationRunManager:
                 validation_groups,
                 lane_assignments,
             ) = self._select_commands(scope, resolved_files)
-        except AmbiguousHostFrozenMarkerError as error:
-            return self._ambiguous_marker_error_result(error)
+        except PytestMarkerAuthorityError as error:
+            return self._marker_authority_error_result(error)
         blockers: list[str] = []
         if not commands:
             blockers.append("NO_VALIDATION_COMMANDS")
@@ -579,9 +607,12 @@ class MCPValidationRunManager:
                 "message": "manifest validation source 无效，未生成验证 preview。",
             }
 
-        command_specs, rejection_details = self._manifest_bound_command_specs(
-            source["acceptance_commands"]
-        )
+        try:
+            command_specs, rejection_details = self._manifest_bound_command_specs(
+                source["acceptance_commands"]
+            )
+        except PytestMarkerAuthorityError as error:
+            return self._marker_authority_error_result(error)
         blockers: list[str] = []
         warnings: list[str] = []
         if rejection_details:
@@ -617,8 +648,8 @@ class MCPValidationRunManager:
                 self._command_lane(spec.get("argv", []))
                 for spec in command_specs
             ]
-        except AmbiguousHostFrozenMarkerError as error:
-            return self._ambiguous_marker_error_result(error)
+        except PytestMarkerAuthorityError as error:
+            return self._marker_authority_error_result(error)
         validation_selection = self._validation_selection(
             "manifest_bound",
             target_files,
@@ -4626,12 +4657,17 @@ print(json.dumps(payload, sort_keys=True))
         instead of silently falling back to the candidate lane.
         """
 
-        is_pytest, marker_expression = cls._extract_pytest_marker_expression(
+        is_pytest, marker_selections = cls._extract_pytest_marker_selections(
             command
         )
-        if not is_pytest or marker_expression is None:
+        if not is_pytest or not marker_selections:
             return _MARKER_CLASS_ORDINARY_CANDIDATE
+        if len(marker_selections) > 1:
+            raise MultiplePytestMarkerSelectorsError(len(marker_selections))
 
+        marker_expression = marker_selections[0]
+        if marker_expression is None:
+            return _MARKER_CLASS_ORDINARY_CANDIDATE
         expression = marker_expression.strip()
         if expression == _HOST_MARKER_EXPRESSION:
             return _MARKER_CLASS_VALID_HOST
@@ -4642,10 +4678,10 @@ print(json.dumps(payload, sort_keys=True))
         return _MARKER_CLASS_ORDINARY_CANDIDATE
 
     @staticmethod
-    def _extract_pytest_marker_expression(
+    def _extract_pytest_marker_selections(
         command: Any,
-    ) -> tuple[bool, str | None]:
-        """Return the pytest invocation and its marker expression, if any.
+    ) -> tuple[bool, list[str | None]]:
+        """Return the pytest invocation and every governed ``-m`` selector.
 
         ``python -m pytest`` uses ``-m`` before pytest starts, so only the
         arguments after the pytest module are eligible for marker parsing.
@@ -4657,7 +4693,7 @@ print(json.dumps(payload, sort_keys=True))
         if not isinstance(command, list) or not all(
             isinstance(part, str) for part in command
         ) or not command:
-            return False, None
+            return False, []
 
         executable = Path(command[0]).name.lower()
         executable = executable.removesuffix(".exe")
@@ -4670,15 +4706,32 @@ print(json.dumps(payload, sort_keys=True))
         ):
             pytest_args = command[3:]
         else:
-            return False, None
+            return False, []
 
+        marker_selections: list[str | None] = []
         for index, argument in enumerate(pytest_args):
-            if argument == "-m" and index + 1 < len(pytest_args):
-                return True, pytest_args[index + 1]
+            if argument == "-m":
+                marker_selections.append(
+                    pytest_args[index + 1]
+                    if index + 1 < len(pytest_args)
+                    else None
+                )
             if argument.startswith("-m="):
                 marker_expression = argument[3:]
-                return True, marker_expression or None
-        return True, None
+                marker_selections.append(marker_expression or None)
+        return True, marker_selections
+
+    @classmethod
+    def _extract_pytest_marker_expression(
+        cls,
+        command: Any,
+    ) -> tuple[bool, str | None]:
+        """Return the first marker expression for compatibility callers."""
+
+        is_pytest, marker_selections = cls._extract_pytest_marker_selections(
+            command
+        )
+        return is_pytest, marker_selections[0] if marker_selections else None
 
     @classmethod
     def _command_requests_host_frozen(cls, command: Any) -> bool:
@@ -4715,6 +4768,10 @@ print(json.dumps(payload, sort_keys=True))
             return [], str(exc)
         if not argv:
             return [], "空命令"
+        # Classify the marker authority before the generic command safety
+        # filter.  Otherwise a compound protected expression could be dropped
+        # as merely unsafe while the remaining acceptance contract continues.
+        self._classify_pytest_marker_expression(argv)
         if not self._is_safe_command(argv):
             return [], "命令不在安全白名单内"
         return argv, None

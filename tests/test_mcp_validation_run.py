@@ -20,6 +20,7 @@ import runner.work_item_governance.toolchain_binding as toolchain_binding
 from runner.mcp_validation_run import (
     AmbiguousHostFrozenMarkerError,
     MCPValidationRunManager,
+    MultiplePytestMarkerSelectorsError,
 )
 from runner.toolchain_environment import (
     ValidationEnvironment,
@@ -1111,6 +1112,138 @@ def test_preview_rejects_compound_host_frozen_marker_before_execution(
     assert not (tmp_path / "validation-project" / ".colameta").exists()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        [
+            "python",
+            "-m",
+            "pytest",
+            "x.py",
+            "-m",
+            "smoke",
+            "-m",
+            "host_frozen_toolchain",
+        ],
+        [
+            "python",
+            "-m",
+            "pytest",
+            "x.py",
+            "-m",
+            "host_frozen_toolchain",
+            "-m",
+            "smoke",
+        ],
+        [
+            "python",
+            "-m",
+            "pytest",
+            "x.py",
+            "-m",
+            "smoke",
+            "-m",
+            "unit",
+        ],
+        [
+            "python",
+            "-m",
+            "pytest",
+            "x.py",
+            "-m=smoke",
+            "-m=host_frozen_toolchain",
+        ],
+    ],
+)
+def test_repeated_pytest_marker_selectors_are_rejected(
+    command: list[str],
+) -> None:
+    with pytest.raises(
+        MultiplePytestMarkerSelectorsError,
+        match="multiple marker selectors",
+    ):
+        MCPValidationRunManager._command_lane(command)
+
+
+def test_unsafe_acceptance_command_is_not_silently_filtered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    manager = MCPValidationRunManager(str(project))
+    acceptance = types.SimpleNamespace(
+        version="v1.18",
+        acceptance_commands=[
+            types.SimpleNamespace(
+                command="python -m pytest tests -q",
+                timeout_seconds=60,
+                continue_on_failure=False,
+            ),
+            types.SimpleNamespace(
+                command=(
+                    "python -m pytest tests -q -m "
+                    "'host_frozen_toolchain or smoke'"
+                ),
+                timeout_seconds=60,
+                continue_on_failure=False,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        validation_run,
+        "load_current_version",
+        lambda _project_root: "v1.18",
+    )
+    monkeypatch.setattr(
+        validation_run.PlanLoader,
+        "load_plan",
+        lambda _loader, _plan_file: types.SimpleNamespace(versions=[acceptance]),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert "preview_id" not in result
+
+
+def test_preview_rejects_repeated_marker_selector_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "tests",
+                "-q",
+                "-m",
+                "smoke",
+                "-m",
+                "host_frozen_toolchain",
+            ],
+            "timeout_seconds": 60,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MULTIPLE_PYTEST_MARKER_SELECTORS_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert result["host_frozen_lane_execution"] is False
+    assert "preview_id" not in result
+
+
 def test_full_preserves_declared_host_frozen_acceptance_lane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1164,10 +1297,12 @@ def test_full_preserves_declared_host_frozen_acceptance_lane(
         ],
     )
 
-    _commands, _specs, _strategy, _warnings, groups, lanes = manager._select_commands(
+    commands, specs, _strategy, _warnings, groups, lanes = manager._select_commands(
         "full", []
     )
 
+    assert len(acceptance) == 4
+    assert len(commands) == len(specs) == 5
     assert lanes[:4] == ["candidate", "candidate", "candidate", "host_frozen"]
     assert groups[0]["strategy"] == "plan_acceptance"
 
