@@ -26,6 +26,7 @@ from runner.mcp_validation_run import (
 from runner.toolchain_environment import (
     ValidationEnvironment,
     build_validation_subprocess_environment,
+    command_requires_candidate_python_environment,
     create_validation_venv,
     materialize_trusted_source_venv,
     rewrite_command_for_validation_environment,
@@ -429,7 +430,7 @@ def test_project_metadata_uses_tomli_only_when_stdlib_tomllib_is_missing(
     [
         ({"pyproject.toml": '[project]\nname = "fixture"\n'}, True),
         ({"pyproject.toml": "[build-system]\nbuild-backend = 'setuptools.build_meta'\n"}, True),
-        ({"setup.cfg": "[metadata]\nname = fixture\n"}, True),
+        ({"setup.cfg": "[metadata]\nname = fixture\n"}, False),
         ({"setup.py": "from setuptools import setup\nsetup()\n"}, True),
         ({"pyproject.toml": "[tool.ruff]\nline-length = 88\n"}, False),
         ({}, False),
@@ -446,6 +447,76 @@ def test_project_installability_requires_an_explicit_packaging_signal(
         (candidate / relative).write_text(contents, encoding="utf-8")
 
     assert toolchain_environment._project_is_installable(candidate) is expected
+
+
+def test_setup_cfg_only_tool_configuration_does_not_trigger_candidate_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "setup.cfg").write_text(
+        "[tool:pytest]\naddopts = -q\n", encoding="utf-8"
+    )
+    labels: list[str] = []
+
+    class FakeBuilder:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def create(self, path: Path) -> None:
+            path.mkdir(parents=True, exist_ok=True)
+            python = toolchain_environment.venv_python(path)
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("validation-python\n", encoding="utf-8")
+
+    pip_wheel = tmp_path / "pip-26.2-py3-none-any.whl"
+    pip_wheel.write_bytes(b"pip wheel")
+    monkeypatch.setattr(toolchain_environment.venv, "EnvBuilder", FakeBuilder)
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_run_toolchain_command",
+        lambda _command, **kwargs: labels.append(str(kwargs["label"])),
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "download_candidate_pip_asset",
+        lambda **kwargs: {
+            "path": pip_wheel,
+            "filename": pip_wheel.name,
+            "sha256": toolchain_environment._CANDIDATE_PIP_WHEEL_SHA256,
+            "asset_verified": True,
+            "installed_offline": False,
+            "network_used": True,
+            "runtime_dependency": False,
+            "_pip_command": [str(kwargs["python_executable"]), "-m", "pip", "download"],
+        },
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_read_distribution_version",
+        lambda *_args, **_kwargs: "24.0" if len(labels) == 0 else "26.2",
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_verify_candidate_install",
+        lambda **_kwargs: {"validation_environment_verified": True},
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_probe_installed_environment_identity",
+        lambda **_kwargs: _fake_environment_identity(),
+    )
+
+    environment = toolchain_environment.prepare_validation_environment(
+        candidate_root=candidate,
+        work_root=tmp_path / "work",
+        parent_environment={"PATH": os.defpath},
+        needs_python=True,
+    )
+
+    assert "candidate wheel build" not in labels
+    assert environment.summary.get("candidate_package_expected") is not True
 
 
 @pytest.mark.parametrize("broken_backend", [False, True])
@@ -1096,6 +1167,71 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
     )
     assert command[1:] == rewritten[1:]
     assert rewritten[0].endswith(os.path.join("validation-venv", "bin", "python"))
+
+
+@pytest.mark.parametrize("tool", ["pytest", "ruff", "bandit", "pip-audit"])
+def test_supported_validation_console_uses_candidate_environment(
+    tmp_path: Path,
+    tool: str,
+) -> None:
+    venv = tmp_path / "validation-venv"
+    script = venv / "bin" / tool
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command = [tool, "--version"]
+
+    assert command_requires_candidate_python_environment(command) is True
+    rewritten = rewrite_command_for_validation_environment(command, venv)
+    assert Path(rewritten[0]).resolve() == script.resolve()
+    assert not rewritten[0].startswith("/usr/bin/")
+
+
+def test_candidate_source_binding_is_rechecked_after_environment_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    source = project / "candidate.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    _git(project, "add", "candidate.py")
+    _git(project, "commit", "-qm", "add candidate")
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    manager = MCPValidationRunManager(str(project))
+    _patch_git_diff_only_preview(manager, monkeypatch)
+    observed_commands: list[list[str]] = []
+
+    def mutate_during_prepare(
+        *, candidate_root: Path, **_kwargs: object
+    ) -> ValidationEnvironment:
+        (candidate_root / "candidate.py").write_text(
+            "VALUE = malicious\n", encoding="utf-8"
+        )
+        return _minimal_validation_environment(tmp_path, candidate_root)
+
+    monkeypatch.setattr(
+        validation_run,
+        "prepare_validation_environment",
+        mutate_during_prepare,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_run_candidate_command",
+        lambda command, **_kwargs: observed_commands.append(list(command))
+        or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    preview = manager.preview(
+        {"scope": "target_files", "target_files": ["candidate.py"]}
+    )
+    started = manager.run({"preview_id": preview["preview_id"]})
+    final = _terminal_status(manager, started["run_id"])
+
+    assert final["status"] == "failed"
+    assert final["command_results"][0]["error_code"] == (
+        "CANDIDATE_SOURCE_CHANGED_DURING_ENVIRONMENT_PREPARATION"
+    )
+    assert final["command_results"][0]["executed_command"] == ""
+    assert observed_commands == []
 
 
 @pytest.mark.parametrize(

@@ -87,6 +87,15 @@ _VALIDATION_TOOL_REQUIREMENTS = (
     "pip-audit>=2.7,<3",
     "pytest-cov>=5,<7",
 )
+_VALIDATION_TOOL_CONSOLE_COMMANDS = frozenset(
+    {
+        "pytest",
+        "ruff",
+        "bandit",
+        "pip-audit",
+        "coverage",
+    }
+)
 _VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS = 1200
 _PACKAGE_MODULES = ("runner", "adapters", "schemas", "scripts")
 
@@ -561,6 +570,16 @@ def command_uses_python(command: Sequence[str]) -> bool:
     return name in {"python", "python3", "python.exe", "python3.exe"} or name.startswith("python3.")
 
 
+def command_requires_candidate_python_environment(command: Sequence[str]) -> bool:
+    """Return whether a governed command needs the candidate Python toolchain."""
+
+    if command_uses_python(command):
+        return True
+    if not command:
+        return False
+    return Path(command[0]).name.lower() in _VALIDATION_TOOL_CONSOLE_COMMANDS
+
+
 def rewrite_command_for_validation_environment(
     command: Sequence[str],
     validation_venv: Path | None,
@@ -568,8 +587,14 @@ def rewrite_command_for_validation_environment(
     """Point Python argv at the validation venv while preserving declared argv."""
 
     rewritten = list(command)
-    if validation_venv is not None and command_uses_python(rewritten):
-        rewritten[0] = str(venv_python(validation_venv))
+    if validation_venv is not None:
+        if command_uses_python(rewritten):
+            rewritten[0] = str(venv_python(validation_venv))
+        elif command_requires_candidate_python_environment(rewritten):
+            # Resolve governed validation entrypoints from the prepared venv;
+            # never allow a host PATH executable to become the authority.
+            script = venv_console_script(validation_venv, Path(rewritten[0]).name)
+            rewritten[0] = str(script or (venv_bin_dir(validation_venv) / Path(rewritten[0]).name))
     return rewritten
 
 
@@ -604,12 +629,14 @@ def _project_metadata(candidate_root: Path) -> tuple[str | None, list[str]]:
 def _project_is_installable(candidate_root: Path) -> bool:
     """Return whether the candidate exposes an explicit packaging surface.
 
-    Static PEP 621 metadata is optional for local projects.  A setup.py,
-    setup.cfg, or packaging table in pyproject.toml is enough to enter the
-    existing governed wheel build/install path; a tool-only pyproject is not.
+    Static PEP 621 metadata is optional for local projects.  A setup.py or an
+    explicit packaging table in pyproject.toml is enough to enter the existing
+    governed wheel build/install path.  setup.cfg contributes packaging
+    configuration only when paired with a real build surface; a setup.cfg-only
+    tool configuration is not installable.
     """
 
-    if any((candidate_root / filename).is_file() for filename in ("setup.py", "setup.cfg")):
+    if (candidate_root / "setup.py").is_file():
         return True
     payload = _load_pyproject(candidate_root)
     if payload is None:

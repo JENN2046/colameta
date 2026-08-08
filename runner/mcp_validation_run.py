@@ -35,6 +35,7 @@ from runner.toolchain_environment import (
     build_validation_subprocess_environment,
     canonical_environment_identity,
     command_uses_python,
+    command_requires_candidate_python_environment,
     materialize_frozen_toolchain_environment,
     materialize_trusted_source_venv,
     prepare_validation_environment,
@@ -1838,7 +1839,13 @@ print(json.dumps(payload, sort_keys=True))
             self._execute_run_worker(run_id, preview_id, artifact, command_specs, commands, started_at)
         except Exception as exc:
             completed_at = _utc_now()
-            stderr = f"VALIDATION_RUN_FAILED: {_redact_sensitive_text(str(exc))}"
+            exception_text = _redact_sensitive_text(str(exc))
+            semantic_error_code = (
+                exception_text
+                if re.fullmatch(r"[A-Z][A-Z0-9_]{2,100}", exception_text)
+                else "VALIDATION_RUN_FAILED"
+            )
+            stderr = f"{semantic_error_code}: {exception_text}"
             lane_assignments = artifact.get("validation_lanes")
             if (
                 not isinstance(lane_assignments, list)
@@ -1856,7 +1863,7 @@ print(json.dumps(payload, sort_keys=True))
                 "lane": failed_lane,
                 "ok": False,
                 "returncode": 125,
-                "error_code": "VALIDATION_RUN_FAILED",
+                "error_code": semantic_error_code,
                 "timeout_seconds": (
                     self._normalize_timeout_seconds(
                         command_specs[0].get("timeout_seconds")
@@ -2021,13 +2028,13 @@ print(json.dumps(payload, sort_keys=True))
                     and isinstance(spec, dict)
                 ]
                 needs_candidate_python = any(
-                    command_uses_python(spec.get("argv", []))
+                    command_requires_candidate_python_environment(spec.get("argv", []))
                     for spec in candidate_specs
                 )
                 needs_host_python = any(
                     lane_assignments[index] == _HOST_FROZEN_LANE
                     and isinstance(spec, dict)
-                    and command_uses_python(spec.get("argv", []))
+                    and command_requires_candidate_python_environment(spec.get("argv", []))
                     for index, spec in enumerate(command_specs)
                 )
                 # Ordinary candidate validation must not depend on the
@@ -2081,6 +2088,13 @@ print(json.dumps(payload, sort_keys=True))
                             else "50.0.0"
                         ),
                     )
+                    if not self._candidate_source_bindings_match_checkout(
+                        Path(candidate_checkout["root"]),
+                        source_bindings,
+                    ):
+                        raise ValidationEnvironmentError(
+                            "CANDIDATE_SOURCE_CHANGED_DURING_ENVIRONMENT_PREPARATION"
+                        )
                     candidate_checkout["validation_venv"] = (
                         validation_environment.venv_dir
                     )
@@ -2255,11 +2269,10 @@ print(json.dumps(payload, sort_keys=True))
                     })
                     continue
                 effective_command = list(command)
-                if manifest_execution_head is not None:
-                    effective_command = self._manifest_execution_command(
-                        effective_command,
-                        manifest_execution_head,
-                    )
+                effective_command = self._execution_command_for_validation(
+                    effective_command,
+                    manifest_execution_head=manifest_execution_head,
+                )
                 if lane == _HOST_FROZEN_LANE and command_uses_python(effective_command):
                     selected_python = (
                         host_preflight.get("python_executable")
@@ -3734,6 +3747,39 @@ print(json.dumps(payload, sort_keys=True))
                 )
         return file_map, canonical_manifest_validation_sha256(file_map)
 
+    @classmethod
+    def _candidate_source_bindings_match_checkout(
+        cls,
+        candidate_root: Path,
+        bindings: list[dict[str, Any]],
+    ) -> bool:
+        """Verify the isolated checkout still matches the Preview binding.
+
+        Environment preparation may execute a build backend against the
+        materialized checkout.  Re-measure the same bound paths immediately
+        afterwards so a backend cannot mutate the Candidate and then execute
+        commands against a different source identity.
+        """
+
+        try:
+            measured, _digest = cls._candidate_file_map(candidate_root, bindings)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        if len(measured) != len(bindings):
+            return False
+        for expected, actual in zip(bindings, measured, strict=True):
+            if not isinstance(expected, dict) or not isinstance(actual, dict):
+                return False
+            for key in ("path", "present", "sha256"):
+                if expected.get(key) != actual.get(key):
+                    return False
+            # Full-worktree bindings carry mode/size metadata.  Older target
+            # bindings do not, so compare those fields when they are present.
+            for key in ("size", "mode"):
+                if key in expected and expected.get(key) != actual.get(key):
+                    return False
+        return True
+
     def _candidate_projection_for_execution(
         self,
         artifact: dict[str, Any],
@@ -5152,7 +5198,7 @@ print(json.dumps(payload, sort_keys=True))
         command: list[str],
         candidate_head: str,
     ) -> list[str]:
-        """Bind the declared clean-tree diff check to the candidate commit."""
+        """Bind a manifest-bound diff check to its committed tree identity."""
 
         if command != ["git", "diff", "--check"]:
             return list(command)
@@ -5168,6 +5214,27 @@ print(json.dumps(payload, sort_keys=True))
             "--no-textconv",
             candidate_head,
         ]
+
+    @staticmethod
+    def _execution_command_for_validation(
+        command: list[str],
+        *,
+        manifest_execution_head: str | None,
+    ) -> list[str]:
+        """Keep ordinary overlay checks on the materialized checkout.
+
+        Only a manifest-bound contract is allowed to replace ``git diff
+        --check`` with a committed-tree check.  Ordinary changed/target
+        validation must retain the command so it observes the Candidate
+        overlay that is about to be executed.
+        """
+
+        if manifest_execution_head is None:
+            return list(command)
+        return MCPValidationRunManager._manifest_execution_command(
+            command,
+            manifest_execution_head,
+        )
 
     def _manifest_candidate_head(
         self,
