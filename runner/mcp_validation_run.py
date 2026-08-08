@@ -4603,6 +4603,9 @@ print(json.dumps(payload, sort_keys=True))
         for index, argument in enumerate(pytest_args):
             if argument == "-m" and index + 1 < len(pytest_args):
                 return True, pytest_args[index + 1]
+            if argument.startswith("-m="):
+                marker_expression = argument[3:]
+                return True, marker_expression or None
         return True, None
 
     @classmethod

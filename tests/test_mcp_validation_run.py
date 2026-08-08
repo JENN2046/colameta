@@ -969,6 +969,24 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
             "not host_frozen_toolchain",
             "candidate",
         ),
+        (
+            ["python", "-m", "pytest", "x.py", "-m=host_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "pytest",
+                "x.py",
+                "-m=not host_frozen_toolchain",
+            ],
+            True,
+            "not host_frozen_toolchain",
+            "candidate",
+        ),
         (["python", "-m", "pytest", "x.py"], True, None, "candidate"),
         (
             ["pytest", "x.py", "-m", "host_frozen_toolchain"],
@@ -977,11 +995,31 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
             "host_frozen",
         ),
         (
+            ["pytest", "x.py", "-m=host_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
+            ["pytest", "x.py", "-m=not host_frozen_toolchain"],
+            True,
+            "not host_frozen_toolchain",
+            "candidate",
+        ),
+        (
             ["python", "-m", "unrelated_module", "-m", "host_frozen_toolchain"],
             False,
             None,
             "candidate",
         ),
+        (
+            ["python", "-m", "unrelated_module", "-m=host_frozen_toolchain"],
+            False,
+            None,
+            "candidate",
+        ),
+        (["python", "-m", "pytest", "x.py", "-m="], True, None, "candidate"),
+        (["python", "-m", "pytest", "x.py", "-m"], True, None, "candidate"),
     ],
 )
 def test_pytest_marker_parser_distinguishes_python_module_flag(
