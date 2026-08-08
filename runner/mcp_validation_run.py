@@ -346,6 +346,18 @@ class MultiplePytestMarkerSelectorsError(PytestMarkerAuthorityError):
         )
 
 
+class GroupedPytestMarkerSelectorError(PytestMarkerAuthorityError):
+    """A grouped short-option token could hide an unsupported ``-m``."""
+
+    code = "GROUPED_PYTEST_MARKER_SELECTOR_UNSUPPORTED"
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        super().__init__(
+            "grouped pytest marker selectors are unsupported; command rejected."
+        )
+
+
 def canonical_validation_result_sha256(result: dict[str, Any]) -> str:
     """Hash one closed terminal result without its self-referential digest."""
 
@@ -4837,6 +4849,8 @@ print(json.dumps(payload, sort_keys=True))
 
         marker_selections: list[str | None] = []
         for index, argument in enumerate(pytest_args):
+            if argument == "--":
+                break
             if argument == "-m":
                 marker_selections.append(
                     pytest_args[index + 1]
@@ -4851,6 +4865,13 @@ print(json.dumps(payload, sort_keys=True))
             if argument.startswith("-m") and argument != "-m":
                 marker_expression = argument[2:]
                 marker_selections.append(marker_expression or None)
+                continue
+            if (
+                argument.startswith("-")
+                and not argument.startswith("--")
+                and "m" in argument[2:]
+            ):
+                raise GroupedPytestMarkerSelectorError(argument)
         return True, marker_selections
 
     @classmethod

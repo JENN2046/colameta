@@ -19,6 +19,7 @@ import runner.toolchain_environment as toolchain_environment
 import runner.work_item_governance.toolchain_binding as toolchain_binding
 from runner.mcp_validation_run import (
     AmbiguousHostFrozenMarkerError,
+    GroupedPytestMarkerSelectorError,
     MCPValidationRunManager,
     MultiplePytestMarkerSelectorsError,
 )
@@ -1108,6 +1109,80 @@ def test_compact_compound_host_frozen_marker_is_rejected() -> None:
         match="mixed or unsupported authority semantics",
     ):
         MCPValidationRunManager._command_lane(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "x.py", "-qmhost_frozen_toolchain"],
+        ["python", "-m", "pytest", "x.py", "-qvmhost_frozen_toolchain"],
+        ["pytest", "x.py", "-vmsmoke"],
+    ],
+)
+def test_grouped_pytest_marker_selector_is_rejected(
+    command: list[str],
+) -> None:
+    with pytest.raises(
+        GroupedPytestMarkerSelectorError,
+        match="grouped pytest marker selectors",
+    ) as raised:
+        MCPValidationRunManager._command_lane(command)
+    assert raised.value.code == "GROUPED_PYTEST_MARKER_SELECTOR_UNSUPPORTED"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "x.py", "-qv"],
+        ["pytest", "x.py", "-vv"],
+    ],
+)
+def test_grouped_pytest_options_without_marker_stay_candidate(
+    command: list[str],
+) -> None:
+    assert MCPValidationRunManager._command_lane(command) == "candidate"
+
+
+def test_grouped_marker_after_double_dash_is_positional() -> None:
+    command = ["pytest", "--", "-qmhost_frozen_toolchain"]
+    is_pytest, selections = MCPValidationRunManager._extract_pytest_marker_selections(
+        command
+    )
+    assert is_pytest is True
+    assert selections == []
+    assert MCPValidationRunManager._command_lane(command) == "candidate"
+
+
+def test_preview_rejects_grouped_marker_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "tests",
+                "-q",
+                "-qmhost_frozen_toolchain",
+            ],
+            "timeout_seconds": 60,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "GROUPED_PYTEST_MARKER_SELECTOR_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert result["host_frozen_lane_execution"] is False
+    assert "preview_id" not in result
 
 
 @pytest.mark.parametrize(
