@@ -5273,6 +5273,41 @@ print(json.dumps(payload, sort_keys=True))
             return venv_python
         return "python3"
 
+    @staticmethod
+    def _is_python_interpreter(executable: str) -> bool:
+        """Recognize Python launchers without treating Python as authority."""
+
+        name = os.path.basename(executable)
+        if name.endswith(".exe"):
+            name = name[:-4]
+        return bool(re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name))
+
+    def _is_supported_python_validation_command(
+        self,
+        command: list[str],
+    ) -> bool:
+        """Allow only the explicitly governed Python validation families."""
+
+        if command[1:] == ["scripts/self_hosting_smoke.py"]:
+            return True
+        if command[1:4] == ["-m", "ruff", "check"]:
+            paths = command[4:]
+            if not paths:
+                return False
+            for part in paths:
+                if part.startswith("-"):
+                    return False
+                if part == ".":
+                    continue
+                normalized = self._normalize_repo_relative_path(part)
+                if (
+                    normalized is None
+                    or self._path_policy.is_denied_source_path(normalized)
+                ):
+                    return False
+            return True
+        return False
+
     def _is_safe_command(self, command: Any) -> bool:
         if not isinstance(command, list) or not command:
             return False
@@ -5333,6 +5368,8 @@ print(json.dumps(payload, sort_keys=True))
                 if normalized is None or self._path_policy.is_denied_source_path(normalized):
                     return False
             return True
+        if self._is_python_interpreter(first):
+            return self._is_supported_python_validation_command(command)
         return True
 
     def _is_supported_manifest_command(self, command: Any) -> bool:

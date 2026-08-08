@@ -2378,6 +2378,13 @@ def test_real_commit_then_validation_handlers_produce_observable_side_effects(
 ) -> None:
     project = tmp_path / "project"
     (project / "runner").mkdir(parents=True)
+    scripts = project / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "self_hosting_smoke.py").write_text(
+        "from pathlib import Path\n"
+        "Path('validation-observed.txt').write_text('passed', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
     tracked = project / "runner" / "tracked.py"
     tracked.write_text("initial\n", encoding="utf-8")
     _git(project, "init", "-q")
@@ -2406,8 +2413,7 @@ def test_real_commit_then_validation_handlers_produce_observable_side_effects(
         "validation_groups": [],
         "commands": [[
             "python3",
-            "-c",
-            "__import__('pathlib').Path('validation-observed.txt').write_text('passed', encoding='utf-8')",
+            "scripts/self_hosting_smoke.py",
         ]],
         "command_specs": [],
         "current_head": _git(project, "rev-parse", "HEAD"),

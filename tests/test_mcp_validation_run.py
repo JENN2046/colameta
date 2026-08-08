@@ -1506,6 +1506,72 @@ def test_preview_rejects_shell_trampoline_before_execution(
 @pytest.mark.parametrize(
     "command",
     [
+        ["python", "-c", "print('should-not-execute')"],
+        ["python3", "-c", "print('should-not-execute')"],
+        [".venv/bin/python", "-c", "print('should-not-execute')"],
+        ["python", "-",],
+        ["python3", "-",],
+        ["python", "arbitrary.py"],
+        ["python3", "arbitrary.py"],
+        ["python", "-m", "os"],
+        ["python", "-m", "http.server"],
+        ["python", "-m", "arbitrary_module"],
+    ],
+)
+def test_arbitrary_python_command_families_are_rejected(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is False
+    _argv, error = manager._parse_command_string(" ".join(command))
+    assert error == "命令不在安全白名单内"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "tests", "-q"],
+        ["python", "-m", "compileall", "runner"],
+        ["python", "-m", "ruff", "check", "runner"],
+        ["python", "scripts/self_hosting_smoke.py"],
+    ],
+)
+def test_supported_python_validation_families_remain_admitted(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is True
+
+
+def test_preview_rejects_arbitrary_python_execution_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": ["python", "-c", "print('should-not-execute')"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "VALIDATION_COMMAND_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert "preview_id" not in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         ["python", "-m", "pytest", "tests", "--basetemp=/tmp/external"],
         ["pytest", "tests", "--basetemp", "/tmp/external"],
     ],
