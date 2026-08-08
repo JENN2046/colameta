@@ -1440,6 +1440,10 @@ def test_grouped_marker_after_double_dash_is_positional() -> None:
         ["sh", "-c", "pytest -q"],
         ["/bin/sh", "-c", "pytest -q"],
         ["/usr/bin/bash", "-c", "pytest -q"],
+        ["env", "sh", "-c", "pytest -q"],
+        ["env", "bash", "-c", "pytest -q"],
+        ["env", "FOO=bar", "sh", "-c", "pytest -q"],
+        ["/usr/bin/env", "bash", "-c", "pytest -q"],
     ],
 )
 def test_general_purpose_shell_validation_commands_are_rejected(
@@ -1449,7 +1453,33 @@ def test_general_purpose_shell_validation_commands_are_rejected(
     manager = MCPValidationRunManager(str(_git_project(tmp_path)))
     assert manager._is_safe_command(command) is False
     _argv, error = manager._parse_command_string(" ".join(command))
-    assert error == "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
+    expected = (
+        "INDIRECT_VALIDATION_COMMAND_LAUNCHER_UNSUPPORTED"
+        if Path(command[0]).name == "env"
+        else "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
+    )
+    assert error == expected
+
+
+def test_preview_rejects_env_indirect_launcher_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": ["env", "sh", "-c", "pytest -q"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+    result = manager.preview({"scope": "current_version"})
+    assert result["ok"] is False
+    assert result["error_code"] == "INDIRECT_VALIDATION_COMMAND_LAUNCHER_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
 
 
 def test_preview_rejects_shell_trampoline_before_execution(
@@ -1500,6 +1530,139 @@ def test_pytest_basetemp_after_double_dash_is_not_rewritten(
         command,
         tmp_path / "scratch",
     ) == command
+
+
+def test_runner_owned_pytest_basetemp_overrides_cli_and_preserves_double_dash(
+    tmp_path: Path,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    scratch = tmp_path / "run-scratch"
+    scratch.mkdir()
+    projected, effective = manager._project_runner_pytest_basetemp(
+        [
+            "python",
+            "-m",
+            "pytest",
+            "tests",
+            "--basetemp=/tmp/external",
+            "--",
+            "--basetemp=/tmp/positional",
+        ],
+        scratch,
+    )
+    assert effective == str(scratch)
+    assert projected == [
+        "python",
+        "-m",
+        "pytest",
+        "tests",
+        f"--basetemp={scratch}",
+        "--",
+        "--basetemp=/tmp/positional",
+    ]
+
+
+def test_pytest_config_basetemp_cannot_override_runner_scratch(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "tests").mkdir()
+    (project / "pytest.ini").write_text(
+        "[pytest]\naddopts = --basetemp=/tmp/rv7-external-sentinel\n",
+        encoding="utf-8",
+    )
+    (project / "tests" / "test_config.py").write_text(
+        "def test_config(tmp_path):\n    (tmp_path / 'ok').write_text('ok')\n",
+        encoding="utf-8",
+    )
+    external = Path("/tmp/rv7-external-sentinel")
+    if external.exists():
+        shutil.rmtree(external)
+    external.mkdir()
+    marker = external / "DO_NOT_DELETE"
+    marker.write_text("keep", encoding="utf-8")
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, effective = manager._project_runner_pytest_basetemp(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+    result = manager._run_command(
+        projected,
+        timeout_seconds=60,
+        cwd=str(project),
+    )
+    assert result["returncode"] == 0
+    assert effective == str(scratch)
+    assert marker.exists()
+    assert any(part == f"--basetemp={scratch}" for part in projected)
+    shutil.rmtree(external, ignore_errors=True)
+
+
+def test_pytest_addopts_environment_cannot_choose_basetemp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "tests").mkdir()
+    (project / "tests" / "test_env.py").write_text(
+        "def test_env(tmp_path):\n    (tmp_path / 'ok').write_text('ok')\n",
+        encoding="utf-8",
+    )
+    external = tmp_path / "external-env-sentinel"
+    external.mkdir()
+    marker = external / "DO_NOT_DELETE"
+    marker.write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_ADDOPTS", f"--basetemp={external}")
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, _effective = manager._project_runner_pytest_basetemp(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+    result = manager._run_command(
+        projected,
+        timeout_seconds=60,
+        cwd=str(project),
+    )
+    assert result["returncode"] == 0
+    assert marker.exists()
+
+
+def test_pyproject_pytest_addopts_cannot_choose_basetemp(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "tests").mkdir()
+    external = tmp_path / "external-pyproject-sentinel"
+    external.mkdir()
+    marker = external / "DO_NOT_DELETE"
+    marker.write_text("keep", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n"
+        f"addopts = ['--basetemp={external}']\n",
+        encoding="utf-8",
+    )
+    (project / "tests" / "test_pyproject.py").write_text(
+        "def test_pyproject(tmp_path):\n    (tmp_path / 'ok').write_text('ok')\n",
+        encoding="utf-8",
+    )
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, _effective = manager._project_runner_pytest_basetemp(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+    result = manager._run_command(
+        projected,
+        timeout_seconds=60,
+        cwd=str(project),
+    )
+    assert result["returncode"] == 0
+    assert marker.exists()
 
 
 def test_validation_command_capacity_rejects_overflow(

@@ -81,6 +81,7 @@ P1_VALIDATION_MAX_AGE_SECONDS = 24 * 60 * 60
 SHELL_META_PATTERNS = ("&&", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
 DANGEROUS_EXECUTABLES = {"rm", "sudo", "su", "chmod", "chown", "curl", "wget", "ssh", "scp", "rsync", "docker", "podman", "kubectl", "terraform"}
 GENERAL_PURPOSE_SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
+INDIRECT_COMMAND_LAUNCHERS = {"env"}
 MANIFEST_PYTHON_EXECUTABLES = {
     "python",
     "python3",
@@ -2008,6 +2009,7 @@ print(json.dumps(payload, sort_keys=True))
         trusted_launcher_binding_receipt: dict[str, Any] | None = None
         trusted_launcher_binding_path: Path | None = None
         execution_overlays_removed: dict[str, bool] = {}
+        pytest_scratch_roots: list[Path] = []
         evidence_root = self._run_evidence_root(run_id)
         if not self._governed_evidence_root_is_valid(run_id, evidence_root):
             raise RuntimeError("governed validation evidence root is invalid")
@@ -2309,10 +2311,21 @@ print(json.dumps(payload, sort_keys=True))
                     effective_command,
                     manifest_execution_head=manifest_execution_head,
                 )
-                if self._pytest_destructive_path_option_indexes(effective_command):
-                    pytest_scratch_root = evidence_root / "pytest" / f"basetemp-{index}"
-                    pytest_scratch_root.mkdir(parents=True, exist_ok=True)
-                    effective_command = self._rewrite_pytest_destructive_paths(
+                is_pytest, _marker_selections = (
+                    self._extract_pytest_marker_selections(effective_command)
+                )
+                effective_pytest_basetemp: str | None = None
+                if is_pytest:
+                    pytest_scratch_root = Path(
+                        tempfile.mkdtemp(
+                            prefix=f"colameta-validation-pytest-{index}-"
+                        )
+                    )
+                    pytest_scratch_roots.append(pytest_scratch_root)
+                    (
+                        effective_command,
+                        effective_pytest_basetemp,
+                    ) = self._project_runner_pytest_basetemp(
                         effective_command,
                         pytest_scratch_root,
                     )
@@ -2482,6 +2495,15 @@ print(json.dumps(payload, sort_keys=True))
                     "unexpected_skip_count": unexpected_skip_count,
                     "required_skipped_count": required_skipped_count,
                     "skipped_nodes": list(pytest_metrics["skipped_nodes"]),
+                    "pytest_basetemp": (
+                        {
+                            "enforced": True,
+                            "authority": "runner_scratch",
+                            "effective": effective_pytest_basetemp,
+                        }
+                        if effective_pytest_basetemp is not None
+                        else None
+                    ),
                 }
                 compileall_artifact = result.get("compileall_artifact")
                 if isinstance(compileall_artifact, dict):
@@ -2539,6 +2561,8 @@ print(json.dumps(payload, sort_keys=True))
                     self._cleanup_isolated_checkout(trusted_source_checkout)
                     and cleanup_complete
                 )
+            for pytest_scratch_root in pytest_scratch_roots:
+                shutil.rmtree(pytest_scratch_root, ignore_errors=True)
 
         lane_checkout_provenance: dict[str, dict[str, Any]] = {}
         for lane, checkout in lane_checkouts.items():
@@ -4607,6 +4631,11 @@ print(json.dumps(payload, sort_keys=True))
         for index, spec in enumerate(command_specs):
             command = spec.get("argv") if isinstance(spec, dict) else None
             self._classify_pytest_marker_expression(command)
+            if self._is_indirect_command_launcher(command):
+                raise ValidationCommandAdmissionError(
+                    "INDIRECT_VALIDATION_COMMAND_LAUNCHER_UNSUPPORTED",
+                    "indirect command launchers are not validation authority; command rejected.",
+                )
             if self._is_general_purpose_shell(command):
                 raise ValidationCommandAdmissionError(
                     "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED",
@@ -4945,6 +4974,55 @@ print(json.dumps(payload, sort_keys=True))
             return False
         return Path(command[0]).name.lower().removesuffix(".exe") in GENERAL_PURPOSE_SHELLS
 
+    @staticmethod
+    def _is_indirect_command_launcher(command: Any) -> bool:
+        if not isinstance(command, list) or not command or not isinstance(command[0], str):
+            return False
+        return Path(command[0]).name.lower().removesuffix(".exe") in INDIRECT_COMMAND_LAUNCHERS
+
+    @classmethod
+    def _pytest_option_start(cls, command: Any) -> int | None:
+        is_pytest, _selections = cls._extract_pytest_marker_selections(command)
+        if not is_pytest or not isinstance(command, list):
+            return None
+        if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
+            return 3
+        return 1
+
+    @classmethod
+    def _project_runner_pytest_basetemp(
+        cls,
+        command: list[str],
+        scratch_root: Path,
+    ) -> tuple[list[str], str | None]:
+        """Force pytest's final destructive-path authority to Runner scratch."""
+
+        option_start = cls._pytest_option_start(command)
+        if option_start is None:
+            return list(command), None
+        option_end = next(
+            (index for index in range(option_start, len(command)) if command[index] == "--"),
+            len(command),
+        )
+        projected = list(command[:option_start])
+        index = option_start
+        while index < option_end:
+            argument = command[index]
+            if argument == "--basetemp":
+                index += 2
+                continue
+            if argument.startswith("--basetemp="):
+                index += 1
+                continue
+            projected.append(argument)
+            index += 1
+        projected.extend(command[option_end:])
+        insert_at = len(projected)
+        if "--" in projected[option_start:]:
+            insert_at = projected.index("--", option_start)
+        projected.insert(insert_at, f"--basetemp={scratch_root}")
+        return projected, str(scratch_root)
+
     @classmethod
     def _pytest_destructive_path_option_indexes(
         cls,
@@ -5100,6 +5178,8 @@ print(json.dumps(payload, sort_keys=True))
             return [], str(exc)
         if not argv:
             return [], "空命令"
+        if self._is_indirect_command_launcher(argv):
+            return [], "INDIRECT_VALIDATION_COMMAND_LAUNCHER_UNSUPPORTED"
         if self._is_general_purpose_shell(argv):
             return [], "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
         # Classify the marker authority before the generic command safety
@@ -5201,6 +5281,8 @@ print(json.dumps(payload, sort_keys=True))
         if not all(isinstance(part, str) and part for part in command):
             return False
         if any(any(pattern in part for pattern in SHELL_META_PATTERNS) for part in command):
+            return False
+        if self._is_indirect_command_launcher(command):
             return False
         if self._is_general_purpose_shell(command):
             return False
@@ -6154,6 +6236,14 @@ print(json.dumps(payload, sort_keys=True))
                 parent_environment=dict(os.environ),
                 forbidden_roots=(Path(self.project_root).resolve(),),
             )
+        is_pytest, _marker_selections = self._extract_pytest_marker_selections(
+            process_command
+        )
+        if is_pytest:
+            # Pytest configuration and inherited PYTEST_ADDOPTS are not part
+            # of the governed argv contract.  The projected Runner-owned
+            # --basetemp below is the sole destructive-path authority.
+            environment.pop("PYTEST_ADDOPTS", None)
         environment.pop("PYTHONPYCACHEPREFIX", None)
         artifact_context = _COMMAND_ARTIFACT_CONTEXT.get()
         compileall_artifact: dict[str, Any] | None = None
