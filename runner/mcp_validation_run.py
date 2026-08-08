@@ -245,16 +245,6 @@ _FROZEN_TOOLCHAIN_ASSET_DIR_ENV = "COLAMETA_FROZEN_TOOLCHAIN_ASSET_DIR"
 _TRUSTED_LAUNCHER_BINDING_ENV = "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE"
 _TRUSTED_LAUNCHER_BINDING_FILENAME = "trusted-launcher-binding.json"
 _TRUSTED_LAUNCHER_RELATIVE_PATH = "scripts/work_item_r3_trusted_launcher.py"
-_HOST_FROZEN_TRIGGER_PATHS = frozenset(
-    {
-        "runner/mcp_validation_run.py",
-        "runner/toolchain_environment.py",
-        "runner/work_item_governance/toolchain_binding.py",
-        "scripts/work_item_r3_closeout.py",
-        "scripts/work_item_r3_trusted_launcher.py",
-        _HOST_FROZEN_TEST_FILE,
-    }
-)
 
 # This is an execution skip policy, not a lane classification list.  The
 # exact skip is an existing dirty-checkout protection in the ordinary
@@ -583,7 +573,10 @@ class MCPValidationRunManager:
             "manifest_bound",
             target_files,
             command_specs,
-            lane_assignments=[_CANDIDATE_LANE] * len(command_specs),
+            lane_assignments=[
+                self._command_lane(spec.get("argv", []))
+                for spec in command_specs
+            ],
         )
         now = _utc_now()
         preview_id = uuid.uuid4().hex[:12]
@@ -608,7 +601,10 @@ class MCPValidationRunManager:
             "candidate_delta_mode": "manifest_subjects",
             "candidate_identity": candidate_identity,
             "validation_selection": validation_selection,
-            "validation_lanes": [_CANDIDATE_LANE] * len(command_specs),
+            "validation_lanes": [
+                self._command_lane(spec.get("argv", []))
+                for spec in command_specs
+            ],
             "current_head": current_head,
             "created_at": _iso(now),
             "expires_at": _iso(now + timedelta(seconds=PREVIEW_TTL_SECONDS)),
@@ -1837,8 +1833,10 @@ print(json.dumps(payload, sort_keys=True))
                     and command_uses_python(spec.get("argv", []))
                     for index, spec in enumerate(command_specs)
                 )
-                needs_python = needs_candidate_python or needs_host_python
-                if needs_python:
+                # Ordinary candidate validation must not depend on the
+                # repository's Host-Frozen cryptography asset.  Resolve the
+                # private authority only for an explicitly selected host lane.
+                if needs_host_python:
                     frozen_asset = self._resolve_frozen_toolchain_asset()
                     if frozen_asset.get("ok") is not True:
                         raise ValidationEnvironmentError(
@@ -4318,7 +4316,10 @@ print(json.dumps(payload, sort_keys=True))
             if acceptance:
                 command_specs.extend(acceptance[:MAX_COMMANDS])
                 commands.extend([item["argv"] for item in command_specs])
-                lane_assignments.extend([_CANDIDATE_LANE] * len(command_specs))
+                lane_assignments.extend(
+                    self._command_lane(item["argv"])
+                    for item in command_specs
+                )
                 validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": [], "command_count": len(command_specs)})
                 return commands, command_specs, "plan_acceptance", warnings, validation_groups, lane_assignments
             warnings.append("当前版本没有可用 acceptance_commands。")
@@ -4331,7 +4332,7 @@ print(json.dumps(payload, sort_keys=True))
                 for spec in acceptance[:MAX_COMMANDS]:
                     command_specs.append(spec)
                     commands.append(spec["argv"])
-                    lane_assignments.append(_CANDIDATE_LANE)
+                    lane_assignments.append(self._command_lane(spec["argv"]))
                 validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": [], "command_count": len(acceptance)})
 
             full_strategies = self._full_validation_strategies()
@@ -4382,10 +4383,11 @@ print(json.dumps(payload, sort_keys=True))
         file_set = set(target_files)
         py_files = sorted([path for path in file_set if path.endswith(".py")])
         test_files = sorted([path for path in py_files if path.startswith("tests/test_")])
-        host_lane_requested = (
-            _HOST_FROZEN_TEST_FILE in test_files
-            or bool(file_set & _HOST_FROZEN_TRIGGER_PATHS)
-        )
+        # Host-Frozen execution is opt-in: it is selected only when the
+        # caller explicitly targets the Host-Frozen test file.  Generic
+        # changed/full validation must not infer ColaMeta's private tests or
+        # toolchain lane from arbitrary project files.
+        host_lane_requested = _HOST_FROZEN_TEST_FILE in test_files
         candidate_test_files = [
             path for path in test_files
             if path != _HOST_FROZEN_TEST_FILE
@@ -4406,7 +4408,10 @@ print(json.dumps(payload, sort_keys=True))
             if acceptance:
                 command_specs.extend(acceptance[:MAX_COMMANDS])
                 commands.extend([item["argv"] for item in command_specs])
-                lane_assignments.extend([_CANDIDATE_LANE] * len(acceptance))
+                lane_assignments.extend(
+                    self._command_lane(item["argv"])
+                    for item in acceptance
+                )
                 validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": target_files, "command_count": len(command_specs)})
                 strategy = "plan_acceptance"
             else:
@@ -4564,6 +4569,31 @@ print(json.dumps(payload, sort_keys=True))
             for command in commands
         ]
 
+    @staticmethod
+    def _command_requests_host_frozen(command: Any) -> bool:
+        """Return whether an explicit command selects the Host-Frozen lane."""
+
+        if not isinstance(command, list):
+            return False
+        try:
+            marker_index = command.index("-m")
+        except ValueError:
+            return False
+        return (
+            marker_index + 1 < len(command)
+            and command[marker_index + 1] == _HOST_MARKER_EXPRESSION
+        )
+
+    @classmethod
+    def _command_lane(cls, command: Any) -> str:
+        """Classify only an explicitly declared Host-Frozen command."""
+
+        return (
+            _HOST_FROZEN_LANE
+            if cls._command_requests_host_frozen(command)
+            else _CANDIDATE_LANE
+        )
+
     def _normalize_timeout_seconds(self, value: Any) -> int:
         try:
             parsed = int(value)
@@ -4616,20 +4646,6 @@ print(json.dumps(payload, sort_keys=True))
                     "-q",
                     "-m",
                     _CANDIDATE_MARKER_EXPRESSION,
-                    "-rs",
-                ],
-            })
-            strategies.append({
-                "strategy": "python_host_frozen",
-                "lane": _HOST_FROZEN_LANE,
-                "argv": [
-                    self._python_executable(),
-                    "-m",
-                    "pytest",
-                    _HOST_FROZEN_TEST_FILE,
-                    "-q",
-                    "-m",
-                    _HOST_MARKER_EXPRESSION,
                     "-rs",
                 ],
             })

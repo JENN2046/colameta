@@ -44,6 +44,23 @@ def _normalized_hostname(parsed: SplitResult) -> str:
     return hostname.rstrip(".").lower()
 
 
+def _normalized_authority(parsed: SplitResult) -> tuple[str, str, int]:
+    """Return the scheme/host/effective-port identity for a URL."""
+
+    scheme = parsed.scheme.lower()
+    hostname = _normalized_hostname(parsed)
+    try:
+        explicit_port = parsed.port
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise HTTPURLPolicyError("URL has an invalid port") from exc
+    effective_port = explicit_port
+    if effective_port is None:
+        effective_port = {"http": 80, "https": 443}.get(scheme)
+    if effective_port is None:
+        raise HTTPURLPolicyError("URL scheme has no effective port")
+    return scheme, hostname, effective_port
+
+
 def _parse_and_validate_url(url: str, allowed_schemes: frozenset[str]) -> SplitResult:
     try:
         parsed = urlsplit(url)
@@ -158,6 +175,16 @@ class _ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
             method=req.get_method(),
         )
         redirected.unredirected_hdrs = dict(req.unredirected_hdrs)
+        if _normalized_authority(urlsplit(req.full_url)) != _normalized_authority(
+            urlsplit(resolved_url)
+        ):
+            # Credentials are scoped to the effective authority, including
+            # the port.  urllib stores ordinary and unredirected headers in
+            # separate case-insensitive-ish mappings, so remove both forms.
+            for header_map in (redirected.headers, redirected.unredirected_hdrs):
+                for key in tuple(header_map):
+                    if key.lower() == "authorization":
+                        del header_map[key]
         if hasattr(req, "timeout"):
             redirected.timeout = req.timeout
         return redirected

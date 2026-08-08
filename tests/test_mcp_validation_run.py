@@ -1448,9 +1448,40 @@ def test_changed_frozen_authority_triggers_both_marker_partitions(
         "changed_files",
         ["runner/work_item_governance/toolchain_binding.py"],
     )
-    assert lanes == ["candidate", "host_frozen", "candidate"]
-    assert "-m not host_frozen_toolchain -rs" in manager._display_command(commands[0])
-    assert "-m host_frozen_toolchain -rs" in manager._display_command(commands[1])
+    # Merely changing the toolchain binding source does not implicitly opt a
+    # generic validation scope into ColaMeta's private Host-Frozen lane.
+    assert lanes == ["candidate"]
+    assert all("test_work_item_r3_closeout_runner.py" not in command for command in commands)
+
+
+def test_generic_python_full_selection_does_not_inject_colameta_host_tests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pyproject.toml").write_text(
+        "[project]\nname='demo'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    tests_dir = project / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_demo.py").write_text(
+        "def test_demo():\n    assert True\n",
+        encoding="utf-8",
+    )
+    manager = MCPValidationRunManager(str(project))
+    monkeypatch.setattr(manager, "_current_acceptance_commands", lambda: ([], []))
+
+    commands, _specs, _strategy, _warnings, _groups, lanes = manager._select_commands(
+        "full", []
+    )
+
+    assert lanes == ["candidate"]
+    assert all(
+        "test_work_item_r3_closeout_runner.py" not in command
+        for command in commands
+    )
+    assert all("host_frozen_toolchain" not in command for command in commands)
 
 
 def test_marker_is_registered_without_unknown_marker_warning(pytestconfig) -> None:

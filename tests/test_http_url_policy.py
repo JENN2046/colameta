@@ -187,6 +187,48 @@ def test_request_method_headers_and_data_are_preserved_on_redirect() -> None:
     assert redirected.origin_req_host == request.origin_req_host
 
 
+@pytest.mark.parametrize(
+    ("origin", "target"),
+    (
+        ("https://a.test/start", "https://a.test:443/next"),
+        ("http://a.test/start", "http://a.test:80/next"),
+        ("https://A.TEST/start", "https://a.test/next"),
+    ),
+)
+def test_redirect_default_port_and_hostname_normalization_preserve_authorization(
+    origin: str,
+    target: str,
+) -> None:
+    handler = _redirect_handler()
+    request = urllib.request.Request(origin)
+    request.add_unredirected_header("Authorization", "Bearer test")
+
+    redirected = handler.redirect_request(request, object(), 302, "Found", {}, target)
+
+    assert redirected.get_header("Authorization") == "Bearer test"
+
+
+@pytest.mark.parametrize(
+    ("origin", "target"),
+    (
+        ("https://a.test/start", "https://a.test:8443/next"),
+        ("http://a.test:80/start", "http://a.test:8080/next"),
+        ("http://a.test/start", "https://a.test/next"),
+    ),
+)
+def test_redirect_authorization_is_removed_when_effective_authority_changes(
+    origin: str,
+    target: str,
+) -> None:
+    handler = _redirect_handler()
+    request = urllib.request.Request(origin)
+    request.add_unredirected_header("Authorization", "Bearer test")
+
+    redirected = handler.redirect_request(request, object(), 302, "Found", {}, target)
+
+    assert redirected.get_header("Authorization") is None
+
+
 def test_timeout_is_passed_to_local_opener() -> None:
     observed = _open_with_fake_transport("http://example.test/healthz", timeout=7.5)
     assert observed["timeout"] == 7.5
