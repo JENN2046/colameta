@@ -982,12 +982,30 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
             "host_frozen",
         ),
         (
+            ["python", "-m", "pytest", "x.py", "-mhost_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
             [
                 "python",
                 "-m",
                 "pytest",
                 "x.py",
                 "-m=not host_frozen_toolchain",
+            ],
+            True,
+            "not host_frozen_toolchain",
+            "candidate",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "pytest",
+                "x.py",
+                "-mnot host_frozen_toolchain",
             ],
             True,
             "not host_frozen_toolchain",
@@ -1007,7 +1025,19 @@ def test_python_command_rewrite_keeps_declared_argv_shape(tmp_path: Path) -> Non
             "host_frozen",
         ),
         (
+            ["pytest", "x.py", "-mhost_frozen_toolchain"],
+            True,
+            "host_frozen_toolchain",
+            "host_frozen",
+        ),
+        (
             ["pytest", "x.py", "-m=not host_frozen_toolchain"],
+            True,
+            "not host_frozen_toolchain",
+            "candidate",
+        ),
+        (
+            ["pytest", "x.py", "-mnot host_frozen_toolchain"],
             True,
             "not host_frozen_toolchain",
             "candidate",
@@ -1065,6 +1095,21 @@ def test_compound_host_frozen_marker_is_rejected(
     assert raised.value.code == "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
 
 
+def test_compact_compound_host_frozen_marker_is_rejected() -> None:
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "x.py",
+        "-mhost_frozen_toolchain or smoke",
+    ]
+    with pytest.raises(
+        AmbiguousHostFrozenMarkerError,
+        match="mixed or unsupported authority semantics",
+    ):
+        MCPValidationRunManager._command_lane(command)
+
+
 @pytest.mark.parametrize(
     "marker_expression",
     [
@@ -1081,6 +1126,39 @@ def test_non_protected_marker_expression_stays_candidate(
 ) -> None:
     command = ["pytest", "x.py", f"-m={marker_expression}"]
     assert MCPValidationRunManager._command_lane(command) == "candidate"
+
+
+def test_pytest_metrics_are_parsed_before_retention_truncation() -> None:
+    command = ["python", "-m", "pytest", "x.py", "-q"]
+    raw_stdout = (
+        "noise\n" * (validation_run.MAX_STDOUT_CHARS // 2)
+        + "2 passed, 1 skipped in 0.01s\n"
+    )
+    metrics = MCPValidationRunManager._pytest_command_metrics(
+        command,
+        raw_stdout,
+        "",
+    )
+    retained_stdout, truncated = validation_run._truncate(
+        raw_stdout,
+        validation_run.MAX_STDOUT_CHARS,
+    )
+
+    assert truncated is True
+    assert "2 passed, 1 skipped" not in retained_stdout
+    assert metrics["metrics_valid"] is True
+    assert metrics["selected_test_count"] == 3
+    assert metrics["skipped_count"] == 1
+
+
+def test_host_frozen_metrics_missing_summary_are_invalid() -> None:
+    command = ["python", "-m", "pytest", "x.py", "-q"]
+    metrics = MCPValidationRunManager._pytest_command_metrics(
+        command,
+        "output without a pytest terminal summary",
+        "",
+    )
+    assert metrics["metrics_valid"] is False
 
 
 def test_preview_rejects_compound_host_frozen_marker_before_execution(
@@ -1162,6 +1240,22 @@ def test_preview_rejects_compound_host_frozen_marker_before_execution(
 def test_repeated_pytest_marker_selectors_are_rejected(
     command: list[str],
 ) -> None:
+    with pytest.raises(
+        MultiplePytestMarkerSelectorsError,
+        match="multiple marker selectors",
+    ):
+        MCPValidationRunManager._command_lane(command)
+
+
+def test_repeated_compact_pytest_marker_selectors_are_rejected() -> None:
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "x.py",
+        "-msmoke",
+        "-mhost_frozen_toolchain",
+    ]
     with pytest.raises(
         MultiplePytestMarkerSelectorsError,
         match="multiple marker selectors",

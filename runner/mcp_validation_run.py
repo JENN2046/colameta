@@ -1587,6 +1587,7 @@ print(json.dumps(payload, sort_keys=True))
             and command[1:3] == ["-m", "pytest"]
         ):
             return {
+                "metrics_valid": True,
                 "selected_test_count": 0,
                 "skipped_count": 0,
                 "xfailed_count": 0,
@@ -1627,6 +1628,11 @@ print(json.dumps(payload, sort_keys=True))
                 skipped_nodes.extend([match.group(2)] * int(match.group(1)))
 
         return {
+            # A pytest command that does not expose a recognizable terminal
+            # summary cannot safely certify Host-Frozen coverage.  Keep this
+            # fact separate from retained display text; callers may truncate
+            # stdout/stderr after extracting these metrics.
+            "metrics_valid": bool(summary_lines),
             "selected_test_count": sum(counts.values()),
             "skipped_count": counts["skipped"],
             "xfailed_count": counts["xfailed"],
@@ -2310,8 +2316,18 @@ print(json.dumps(payload, sort_keys=True))
                         command_index=index,
                         command_artifacts_root=command_artifacts_root,
                     )
-                stdout = result["stdout"]
-                stderr = result["stderr"]
+                raw_stdout = result["stdout"]
+                raw_stderr = result["stderr"]
+                # Parse structured pytest facts before applying the bounded
+                # retention/display truncation below.  The full redacted
+                # streams remain process-local only and are not persisted.
+                pytest_metrics = self._pytest_command_metrics(
+                    command,
+                    raw_stdout,
+                    raw_stderr,
+                )
+                stdout = raw_stdout
+                stderr = raw_stderr
                 remaining = max(
                     0,
                     MAX_TOTAL_OUTPUT_CHARS - total_output_chars,
@@ -2328,11 +2344,17 @@ print(json.dumps(payload, sort_keys=True))
                 total_output_chars += len(stderr)
                 ok = result["returncode"] == 0
                 error_code = result.get("error_code")
-                pytest_metrics = self._pytest_command_metrics(
-                    command,
-                    stdout,
-                    stderr,
-                )
+                if (
+                    ok
+                    and lane == _HOST_FROZEN_LANE
+                    and command[1:3] == ["-m", "pytest"]
+                    and pytest_metrics["metrics_valid"] is not True
+                ):
+                    ok = False
+                    error_code = "PYTEST_METRICS_UNAVAILABLE"
+                    stderr = (stderr + "\n" if stderr else "") + (
+                        "host-frozen pytest metrics unavailable"
+                    )
                 allowed_skip_count = sum(
                     1
                     for signature in pytest_metrics["skipped_nodes"]
@@ -2383,6 +2405,7 @@ print(json.dumps(payload, sort_keys=True))
                     "stderr": stderr,
                     "stdout_truncated": stdout_truncated,
                     "stderr_truncated": stderr_truncated,
+                    "metrics_valid": pytest_metrics["metrics_valid"],
                     "selected_test_count": int(
                         pytest_metrics["selected_test_count"]
                     ),
@@ -4820,8 +4843,13 @@ print(json.dumps(payload, sort_keys=True))
                     if index + 1 < len(pytest_args)
                     else None
                 )
+                continue
             if argument.startswith("-m="):
                 marker_expression = argument[3:]
+                marker_selections.append(marker_expression or None)
+                continue
+            if argument.startswith("-m") and argument != "-m":
+                marker_expression = argument[2:]
                 marker_selections.append(marker_expression or None)
         return True, marker_selections
 
