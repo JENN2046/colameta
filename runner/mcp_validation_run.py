@@ -239,6 +239,15 @@ _VALIDATION_LANES = {_CANDIDATE_LANE, _HOST_FROZEN_LANE}
 _HOST_FROZEN_MARKER = "host_frozen_toolchain"
 _CANDIDATE_MARKER_EXPRESSION = f"not {_HOST_FROZEN_MARKER}"
 _HOST_MARKER_EXPRESSION = _HOST_FROZEN_MARKER
+# Keep this deliberately narrower than a pytest expression parser.  It only
+# answers whether the protected marker is present as an independent marker
+# identifier, so mixed authority expressions can be rejected safely.
+_HOST_FROZEN_MARKER_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9_]){re.escape(_HOST_FROZEN_MARKER)}(?![A-Za-z0-9_])"
+)
+_MARKER_CLASS_VALID_HOST = "valid_host_frozen"
+_MARKER_CLASS_VALID_CANDIDATE = "valid_candidate_exclusion"
+_MARKER_CLASS_ORDINARY_CANDIDATE = "ordinary_candidate"
 _HOST_FROZEN_TEST_FILE = "tests/test_work_item_r3_closeout_runner.py"
 _FROZEN_CRYPTOGRAPHY_WHEEL_ENV = "COLAMETA_FROZEN_CRYPTOGRAPHY_WHEEL"
 _FROZEN_TOOLCHAIN_ASSET_DIR_ENV = "COLAMETA_FROZEN_TOOLCHAIN_ASSET_DIR"
@@ -295,6 +304,19 @@ class P1ValidationResultError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class AmbiguousHostFrozenMarkerError(ValueError):
+    """A pytest command mixes Host-Frozen and candidate authority."""
+
+    code = "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
+
+    def __init__(self, expression: str) -> None:
+        self.expression = expression
+        super().__init__(
+            "pytest marker expression references host_frozen_toolchain "
+            "with mixed or unsupported authority semantics; command rejected."
+        )
 
 
 def canonical_validation_result_sha256(result: dict[str, Any]) -> str:
@@ -362,6 +384,24 @@ class MCPValidationRunManager:
         )
         self._path_policy = RunnerPathPolicy()
 
+    @staticmethod
+    def _ambiguous_marker_error_result(
+        error: AmbiguousHostFrozenMarkerError,
+    ) -> dict[str, Any]:
+        """Return the fail-closed preview response without creating a preview."""
+
+        return {
+            "ok": False,
+            "action": "preview",
+            "error_code": error.code,
+            "message": str(error),
+            "marker_expression": error.expression,
+            "command_executed": False,
+            "candidate_lane_fallback": False,
+            "host_frozen_lane_execution": False,
+            "terminal_result": "rejected",
+        }
+
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         normalized_action = action.strip().lower() if isinstance(action, str) else ""
         if normalized_action == "inspect":
@@ -428,14 +468,17 @@ class MCPValidationRunManager:
         if scope == "changed_files":
             resolved_files = candidate_delta_paths[:MAX_TARGET_FILES]
 
-        (
-            commands,
-            command_specs,
-            strategy,
-            warnings,
-            validation_groups,
-            lane_assignments,
-        ) = self._select_commands(scope, resolved_files)
+        try:
+            (
+                commands,
+                command_specs,
+                strategy,
+                warnings,
+                validation_groups,
+                lane_assignments,
+            ) = self._select_commands(scope, resolved_files)
+        except AmbiguousHostFrozenMarkerError as error:
+            return self._ambiguous_marker_error_result(error)
         blockers: list[str] = []
         if not commands:
             blockers.append("NO_VALIDATION_COMMANDS")
@@ -569,14 +612,18 @@ class MCPValidationRunManager:
             candidate_source_bindings,
             binding_scope="manifest_subjects",
         )
+        try:
+            lane_assignments = [
+                self._command_lane(spec.get("argv", []))
+                for spec in command_specs
+            ]
+        except AmbiguousHostFrozenMarkerError as error:
+            return self._ambiguous_marker_error_result(error)
         validation_selection = self._validation_selection(
             "manifest_bound",
             target_files,
             command_specs,
-            lane_assignments=[
-                self._command_lane(spec.get("argv", []))
-                for spec in command_specs
-            ],
+            lane_assignments=lane_assignments,
         )
         now = _utc_now()
         preview_id = uuid.uuid4().hex[:12]
@@ -601,10 +648,7 @@ class MCPValidationRunManager:
             "candidate_delta_mode": "manifest_subjects",
             "candidate_identity": candidate_identity,
             "validation_selection": validation_selection,
-            "validation_lanes": [
-                self._command_lane(spec.get("argv", []))
-                for spec in command_specs
-            ],
+            "validation_lanes": lane_assignments,
             "current_head": current_head,
             "created_at": _iso(now),
             "expires_at": _iso(now + timedelta(seconds=PREVIEW_TTL_SECONDS)),
@@ -4569,6 +4613,34 @@ print(json.dumps(payload, sort_keys=True))
             for command in commands
         ]
 
+    @classmethod
+    def _classify_pytest_marker_expression(
+        cls,
+        command: Any,
+    ) -> str:
+        """Classify a pytest command's marker authority fail-closed.
+
+        Only the two exact expressions have a single unambiguous authority.
+        A compound expression mentioning the protected marker cannot be
+        represented by the current single-lane launcher, so it is rejected
+        instead of silently falling back to the candidate lane.
+        """
+
+        is_pytest, marker_expression = cls._extract_pytest_marker_expression(
+            command
+        )
+        if not is_pytest or marker_expression is None:
+            return _MARKER_CLASS_ORDINARY_CANDIDATE
+
+        expression = marker_expression.strip()
+        if expression == _HOST_MARKER_EXPRESSION:
+            return _MARKER_CLASS_VALID_HOST
+        if expression == _CANDIDATE_MARKER_EXPRESSION:
+            return _MARKER_CLASS_VALID_CANDIDATE
+        if _HOST_FROZEN_MARKER_TOKEN_RE.search(expression):
+            raise AmbiguousHostFrozenMarkerError(expression)
+        return _MARKER_CLASS_ORDINARY_CANDIDATE
+
     @staticmethod
     def _extract_pytest_marker_expression(
         command: Any,
@@ -4612,10 +4684,10 @@ print(json.dumps(payload, sort_keys=True))
     def _command_requests_host_frozen(cls, command: Any) -> bool:
         """Return whether an explicit pytest command selects Host-Frozen."""
 
-        is_pytest, marker_expression = cls._extract_pytest_marker_expression(
-            command
+        return (
+            cls._classify_pytest_marker_expression(command)
+            == _MARKER_CLASS_VALID_HOST
         )
-        return is_pytest and marker_expression == _HOST_MARKER_EXPRESSION
 
     @classmethod
     def _command_lane(cls, command: Any) -> str:

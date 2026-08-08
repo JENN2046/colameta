@@ -18,6 +18,7 @@ import runner.mcp_validation_run as validation_run
 import runner.toolchain_environment as toolchain_environment
 import runner.work_item_governance.toolchain_binding as toolchain_binding
 from runner.mcp_validation_run import (
+    AmbiguousHostFrozenMarkerError,
     MCPValidationRunManager,
 )
 from runner.toolchain_environment import (
@@ -1033,6 +1034,81 @@ def test_pytest_marker_parser_distinguishes_python_module_flag(
     )
     assert (actual_is_pytest, actual_marker) == (is_pytest, marker)
     assert MCPValidationRunManager._command_lane(command) == expected_lane
+
+
+@pytest.mark.parametrize(
+    "marker_expression",
+    [
+        "host_frozen_toolchain or smoke",
+        "host_frozen_toolchain and smoke",
+        "smoke or host_frozen_toolchain",
+        "smoke and host_frozen_toolchain",
+        "not (host_frozen_toolchain)",
+        "not host_frozen_toolchain or smoke",
+        "host_frozen_toolchain or not smoke",
+    ],
+)
+def test_compound_host_frozen_marker_is_rejected(
+    marker_expression: str,
+) -> None:
+    command = ["python", "-m", "pytest", "x.py", f"-m={marker_expression}"]
+    with pytest.raises(
+        AmbiguousHostFrozenMarkerError,
+        match="mixed or unsupported authority semantics",
+    ) as raised:
+        MCPValidationRunManager._command_lane(command)
+    assert raised.value.code == "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
+
+
+@pytest.mark.parametrize(
+    "marker_expression",
+    [
+        "smoke",
+        "smoke or unit",
+        "host_frozen_toolchain_extra",
+        "not_host_frozen_toolchain",
+        "my_host_frozen_toolchain",
+        "host_frozen_toolchain2",
+    ],
+)
+def test_non_protected_marker_expression_stays_candidate(
+    marker_expression: str,
+) -> None:
+    command = ["pytest", "x.py", f"-m={marker_expression}"]
+    assert MCPValidationRunManager._command_lane(command) == "candidate"
+
+
+def test_preview_rejects_compound_host_frozen_marker_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": [
+                "python",
+                "-m",
+                "pytest",
+                "tests",
+                "-q",
+                "-m=host_frozen_toolchain or smoke",
+            ],
+            "timeout_seconds": 60,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "AMBIGUOUS_HOST_FROZEN_MARKER_EXPRESSION"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert result["host_frozen_lane_execution"] is False
+    assert "preview_id" not in result
+    assert not (tmp_path / "validation-project" / ".colameta").exists()
 
 
 def test_full_preserves_declared_host_frozen_acceptance_lane(
