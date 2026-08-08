@@ -151,9 +151,7 @@ def _asset_bound_receipt(
     toolchain_project = tmp_path / "frozen-toolchain-project"
     environment = toolchain_project / ".venv"
     (environment / "bin").mkdir(parents=True, exist_ok=True)
-    (environment / "lib" / "python3.12" / "site-packages").mkdir(
-        parents=True, exist_ok=True
-    )
+    _venv_purelib(environment).mkdir(parents=True, exist_ok=True)
     (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     filename = "cryptography-test.whl"
     asset = tmp_path / "assets" / filename
