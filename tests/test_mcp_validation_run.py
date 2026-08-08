@@ -1433,6 +1433,100 @@ def test_grouped_marker_after_double_dash_is_positional() -> None:
     assert MCPValidationRunManager._command_lane(command) == "candidate"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash", "-c", "pytest -q"],
+        ["sh", "-c", "pytest -q"],
+        ["/bin/sh", "-c", "pytest -q"],
+        ["/usr/bin/bash", "-c", "pytest -q"],
+    ],
+)
+def test_general_purpose_shell_validation_commands_are_rejected(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is False
+    _argv, error = manager._parse_command_string(" ".join(command))
+    assert error == "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
+
+
+def test_preview_rejects_shell_trampoline_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": ["bash", "-c", "pytest -q"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+    result = manager.preview({"scope": "current_version"})
+    assert result["ok"] is False
+    assert result["error_code"] == "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert "preview_id" not in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "tests", "--basetemp=/tmp/external"],
+        ["pytest", "tests", "--basetemp", "/tmp/external"],
+    ],
+)
+def test_pytest_basetemp_is_projected_to_governed_scratch(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    scratch = tmp_path / "run-scratch" / "pytest" / "basetemp-0"
+    projected = manager._rewrite_pytest_destructive_paths(command, scratch)
+    assert "external" not in " ".join(projected)
+    assert str(scratch) in " ".join(projected)
+
+
+def test_pytest_basetemp_after_double_dash_is_not_rewritten(
+    tmp_path: Path,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    command = ["pytest", "--", "--basetemp=/tmp/external"]
+    assert manager._rewrite_pytest_destructive_paths(
+        command,
+        tmp_path / "scratch",
+    ) == command
+
+
+def test_validation_command_capacity_rejects_overflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    commands = [
+        {
+            "argv": ["python", "-m", "pytest", "tests", "-q"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }
+        for _ in range(validation_run.MAX_COMMANDS + 1)
+    ]
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: (commands, []),
+    )
+    result = manager.preview({"scope": "current_version"})
+    assert result["ok"] is False
+    assert result["error_code"] == "VALIDATION_COMMAND_CAPACITY_EXCEEDED"
+    assert result["command_executed"] is False
+    assert "preview_id" not in result
+
+
 def test_preview_rejects_grouped_marker_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

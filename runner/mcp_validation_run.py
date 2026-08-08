@@ -80,6 +80,7 @@ VALIDATION_EXTERNAL_EVIDENCE_CONTRACT_VERSION = 2
 P1_VALIDATION_MAX_AGE_SECONDS = 24 * 60 * 60
 SHELL_META_PATTERNS = ("&&", ";", "|", ">", "<", "`", "$(", "${", "\n", "\r")
 DANGEROUS_EXECUTABLES = {"rm", "sudo", "su", "chmod", "chown", "curl", "wget", "ssh", "scp", "rsync", "docker", "podman", "kubectl", "terraform"}
+GENERAL_PURPOSE_SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 MANIFEST_PYTHON_EXECUTABLES = {
     "python",
     "python3",
@@ -310,6 +311,15 @@ class P1ValidationResultError(ValueError):
         self.message = message
 
 
+class ValidationCommandAdmissionError(ValueError):
+    """A validation command set cannot be admitted safely."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
 class PytestMarkerAuthorityError(ValueError):
     """A pytest command cannot be assigned one governed execution lane."""
 
@@ -446,6 +456,21 @@ class MCPValidationRunManager:
             result["marker_selector_count"] = error.selector_count
         return result
 
+    @staticmethod
+    def _command_admission_error_result(
+        error: ValidationCommandAdmissionError,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "action": "preview",
+            "error_code": error.code,
+            "message": str(error),
+            "command_executed": False,
+            "candidate_lane_fallback": False,
+            "host_frozen_lane_execution": False,
+            "terminal_result": "rejected",
+        }
+
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         normalized_action = action.strip().lower() if isinstance(action, str) else ""
         if normalized_action == "inspect":
@@ -523,6 +548,8 @@ class MCPValidationRunManager:
             ) = self._select_commands(scope, resolved_files)
         except PytestMarkerAuthorityError as error:
             return self._marker_authority_error_result(error)
+        except ValidationCommandAdmissionError as error:
+            return self._command_admission_error_result(error)
         blockers: list[str] = []
         if not commands:
             blockers.append("NO_VALIDATION_COMMANDS")
@@ -629,6 +656,8 @@ class MCPValidationRunManager:
             )
         except PytestMarkerAuthorityError as error:
             return self._marker_authority_error_result(error)
+        except ValidationCommandAdmissionError as error:
+            return self._command_admission_error_result(error)
         blockers: list[str] = []
         warnings: list[str] = []
         if rejection_details:
@@ -636,6 +665,13 @@ class MCPValidationRunManager:
             warnings.append("至少一条 manifest acceptance command 未通过本地 shell-free 执行策略。")
             # A mixed safe/unsafe declaration must not silently turn into a
             # partial execution. The whole declared contract is rejected.
+            command_specs = []
+        if len(source["acceptance_commands"]) > MAX_COMMANDS:
+            blockers.append("VALIDATION_COMMAND_CAPACITY_EXCEEDED")
+            warnings.append(
+                "manifest acceptance command 数量超过 governed validation capacity；"
+                "拒绝整个 contract。"
+            )
             command_specs = []
         if not source["acceptance_commands"]:
             blockers.append("NO_MANIFEST_ACCEPTANCE_COMMANDS")
@@ -2273,6 +2309,13 @@ print(json.dumps(payload, sort_keys=True))
                     effective_command,
                     manifest_execution_head=manifest_execution_head,
                 )
+                if self._pytest_destructive_path_option_indexes(effective_command):
+                    pytest_scratch_root = evidence_root / "pytest" / f"basetemp-{index}"
+                    pytest_scratch_root.mkdir(parents=True, exist_ok=True)
+                    effective_command = self._rewrite_pytest_destructive_paths(
+                        effective_command,
+                        pytest_scratch_root,
+                    )
                 if lane == _HOST_FROZEN_LANE and command_uses_python(effective_command):
                     selected_python = (
                         host_preflight.get("python_executable")
@@ -4552,6 +4595,29 @@ print(json.dumps(payload, sort_keys=True))
         files, error = self._collect_worktree_delta_paths()
         return files[:MAX_TARGET_FILES], error
 
+    def _validate_command_specs_for_admission(
+        self,
+        command_specs: list[dict[str, Any]],
+    ) -> None:
+        if len(command_specs) > MAX_COMMANDS:
+            raise ValidationCommandAdmissionError(
+                "VALIDATION_COMMAND_CAPACITY_EXCEEDED",
+                "validation command 数量超过 governed capacity；拒绝整个 contract。",
+            )
+        for index, spec in enumerate(command_specs):
+            command = spec.get("argv") if isinstance(spec, dict) else None
+            self._classify_pytest_marker_expression(command)
+            if self._is_general_purpose_shell(command):
+                raise ValidationCommandAdmissionError(
+                    "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED",
+                    "general-purpose shell interpreters are not validation authority; command rejected.",
+                )
+            if not self._is_safe_command(command):
+                raise ValidationCommandAdmissionError(
+                    "VALIDATION_COMMAND_UNSUPPORTED",
+                    f"validation command #{index + 1} 不在安全准入子集内；拒绝整个 contract。",
+                )
+
     def _select_commands(
         self,
         scope: str,
@@ -4574,7 +4640,8 @@ print(json.dumps(payload, sort_keys=True))
             acceptance, acceptance_warnings = self._current_acceptance_commands()
             warnings.extend(acceptance_warnings)
             if acceptance:
-                command_specs.extend(acceptance[:MAX_COMMANDS])
+                command_specs.extend(acceptance)
+                self._validate_command_specs_for_admission(command_specs)
                 commands.extend([item["argv"] for item in command_specs])
                 lane_assignments.extend(
                     self._command_lane(item["argv"])
@@ -4589,7 +4656,7 @@ print(json.dumps(payload, sort_keys=True))
             acceptance, acceptance_warnings = self._current_acceptance_commands()
             warnings.extend(acceptance_warnings)
             if acceptance:
-                for spec in acceptance[:MAX_COMMANDS]:
+                for spec in acceptance:
                     command_specs.append(spec)
                     commands.append(spec["argv"])
                     lane_assignments.append(self._command_lane(spec["argv"]))
@@ -4628,16 +4695,18 @@ print(json.dumps(payload, sort_keys=True))
                     warnings.append("未检测到受支持的 project 类型，无法确定 full 验证策略。")
                 return [], [], "unsupported_strategy", warnings, [], []
 
+            self._validate_command_specs_for_admission(command_specs)
+
             strategy_names = [g["strategy"] for g in validation_groups]
             overall_strategy = "+".join(strategy_names)
 
             return (
-                commands[:MAX_COMMANDS],
-                command_specs[:MAX_COMMANDS],
+                commands,
+                command_specs,
                 overall_strategy,
                 warnings,
                 validation_groups,
-                lane_assignments[:MAX_COMMANDS],
+                lane_assignments,
             )
 
         file_set = set(target_files)
@@ -4666,11 +4735,11 @@ print(json.dumps(payload, sort_keys=True))
             acceptance, acceptance_warnings = self._current_acceptance_commands()
             warnings.extend(acceptance_warnings)
             if acceptance:
-                command_specs.extend(acceptance[:MAX_COMMANDS])
+                command_specs.extend(acceptance)
                 commands.extend([item["argv"] for item in command_specs])
                 lane_assignments.extend(
                     self._command_lane(item["argv"])
-                    for item in acceptance
+                    for item in command_specs
                 )
                 validation_groups.append({"strategy": "plan_acceptance", "lane": _CANDIDATE_LANE, "files": target_files, "command_count": len(command_specs)})
                 strategy = "plan_acceptance"
@@ -4731,13 +4800,14 @@ print(json.dumps(payload, sort_keys=True))
         validation_groups.append({"strategy": "quick_static", "lane": _CANDIDATE_LANE, "files": [], "command_count": 1})
         if not target_files and scope == "changed_files":
             warnings.append("没有检测到 changed files，执行通用 diff 检查。")
+        self._validate_command_specs_for_admission(command_specs)
         return (
-            commands[:MAX_COMMANDS],
-            command_specs[:MAX_COMMANDS],
+            commands,
+            command_specs,
             strategy,
             warnings,
             validation_groups,
-            lane_assignments[:MAX_COMMANDS],
+            lane_assignments,
         )
 
     def _current_acceptance_commands(self) -> tuple[list[dict[str, Any]], list[str]]:
@@ -4760,8 +4830,15 @@ print(json.dumps(payload, sort_keys=True))
                 continue
             argv, error = self._parse_command_string(raw_command)
             if error:
-                warnings.append(f"acceptance command #{index + 1} 不安全：{error}")
-                continue
+                code = (
+                    error
+                    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,100}", error)
+                    else "VALIDATION_COMMAND_UNSUPPORTED"
+                )
+                raise ValidationCommandAdmissionError(
+                    code,
+                    f"acceptance command #{index + 1} is not in the governed validation subset; command set rejected.",
+                )
             result.append({
                 "argv": argv,
                 "timeout_seconds": self._normalize_timeout_seconds(getattr(command, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
@@ -4861,6 +4938,62 @@ print(json.dumps(payload, sort_keys=True))
         if _HOST_FROZEN_MARKER_TOKEN_RE.search(expression):
             raise AmbiguousHostFrozenMarkerError(expression)
         return _MARKER_CLASS_ORDINARY_CANDIDATE
+
+    @staticmethod
+    def _is_general_purpose_shell(command: Any) -> bool:
+        if not isinstance(command, list) or not command or not isinstance(command[0], str):
+            return False
+        return Path(command[0]).name.lower().removesuffix(".exe") in GENERAL_PURPOSE_SHELLS
+
+    @classmethod
+    def _pytest_destructive_path_option_indexes(
+        cls,
+        command: Any,
+    ) -> list[tuple[int, int | None]]:
+        """Return ``--basetemp`` option/value indexes before ``--``."""
+
+        is_pytest, _selections = cls._extract_pytest_marker_selections(command)
+        if not is_pytest:
+            return []
+        result: list[tuple[int, int | None]] = []
+        arguments = command[1:] if isinstance(command, list) else []
+        if len(arguments) >= 2 and arguments[0] == "-m" and arguments[1] == "pytest":
+            arguments = arguments[2:]
+            offset = 3
+        else:
+            offset = 1
+        for local_index, argument in enumerate(arguments):
+            if argument == "--":
+                break
+            index = local_index + offset
+            if argument == "--basetemp":
+                value_index = index + 1 if local_index + 1 < len(arguments) else None
+                result.append((index, value_index))
+            elif argument.startswith("--basetemp="):
+                result.append((index, None))
+        return result
+
+    @classmethod
+    def _rewrite_pytest_destructive_paths(
+        cls,
+        command: list[str],
+        scratch_root: Path,
+    ) -> list[str]:
+        """Project destructive pytest paths into this run's governed scratch."""
+
+        rewritten = list(command)
+        for option_index, value_index in cls._pytest_destructive_path_option_indexes(command):
+            option = rewritten[option_index]
+            if option == "--basetemp":
+                if value_index is None or value_index >= len(rewritten) or rewritten[value_index].startswith("-"):
+                    raise ValidationCommandAdmissionError(
+                        "PYTEST_DESTRUCTIVE_PATH_INVALID",
+                        "pytest --basetemp requires an explicit path; command rejected.",
+                    )
+                rewritten[value_index] = str(scratch_root)
+            else:
+                rewritten[option_index] = f"--basetemp={scratch_root}"
+        return rewritten
 
     @staticmethod
     def _extract_pytest_marker_selections(
@@ -4967,6 +5100,8 @@ print(json.dumps(payload, sort_keys=True))
             return [], str(exc)
         if not argv:
             return [], "空命令"
+        if self._is_general_purpose_shell(argv):
+            return [], "SHELL_INTERPRETER_VALIDATION_COMMAND_UNSUPPORTED"
         # Classify the marker authority before the generic command safety
         # filter.  Otherwise a compound protected expression could be dropped
         # as merely unsafe while the remaining acceptance contract continues.
@@ -5067,6 +5202,8 @@ print(json.dumps(payload, sort_keys=True))
             return False
         if any(any(pattern in part for pattern in SHELL_META_PATTERNS) for part in command):
             return False
+        if self._is_general_purpose_shell(command):
+            return False
         first = command[0]
         executable_name = os.path.basename(first)
         if executable_name in DANGEROUS_EXECUTABLES:
@@ -5080,6 +5217,9 @@ print(json.dumps(payload, sort_keys=True))
         elif "/" in first:
             normalized = self._normalize_repo_relative_path(first)
             if normalized is None:
+                return False
+        for _option_index, value_index in self._pytest_destructive_path_option_indexes(command):
+            if value_index is None or value_index >= len(command) or command[value_index].startswith("-"):
                 return False
         if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
             marker_expression_pending = False
