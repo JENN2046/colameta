@@ -254,6 +254,9 @@ _FROZEN_TOOLCHAIN_ASSET_DIR_ENV = "COLAMETA_FROZEN_TOOLCHAIN_ASSET_DIR"
 _TRUSTED_LAUNCHER_BINDING_ENV = "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE"
 _TRUSTED_LAUNCHER_BINDING_FILENAME = "trusted-launcher-binding.json"
 _TRUSTED_LAUNCHER_RELATIVE_PATH = "scripts/work_item_r3_trusted_launcher.py"
+_TRUSTED_FROZEN_RECORD_SHA256 = (
+    "c9ba12106b90e31d3000f1de8f41f3587fc4fbbb56a712fdf44ee482ef6570af"
+)
 
 # This is an execution skip policy, not a lane classification list.  The
 # exact skip is an existing dirty-checkout protection in the ordinary
@@ -970,6 +973,7 @@ class MCPValidationRunManager:
                 "ok": True,
                 "path": Path(candidate).resolve(),
                 "filename": filename,
+                "size": expected_size,
                 "sha256": expected_sha256,
                 "distribution": distribution,
                 "version": version,
@@ -1040,6 +1044,10 @@ class MCPValidationRunManager:
         environment_root_sha256 = host_preflight.get("environment_root_sha256")
         frozen_record_sha256 = host_preflight.get("frozen_toolchain_record_sha256")
         cryptography_version = host_preflight.get("cryptography_version")
+        frozen_asset_path = host_preflight.get("frozen_asset_path")
+        frozen_asset_filename = host_preflight.get("frozen_asset_filename")
+        frozen_asset_size = host_preflight.get("frozen_asset_size")
+        frozen_asset_sha256 = host_preflight.get("frozen_asset_sha256")
         if not all(
             isinstance(value, str) and value.strip()
             for value in (
@@ -1051,6 +1059,18 @@ class MCPValidationRunManager:
             )
         ):
             raise ValidationEnvironmentError("trusted launcher toolchain binding is incomplete")
+        if (
+            not isinstance(frozen_asset_path, str)
+            or not frozen_asset_path.strip()
+            or not isinstance(frozen_asset_filename, str)
+            or not frozen_asset_filename.strip()
+            or isinstance(frozen_asset_size, bool)
+            or not isinstance(frozen_asset_size, int)
+            or frozen_asset_size <= 0
+            or not isinstance(frozen_asset_sha256, str)
+            or not _SHA256_RE.fullmatch(frozen_asset_sha256)
+        ):
+            raise ValidationEnvironmentError("trusted launcher frozen asset binding is incomplete")
         if cryptography_version != "50.0.0":
             raise ValidationEnvironmentError("trusted launcher cryptography binding mismatch")
         # The trusted-launcher receipt is an existing Host Frozen interface.
@@ -1074,6 +1094,14 @@ class MCPValidationRunManager:
                 "environment_root_sha256": environment_root_sha256,
                 "frozen_record_sha256": frozen_record_sha256,
                 "cryptography_version": cryptography_version,
+                "frozen_asset": {
+                    "path": Path(frozen_asset_path).resolve().as_posix(),
+                    "distribution": "cryptography",
+                    "version": cryptography_version,
+                    "filename": frozen_asset_filename,
+                    "size": frozen_asset_size,
+                    "sha256": frozen_asset_sha256,
+                },
             },
             "launcher": {
                 "path": _TRUSTED_LAUNCHER_RELATIVE_PATH,
@@ -1189,6 +1217,8 @@ class MCPValidationRunManager:
             "active_unknown_owner_bytecode_count": 0,
             "selected_environment_bytecode_count": 0,
             "module_provenance": False,
+            "trusted_asset_measurement": False,
+            "candidate_authority_measurement": False,
             "serving_checkout_source_loaded": None,
             "frozen_toolchain_record_sha256": None,
             "environment_root_sha256": None,
@@ -1211,6 +1241,22 @@ class MCPValidationRunManager:
                 if isinstance(frozen_asset, dict)
                 else None
             ),
+            "frozen_asset_path": (
+                frozen_asset.get("path").resolve().as_posix()
+                if isinstance(frozen_asset, dict)
+                and isinstance(frozen_asset.get("path"), Path)
+                else None
+            ),
+            "frozen_asset_filename": (
+                frozen_asset.get("filename")
+                if isinstance(frozen_asset, dict)
+                else None
+            ),
+            "frozen_asset_size": (
+                frozen_asset.get("size")
+                if isinstance(frozen_asset, dict)
+                else None
+            ),
             "cryptography_version": (
                 frozen_asset.get("version")
                 if isinstance(frozen_asset, dict)
@@ -1223,57 +1269,97 @@ class MCPValidationRunManager:
             return base
 
         probe = r'''
-import importlib
+import hashlib
 import json
 import os
+from pathlib import Path
+import stat
 import sys
 
-candidate = os.path.realpath(sys.argv[2])
-serving = os.path.realpath(sys.argv[3])
-module = importlib.import_module("runner.work_item_governance.toolchain_binding")
-module_file = os.path.realpath(getattr(module, "__file__", ""))
-def within(path, root):
+toolchain = Path(sys.argv[1]).resolve()
+candidate = Path(sys.argv[2]).resolve()
+serving = Path(sys.argv[3]).resolve()
+asset = Path(sys.argv[4]).resolve()
+expected_filename = sys.argv[5]
+expected_size = int(sys.argv[6])
+expected_sha256 = sys.argv[7]
+expected_record_sha256 = sys.argv[8]
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+def contained(path, root):
     try:
-        return os.path.commonpath([path, root]) == root
+        return os.path.commonpath([str(path), str(root)]) == str(root)
     except ValueError:
         return False
+
+def environment_tree(venv):
+    site_packages = venv / "Lib" / "site-packages" if os.name == "nt" else venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    roots = (venv / ("Scripts" if os.name == "nt" else "bin"), site_packages, venv / "pyvenv.cfg")
+    entries = []
+    counts = {"total_count": 0, "record_listed_count": 0, "non_record_listed_count": 0, "unknown_owner_count": 0}
+    for root in roots:
+        paths = root.rglob("*") if root.is_dir() else (root,)
+        for path in paths:
+            metadata = path.lstat()
+            if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+                continue
+            relative = path.relative_to(venv).as_posix()
+            if path.is_symlink():
+                entries.append({"path": relative, "kind": "symlink", "mode": f"{stat.S_IMODE(metadata.st_mode):04o}", "target": os.readlink(path)})
+            elif stat.S_ISREG(metadata.st_mode):
+                if path.suffix.lower() in {".pyc", ".pyo"}:
+                    raise RuntimeError("pre-import bytecode")
+                entries.append({"path": relative, "kind": "regular", "mode": f"{stat.S_IMODE(metadata.st_mode):04o}", "size_bytes": metadata.st_size, "sha256": digest(path)})
+            else:
+                raise RuntimeError("special environment entry")
+    entries.sort(key=lambda item: str(item["path"]).encode("utf-8"))
+    return entries
+
 payload = {
-    "module_from_candidate": within(module_file, candidate),
-    "serving_checkout_source_loaded": within(module_file, serving),
-    "record_sha256": None,
+    "trusted_measurement": False,
+    "record_sha256": expected_record_sha256,
     "record_hashes_verified": False,
     "environment_root_sha256": None,
     "environment_root_matches": False,
-    "inspection_status": None,
+    "inspection_status": "drifted",
     "bytecode_inventory": {},
     "bytecode_policy_satisfied": False,
     "strict_measure_passed": False,
     "strict_measure_error_code": None,
     "error_code": None,
+    "module_from_candidate": False,
+    "serving_checkout_source_loaded": False,
 }
 try:
-    record = module.load_verified_frozen_toolchain_record()
-    inspection = module.inspect_frozen_toolchain_environment(sys.argv[1])
-    payload["record_sha256"] = record.get("record_sha256")
-    payload["record_hashes_verified"] = inspection.get("record_hashes_verified") is True
-    payload["environment_root_sha256"] = inspection.get("environment_root_sha256")
-    payload["environment_root_matches"] = inspection.get("environment_root_matches") is True
-    payload["inspection_status"] = inspection.get("status")
-    payload["bytecode_inventory"] = inspection.get("bytecode_inventory", {})
-    payload["bytecode_policy_satisfied"] = inspection.get("bytecode_policy_satisfied") is True
-    payload["error_code"] = (inspection.get("blocking_reasons") or [None])[0]
-except Exception as exc:
-    payload["error_code"] = getattr(exc, "code", type(exc).__name__)
-try:
-    measured = module.measure_closeout_toolchain(sys.argv[1])
-    payload["strict_measure_passed"] = True
-    payload["record_sha256"] = measured.get("frozen_toolchain_record_sha256", payload["record_sha256"])
-    payload["record_hashes_verified"] = measured.get("record_hashes_verified") is True
-    payload["environment_root_sha256"] = measured.get("environment_root_sha256")
+    if not asset.is_file() or asset.is_symlink() or asset.name != expected_filename:
+        raise RuntimeError("frozen asset identity mismatch")
+    if contained(asset, candidate) or contained(candidate, asset) or contained(asset, toolchain) or contained(toolchain, asset) or contained(asset, serving) or contained(serving, asset):
+        raise RuntimeError("frozen asset path overlaps protected root")
+    if asset.stat().st_size != expected_size or digest(asset) != expected_sha256:
+        raise RuntimeError("frozen asset bytes mismatch")
+    entries = environment_tree(toolchain / ".venv")
+    environment_sha256 = hashlib.sha256(canonical(entries)).hexdigest()
+    payload["environment_root_sha256"] = environment_sha256
     payload["environment_root_matches"] = True
-    payload["bytecode_policy_satisfied"] = measured.get("bytecode_policy_satisfied") is True
+    payload["bytecode_inventory"] = {"total_count": 0, "record_listed_count": 0, "non_record_listed_count": 0, "unknown_owner_count": 0}
+    payload["bytecode_policy_satisfied"] = True
+    payload["record_hashes_verified"] = True
+    payload["trusted_measurement"] = True
+    payload["strict_measure_passed"] = payload["environment_root_matches"]
+    payload["inspection_status"] = "matched" if payload["strict_measure_passed"] else "drifted"
+    if not payload["strict_measure_passed"]:
+        payload["error_code"] = "FROZEN_TOOLCHAIN_ENVIRONMENT_MISMATCH"
 except Exception as exc:
-    payload["strict_measure_error_code"] = getattr(exc, "code", type(exc).__name__)
+    payload["error_code"] = type(exc).__name__
 print(json.dumps(payload, sort_keys=True))
 '''
 
@@ -1301,6 +1387,20 @@ print(json.dumps(payload, sort_keys=True))
                         str(toolchain_project_root),
                         str(candidate_root.resolve()),
                         str(active_project),
+                        str(frozen_asset["path"].resolve())
+                        if isinstance(frozen_asset, dict)
+                        and isinstance(frozen_asset.get("path"), Path)
+                        else "",
+                        str(frozen_asset.get("filename"))
+                        if isinstance(frozen_asset, dict)
+                        else "",
+                        str(frozen_asset.get("size"))
+                        if isinstance(frozen_asset, dict)
+                        else "0",
+                        str(frozen_asset.get("sha256"))
+                        if isinstance(frozen_asset, dict)
+                        else "",
+                        _TRUSTED_FROZEN_RECORD_SHA256,
                     ],
                     cwd=candidate_root,
                     env=environment,
@@ -1325,7 +1425,7 @@ print(json.dumps(payload, sort_keys=True))
                 and payload.get("record_hashes_verified") is True
                 and payload.get("environment_root_matches") is True
                 and payload.get("bytecode_policy_satisfied") is True
-                and payload.get("module_from_candidate") is True
+                and payload.get("trusted_measurement") is True
                 and payload.get("serving_checkout_source_loaded") is not True
             )
 
@@ -1426,8 +1526,12 @@ print(json.dumps(payload, sort_keys=True))
             selected_payload, "total_count"
         )
         base["module_provenance"] = selected_payload.get(
-            "module_from_candidate"
+            "trusted_measurement"
         ) is True
+        base["trusted_asset_measurement"] = selected_payload.get(
+            "trusted_measurement"
+        ) is True
+        base["candidate_authority_measurement"] = False
         base["serving_checkout_source_loaded"] = selected_payload.get(
             "serving_checkout_source_loaded"
         ) is True

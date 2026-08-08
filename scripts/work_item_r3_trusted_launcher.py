@@ -85,6 +85,16 @@ _BINDING_RECEIPT_ENV = "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE"
 _BINDING_RECEIPT_NAME = "trusted-launcher-binding.json"
 _BINDING_SCHEMA = "colameta.trusted_launcher_binding.v1"
 _HOST_FROZEN_LANE = "host_frozen"
+_TRUSTED_FROZEN_ASSET = {
+    "distribution": "cryptography",
+    "version": "50.0.0",
+    "filename": "cryptography-50.0.0-cp39-abi3-manylinux_2_34_x86_64.whl",
+    "size": 4762400,
+    "sha256": "37fdb0d0111f1e2ff07139dfb79f1b49531f8e213c46f1163dd7642979b58c47",
+}
+_TRUSTED_FROZEN_RECORD_SHA256 = (
+    "c9ba12106b90e31d3000f1de8f41f3587fc4fbbb56a712fdf44ee482ef6570af"
+)
 
 
 class _TrustedBootstrapCapability:
@@ -254,6 +264,13 @@ def _load_binding_receipt(root: Path) -> dict[str, Any] | None:
         "environment_root_sha256",
         "frozen_record_sha256",
         "cryptography_version",
+    } and set(toolchain) != {
+        "project_root",
+        "environment_root",
+        "environment_root_sha256",
+        "frozen_record_sha256",
+        "cryptography_version",
+        "frozen_asset",
     }:
         raise RuntimeError("trusted launcher toolchain binding schema is invalid")
     if set(launcher) != {"path", "sha256"}:
@@ -323,7 +340,78 @@ def _load_binding_receipt(root: Path) -> dict[str, Any] | None:
         or validation.get("lane") != _HOST_FROZEN_LANE
     ):
         raise RuntimeError("trusted launcher validation binding is invalid")
+    frozen_asset = toolchain.get("frozen_asset")
+    if frozen_asset is not None:
+        if not isinstance(frozen_asset, dict) or set(frozen_asset) != {
+            "path",
+            "distribution",
+            "version",
+            "filename",
+            "size",
+            "sha256",
+        }:
+            raise RuntimeError("trusted launcher frozen asset binding is invalid")
+        if (
+            not isinstance(frozen_asset.get("path"), str)
+            or not frozen_asset["path"]
+            or not isinstance(frozen_asset.get("size"), int)
+            or isinstance(frozen_asset.get("size"), bool)
+            or not _is_sha256(frozen_asset.get("sha256"))
+            or not all(
+                isinstance(frozen_asset.get(key), str) and frozen_asset[key]
+                for key in ("distribution", "version", "filename")
+            )
+        ):
+            raise RuntimeError("trusted launcher frozen asset binding is invalid")
     return receipt
+
+
+def _verify_bound_frozen_asset(root: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Verify the host-frozen wheel before any Candidate import is possible."""
+
+    toolchain = receipt.get("toolchain")
+    asset = toolchain.get("frozen_asset") if isinstance(toolchain, dict) else None
+    if not isinstance(asset, dict):
+        raise RuntimeError("trusted launcher frozen asset binding is unavailable")
+    if (
+        asset.get("distribution") != _TRUSTED_FROZEN_ASSET["distribution"]
+        or asset.get("version") != _TRUSTED_FROZEN_ASSET["version"]
+        or asset.get("filename") != _TRUSTED_FROZEN_ASSET["filename"]
+        or asset.get("size") != _TRUSTED_FROZEN_ASSET["size"]
+        or asset.get("sha256") != _TRUSTED_FROZEN_ASSET["sha256"]
+        or toolchain.get("frozen_record_sha256") != _TRUSTED_FROZEN_RECORD_SHA256
+    ):
+        raise RuntimeError("trusted launcher frozen asset identity mismatch")
+    path = Path(str(asset["path"])).expanduser()
+    if not path.is_absolute() or path.is_symlink():
+        raise RuntimeError("trusted launcher frozen asset path is unsafe")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("trusted launcher frozen asset is unavailable") from exc
+    project_root = Path(str(toolchain["project_root"])).expanduser().resolve(strict=True)
+    environment_root = Path(str(toolchain["environment_root"])).expanduser().resolve(strict=True)
+    for protected in (root.resolve(), project_root, environment_root):
+        if _is_contained(resolved, protected) or _is_contained(protected, resolved):
+            raise RuntimeError("trusted launcher frozen asset path overlaps protected root")
+    if resolved.name != _TRUSTED_FROZEN_ASSET["filename"]:
+        raise RuntimeError("trusted launcher frozen asset filename mismatch")
+    metadata = resolved.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != _TRUSTED_FROZEN_ASSET["size"]:
+        raise RuntimeError("trusted launcher frozen asset size mismatch")
+    measured = _sha256_file(resolved)
+    if measured != _TRUSTED_FROZEN_ASSET["sha256"]:
+        raise RuntimeError("trusted launcher frozen asset hash mismatch")
+    environment = _measure_environment_tree(environment_root)
+    if environment["environment_tree_sha256"] != toolchain.get("environment_root_sha256"):
+        raise RuntimeError("trusted launcher frozen environment identity mismatch")
+    return {
+        "path": resolved.as_posix(),
+        "filename": resolved.name,
+        "size": metadata.st_size,
+        "sha256": measured,
+        "authority_source": "trusted_launcher_binding",
+    }
 
 
 def _trusted_git_environment() -> dict[str, str]:
@@ -727,6 +815,11 @@ def preimport_attestation(project_root: Path) -> dict[str, Any]:
         and binding_receipt is None
     ):
         raise RuntimeError("R3 host-frozen execution requires a governed binding receipt.")
+    frozen_asset = None
+    if binding_receipt is not None and (
+        os.environ.get("COLAMETA_VALIDATION_LANE") == _HOST_FROZEN_LANE
+    ):
+        frozen_asset = _verify_bound_frozen_asset(root, binding_receipt)
     forbidden_environment = sorted(
         key
         for key in os.environ
@@ -778,6 +871,8 @@ def preimport_attestation(project_root: Path) -> dict[str, Any]:
     }
     if binding_receipt is not None:
         record["trusted_launcher_binding"] = binding_receipt
+    if frozen_asset is not None:
+        record["frozen_asset"] = frozen_asset
     record["attestation_sha256"] = _canonical_sha256(record)
     return record
 
@@ -809,37 +904,13 @@ def main() -> int:
     sys.path.insert(0, site_packages.as_posix())
     sys.path.insert(0, project_root.as_posix())
 
-    if isinstance(binding_receipt, dict):
-        try:
-            import importlib.metadata
-
-            binding_module = __import__(
-                "runner.work_item_governance.toolchain_binding",
-                fromlist=["load_verified_frozen_toolchain_record"],
-            )
-            binding_file = Path(
-                os.path.realpath(getattr(binding_module, "__file__", ""))
-            )
-            if not _is_contained(binding_file, project_root):
-                raise RuntimeError("R3 launcher loaded a non-candidate toolchain module.")
-            record = binding_module.load_verified_frozen_toolchain_record()
-            measured = binding_module.measure_closeout_toolchain(
-                binding_receipt["toolchain"]["project_root"]
-            )
-            if (
-                record.get("record_sha256") != binding_receipt["toolchain"]["frozen_record_sha256"]
-                or measured.get("frozen_toolchain_record_sha256")
-                != binding_receipt["toolchain"]["frozen_record_sha256"]
-                or measured.get("environment_root_sha256")
-                != binding_receipt["toolchain"]["environment_root_sha256"]
-                or importlib.metadata.version("cryptography")
-                != binding_receipt["toolchain"]["cryptography_version"]
-                or measured.get("record_hashes_verified") is not True
-                or measured.get("bytecode_policy_satisfied") is not True
-            ):
-                raise RuntimeError("R3 frozen toolchain differs from the governed receipt.")
-        except Exception as exc:
-            raise RuntimeError("R3 governed frozen toolchain verification failed") from exc
+    if isinstance(binding_receipt, dict) and (
+        os.environ.get("COLAMETA_VALIDATION_LANE") == _HOST_FROZEN_LANE
+    ):
+        # Re-measure immediately after the interpreter/site-packages boundary
+        # is established.  This closes the post-binding mutation window while
+        # keeping Candidate toolchain helpers out of the authority decision.
+        _verify_bound_frozen_asset(project_root, binding_receipt)
 
     import runpy
 

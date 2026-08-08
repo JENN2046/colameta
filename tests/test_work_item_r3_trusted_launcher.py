@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -133,3 +135,127 @@ def test_worktree_launcher_path_is_never_a_trusted_entrypoint(tmp_path: Path) ->
 
     assert completed.returncode == 78
     assert "must be streamed from the exact Git blob" in completed.stderr
+
+
+def _asset_bound_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes = b"trusted-wheel-bytes",
+) -> tuple[Path, Path, dict[str, object]]:
+    repository = _clean_checkout(tmp_path)
+    launcher_path = repository / "scripts" / "work_item_r3_trusted_launcher.py"
+    launcher_path.write_bytes(Path(launcher.__file__).read_bytes())
+    subprocess.run(["git", "-C", repository, "add", "."], check=True)
+    subprocess.run(["git", "-C", repository, "commit", "-qm", "launcher"], check=True)
+    receipt_path = repository.parent / "trusted-launcher-binding.json"
+    toolchain_project = tmp_path / "frozen-toolchain-project"
+    environment = toolchain_project / ".venv"
+    (environment / "bin").mkdir(parents=True, exist_ok=True)
+    (environment / "lib" / "python3.12" / "site-packages").mkdir(
+        parents=True, exist_ok=True
+    )
+    (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    filename = "cryptography-test.whl"
+    asset = tmp_path / "assets" / filename
+    asset.parent.mkdir()
+    asset.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    trusted_asset = {
+        "distribution": "cryptography",
+        "version": "50.0.0",
+        "filename": filename,
+        "size": len(payload),
+        "sha256": digest,
+    }
+    monkeypatch.setattr(launcher, "_TRUSTED_FROZEN_ASSET", trusted_asset)
+    monkeypatch.setattr(launcher, "_TRUSTED_FROZEN_RECORD_SHA256", "f" * 64)
+    monkeypatch.setattr(
+        launcher,
+        "_EXPECTED_ENVIRONMENT_TREE_SHA256",
+        launcher._measure_environment_tree(environment)["environment_tree_sha256"],
+    )
+    head = subprocess.run(
+        ["git", "-C", repository, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bindings: list[dict[str, object]] = []
+    receipt: dict[str, object] = {
+        "schema_version": "colameta.trusted_launcher_binding.v1",
+        "candidate": {
+            "head": head,
+            "root": repository.resolve().as_posix(),
+            "worktree_delta_sha256": launcher._canonical_sha256(bindings),
+            "source_binding_sha256": launcher._canonical_sha256(bindings),
+            "source_binding_count": 0,
+            "source_binding_scope": "full_allowed_worktree_delta",
+            "source_bindings": bindings,
+        },
+        "toolchain": {
+            "project_root": toolchain_project.resolve().as_posix(),
+            "environment_root": environment.resolve().as_posix(),
+            "environment_root_sha256": launcher._EXPECTED_ENVIRONMENT_TREE_SHA256,
+            "frozen_record_sha256": "f" * 64,
+            "cryptography_version": "50.0.0",
+            "frozen_asset": {"path": asset.as_posix(), **trusted_asset},
+        },
+        "launcher": {"path": "scripts/work_item_r3_trusted_launcher.py", "sha256": hashlib.sha256(launcher_path.read_bytes()).hexdigest()},
+        "validation": {"preview_id": "fixture", "command_specs_sha256": "c" * 64, "lane": "host_frozen"},
+    }
+    receipt["receipt_sha256"] = launcher._canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    return repository, receipt_path, receipt
+
+
+def test_frozen_asset_measurement_is_trusted_and_preimport_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path, receipt = _asset_bound_receipt(tmp_path, monkeypatch)
+    source = Path(launcher.__file__).read_text(encoding="utf-8")
+    assert "runner.work_item_governance.toolchain_binding" not in source
+    measured = launcher._verify_bound_frozen_asset(repository, receipt)
+    assert measured["authority_source"] == "trusted_launcher_binding"
+    assert measured["sha256"] == receipt["toolchain"]["frozen_asset"]["sha256"]
+
+
+def test_candidate_expected_hash_spoof_cannot_authorize_wrong_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, receipt_path, receipt = _asset_bound_receipt(tmp_path, monkeypatch)
+    asset = Path(receipt["toolchain"]["frozen_asset"]["path"])
+    asset.write_bytes(b"tampered-wheel")
+    with pytest.raises(RuntimeError, match="identity mismatch|size mismatch|hash mismatch"):
+        launcher._verify_bound_frozen_asset(repository, receipt)
+    # Changing only the receipt's expected hash cannot override the trusted
+    # launcher identity; the receipt digest remains valid but is rejected.
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["toolchain"]["frozen_asset"]["sha256"] = "0" * 64
+    tampered["receipt_sha256"] = launcher._canonical_sha256(
+        {key: value for key, value in tampered.items() if key != "receipt_sha256"}
+    )
+    receipt_path.write_text(json.dumps(tampered, sort_keys=True), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        launcher._verify_bound_frozen_asset(repository, tampered)
+
+
+def test_frozen_asset_symlink_and_path_escape_are_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path, receipt = _asset_bound_receipt(tmp_path, monkeypatch)
+    asset = Path(receipt["toolchain"]["frozen_asset"]["path"])
+    link = asset.with_name("asset-link.whl")
+    link.symlink_to(asset)
+    receipt["toolchain"]["frozen_asset"]["path"] = link.as_posix()
+    with pytest.raises(RuntimeError, match="path is unsafe"):
+        launcher._verify_bound_frozen_asset(repository, receipt)
+    escaped = repository / receipt["toolchain"]["frozen_asset"]["filename"]
+    escaped.write_bytes(asset.read_bytes())
+    receipt["toolchain"]["frozen_asset"]["path"] = escaped.as_posix()
+    with pytest.raises(RuntimeError, match="overlaps protected root"):
+        launcher._verify_bound_frozen_asset(repository, receipt)

@@ -158,6 +158,10 @@ def _trusted_launcher_artifact_for_bindings(
         "environment_root_sha256": "c" * 64,
         "frozen_toolchain_record_sha256": "d" * 64,
         "cryptography_version": "50.0.0",
+        "frozen_asset_path": str(tmp_path / "assets" / "cryptography.whl"),
+        "frozen_asset_filename": "cryptography-50.0.0-cp39-abi3-manylinux_2_34_x86_64.whl",
+        "frozen_asset_size": 4762400,
+        "frozen_asset_sha256": "e" * 64,
     }
     return manager, {"artifact": artifact, "host_preflight": host_preflight}, project
 
