@@ -424,6 +424,152 @@ def test_project_metadata_uses_tomli_only_when_stdlib_tomllib_is_missing(
     )
 
 
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        ({"pyproject.toml": '[project]\nname = "fixture"\n'}, True),
+        ({"pyproject.toml": "[build-system]\nbuild-backend = 'setuptools.build_meta'\n"}, True),
+        ({"setup.cfg": "[metadata]\nname = fixture\n"}, True),
+        ({"setup.py": "from setuptools import setup\nsetup()\n"}, True),
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 88\n"}, False),
+        ({}, False),
+    ],
+)
+def test_project_installability_requires_an_explicit_packaging_signal(
+    tmp_path: Path,
+    files: dict[str, str],
+    expected: bool,
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    for relative, contents in files.items():
+        (candidate / relative).write_text(contents, encoding="utf-8")
+
+    assert toolchain_environment._project_is_installable(candidate) is expected
+
+
+@pytest.mark.parametrize("broken_backend", [False, True])
+def test_non_pep621_setup_cfg_project_enters_governed_wheel_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    broken_backend: bool,
+) -> None:
+    candidate = tmp_path / "candidate"
+    (candidate / "src" / "legacy_demo").mkdir(parents=True)
+    (candidate / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools", "wheel"]\n'
+        'build-backend = "setuptools.build_meta"\n',
+        encoding="utf-8",
+    )
+    (candidate / "setup.cfg").write_text(
+        "[metadata]\nname = legacy-demo\nversion = 0.1.0\n"
+        "[options]\npackages = find:\npackage_dir =\n    = src\n"
+        "[options.packages.find]\nwhere = src\n",
+        encoding="utf-8",
+    )
+    (candidate / "src" / "legacy_demo" / "__init__.py").write_text(
+        '__version__ = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+    labels: list[str] = []
+
+    class FakeBuilder:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def create(self, path: Path) -> None:
+            path.mkdir(parents=True, exist_ok=True)
+            python = toolchain_environment.venv_python(path)
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("validation-python\n", encoding="utf-8")
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        commands.append(command)
+        labels.append(str(kwargs["label"]))
+        if kwargs["label"] == "candidate wheel build":
+            if broken_backend:
+                raise toolchain_environment.ValidationEnvironmentError(
+                    "validation toolchain candidate wheel build returned a failure"
+                )
+            wheel_dir = Path(command[command.index("--wheel-dir") + 1])
+            (wheel_dir / "legacy_demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+    pip_wheel = tmp_path / "pip-26.2-py3-none-any.whl"
+    pip_wheel.write_bytes(b"pip wheel")
+    monkeypatch.setattr(toolchain_environment.venv, "EnvBuilder", FakeBuilder)
+    monkeypatch.setattr(toolchain_environment, "_run_toolchain_command", fake_run)
+    monkeypatch.setattr(
+        toolchain_environment,
+        "download_candidate_pip_asset",
+        lambda **kwargs: {
+            "path": pip_wheel,
+            "filename": pip_wheel.name,
+            "sha256": toolchain_environment._CANDIDATE_PIP_WHEEL_SHA256,
+            "asset_verified": True,
+            "installed_offline": False,
+            "network_used": True,
+            "runtime_dependency": False,
+            "_pip_command": [str(kwargs["python_executable"]), "-m", "pip", "download"],
+        },
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_read_distribution_version",
+        lambda *_args, **_kwargs: "24.0" if not commands else "26.2",
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_wheel_primary_metadata",
+        lambda _path: ("legacy-demo", "0.1.0", set(), {}),
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_verify_candidate_install",
+        lambda **kwargs: {
+            "candidate_package_expected": bool(kwargs["distribution_name"]),
+            "candidate_package_installed": True,
+            "validation_environment_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_probe_installed_environment_identity",
+        lambda **_kwargs: _fake_environment_identity(),
+    )
+    monkeypatch.setattr(toolchain_environment, "_clean_candidate_build_overlays", lambda **_kwargs: None)
+
+    if broken_backend:
+        with pytest.raises(
+            toolchain_environment.ValidationEnvironmentError,
+            match="candidate wheel build returned a failure",
+        ):
+            toolchain_environment.prepare_validation_environment(
+                candidate_root=candidate,
+                work_root=tmp_path / "work",
+                parent_environment={"PATH": os.defpath},
+                needs_python=True,
+            )
+        return
+
+    environment = toolchain_environment.prepare_validation_environment(
+        candidate_root=candidate,
+        work_root=tmp_path / "work",
+        parent_environment={"PATH": os.defpath},
+        needs_python=True,
+    )
+
+    assert labels == [
+        "candidate pip bootstrap upgrade",
+        "candidate validation tool installation",
+        "candidate wheel build",
+        "candidate wheel installation",
+    ]
+    assert any("--no-build-isolation" in command for command in commands)
+    assert environment.summary["candidate_package_expected"] is True
+    assert environment.summary["candidate_package_installed"] is True
+
+
 def test_runtime_dependencies_are_direct_and_python_version_bound() -> None:
     try:
         import tomllib
@@ -627,7 +773,10 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
 ) -> None:
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    shutil.copy2(Path("pyproject.toml"), candidate / "pyproject.toml")
+    (candidate / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n",
+        encoding="utf-8",
+    )
     commands: list[list[str]] = []
     timeouts: list[tuple[str, int]] = []
     environments: list[dict[str, str]] = []
@@ -697,11 +846,6 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
             "candidate_module_provenance_verified": True,
             "validation_environment_verified": True,
         },
-    )
-    monkeypatch.setattr(
-        toolchain_environment,
-        "_project_metadata",
-        lambda _candidate: (None, []),
     )
     monkeypatch.setattr(
         toolchain_environment,

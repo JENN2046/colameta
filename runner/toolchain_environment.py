@@ -573,10 +573,10 @@ def rewrite_command_for_validation_environment(
     return rewritten
 
 
-def _project_metadata(candidate_root: Path) -> tuple[str | None, list[str]]:
+def _load_pyproject(candidate_root: Path) -> dict[str, Any] | None:
     pyproject = candidate_root / "pyproject.toml"
     if not pyproject.is_file():
-        return None, []
+        return None
     try:
         try:
             import tomllib
@@ -584,15 +584,37 @@ def _project_metadata(candidate_root: Path) -> tuple[str | None, list[str]]:
             import tomli as tomllib
 
         with pyproject.open("rb") as handle:
-            project = tomllib.load(handle).get("project", {})
+            payload = tomllib.load(handle)
     except (OSError, ValueError, TypeError):
-        return None, []
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _project_metadata(candidate_root: Path) -> tuple[str | None, list[str]]:
+    payload = _load_pyproject(candidate_root)
+    project = payload.get("project", {}) if payload is not None else {}
     if not isinstance(project, dict):
         return None, []
     name = project.get("name")
     scripts = project.get("scripts", {})
     script_names = [key for key in scripts if isinstance(key, str) and key.strip()] if isinstance(scripts, dict) else []
     return (name.strip() if isinstance(name, str) and name.strip() else None), script_names
+
+
+def _project_is_installable(candidate_root: Path) -> bool:
+    """Return whether the candidate exposes an explicit packaging surface.
+
+    Static PEP 621 metadata is optional for local projects.  A setup.py,
+    setup.cfg, or packaging table in pyproject.toml is enough to enter the
+    existing governed wheel build/install path; a tool-only pyproject is not.
+    """
+
+    if any((candidate_root / filename).is_file() for filename in ("setup.py", "setup.cfg")):
+        return True
+    payload = _load_pyproject(candidate_root)
+    if payload is None:
+        return False
+    return any(isinstance(payload.get(section), dict) for section in ("project", "build-system"))
 
 
 def _run_toolchain_command(
@@ -1266,6 +1288,8 @@ def prepare_validation_environment(
         forbidden_roots=forbidden_roots,
     )
     distribution_name, script_names = _project_metadata(candidate)
+    project_is_installable = _project_is_installable(candidate)
+    candidate_distribution_name = distribution_name
     if needs_python and venv_dir is not None and python_executable is not None:
         wheelhouse = work / "wheelhouse"
         wheelhouse.mkdir(parents=True, exist_ok=True)
@@ -1372,7 +1396,7 @@ def prepare_validation_environment(
             timeout_seconds=_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS,
         )
         candidate_wheel: Path | None = None
-        if distribution_name:
+        if project_is_installable:
             run_candidate_pip(
                 [
                     "wheel",
@@ -1401,11 +1425,15 @@ def prepare_validation_environment(
             candidate_wheels = []
             for path in wheelhouse.glob("*.whl"):
                 wheel_name, _version, _tags, _metadata = _wheel_primary_metadata(path)
-                if canonicalize_name(wheel_name) == canonicalize_name(distribution_name):
+                if distribution_name is None or canonicalize_name(wheel_name) == canonicalize_name(distribution_name):
                     candidate_wheels.append(path)
             if len(candidate_wheels) != 1:
                 raise ValidationEnvironmentError("candidate wheel build output is ambiguous")
             candidate_wheel = candidate_wheels[0]
+            if candidate_distribution_name is None:
+                candidate_distribution_name, _version, _tags, _metadata = _wheel_primary_metadata(
+                    candidate_wheel
+                )
             run_candidate_pip(
                 [
                     "install",
@@ -1448,7 +1476,7 @@ def prepare_validation_environment(
             candidate_root=candidate,
             validation_venv=venv_dir,
             environment=environment,
-            distribution_name=distribution_name,
+            distribution_name=candidate_distribution_name,
             script_names=script_names,
             forbidden_roots=forbidden_roots,
         )
